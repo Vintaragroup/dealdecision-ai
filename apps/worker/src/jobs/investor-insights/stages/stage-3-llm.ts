@@ -67,7 +67,8 @@ export async function buildGovernedSummarySection(
 	governanceVersion: string,
 	dealName?: string,
 	productNarrativeBody?: string,
-	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string }
+	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string },
+	canonicalCompanyName?: string | null
 ): Promise<{ section: RenderPackage["sections"][number]; record: GovernedSummaryRecord } | null> {
 	try {
 		const phase2Result = extractPhase2Result(inputs);
@@ -115,6 +116,7 @@ export async function buildGovernedSummarySection(
 			engineVersion,
 			governanceVersion,
 			dealName: dealName ?? undefined,
+			canonicalCompanyName: canonicalCompanyName ?? undefined,
 			productNarrativeBody: productNarrativeBody ?? undefined,
 			contradictionMarkersBody,
 		});

@@ -287,7 +287,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			loadDealName(pool, dealId),
 		]);
 		const gfCanonicalIdentity = gfDealName
-			? resolveCanonicalIdentity(insightSlotInputs.dpuPages, gfDealName)
+			? resolveCanonicalIdentity(insightSlotInputs.dpuPages, gfDealName, insightSlotInputs.documentTitles)
 			: null;
 		console.log(JSON.stringify({
 			event: "CANONICAL_IDENTITY_DEBUG",
@@ -608,7 +608,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			loadDealName(pool, dealId),
 		]);
 		const canonicalIdentity = dealName
-			? resolveCanonicalIdentity(insightSlotInputs.dpuPages, dealName)
+			? resolveCanonicalIdentity(insightSlotInputs.dpuPages, dealName, insightSlotInputs.documentTitles)
 			: null;
 		console.log(JSON.stringify({
 			event: "CANONICAL_IDENTITY_DEBUG",
@@ -857,7 +857,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		loadDealName(pool, dealId),
 	]);
 	const canonicalIdentity = dealName
-		? resolveCanonicalIdentity(insightSlotInputs.dpuPages, dealName)
+		? resolveCanonicalIdentity(insightSlotInputs.dpuPages, dealName, insightSlotInputs.documentTitles)
 		: null;
 	console.log(JSON.stringify({
 		event: "CANONICAL_IDENTITY_DEBUG",
@@ -895,7 +895,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		VERSION_PINS.governance_version,
 		dealName ?? undefined,
 		productNarrativeBody ?? undefined,
-		llmOpts
+		llmOpts,
+		canonicalIdentity?.canonical_company_name ?? null
 	);
 	const governedExecResult = await buildGovernedExecutiveSummarySection(
 		insightSlotInputs,
@@ -1281,6 +1282,7 @@ export async function recomputeInsightSlotBody(
 		deckFinancialSignals: null,
 		workbookFacts: [],
 		dealTractionFacts: [],
+		documentTitles: [],
 	};
 
 	return buildInsightSlotsSection(inputs).body ?? "";

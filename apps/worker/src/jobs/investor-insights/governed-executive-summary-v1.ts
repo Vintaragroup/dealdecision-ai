@@ -158,6 +158,12 @@ export interface GovernedExecutiveSummaryFingerprintInputs {
 	governanceVersion?: string | null;
 	/** Deal name for cache invalidation when name is first set. */
 	dealNameText?: string | null;
+	/**
+	 * Canonical company name for cache invalidation (Fix F).
+	 * When canonical identity newly resolves or changes, the fingerprint must
+	 * change so the cached exec summary is not reused with the old identity.
+	 */
+	canonicalCompanyNameText?: string | null;
 	/** Product narrative text for cache invalidation. */
 	productNarrativeText?: string | null;
 	/** PR36.9: Contradiction markers text for cache invalidation. */
@@ -190,6 +196,7 @@ export function computeGovernedExecSummaryFingerprintV1(
 		engine_version: inputs.engineVersion ?? null,
 		governance_version: inputs.governanceVersion ?? null,
 		deal_name: inputs.dealNameText ?? null,
+		canonical_company_name: inputs.canonicalCompanyNameText ?? null,
 		product_narrative: inputs.productNarrativeText ? normalizeForFingerprint(inputs.productNarrativeText) : null,
 		contradiction_markers: inputs.contradictionMarkersText ? normalizeForFingerprint(inputs.contradictionMarkersText) : null,
 	};
@@ -325,6 +332,7 @@ export async function resolveGovernedExecSummaryWithCache(
 		engineVersion,
 		governanceVersion,
 		dealNameText: dealName ?? null,
+		canonicalCompanyNameText: canonicalCompanyName ?? null,
 		productNarrativeText: productNarrativeBody ?? null,
 		contradictionMarkersText: contradictionMarkersBody ?? null,
 	});

@@ -61,6 +61,19 @@ const TITLE_LINE_RE =
 const BRAND_TOKEN_RE =
 	/\b([A-Z][a-z]{2,}(?:[A-Z][a-z]*)+|[A-Z]{2,}[a-z]{2,}[A-Z][A-Za-z]*|[A-Z][a-z]{3,})\b/g;
 
+/**
+ * All-caps brand token (Fix B):
+ *   VERSE, ACME, BREX, GUSTO, etc.
+ *
+ * Captures tokens of 3–14 all-uppercase letters.  Must be filtered
+ * through STOPWORDS (title-cased) and ALLCAPS_NOISE_WORDS before being
+ * treated as a company-name candidate.
+ *
+ * Minimum 3 chars; maximum 14 chars avoids catch-all acronyms like
+ * CONFIDENTIAL, INTRODUCTION, etc. (those are also in ALLCAPS_NOISE_WORDS).
+ */
+const ALLCAPS_TOKEN_RE = /\b([A-Z]{3,14})\b/g;
+
 // ─── Stopwords that should never be mistaken for company names ────────────────
 
 const STOPWORDS = new Set([
@@ -75,6 +88,46 @@ const STOPWORDS = new Set([
 	// Common pronouns / determiners that appear at sentence starts
 	"This", "That", "These", "Those", "Here", "There", "Such", "Each",
 	"Some", "Many", "Most", "More", "Less", "They", "Their",
+	//
+	// Fix D: common investor-deck words that are never company names.
+	// These appear on 3+ pages of almost any pitch deck (e.g. as section
+	// headings, table column labels, or body text) and will reliably score
+	// above weak text candidates in the old code.  Adding them here prevents
+	// the repeated_token signal from surfacing them as viable candidates.
+	//
+	// Financial / metric labels
+	"Sales", "High", "Functional", "Target", "Size", "Total", "Value",
+	"Annual", "Monthly", "Quarterly", "Cost", "Costs", "Budget", "Margin",
+	"Gross", "Rate", "Rates", "Model", "Models", "Plan", "Plans",
+	"Projected", "Actual", "Forecast", "Period", "Quarter", "Month",
+	// Common deck section / flow words
+	"Final", "Draft", "Version", "Slides", "Presentation",
+	"Next", "First", "Based", "Focus", "Core", "Current", "Prior",
+	"Global", "Digital", "Smart", "Direct", "Full", "Free", "Clear",
+	"Real", "True", "Open", "Fast", "Deep", "Wide", "Large", "Small",
+]);
+
+/**
+ * Additional stopwords checked only when filtering all-caps repeated tokens
+ * (ALLCAPS_TOKEN_RE matches).
+ *
+ * Covers single common English words, transitional phrases, and acronyms
+ * that are innocuous in isolation but would produce noise candidates when
+ * repeated across slides (e.g. "AND", "FOR", "THE", "OUR", "WITH", "NEW").
+ *
+ * Design rule: every entry here must be something that should NEVER be a
+ * company name in the all-caps form.  Actual all-caps brand names like
+ * "VERSE", "BREX", "GUSTO" are deliberately NOT present.
+ */
+const ALLCAPS_NOISE_WORDS = new Set([
+	"THE", "FOR", "AND", "WITH", "NOT", "BUT", "OUR", "YOUR",
+	"HOW", "WHY", "WHO", "NEW", "OLD", "TOP", "KEY", "ALL",
+	"USE", "GET", "SET", "LET", "PUT", "NET", "TAX", "AVG",
+	"INC", "LLC", "LTD", "CORP", "DBA",
+	"CEO", "COO", "CFO", "CTO", "CMO", "CPO", "CHRO",
+	"USA", "USD", "EUR", "YOY", "MOM", "ARR", "MRR",
+	"SLA", "NDA", "SOC", "SOW", "MVP", "RFP", "IPO", "MNA",
+	"SEO", "API", "SDK", "CRM", "ERP", "KYC", "AML",
 ]);
 
 // ─── Source priority (for primary source selection) ────────────────────────────
@@ -314,7 +367,13 @@ function collectDomainTokens(pages: DpuPage[]): Map<string, Set<number>> {
 
 /**
  * Find brand tokens appearing on ≥ 3 distinct pages.
- * Returns a map from raw token → set of page indices.
+ * Returns a map from display token → set of page indices.
+ *
+ * Two passes are performed:
+ *   1. Mixed-case / CamelCase tokens via BRAND_TOKEN_RE (e.g. Complyant, WorkflowAI).
+ *   2. All-caps tokens via ALLCAPS_TOKEN_RE (e.g. VERSE, ACME, BREX) — Fix B.
+ *      All-caps tokens are title-cased before storage so that the display form
+ *      is clean ("Verse", not "VERSE") and the normalised key is consistent.
  */
 function collectRepeatedBrandTokens(pages: DpuPage[]): Map<string, Set<number>> {
 	const freq = new Map<string, Set<number>>();
@@ -323,12 +382,33 @@ function collectRepeatedBrandTokens(pages: DpuPage[]): Map<string, Set<number>> 
 		const text = page.text ?? "";
 		const seenOnPage = new Set<string>();
 
-		// Reset lastIndex
+		// Pass 1: mixed-case / CamelCase tokens
 		BRAND_TOKEN_RE.lastIndex = 0;
-
 		let m: RegExpExecArray | null;
 		while ((m = BRAND_TOKEN_RE.exec(text)) !== null) {
 			const tok = m[1]!;
+			if (STOPWORDS.has(tok)) continue;
+			if (tok.length < 4) continue;
+			if (!seenOnPage.has(tok)) {
+				seenOnPage.add(tok);
+				const s = freq.get(tok) ?? new Set<number>();
+				s.add(page.page_index);
+				freq.set(tok, s);
+			}
+		}
+
+		// Pass 2: all-caps tokens (Fix B)
+		// Convert to Title Case so "VERSE" → "Verse" — consistent normalised key
+		// and clean display form.  Extra filters prevent generic acronyms / noise.
+		ALLCAPS_TOKEN_RE.lastIndex = 0;
+		while ((m = ALLCAPS_TOKEN_RE.exec(text)) !== null) {
+			const raw = m[1]!;
+			// Skip tokens already matched by the BRAND_TOKEN_RE pass
+			// (those are mixed-case and appear in seenOnPage already).
+			// Apply all-caps specific noise filter first, then STOPWORDS title-cased.
+			if (ALLCAPS_NOISE_WORDS.has(raw)) continue;
+			// Convert to Title Case for consistent key and friendly display
+			const tok = raw.charAt(0) + raw.slice(1).toLowerCase();
 			if (STOPWORDS.has(tok)) continue;
 			if (tok.length < 4) continue;
 			if (!seenOnPage.has(tok)) {
@@ -363,7 +443,15 @@ function upsertCandidate(
 	if (existing) {
 		existing.sources.add(source);
 		for (const idx of pageIndices) existing.page_indices.add(idx);
-		// Prefer shorter, cleaner display names (first one extracted usually cleaner)
+		// Prefer mixed-case display names over all-caps forms (e.g. "Verse" beats "VERSE").
+		// This handles the case where IS_A_RE extracts "VERSE is..." before the
+		// ALLCAPS_TOKEN_RE pass title-cases it to "Verse".
+		const trimmedNew = name.trim();
+		const existingIsAllCaps = /^[A-Z][A-Z0-9]{1,}$/.test(existing.name);
+		const newIsMixedCase = /[a-z]/.test(trimmedNew);
+		if (existingIsAllCaps && newIsMixedCase) {
+			existing.name = trimmedNew;
+		}
 	} else {
 		acc.set(normalized, {
 			name: name.trim(),
@@ -426,7 +514,23 @@ export function resolveCanonicalIdentity(
 	// ── Signal 3: Domain / email corroboration ────────────────────────────────
 	const domainTokens = collectDomainTokens(pages);
 	for (const [domTok, pageSet] of domainTokens) {
-		// Check if this domain token matches an existing candidate (fuzzy match ≥ 0.75)
+		// Check if this domain token matches an existing candidate.
+		//
+		// Two matching strategies:
+		//   A) Levenshtein similarity ≥ 0.75 — catches minor spelling variations
+		//      (e.g. "complyant" ↔ "complyant").
+		//   B) Prefix containment — the domain token is a compound extension of
+		//      a shorter deck-primary brand already in the accumulator (Fix C).
+		//      Example: existing candidate "verse" + domain "versedrink" →
+		//      "versedrink".startsWith("verse") → corroborate "Verse" rather than
+		//      adding a competing standalone "Versedrink" candidate.
+		//
+		//      Rationale: the deck-primary display name (visible to investors on
+		//      slides) should be preferred when the domain merely appends a
+		//      descriptor suffix.  We do NOT apply the reverse (shorter domain
+		//      corroborating a longer candidate) to avoid false matches.
+		//      We guard with normKey.length >= 4 to prevent tiny stems like
+		//      "ai" or "me" from matching unrelated domains.
 		let matched = false;
 		for (const [normKey, candidate] of acc) {
 			const sim = levenshteinRatio(domTok, normKey);
@@ -435,6 +539,21 @@ export function resolveCanonicalIdentity(
 				for (const idx of pageSet) candidate.page_indices.add(idx);
 				matched = true;
 				break;
+			}
+		}
+		if (!matched) {
+			// Strategy B: prefix-containment check (Fix C)
+			for (const [normKey, candidate] of acc) {
+				if (
+					normKey.length >= 4 &&
+					domTok.length > normKey.length &&
+					domTok.startsWith(normKey)
+				) {
+					candidate.sources.add("domain_email");
+					for (const idx of pageSet) candidate.page_indices.add(idx);
+					matched = true;
+					break;
+				}
 			}
 		}
 		if (!matched) {
@@ -454,24 +573,49 @@ export function resolveCanonicalIdentity(
 			const existing = acc.get(normTok)!;
 			existing.sources.add("repeated_token");
 			for (const idx of pageSet) existing.page_indices.add(idx);
+			// Prefer mixed-case over all-caps display names (e.g. "Verse" beats "VERSE")
+			const existingIsAllCaps = /^[A-Z][A-Z0-9]{1,}$/.test(existing.name);
+			const newIsMixedCase = /[a-z]/.test(tok);
+			if (existingIsAllCaps && newIsMixedCase) {
+				existing.name = tok;
+			}
 		} else {
 			upsertCandidate(acc, tok, "repeated_token", Array.from(pageSet));
 		}
 	}
 
 	// ── Signal 5: Filenames ───────────────────────────────────────────────────
+	//
+	// Fix A: tokenize filename stems rather than registering whole multi-word
+	// filenames as single candidates.
+	//
+	// "PD - Verse.pdf"             → tokens: ["Verse"]
+	// "Acme_Investor_Deck_v2.pdf"  → tokens: ["Acme"]
+	// "BrandPoint Deck Final.pdf"  → tokens: ["BrandPoint"]
+	//
+	// Each token is validated independently: must be ≥ 4 chars, start with an
+	// uppercase letter, not be a version string (v1, v2 ...) or a year (2024),
+	// and not appear in STOPWORDS.
 	if (filenames && filenames.length > 0) {
 		for (const filename of filenames) {
-			// Strip extension and transform underscores/hyphens to spaces
-			const stem = filename
+			// Strip path components, then extension, then convert separators → space
+			const basename = (filename.split(/[\\/]/).pop() ?? filename);
+			const stem = basename
 				.replace(/\.[a-zA-Z0-9]{2,5}$/, "")
 				.replace(/[_\-]+/g, " ")
 				.trim();
-			if (stem.length >= 3 && /[A-Z]/.test(stem)) {
-				const candidate = normalizeCompanyName(stem);
-				if (candidate && !STOPWORDS.has(candidate.split(" ")[0] ?? "")) {
-					upsertCandidate(acc, candidate, "filename", []);
-				}
+
+			// Split into word tokens; validate each independently
+			const tokens = stem.split(/\s+/);
+			for (const tok of tokens) {
+				if (tok.length < 4) continue; // too short to be a brand name
+				if (!/[A-Z]/.test(tok)) continue; // must contain at least one uppercase
+				if (/^\d/.test(tok)) continue; // starts with digit (year, version)
+				if (/^[vV]\d/.test(tok)) continue; // version string (v1, v2, V3)
+				const candidate = normalizeCompanyName(tok);
+				if (!candidate || candidate.length < 4) continue;
+				if (STOPWORDS.has(candidate.split(" ")[0] ?? "")) continue;
+				upsertCandidate(acc, candidate, "filename", []);
 			}
 		}
 	}

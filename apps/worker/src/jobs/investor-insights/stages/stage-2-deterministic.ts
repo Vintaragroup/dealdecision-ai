@@ -425,6 +425,12 @@ export interface InsightSlotInputs {
 	 * when workbook facts are absent or incomplete.
 	 */
 	dealTractionFacts: DealTractionFact[];
+	/**
+	 * Titles of documents uploaded for this deal, fetched from the documents table.
+	 * Used as the filenames signal in resolveCanonicalIdentity so that stems like
+	 * "PD - Verse.pdf" can surface brand candidates without deal-specific hacks.
+	 */
+	documentTitles: string[];
 }
 
 
@@ -1165,6 +1171,28 @@ async function loadInsightSlotInputs(
 			// deal_facts_v1 traction facts are supplemental; failure is non-fatal.
 		});
 
+	// Fetch document titles for the canonical-identity resolver (Fix A).
+	// Non-fatal: if the query fails, documentTitles stays empty and the filename
+	// signal is simply absent from the resolver run.
+	let documentTitles: string[] = [];
+	await pool
+		.query<{ title: string }>(
+			`SELECT title
+			   FROM public.documents
+			  WHERE deal_id = $1
+			    AND deleted_at IS NULL
+			    AND title IS NOT NULL
+			  ORDER BY uploaded_at ASC
+			  LIMIT 50`,
+			[dealId]
+		)
+		.then(({ rows }) => {
+			documentTitles = rows.map((r) => r.title).filter((t) => t.length > 0);
+		})
+		.catch(() => {
+			// Document titles are supplemental; failure is non-fatal.
+		});
+
 	const _bestStmt = pickBestStatement(financialStatements);
 	const _bestUof  = pickBestUseOfFunds(useOfFundsStatements);
 	const _bestBs   = pickBestBalanceSheet(balanceSheets);
@@ -1206,6 +1234,7 @@ async function loadInsightSlotInputs(
 		deckFinancialSignals,
 		workbookFacts,
 		dealTractionFacts,
+		documentTitles,
 	};
 }
 

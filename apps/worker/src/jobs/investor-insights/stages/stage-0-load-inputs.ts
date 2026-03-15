@@ -3,6 +3,20 @@
  *
  * All functions are best-effort: individual failures return zero/null/[] rather than throwing,
  * so the main processor can always continue with degraded data rather than a hard crash.
+ *
+ * ── Evidence source-of-truth ────────────────────────────────────────────────
+ * Canonical evidence lives in `evidence_items` (written by document_intelligence_extract).
+ * Legacy evidence lives in the `evidence` table (written by fetch_evidence and other paths).
+ *
+ * Both loadUpstreamSnapshot and loadCoverageSnapshot query canonical `evidence_items` first.
+ * If the canonical table returns zero rows, a best-effort fallback to the legacy `evidence`
+ * table is attempted. The result is tagged with `evidenceSource` ('canonical' |
+ * 'legacy_fallback' | 'missing') so downstream observers can distinguish the path taken.
+ *
+ * Diagnostic log events:
+ *   EVIDENCE_SOURCE_CANONICAL       — evidence_items had rows; primary path used.
+ *   EVIDENCE_SOURCE_LEGACY_FALLBACK — evidence_items was empty; legacy evidence used.
+ *   EVIDENCE_SOURCE_MISSING         — neither table had rows for this deal.
  */
 
 import type { Pool } from "pg";
@@ -10,13 +24,17 @@ import type { Pool } from "pg";
 import type { FusedFact } from "../deal-fusion";
 import type { GovernedSummaryRecord } from "../governed-summary-v1";
 import type { GovernedExecutiveSummaryRecord } from "../governed-executive-summary-v1";
-import type { UpstreamSnapshot, CoverageSnapshot } from "./_shared";
+import type { EvidenceSource, UpstreamSnapshot, CoverageSnapshot } from "./_shared";
 
 // ─── Upstream snapshot ────────────────────────────────────────────────────────
 
 /**
  * Collect upstream deterministic signal counts for the fingerprint.
  * All sub-queries are best-effort; failure returns zero-value for that field.
+ *
+ * Evidence count is read from canonical `evidence_items` first. If that table
+ * returns zero rows, a fallback to the legacy `evidence` table is attempted.
+ * See module-level comment for diagnostic log event names.
  */
 export async function loadUpstreamSnapshot(pool: Pool, dealId: string): Promise<UpstreamSnapshot> {
 	let dpuCount = 0;
@@ -71,7 +89,54 @@ export async function loadUpstreamSnapshot(pool: Pool, dealId: string): Promise<
 			}),
 	]);
 
-	return { dpuCount, dpuCoverage, evidenceCount, visualAssetCount, overlayExists };
+	// ── Evidence source resolution ────────────────────────────────────────────
+	// If evidence_items returned 0, attempt legacy fallback before tagging the source.
+	let evidenceSource: EvidenceSource;
+	if (evidenceCount > 0) {
+		evidenceSource = "canonical";
+		console.log(
+			JSON.stringify({
+				event: "EVIDENCE_SOURCE_CANONICAL",
+				deal_id: dealId,
+				count: evidenceCount,
+			})
+		);
+	} else {
+		// evidence_items empty — try legacy evidence table as fallback.
+		try {
+			const { rows: legacyRows } = await pool.query<{ c: string }>(
+				`SELECT COUNT(*)::bigint AS c FROM public.evidence WHERE deal_id = $1::uuid`,
+				[dealId]
+			);
+			const legacyCount = Number(legacyRows[0]?.c ?? 0);
+			if (legacyCount > 0) {
+				evidenceCount = legacyCount;
+				evidenceSource = "legacy_fallback";
+				console.log(
+					JSON.stringify({
+						event: "EVIDENCE_SOURCE_LEGACY_FALLBACK",
+						deal_id: dealId,
+						legacy_count: legacyCount,
+						note: "evidence_items empty; used legacy evidence table — canonicalization recommended",
+					})
+				);
+			} else {
+				evidenceSource = "missing";
+				console.log(
+					JSON.stringify({
+						event: "EVIDENCE_SOURCE_MISSING",
+						deal_id: dealId,
+						note: "neither evidence_items nor legacy evidence has rows for this deal",
+					})
+				);
+			}
+		} catch {
+			// Legacy fallback query failed — treat as missing; do not block pipeline.
+			evidenceSource = "missing";
+		}
+	}
+
+	return { dpuCount, dpuCoverage, evidenceCount, visualAssetCount, overlayExists, evidenceSource };
 }
 
 // ─── Coverage snapshot ──────────────────────────────────────────────────────────
@@ -177,7 +242,54 @@ export async function loadCoverageSnapshot(pool: Pool, dealId: string): Promise<
 		.map((r, i) => (r.status === "rejected" ? queries[i]![0] : null))
 		.filter((label): label is string => label !== null);
 
-	return { docsCount, dpuPageCount, dpuNonemptyPages, evidenceCount, visualsCount, coverageQueryErrors, xlsxBonusPages };
+	// ── Evidence source resolution ────────────────────────────────────────────
+	// If evidence_items returned 0, attempt legacy fallback before tagging the source.
+	let evidenceSource: EvidenceSource;
+	if (evidenceCount > 0) {
+		evidenceSource = "canonical";
+		console.log(
+			JSON.stringify({
+				event: "EVIDENCE_SOURCE_CANONICAL",
+				deal_id: dealId,
+				count: evidenceCount,
+			})
+		);
+	} else {
+		// evidence_items empty — try legacy evidence table as fallback.
+		try {
+			const { rows: legacyRows } = await pool.query<{ c: string }>(
+				`SELECT COUNT(*)::bigint AS c FROM public.evidence WHERE deal_id = $1::uuid`,
+				[dealId]
+			);
+			const legacyCount = Number(legacyRows[0]?.c ?? 0);
+			if (legacyCount > 0) {
+				evidenceCount = legacyCount;
+				evidenceSource = "legacy_fallback";
+				console.log(
+					JSON.stringify({
+						event: "EVIDENCE_SOURCE_LEGACY_FALLBACK",
+						deal_id: dealId,
+						legacy_count: legacyCount,
+						note: "evidence_items empty; used legacy evidence table — canonicalization recommended",
+					})
+				);
+			} else {
+				evidenceSource = "missing";
+				console.log(
+					JSON.stringify({
+						event: "EVIDENCE_SOURCE_MISSING",
+						deal_id: dealId,
+						note: "neither evidence_items nor legacy evidence has rows for this deal",
+					})
+				);
+			}
+		} catch {
+			// Legacy fallback query failed — treat as missing; do not block pipeline.
+			evidenceSource = "missing";
+		}
+	}
+
+	return { docsCount, dpuPageCount, dpuNonemptyPages, evidenceCount, visualsCount, coverageQueryErrors, xlsxBonusPages, evidenceSource };
 }
 
 // ─── Deal name loader ─────────────────────────────────────────────────────────

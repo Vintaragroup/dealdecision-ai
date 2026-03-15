@@ -73,6 +73,19 @@ export function buildComplianceState(events: ComplianceState["events"] = []): Co
 	};
 }
 
+// ─── Evidence source ─────────────────────────────────────────────────────────
+
+/**
+ * Indicates which storage table provided the evidence count for a pipeline run.
+ *
+ * - `canonical`        — evidence_items had rows; primary path used.
+ * - `legacy_fallback`  — evidence_items was empty; fell back to legacy `evidence` table.
+ *                        Signals the deal was ingested before document_intelligence_extract
+ *                        populated evidence_items. A canonicalization run is recommended.
+ * - `missing`          — neither table had rows for this deal.
+ */
+export type EvidenceSource = "canonical" | "legacy_fallback" | "missing";
+
 // ─── Upstream snapshot ────────────────────────────────────────────────────────
 
 export interface UpstreamSnapshot {
@@ -81,6 +94,11 @@ export interface UpstreamSnapshot {
 	evidenceCount: number;
 	visualAssetCount: number;
 	overlayExists: boolean;
+	/**
+	 * Diagnostic field — which table supplied `evidenceCount`.
+	 * Optional; absent on objects constructed before this field was added.
+	 */
+	evidenceSource?: EvidenceSource;
 }
 
 // ─── Coverage snapshot ──────────────────────────────────────────────────────────
@@ -93,6 +111,11 @@ export interface CoverageSnapshot {
 	visualsCount: number;
 	/** Names of sub-queries that were rejected via Promise.allSettled. Empty = all succeeded. */
 	coverageQueryErrors: string[];
+	/**
+	 * Diagnostic field — which table supplied `evidenceCount`.
+	 * Optional; absent on objects constructed before this field was added.
+	 */
+	evidenceSource?: EvidenceSource;
 	/**
 	 * WS-C PR20: XLSX pages that lack meaningful page_text but contain structured
 	 * row data (page_type="excel_range" AND payload.rows array present).

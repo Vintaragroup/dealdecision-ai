@@ -21,6 +21,7 @@ import type { FinancialFactsV1 } from "../../../lib/financial-facts-v1.js";
 import type { GovernedSummaryRecord } from "../governed-summary-v1";
 import type { GovernedExecutiveSummaryRecord } from "../governed-executive-summary-v1";
 import type { NarrativeContradictionBundle } from "../narrative-contradiction-v1";
+import type { CanonicalIdentityResult } from "../canonical-identity/canonical-identity-schema";
 import { VERSION_PINS } from "./_shared";
 
 // ─── Render package builder ───────────────────────────────────────────────────
@@ -40,7 +41,18 @@ export function buildRenderPackage(opts: {
 	recoveryMetadata?: RenderPackage["recovery_metadata"];
 	/** PR22: deterministic Overview-tab slot fallbacks (optional, flag-gated). */
 	deterministicOverviewSlots?: RenderPackage["deterministic_overview_slots"];
+	/** Canonical company identity result — mapped to structured UI field when present. */
+	canonicalIdentity?: CanonicalIdentityResult | null;
 }): RenderPackage {
+	const canonicalIdentityUi: RenderPackage["canonical_identity"] = opts.canonicalIdentity
+		? {
+				entered_name: opts.canonicalIdentity.entered_deal_name,
+				canonical_company_name: opts.canonicalIdentity.canonical_company_name,
+				confidence: opts.canonicalIdentity.canonical_company_name_confidence,
+				mismatch_flagged: opts.canonicalIdentity.mismatch_flagged,
+				evidence_summary: opts.canonicalIdentity.identity_evidence ?? null,
+		  }
+		: undefined;
 	return {
 		render_version: "ui_contract_v1",
 		ui_contract_version: VERSION_PINS.ui_contract_version,
@@ -58,6 +70,7 @@ export function buildRenderPackage(opts: {
 		...(opts.governedSkips !== undefined && opts.governedSkips.length > 0 && { governed_skips: opts.governedSkips }),
 		...(opts.recoveryMetadata !== undefined && { recovery_metadata: opts.recoveryMetadata }),
 		...(opts.deterministicOverviewSlots !== undefined && { deterministic_overview_slots: opts.deterministicOverviewSlots }),
+		...(canonicalIdentityUi !== undefined && { canonical_identity: canonicalIdentityUi }),
 		no_empty_blocks: true,
 		audit_footer: {
 			stage: "stage_0",

@@ -25,6 +25,7 @@ import {
 	serializeExternalDiligenceBody,
 	serializeExternalDiligenceSectionBody,
 } from "./serialize-external-diligence";
+import type { CanonicalIdentityResult } from "../canonical-identity/canonical-identity-schema";
 
 export type { ExternalDiligenceV1 } from "./external-diligence-schema";
 
@@ -37,6 +38,8 @@ export interface RunExternalDiligenceV1Opts {
 	dealName?: string | null;
 	/** Canonical fields body from Phase-2 — used for claim corroboration */
 	canonicalFieldsBody?: string | null;
+	/** Canonical identity result — when high/medium confidence, overrides page extraction */
+	canonicalIdentity?: CanonicalIdentityResult | null;
 }
 
 // ─── Result ───────────────────────────────────────────────────────────────────
@@ -87,7 +90,7 @@ export async function runExternalDiligenceV1(
 	inputs: InsightSlotInputs,
 	opts: RunExternalDiligenceV1Opts
 ): Promise<ExternalDiligenceV1Result | null> {
-	const { deal_id, dealName, canonicalFieldsBody } = opts;
+	const { deal_id, dealName, canonicalFieldsBody, canonicalIdentity } = opts;
 
 	try {
 		console.log(
@@ -101,7 +104,7 @@ export async function runExternalDiligenceV1(
 		);
 
 		// ── Step 1: Build query plan ──────────────────────────────────────────
-		const plan = buildExternalDiligenceQueryPlan(inputs, dealName);
+		const plan = buildExternalDiligenceQueryPlan(inputs, dealName, canonicalFieldsBody, canonicalIdentity);
 
 		console.log(
 			JSON.stringify({

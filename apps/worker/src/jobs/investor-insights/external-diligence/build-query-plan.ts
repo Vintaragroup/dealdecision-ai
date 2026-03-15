@@ -45,6 +45,7 @@ import {
 	buildFounderEntityQuery,
 } from "./query-entity-utils";
 import { inferProductCategory } from "./infer-product-category";
+import type { CanonicalIdentityResult } from "../canonical-identity/canonical-identity-schema";
 
 // ─── Shared noise domain exclusions ──────────────────────────────────────────
 
@@ -305,10 +306,20 @@ function buildExternalRisksQuery(name: string): BucketQuerySpec {
 export function buildExternalDiligenceQueryPlan(
 	inputs: InsightSlotInputs,
 	dealName?: string | null,
-	canonicalFieldsBody?: string | null
+	canonicalFieldsBody?: string | null,
+	canonicalIdentity?: CanonicalIdentityResult | null
 ): ExternalDiligenceQueryPlan {
+	// PR-CanonicalIdentity: use canonical company name when the resolver produced
+	// a high- or medium-confidence result, falling back to page extraction.
+	const canonicalCompanyName =
+		canonicalIdentity &&
+		(canonicalIdentity.canonical_company_name_confidence === "high" ||
+			canonicalIdentity.canonical_company_name_confidence === "medium")
+			? canonicalIdentity.canonical_company_name
+			: null;
+
 	// Extract raw signals from pages + canonical
-	const rawCompanyName = extractCompanyNameFromPages(inputs.dpuPages, dealName);
+	const rawCompanyName = canonicalCompanyName ?? extractCompanyNameFromPages(inputs.dpuPages, dealName);
 	const sectorFromPages = extractSectorFromPages(inputs.dpuPages);
 	const sectorFromCanonical = extractSectorFromCanonical(canonicalFieldsBody ?? null);
 	const sector = sectorFromPages ?? sectorFromCanonical;

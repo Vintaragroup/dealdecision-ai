@@ -2207,6 +2207,18 @@ export type InvestorInsightsReport = {
         hard_missing_pages_total: number | null;
       };
     };
+    /**
+     * Structured canonical company identity — populated when the canonical
+     * identity resolver ran and produced a result.  Use this for the rename
+     * suggestion banner; do NOT parse the debug section body text.
+     */
+    canonical_identity?: {
+      entered_name: string;
+      canonical_company_name: string;
+      confidence: 'high' | 'medium' | 'low' | 'none';
+      mismatch_flagged: boolean;
+      evidence_summary: string | null;
+    };
     [key: string]: unknown;
   };
   updated_at?: string;

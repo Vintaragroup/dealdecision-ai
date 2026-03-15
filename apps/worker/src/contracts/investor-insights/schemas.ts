@@ -141,6 +141,20 @@ export const RenderPackageSchema = z.object({
     })
     .optional(),
 
+  // Canonical company identity — structured field for UI rename suggestion.
+  // Populated when the canonical identity resolver runs and mismatch detection
+  // is meaningful (confidence high/medium).  Optional so pre-existing render
+  // packages without this field remain valid.
+  canonical_identity: z
+    .object({
+      entered_name: z.string(),
+      canonical_company_name: z.string(),
+      confidence: z.enum(["high", "medium", "low", "none"]),
+      mismatch_flagged: z.boolean(),
+      evidence_summary: z.string().nullable(),
+    })
+    .optional(),
+
   // PR22: deterministic Overview-tab slot fallbacks.
   // Populated when DETERMINISTIC_SLOT_FALLBACK_V1=true and at least one
   // slot was extractable from DPU pages.  Optional so pre-existing render

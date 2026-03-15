@@ -48,6 +48,7 @@ import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
 import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
 import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
 import { chooseGovernedKeyFact } from '../../lib/chooseGovernedKeyFact';
+import { CanonicalIdentityRenameBanner } from '../deal/CanonicalIdentityRenameBanner';
 import { deriveGatingState, shouldSuppressNeedsReview } from '../../lib/badgePolicy';
 import { useAsyncStaleGuard } from '../../lib/hooks/useAsyncStaleGuard';
 import { useUserRole } from '../../contexts/UserRoleContext';
@@ -6037,6 +6038,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   {displayType === 'seed' ? 'Seed' : displayType === 'series-a' ? 'Series A' : displayType === 'series-b' ? 'Series B' : displayType === 'series-c' ? 'Series C' : displayType === 'series-d' ? 'Series D+' : 'Series A'}
                 </span>
               </div>
+              {dealId && (
+                <CanonicalIdentityRenameBanner
+                  dealId={dealId}
+                  currentDealName={displayName}
+                  canonicalIdentity={investorInsights.report?.render_package?.canonical_identity}
+                  darkMode={darkMode}
+                  onRenameSuccess={refreshDealFromApi}
+                />
+              )}
               {/* Improved Metadata Layout - Single Flowing Row */}
               <div className={`text-sm flex flex-wrap items-center gap-x-4 gap-y-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                 <span className="flex items-center gap-1.5">

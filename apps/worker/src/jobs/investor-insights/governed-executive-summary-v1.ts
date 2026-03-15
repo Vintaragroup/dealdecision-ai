@@ -83,6 +83,12 @@ export interface GovernedExecutiveSummaryArgs {
 	/** Pre-formatted coverage note (injected by caller, not the LLM). */
 	coverageNote: string;
 	dealName?: string;
+	/**
+	 * Canonical company name resolved from document evidence.
+	 * When present and different from dealName, the Deal Identity block will
+	 * note both so the LLM uses the correct name from the deck.
+	 */
+	canonicalCompanyName?: string | null;
 	/** Product/narrative text from non-financial deck pages. */
 	productNarrativeBody?: string | null;
 	/** PR36.9: Serialized contradiction markers body. */
@@ -246,6 +252,12 @@ export interface ResolveGovernedExecSummaryArgs {
 	/** GOVERNANCE_VERSION pin for fingerprint. */
 	governanceVersion: string;
 	dealName?: string;
+	/**
+	 * Canonical company name resolved from document evidence.
+	 * When present and different from dealName, the Deal Identity block will
+	 * note both so the LLM uses the correct name from the deck.
+	 */
+	canonicalCompanyName?: string | null;
 	/** Product/narrative text from non-financial deck pages. */
 	productNarrativeBody?: string | null;
 	/** PR36.9: Serialized contradiction markers body. */
@@ -287,6 +299,7 @@ export async function resolveGovernedExecSummaryWithCache(
 		engineVersion,
 		governanceVersion,
 		dealName,
+		canonicalCompanyName,
 		productNarrativeBody,
 		contradictionMarkersBody,
 		generateFn = generateGovernedExecSummaryV1,
@@ -368,8 +381,7 @@ export async function resolveGovernedExecSummaryWithCache(
 		financialReconciliationBody,
 		conflictsBody,
 		coverageNote,
-		dealName,
-		productNarrativeBody,
+		dealName,		canonicalCompanyName,		productNarrativeBody,
 		contradictionMarkersBody,
 	});
 
@@ -504,8 +516,17 @@ export async function generateGovernedExecSummaryV1(
 	const parts: string[] = [];
 
 	// 1. Deal Identity
-	if (args.dealName) {
-		parts.push(`## Deal Identity\nDeal name: ${args.dealName}`);
+	const displayName = args.canonicalCompanyName ?? args.dealName;
+	if (displayName) {
+		const hasCanonicalMismatch =
+			args.canonicalCompanyName &&
+			args.dealName &&
+			args.canonicalCompanyName.toLowerCase() !== args.dealName.toLowerCase();
+
+		const identityNote = hasCanonicalMismatch
+			? `Deal name: ${args.canonicalCompanyName} (as named in submitted materials; entered as "${args.dealName}")`
+			: `Deal name: ${displayName}`;
+		parts.push(`## Deal Identity\n${identityNote}`);
 	}
 
 	// 2. Product Narrative — always inject a section; if absent, provide explicit placeholder

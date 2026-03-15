@@ -119,6 +119,7 @@ import { XLSX_DPU_USEFUL_HEURISTIC_VERSION } from "./stages/_shared";
 import { resolveOverviewFallbacksV1 } from "./stages/deterministic-slot-fallback-v1.js";
 import { runExternalDiligenceV1, buildExternalDiligenceRenderSection } from "./external-diligence/external-diligence-v1";
 import { computeLimitedScoringV1, buildLimitedScoringSection } from "./limited-scoring-v1";
+import { resolveCanonicalIdentity, buildCanonicalIdentityRenderSection } from "./canonical-identity/resolve-canonical-identity";
 
 // ─── Binding constants ─────────────────────────────────────────────────────────
 
@@ -279,11 +280,26 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		}
 
 		const fallbackFp = buildFallbackFingerprint(dealId, engineVersion);
-		const [coverage, insightSlotInputs, previousFusedFacts] = await Promise.all([
+		const [coverage, insightSlotInputs, previousFusedFacts, gfDealName] = await Promise.all([
 			loadCoverageSnapshot(pool, dealId),
 			loadInsightSlotInputs(pool, dealId, gateState),
 			loadPreviousFusedFacts(pool, dealId),
+			loadDealName(pool, dealId),
 		]);
+		const gfCanonicalIdentity = gfDealName
+			? resolveCanonicalIdentity(insightSlotInputs.dpuPages, gfDealName)
+			: null;
+		console.log(JSON.stringify({
+			event: "CANONICAL_IDENTITY_DEBUG",
+			v: "CANONICAL_IDENTITY_BUILD_V3",
+			deal_id: dealId,
+			path: "gate_fail",
+			entered_name: gfCanonicalIdentity?.entered_deal_name ?? null,
+			canonical_company_name: gfCanonicalIdentity?.canonical_company_name ?? null,
+			confidence: gfCanonicalIdentity?.canonical_company_name_confidence ?? null,
+			mismatch_flagged: gfCanonicalIdentity?.mismatch_flagged ?? null,
+			ts: new Date().toISOString(),
+		}));
 		const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 		const phase2Sections = buildPhase2Sections(insightSlotInputs);
 		const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
@@ -331,6 +347,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			deterministicOverviewSlots: process.env["DETERMINISTIC_SLOT_FALLBACK_V1"] === "true"
 				? buildDeterministicOverviewSlots(insightSlotInputs.dpuPages)
 				: undefined,
+			canonicalIdentity: gfCanonicalIdentity ?? undefined,
 		});
 
 		// Validate render package; log on failure but always persist (fail-closed)
@@ -449,8 +466,9 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	// ── 5. Dedup index check ──────────────────────────────────────────────────
 	if (!forceRecompute) {
 		try {
-			const { rows } = await pool.query<{ id: string; status: string }>(
-				`SELECT id, status
+			const { rows } = await pool.query<{ id: string; status: string; has_canonical_identity: boolean }>(
+				`SELECT id, status,
+				        (render_package->'canonical_identity') IS NOT NULL AS has_canonical_identity
 				   FROM public.investor_insight_reports
 				  WHERE deal_id = $1::uuid
 				    AND engine_version = $2::text
@@ -459,24 +477,41 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				[dealId, engineVersion, upstreamFingerprint]
 			);
 			if (rows[0]) {
+				if (rows[0].has_canonical_identity) {
+					// Full dedup hit — cached report already contains canonical_identity.
+					console.log(
+						JSON.stringify({
+							event: "INVESTOR_INSIGHTS_DEDUP_HIT",
+							reason_code: "FP_IDEMPOTENT_HIT_SKIP",
+							v: "CANONICAL_IDENTITY_BUILD_V3",
+							deal_id: dealId,
+							engine_version: engineVersion,
+							upstream_fingerprint: upstreamFingerprint,
+							existing_report_id: rows[0].id,
+							existing_status: rows[0].status,
+							ts: new Date().toISOString(),
+						})
+					);
+					return {
+						ok: true,
+						status: "dedup_skip",
+						reason_code: "FP_IDEMPOTENT_HIT_SKIP",
+						report_id: rows[0].id,
+					};
+				}
+				// Report predates canonical_identity feature — bypass dedup so this
+				// run refreshes the persisted render_package with the new field.
 				console.log(
 					JSON.stringify({
-						event: "INVESTOR_INSIGHTS_DEDUP_HIT",
-						reason_code: "FP_IDEMPOTENT_HIT_SKIP",
+						event: "INVESTOR_INSIGHTS_DEDUP_BYPASS_CANONICAL",
+						reason_code: "CANONICAL_IDENTITY_MISSING",
+						v: "CANONICAL_IDENTITY_BUILD_V3",
 						deal_id: dealId,
 						engine_version: engineVersion,
-						upstream_fingerprint: upstreamFingerprint,
 						existing_report_id: rows[0].id,
-						existing_status: rows[0].status,
 						ts: new Date().toISOString(),
 					})
 				);
-				return {
-					ok: true,
-					status: "dedup_skip",
-					reason_code: "FP_IDEMPOTENT_HIT_SKIP",
-					report_id: rows[0].id,
-				};
 			}
 		} catch {
 			// Dedup check is best-effort; failure must not block downstream work
@@ -572,6 +607,20 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			loadPreviousFusedFacts(pool, dealId),
 			loadDealName(pool, dealId),
 		]);
+		const canonicalIdentity = dealName
+			? resolveCanonicalIdentity(insightSlotInputs.dpuPages, dealName)
+			: null;
+		console.log(JSON.stringify({
+			event: "CANONICAL_IDENTITY_DEBUG",
+			v: "CANONICAL_IDENTITY_BUILD_V3",
+			deal_id: dealId,
+			path: "evidence_gate_fail",
+			entered_name: canonicalIdentity?.entered_deal_name ?? null,
+			canonical_company_name: canonicalIdentity?.canonical_company_name ?? null,
+			confidence: canonicalIdentity?.canonical_company_name_confidence ?? null,
+			mismatch_flagged: canonicalIdentity?.mismatch_flagged ?? null,
+			ts: new Date().toISOString(),
+		}));
 		const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 		const phase2Sections = buildPhase2Sections(insightSlotInputs);
 		const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
@@ -603,6 +652,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			deal_id: dealId,
 			dealName: dealName ?? undefined,
 			canonicalFieldsBody: egCanonicalFieldsBody,
+			canonicalIdentity,
 		}).catch((err) => {
 			console.warn(JSON.stringify({
 				event: "EXTERNAL_DILIGENCE_CATCH",
@@ -630,6 +680,13 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		if (egExtDiligenceSection) {
 			sections.push(egExtDiligenceSection);
 		}
+		// Canonical identity debug section (mismatch warnings visible to reviewers)
+		const egCanonicalIdentitySection = canonicalIdentity
+			? buildCanonicalIdentityRenderSection(canonicalIdentity)
+			: null;
+		if (egCanonicalIdentitySection) {
+			sections.push(egCanonicalIdentitySection);
+		}
 
 		const renderPackage = buildRenderPackage({
 			dealId,
@@ -646,6 +703,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			deterministicOverviewSlots: process.env["DETERMINISTIC_SLOT_FALLBACK_V1"] === "true"
 				? buildDeterministicOverviewSlots(insightSlotInputs.dpuPages)
 				: undefined,
+			canonicalIdentity: canonicalIdentity ?? undefined,
 		});
 
 		let validatedPkg = renderPackage;
@@ -798,6 +856,20 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		loadPreviousGovernedExecSummary(pool, dealId),
 		loadDealName(pool, dealId),
 	]);
+	const canonicalIdentity = dealName
+		? resolveCanonicalIdentity(insightSlotInputs.dpuPages, dealName)
+		: null;
+	console.log(JSON.stringify({
+		event: "CANONICAL_IDENTITY_DEBUG",
+		v: "CANONICAL_IDENTITY_BUILD_V3",
+		deal_id: dealId,
+		path: "main",
+		entered_name: canonicalIdentity?.entered_deal_name ?? null,
+		canonical_company_name: canonicalIdentity?.canonical_company_name ?? null,
+		confidence: canonicalIdentity?.canonical_company_name_confidence ?? null,
+		mismatch_flagged: canonicalIdentity?.mismatch_flagged ?? null,
+		ts: new Date().toISOString(),
+	}));
 	const insightSlotsSections = buildInsightSlotsSections(dealId, insightSlotInputs);
 	const phase2Sections = buildPhase2Sections(insightSlotInputs);
 	const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
@@ -834,7 +906,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		VERSION_PINS.governance_version,
 		dealName ?? undefined,
 		productNarrativeBody ?? undefined,
-		llmOpts
+		llmOpts,
+		canonicalIdentity?.canonical_company_name ?? null
 	);
 	// Compute canonical fields body for product profile (same source as governed summaries)
 	const phase2ForProfile = extractPhase2Result(insightSlotInputs);
@@ -877,6 +950,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		deal_id: dealId,
 		dealName: dealName ?? undefined,
 		canonicalFieldsBody: extDiligenceCanonicalBody,
+		canonicalIdentity,
 	}).catch((err) => {
 		console.warn(JSON.stringify({
 			event: "EXTERNAL_DILIGENCE_CATCH",
@@ -904,6 +978,13 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	if (extDiligenceSection) {
 		sections.push(extDiligenceSection);
 	}
+	// Canonical identity debug section (mismatch warnings visible to reviewers)
+	const canonicalIdentitySection = canonicalIdentity
+		? buildCanonicalIdentityRenderSection(canonicalIdentity)
+		: null;
+	if (canonicalIdentitySection) {
+		sections.push(canonicalIdentitySection);
+	}
 
 	// WS-A PR20: build recovery metadata when mode="recover_structured_json".
 	const recoveryMetadata = mode === "recover_structured_json"
@@ -930,6 +1011,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		deterministicOverviewSlots: process.env["DETERMINISTIC_SLOT_FALLBACK_V1"] === "true"
 			? buildDeterministicOverviewSlots(insightSlotInputs.dpuPages)
 			: undefined,
+		canonicalIdentity: canonicalIdentity ?? undefined,
 	});
 
 	let validatedPkg = renderPackage;

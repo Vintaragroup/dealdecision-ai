@@ -1760,6 +1760,7 @@ export function InvestorInsightsTab({ darkMode, dealId }: InvestorInsightsTabPro
     reportStatus: report?.status_summary?.report_status ?? reportStatus,
     evidenceGate: evidenceGateForPolicy,
     isRunning,
+    isFirstPassResult: report?.status_summary?.is_first_pass_result === true,
   });
 
   // Amber blocked banner: only when gate failed AND no rerun in flight.

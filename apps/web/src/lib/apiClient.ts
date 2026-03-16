@@ -2166,6 +2166,12 @@ export type InvestorInsightsStatusSummary = {
     coverage_pct: number;
     evidence_count: number;
   } | null;
+  /**
+   * Phase 2 first-pass: true when the most recently succeeded analyze_deal run was a
+   * first-pass job (only the first ~10 pages extracted).  Full analysis is still in flight.
+   * The UI can surface a "Quick preview — full analysis incoming" banner.
+   */
+  is_first_pass_result?: boolean;
 };
 
 export type InvestorInsightsReport = {

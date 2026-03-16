@@ -95,6 +95,10 @@ export function resolveInsightsPollingInterval(
   // Fast poll: either side actively running
   if (a === 'running' || r === 'running') return fastMs;
 
+  // Phase 2 first-pass: analysis succeeded but only from the first ~10 pages.
+  // Full analysis is still queued — keep fast-polling so the UI upgrades seamlessly.
+  if (ss.is_first_pass_result === true) return fastMs;
+
   // Terminal: no more automatic state changes expected
   if (TERMINAL_ANALYSIS.has(a) && TERMINAL_REPORT.has(r)) return null;
 

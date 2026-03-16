@@ -64,6 +64,13 @@ export type InsightsDisplayInput = {
    * Optional — defaults to false.  Used to derive shouldSuppressHardStaleDpu.
    */
   isStaleDpu?: boolean;
+
+  /**
+   * Phase 2 first-pass: true when analysis succeeded but only first ~10 pages were
+   * extracted.  Full analysis is still queued.  Used to show a "Quick preview" banner
+   * and keep the polling interval at the fast rate.
+   */
+  isFirstPassResult?: boolean;
 };
 
 export type InsightsDisplayState = {
@@ -115,6 +122,7 @@ export type InsightsDisplayState = {
   /**
    * Copy for the blue "background analysis running" banner.
    * When isAutoRerunInFlight the text is more specific about OCR origin.
+   * When isFirstPassResult the text hints that full analysis is on the way.
    */
   backgroundRunningLabel: string;
 };
@@ -135,7 +143,7 @@ const REPORT_STATUS_LABELS: Record<string, string> = {
 // ─── Pure derivation ──────────────────────────────────────────────────────────
 
 export function deriveInsightsDisplayState(input: InsightsDisplayInput): InsightsDisplayState {
-  const { reportStatus, evidenceGate, isRunning, isStaleDpu = false } = input;
+  const { reportStatus, evidenceGate, isRunning, isStaleDpu = false, isFirstPassResult = false } = input;
 
   // ── Core boolean derivations ────────────────────────────────────────────────
   const isBlockedByEvidenceGate =
@@ -171,7 +179,9 @@ export function deriveInsightsDisplayState(input: InsightsDisplayInput): Insight
 
   const backgroundRunningLabel = isAutoRerunInFlight
     ? 'Auto-refreshing after OCR improvement — checking for updates…'
-    : 'Analysis running — checking for updates…';
+    : isFirstPassResult
+      ? 'Quick preview — extracting remaining pages and running full analysis…'
+      : 'Analysis running — checking for updates…';
 
   return {
     isBlockedByEvidenceGate,

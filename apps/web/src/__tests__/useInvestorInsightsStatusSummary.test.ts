@@ -138,6 +138,36 @@ describe('resolveInsightsPollingInterval', () => {
     const mixed = makeReportWithSummary('succeeded', 'not_started');
     expect(resolveInsightsPollingInterval(mixed, 'deal-1', 500, 30000)).toBe(30000);
   });
+
+  // ── is_first_pass_result: keeps polling even when both sides terminal ────
+
+  test('returns fastMs when is_first_pass_result=true even if both terminal', () => {
+    const base = makeReportWithSummary('succeeded', 'succeeded');
+    const report: InvestorInsightsReport = {
+      ...base,
+      status_summary: { ...base.status_summary!, is_first_pass_result: true },
+    };
+    expect(resolveInsightsPollingInterval(report, 'deal-1', 2000, 15000)).toBe(2000);
+  });
+
+  test('returns null when is_first_pass_result=false and both terminal', () => {
+    const base = makeReportWithSummary('succeeded', 'succeeded');
+    const report: InvestorInsightsReport = {
+      ...base,
+      status_summary: { ...base.status_summary!, is_first_pass_result: false },
+    };
+    expect(resolveInsightsPollingInterval(report, 'deal-1', 2000, 15000)).toBeNull();
+  });
+
+  test('returns fastMs when is_first_pass_result=true and analysis running', () => {
+    const base = makeReportWithSummary('running', 'not_started');
+    const report: InvestorInsightsReport = {
+      ...base,
+      status_summary: { ...base.status_summary!, is_first_pass_result: true },
+    };
+    // analysis_status running already causes fast polling; is_first_pass_result doesn't break it
+    expect(resolveInsightsPollingInterval(report, 'deal-1', 2000, 15000)).toBe(2000);
+  });
 });
 
 // ── Test 2–9: Hook behaviour ─────────────────────────────────────────────────
@@ -186,6 +216,21 @@ describe('useInvestorInsightsStatusSummary hook', () => {
     );
 
     expect(result.current.intervalMs).toBe(INSIGHTS_POLLING_SLOW_MS);
+  });
+
+  test('exposes intervalMs = FAST when both terminal but is_first_pass_result=true', () => {
+    const base = makeReportWithSummary('succeeded', 'succeeded');
+    const report: InvestorInsightsReport = {
+      ...base,
+      status_summary: { ...base.status_summary!, is_first_pass_result: true },
+    };
+    mockUseInsights.mockReturnValue(makeMockInsightsResult(report));
+
+    const { result } = renderHook(() =>
+      useInvestorInsightsStatusSummary('deal-1'),
+    );
+
+    expect(result.current.intervalMs).toBe(INSIGHTS_POLLING_FAST_MS);
   });
 
   // ── isRunning derived field ──────────────────────────────────────────────

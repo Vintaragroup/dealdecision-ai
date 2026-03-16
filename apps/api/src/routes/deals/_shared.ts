@@ -2707,6 +2707,12 @@ export type StatusSummary = {
   blocking_reason: string | null;
   last_activity_at: string | null;
   evidence_gate: StatusSummaryEvidenceGate | null;
+  /**
+   * Phase 2 first-pass: true when the most recently completed analyze_deal run
+   * was a first-pass job (reason = "first_pass_pages_ready"), meaning full-deck
+   * visual extraction is still in progress and richer results are on the way.
+   */
+  is_first_pass_result?: boolean;
 };
 
 export function mapAnalysisJobStatus(raw: string | null | undefined): StatusSummaryAnalysis {
@@ -2742,9 +2748,9 @@ export function maxIsoTs(...ts: Array<string | null | undefined>): string | null
 export async function buildStatusSummary(pool: any, dealId: string): Promise<StatusSummary> {
   const [analyzeResult, reportResult] = await Promise.all([
     pool.query(
-      `SELECT status, updated_at FROM jobs WHERE deal_id = $1 AND type = 'analyze_deal' ORDER BY created_at DESC LIMIT 1`,
+      `SELECT status, updated_at, payload->>'reason' AS reason FROM jobs WHERE deal_id = $1 AND type = 'analyze_deal' ORDER BY created_at DESC LIMIT 1`,
       [dealId]
-    ) as Promise<{ rows: Array<{ status: string; updated_at: string }> }>,
+    ) as Promise<{ rows: Array<{ status: string; updated_at: string; reason: string | null }> }>,
     pool.query(
       `SELECT status, render_package, updated_at FROM investor_insight_reports WHERE deal_id = $1 ORDER BY updated_at DESC LIMIT 1`,
       [dealId]
@@ -2757,6 +2763,13 @@ export async function buildStatusSummary(pool: any, dealId: string): Promise<Sta
   const analysisStatus       = mapAnalysisJobStatus(analyzeJob?.status);
   const reportStatus         = mapReportRowStatus(reportRow?.status);
   const hasExistingRenderPkg = reportRow?.render_package != null;
+
+  // Phase 2 first-pass: if the latest SUCCEEDED analyze_deal was a first-pass job the
+  // full-deck extraction is still running.  Surface this to the UI so it can show a
+  // "Quick preview — full analysis in progress" banner instead of a "done" state.
+  const isFirstPassResult =
+    (analysisStatus === 'succeeded') &&
+    analyzeJob?.reason === 'first_pass_pages_ready';
 
   // blocking_reason is only set when the UI has NO fallback content to show.
   // If a render_package exists, the UI should always render it — never block.
@@ -2787,5 +2800,6 @@ export async function buildStatusSummary(pool: any, dealId: string): Promise<Sta
     blocking_reason:             blockingReason,
     last_activity_at:            maxIsoTs(analyzeJob?.updated_at, reportRow?.updated_at),
     evidence_gate:               evidenceGate,
+    is_first_pass_result:        isFirstPassResult || undefined,
   };
 }

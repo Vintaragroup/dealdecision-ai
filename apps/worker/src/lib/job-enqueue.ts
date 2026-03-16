@@ -9,6 +9,8 @@ export type EnqueuePersistedJobInput = {
 	job_id?: string;
 	idempotent?: boolean;
   delay_ms?: number;
+  /** BullMQ job priority (lower number = higher priority). Omit to use the queue default. */
+  priority?: number;
   type:
     | "ingest_documents"
     | "render_document_pages"
@@ -117,12 +119,16 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
     const retryOpts = input.type === "extract_visuals"
       ? {}
       : { attempts: 3, backoff: { type: "exponential" as const, delay: 1000 } };
+    const priorityOpt = typeof input.priority === "number" && Number.isFinite(input.priority)
+      ? { priority: Math.max(1, Math.floor(input.priority)) }
+      : {};
     await queue.add(input.type, payload, {
       jobId,
       removeOnComplete: true,
       removeOnFail: false,
       delay: delayMs,
       ...retryOpts,
+      ...priorityOpt,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

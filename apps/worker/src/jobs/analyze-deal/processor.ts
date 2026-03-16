@@ -463,6 +463,11 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 		typeof pageUnderstandingVersionRaw === "string" && pageUnderstandingVersionRaw.trim().length > 0
 			? pageUnderstandingVersionRaw.trim()
 			: "page_understanding_v1";
+	// Phase 2: first-pass jobs are triggered by the first chunk of extract_visuals before all
+	// pages have finished.  They intentionally skip investor_insights so that the expensive
+	// multi-stage pipeline only runs once — from the full analyze_deal triggered at finalize.
+	const isFirstPass = (job.data as any)?.reason === "first_pass_pages_ready"
+		|| Boolean((job.data as any)?.prereq?.first_pass);
 	const minDpuCreatedAtRaw = (job.data as any)?.min_dpu_created_at ?? (job.data as any)?.payload?.min_dpu_created_at;
 	const minDpuCreatedAt =
 		typeof minDpuCreatedAtRaw === "string" && minDpuCreatedAtRaw.trim().length > 0
@@ -474,6 +479,18 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 	}
 
 	try {
+		// Phase 7: observability — log the analysis mode so first-pass jobs are clearly
+		// distinguishable in production logs without having to scan job payloads.
+		console.log(
+			JSON.stringify({
+				event: "ANALYZE_DEAL_START",
+				deal_id: dealId,
+				job_id: job.id ? String(job.id) : null,
+				is_first_pass: isFirstPass,
+				reason: (job.data as any)?.reason ?? null,
+				ts: new Date().toISOString(),
+			})
+		);
 		await updateJob(job, "running", "Loading documents for analysis", 10);
 		const rows = await getDocumentsForDealWithAnalysis(dealId);
 		const eligible = rows.filter(
@@ -1572,7 +1589,22 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 		// Phase J invariant: governed summary must resolve via resolveGovernedSummaryWithCache.
 		// This trigger enqueues the same worker job as the API /generate and /regenerate routes.
 		// All governed summary generation is handled exclusively inside the worker processor.
-		if (overviewOk && process.env.INVESTOR_INSIGHTS_ENABLED === "true") {
+		//
+		// Phase 2: skip for first-pass jobs — investor_insights runs once, from the full analyze_deal
+		// triggered at extract_visuals finalize, so we avoid a redundant multi-stage insights run.
+		if (overviewOk && isFirstPass) {
+			// Phase 7 observability: emit explicit skip event so first-pass jobs are traceable.
+			console.log(
+				JSON.stringify({
+					event: "INVESTOR_INSIGHTS_SKIPPED_FIRST_PASS",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					reason: "first_pass_job",
+					ts: new Date().toISOString(),
+				})
+			);
+		}
+		if (overviewOk && process.env.INVESTOR_INSIGHTS_ENABLED === "true" && !isFirstPass) {
 			try {
 				const insightsQueue = getQueue("investor_insights");
 				const insightsJobId = makeJobId("investor_insights", [dealId, "v1", "overlay_complete"]);

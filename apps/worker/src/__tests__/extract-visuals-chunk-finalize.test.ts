@@ -549,11 +549,12 @@ describe("extract_visuals chunking finalization", () => {
 		logSpy.mockRestore();
 	});
 
-	it("non-final chunk does not enqueue analyze_deal", async () => {
+	it("non-first non-final chunk does not enqueue analyze_deal", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined as any);
 		const m = getMocks();
 
-		await extractVisualsProcessor!(makeJob({ deal_id: "deal-1", document_id: "doc-1", page_start: 0, page_end: 10 }));
+		// page_start=10: not chunk 0, so the first-pass trigger does not fire
+		await extractVisualsProcessor!(makeJob({ deal_id: "deal-1", document_id: "doc-1", page_start: 10, page_end: 20 }));
 
 		const inserts = (m.pgQueries ?? []).filter((q: any) => String(q?.sql ?? "").includes("INSERT INTO jobs"));
 		const analyzeJobInserts = inserts.filter((q: any) => q?.params?.[3] === "analyze_deal");

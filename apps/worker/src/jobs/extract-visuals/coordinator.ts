@@ -41,6 +41,13 @@ import {
 } from "../../lib/document-intelligence-batch";
 import { startNamedStepRunLedger, finishStepRunLedger } from "../../lib/pipeline-run-ledger";
 import { enqueueAnalyzeDeal } from "../../lib/enqueue-analyze-deal";
+import {
+  FIRST_PASS_PAGE_THRESHOLD,
+  FIRST_PASS_VISION_TIMEOUTS_PDF,
+  FIRST_PASS_VISION_TIMEOUTS_PPTX,
+  FIRST_PASS_CHUNK_PRIORITY,
+  BACKGROUND_CHUNK_PRIORITY,
+} from "../../lib/first-pass-config";
 import { verifyVisionServiceForJob } from "../../lib/vision-verification";
 import { tryReadImageB64ForVision, headCheckImageUri } from "../../lib/vision-image";
 import { pickDownloadUrlFromExtractionMetadata } from "../../lib/original-file-url";
@@ -855,9 +862,17 @@ export async function runExtractVisualsCoordinator(job: Job) {
 								`range:${range.start}-${range.end}`,
 						  ])
 						: undefined;
+					// Phase 4: give the first chunk (pages 0-N) a higher BullMQ priority so it
+					// is processed before background chunks when multiple workers are running.
+					// Phase 5: use idempotent inserts — if the coordinator job is retried the
+					// derived job_id is deterministic; ON CONFLICT DO NOTHING prevents a duplicate
+					// key error in the jobs table.
+					const chunkPriority = range.start === 0 ? FIRST_PASS_CHUNK_PRIORITY : BACKGROUND_CHUNK_PRIORITY;
 					const persisted = await enqueuePersistedJob({
 						type: "extract_visuals",
 						...(derivedChunkJobId ? { job_id: derivedChunkJobId } : {}),
+						idempotent: true,
+						priority: chunkPriority,
 						deal_id: dealId ?? (typeof docMeta?.deal_id === "string" ? docMeta.deal_id : undefined),
 						document_id: docId,
 						parent_job_id: parentJobId,
@@ -2511,7 +2526,12 @@ export async function runExtractVisualsCoordinator(job: Job) {
 			docVisionCallsStarted += 1;
 			docPagesProcessed += 1;
 			pagesVisionAttempted += 1;
-			const timeoutsMs = docKind === "powerpoint" ? [20_000, 60_000, 90_000] : [20_000, 60_000];
+			// Phase 3: use shorter timeouts for critical-path (first-pass) pages so that
+			// slow / failing late pages don't inflate the time-to-first-analysis.
+			const isFirstPassPage = i < FIRST_PASS_PAGE_THRESHOLD;
+			const timeoutsMs = docKind === "powerpoint"
+				? (isFirstPassPage ? [...FIRST_PASS_VISION_TIMEOUTS_PPTX] : [20_000, 60_000, 90_000])
+				: (isFirstPassPage ? [...FIRST_PASS_VISION_TIMEOUTS_PDF] : [20_000, 60_000]);
 			try {
 				console.log(
 					JSON.stringify({
@@ -3142,6 +3162,50 @@ export async function runExtractVisualsCoordinator(job: Job) {
 
 	const chunkIsLast = chunkJobIsLastChunk === true;
 	const shouldFinalize = isChunkJob && chunkIsLast === true;
+
+	// Phase 2: First-pass early trigger.
+	// When the first chunk (pages 0 … FIRST_PASS_PAGE_THRESHOLD-1) completes AND it is NOT
+	// also the last chunk (which will trigger the full finalize path), enqueue analyze_deal
+	// immediately so the user sees a first-pass result while background chunks continue.
+	// The full analyze_deal (triggered by the last chunk's finalize) will overwrite these
+	// results with richer data once all pages are extracted.
+	//
+	// This is intentionally best-effort: failures here never block extraction completion.
+	const isFirstChunk = isChunkJob && typeof requestedPageStart === "number" && requestedPageStart === 0;
+	if (isFirstChunk && !chunkIsLast && dealIdForAudit) {
+		const firstPassPagesReady = (pagesVisionSucceeded + pagesSkippedExisting) > 0;
+		if (firstPassPagesReady) {
+			try {
+				await enqueueAnalyzeDeal({
+					dealId: dealIdForAudit,
+					reason: "first_pass_pages_ready",
+					triggerJobId: job.id ? String(job.id) : null,
+					shouldEnqueue: true,
+					extra: {
+						first_pass: true,
+						first_pass_pages_extracted: pagesVisionSucceeded,
+						first_pass_pages_skipped_existing: pagesSkippedExisting,
+						chunk_page_start: requestedPageStart,
+						chunk_page_end: requestedPageEnd ?? null,
+					},
+				});
+				console.log(
+					JSON.stringify({
+						event: "FIRST_PASS_ANALYZE_DEAL_TRIGGERED",
+						deal_id: dealIdForAudit,
+						job_id: job.id ? String(job.id) : null,
+						pages_extracted: pagesVisionSucceeded,
+						pages_skipped_existing: pagesSkippedExisting,
+						chunk_page_start: requestedPageStart,
+						chunk_page_end: requestedPageEnd ?? null,
+						ts: new Date().toISOString(),
+					})
+				);
+			} catch {
+				// never block extraction completion
+			}
+		}
+	}
 
 	// Optional safety: ensure finalization/analyze happens exactly once per (deal, document) for a short window.
 	// This prevents duplicate final-chunk jobs (retries, concurrent runs) from racing.

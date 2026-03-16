@@ -272,3 +272,36 @@ describe('Edge cases', () => {
     expect(s.shouldShowRunAnalysisCta).toBe(true);
   });
 });
+
+// ─── Phase 2: first-pass label ────────────────────────────────────────────────
+describe('Phase 2 — isFirstPassResult banner label', () => {
+  test('backgroundRunningLabel shows "Quick preview" copy when isFirstPassResult=true', () => {
+    const s = deriveInsightsDisplayState({
+      reportStatus: 'succeeded',
+      evidenceGate: null,
+      isRunning: false,
+      isFirstPassResult: true,
+    });
+    expect(s.backgroundRunningLabel).toBe(
+      'Quick preview — extracting remaining pages and running full analysis…'
+    );
+  });
+
+  test('backgroundRunningLabel is generic when isFirstPassResult=false (default)', () => {
+    const s = deriveInsightsDisplayState({
+      reportStatus: 'running',
+      evidenceGate: null,
+      isRunning: true,
+      isFirstPassResult: false,
+    });
+    expect(s.backgroundRunningLabel).toBe('Analysis running — checking for updates…');
+  });
+
+  test('auto-rerun label takes precedence over first-pass label', () => {
+    // isAutoRerunInFlight = true (running + deterministic_only + gate failed)
+    const s = deriveInsightsDisplayState(make({ isRunning: true, isFirstPassResult: true }));
+    expect(s.backgroundRunningLabel).toBe(
+      'Auto-refreshing after OCR improvement — checking for updates…'
+    );
+  });
+});

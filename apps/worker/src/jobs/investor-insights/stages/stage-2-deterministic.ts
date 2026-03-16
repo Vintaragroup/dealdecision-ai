@@ -15,8 +15,9 @@ import {
 	buildConfidenceSignals,
 	isProjectedScope,
 	temporalScopeLabel,
+	FACT_PLAUSIBILITY_GUARDS,
 } from "@dealdecision/core";
-import type { EvidenceConfidenceLevel, FinancialFactV1 } from "@dealdecision/core";
+import type { EvidenceConfidenceLevel, FinancialFactV1, FactPlausibilityGuard } from "@dealdecision/core";
 import { detectFinancialTables } from "../../../extraction/xlsx/table-detector.js";
 import { parseFinancialTable } from "../../../extraction/xlsx/financial-model-interpreter.js";
 import { promoteToFinancialFactV1 } from "../../../extraction/xlsx/metric-promoter.js";
@@ -92,10 +93,19 @@ import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, h
 import {
 	ARR_TAINT_WINDOW,
 	VALUATION_TAINT_WINDOW,
+	MRR_TAINT_WINDOW,
+	REVENUE_TAINT_WINDOW,
+	CUSTOMER_TAINT_WINDOW,
 	ARR_MARKET_TAINT_RE,
 	ARR_COMPANY_OWNERSHIP_RE,
 	VALUATION_COMPETITOR_TAINT_RE,
 	VALUATION_COMPANY_OWNERSHIP_RE,
+	MRR_MARKET_TAINT_RE,
+	MRR_COMPANY_OWNERSHIP_RE,
+	REVENUE_MARKET_TAINT_RE,
+	REVENUE_COMPANY_OWNERSHIP_RE,
+	CUSTOMER_COMPETITOR_TAINT_RE,
+	CUSTOMER_COMPANY_OWNERSHIP_RE,
 	NumericContextSuppressReason,
 } from "../numeric-context-taxonomy.js";
 import {
@@ -1043,6 +1053,177 @@ function detectMarketSizingTriad(
 			som: moneyValues[2] ?? null,
 			ref: dpuEvidenceRef(page.document_id, page.page_index),
 		};
+	}
+	return null;
+}
+
+// ── MRR context guard ─────────────────────────────────────────────────────────
+
+/**
+ * Returns true when the context window around an MRR match contains market/segment
+ * language indicating the MRR figure describes an external market rather than the
+ * company's own metric.
+ *
+ * Company-ownership override: if MRR_COMPANY_OWNERSHIP_RE fires in the window,
+ * the match is never tainted regardless of market keywords present.
+ *
+ * True-positive examples (tainted → suppressed):
+ *   "total MRR market of $500M"              → "market" near MRR
+ *   "industry MRR pool: $2B"                 → "industry" near MRR
+ *   "MRR market opportunity: $300M"           → "market opportunity"
+ *
+ * True-negative examples (not tainted → kept):
+ *   "our MRR is $200K"                       → COMPANY_OWNERSHIP override fires
+ *   "MRR reached $50K in Q3"                 → traction slide
+ *   "current MRR: $120K"                     → no market language in window
+ */
+function isMrrMatchTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - MRR_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + MRR_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (MRR_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return MRR_MARKET_TAINT_RE.test(window);
+}
+
+/**
+ * Context-gated detect function for mrr_value.
+ * Skips MRR matches whose context window contains market/industry language.
+ * Falls back to unfiltered evidence snippets (already short clips).
+ */
+function detectMrrInTextSources(
+	pattern: RegExp,
+	dpuPages: DpuPage[],
+	evidenceSnippets: EvidenceSnippet[]
+): { snippet: string; ref: string } | null {
+	for (const page of dpuPages) {
+		const text = page.text ?? "";
+		const m = pattern.exec(text);
+		if (m && !isMrrMatchTainted(text, m.index, m[0].length)) {
+			return { snippet: m[0].slice(0, 80), ref: dpuEvidenceRef(page.document_id, page.page_index) };
+		}
+	}
+	// Evidence snippets are short contextual clips — use unfiltered
+	for (const ev of evidenceSnippets) {
+		const text = ev.claim_text_norm ?? ev.claim_text ?? "";
+		const m = pattern.exec(text);
+		if (m) {
+			const prefix = ev.id.replace(/-/g, "").slice(0, 8);
+			return { snippet: m[0].slice(0, 80), ref: `evidence:item:${prefix}` };
+		}
+	}
+	return null;
+}
+
+// ── Revenue context guard ─────────────────────────────────────────────────────
+
+/**
+ * Returns true when the context window around a revenue match contains market/
+ * sector language indicating the revenue figure describes an external market or
+ * competitor rather than the company's own revenue.
+ *
+ * Company-ownership override: if REVENUE_COMPANY_OWNERSHIP_RE fires in the window,
+ * the match is never tainted regardless of market keywords present.
+ *
+ * True-positive examples (tainted → suppressed):
+ *   "market revenue opportunity: $5B"        → "market revenue"
+ *   "industry revenue pool of $2B"           → "industry revenue"
+ *   "competitor revenue: $8B"                → "competitor" near revenue
+ *
+ * True-negative examples (not tainted → kept):
+ *   "our revenue is $500K"                   → COMPANY_OWNERSHIP override fires
+ *   "revenue reached $1M in 2024"            → traction slide
+ *   "annual revenue: $800K"                  → no market language in window
+ */
+function isRevenueMatchTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - REVENUE_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + REVENUE_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (REVENUE_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return REVENUE_MARKET_TAINT_RE.test(window);
+}
+
+/**
+ * Context-gated detect function for revenue_value.
+ * Skips revenue matches whose context window contains market/competitor language.
+ * Falls back to unfiltered evidence snippets.
+ */
+function detectRevenueInTextSources(
+	pattern: RegExp,
+	dpuPages: DpuPage[],
+	evidenceSnippets: EvidenceSnippet[]
+): { snippet: string; ref: string } | null {
+	for (const page of dpuPages) {
+		const text = page.text ?? "";
+		const m = pattern.exec(text);
+		if (m && !isRevenueMatchTainted(text, m.index, m[0].length)) {
+			return { snippet: m[0].slice(0, 80), ref: dpuEvidenceRef(page.document_id, page.page_index) };
+		}
+	}
+	// Evidence snippets are short contextual clips — use unfiltered
+	for (const ev of evidenceSnippets) {
+		const text = ev.claim_text_norm ?? ev.claim_text ?? "";
+		const m = pattern.exec(text);
+		if (m) {
+			const prefix = ev.id.replace(/-/g, "").slice(0, 8);
+			return { snippet: m[0].slice(0, 80), ref: `evidence:item:${prefix}` };
+		}
+	}
+	return null;
+}
+
+// ── Customer count context guard ──────────────────────────────────────────────
+
+/**
+ * Returns true when the context window around a customer count match contains
+ * signals that the count belongs to a competitor or is an industry benchmark
+ * rather than the company's own customer base.
+ *
+ * Company-ownership override: if CUSTOMER_COMPANY_OWNERSHIP_RE fires in the window,
+ * the match is never tainted.
+ *
+ * True-positive examples (tainted → suppressed):
+ *   "competitors serve 10,000 customers"     → "competitor" near count
+ *   "industry average of 500 customers"      → "industry average"
+ *   "market leader with 1M customers"        → "market leader"
+ *
+ * True-negative examples (not tainted → kept):
+ *   "we have 120 customers"                  → COMPANY_OWNERSHIP override fires
+ *   "our customer base: 450"                 → company metric
+ *   "currently serving 200 clients"          → active company context
+ */
+function isCustomerCountTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - CUSTOMER_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + CUSTOMER_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (CUSTOMER_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return CUSTOMER_COMPETITOR_TAINT_RE.test(window);
+}
+
+/**
+ * Context-gated detect function for customer_count.
+ * Skips customer count matches whose context window contains competitor/benchmark signals.
+ * Falls back to unfiltered evidence snippets.
+ */
+function detectCustomerCountInTextSources(
+	pattern: RegExp,
+	dpuPages: DpuPage[],
+	evidenceSnippets: EvidenceSnippet[]
+): { snippet: string; ref: string } | null {
+	for (const page of dpuPages) {
+		const text = page.text ?? "";
+		const m = pattern.exec(text);
+		if (m && !isCustomerCountTainted(text, m.index, m[0].length)) {
+			return { snippet: m[0].slice(0, 80), ref: dpuEvidenceRef(page.document_id, page.page_index) };
+		}
+	}
+	// Evidence snippets are short contextual clips — use unfiltered
+	for (const ev of evidenceSnippets) {
+		const text = ev.claim_text_norm ?? ev.claim_text ?? "";
+		const m = pattern.exec(text);
+		if (m) {
+			const prefix = ev.id.replace(/-/g, "").slice(0, 8);
+			return { snippet: m[0].slice(0, 80), ref: `evidence:item:${prefix}` };
+		}
 	}
 	return null;
 }
@@ -2283,6 +2464,8 @@ const P2_REASON = {
 	// Context-guard suppression reason codes (numeric-context-taxonomy phase)
 	ARR_MARKET_CONTEXT_TAINT: NumericContextSuppressReason.ARR_MARKET_CONTEXT_TAINT,
 	VALUATION_COMPETITOR_CONTEXT_TAINT: NumericContextSuppressReason.VALUATION_COMPETITOR_CONTEXT_TAINT,
+	/** Canonical field rejected by page-level plausibility guard. */
+	PLAUSIBILITY_GUARD_REJECTED: "PLAUSIBILITY_GUARD_REJECTED",
 } as const;
 
 // ── Phase 2 sub-field patterns (compile once) ────────────────────────────────
@@ -2409,6 +2592,12 @@ interface CanonicalField {
 	 * Never surfaced in canonicalFieldsBody — only available in the conflicts/withheld body.
 	 */
 	suppressedValue?: string;
+	/**
+	 * Number of distinct evidence sources that agree on this field's value.
+	 * Computed during the corroboration pass (after field extraction, before confidence eval).
+	 * When ≥ 2, buildConfidenceSignals emits evidence_count=2 → VERIFIED tier.
+	 */
+	corroboration_count?: number;
 }
 
 interface ConflictEntry {
@@ -2593,6 +2782,19 @@ function findConflictInMatches(
 }
 
 /**
+ * Look up the full normalized page text for a given DPU evidence reference.
+ * Returns null when the ref belongs to an evidence snippet rather than a DPU page.
+ */
+function findPageTextForRef(pages: DpuPage[], ref: string): string | null {
+	for (const page of pages) {
+		if (dpuEvidenceRef(page.document_id, page.page_index) === ref) {
+			return page.text ?? "";
+		}
+	}
+	return null;
+}
+
+/**
  * Evaluate a single canonical sub-field via first-match detection (DPU → evidence fallback).
  *
  * When `taintedReasonCode` is provided and `detectFn` returns null, this function
@@ -2601,6 +2803,10 @@ function findConflictInMatches(
  * it as context-tainted), the returned field uses `taintedReasonCode` and records
  * the tainted snippet in `suppressedValue` for the audit trail — it is still
  * NotComputable (value=null) so it never reaches the governed narrative corpus.
+ *
+ * When `plausibilityGuard` is provided, it is applied to the full source page text
+ * after a match is found. If the guard rejects the page, the field is returned as
+ * NotComputable with reason=PLAUSIBILITY_GUARD_REJECTED and the suppressed value.
  */
 function evalCanonicalField(
 	category: string,
@@ -2611,14 +2817,65 @@ function evalCanonicalField(
 	reasonCode: string,
 	dpuLoadFailed: boolean,
 	detectFn: (p: RegExp, pages: DpuPage[], ev: EvidenceSnippet[]) => { snippet: string; ref: string } | null = detectInTextSources,
-	taintedReasonCode?: string
+	taintedReasonCode?: string,
+	plausibilityGuard?: FactPlausibilityGuard
 ): CanonicalField {
 	if (dpuLoadFailed) {
 		return { category, field, computability: "NotComputable", value: null, evidenceRef: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
 	}
+
+	// When a plausibility guard is provided, scan pages directly with guard-aware iteration
+	// so that a guard-rejected page does NOT silently win over a correct later page.
+	if (plausibilityGuard) {
+		// Try each DPU page in order, applying the guard; accept the first passing page.
+		for (const page of pages) {
+			const text = page.text ?? "";
+			const m = pattern.exec(text);
+			if (!m) continue;
+			// Apply the per-field detect function's taint logic by checking if the
+			// preferred detect function also finds a hit on this page.  We call
+			// detectFn with this single page to honour any existing taint guards.
+			const singlePageHit = detectFn(pattern, [page], []);
+			if (!singlePageHit) continue; // taint-rejected by existing detector
+			const pageText = text;
+			const guardResult = plausibilityGuard(field, pageText, singlePageHit.snippet);
+			if (!guardResult.allowed) {
+				// Record first rejected hit for audit trail then keep trying
+				// (only the LAST suppressed value will be stored if all pages fail)
+				continue;
+			}
+			return { category, field, computability: "Computable", value: cleanCanonicalValue(field, singlePageHit.snippet), evidenceRef: singlePageHit.ref, reasonCode: null };
+		}
+		// No DPU page passed the guard — try evidence snippets with guard
+		for (const ev of evidenceSnippets) {
+			const text = ev.claim_text_norm ?? ev.claim_text ?? "";
+			const m = pattern.exec(text);
+			if (!m) continue;
+			const prefix = ev.id.replace(/-/g, "").slice(0, 8);
+			const ref = `evidence:item:${prefix}`;
+			const snippet = m[0].slice(0, 80);
+			const guardResult = plausibilityGuard(field, text, snippet);
+			if (!guardResult.allowed) continue;
+			return { category, field, computability: "Computable", value: cleanCanonicalValue(field, snippet), evidenceRef: ref, reasonCode: null };
+		}
+		// All candidates guard-rejected — emit suppressed result from first DPU hit (if any)
+		const firstHit = detectFn(pattern, pages, evidenceSnippets);
+		if (firstHit) {
+			return {
+				category, field,
+				computability: "NotComputable",
+				value: null,
+				evidenceRef: null,
+				reasonCode: P2_REASON.PLAUSIBILITY_GUARD_REJECTED,
+				suppressedValue: cleanCanonicalValue(field, firstHit.snippet),
+			};
+		}
+		// No match at all with guard — fall through to taint check below
+	} else {
 	const hit = detectFn(pattern, pages, evidenceSnippets);
 	if (hit) {
 		return { category, field, computability: "Computable", value: cleanCanonicalValue(field, hit.snippet), evidenceRef: hit.ref, reasonCode: null };
+	}
 	}
 	// When a taint code is supplied, check whether the raw unfiltered pattern fires.
 	// If it does, the clean detectFn rejected a tainted match → emit the taint code with audit value.
@@ -2636,6 +2893,66 @@ function evalCanonicalField(
 		}
 	}
 	return { category, field, computability: "NotComputable", value: null, evidenceRef: null, reasonCode };
+}
+
+// ── Corroboration counter ─────────────────────────────────────────────────────
+
+/**
+ * Patterns used for corroboration counting (deck-sourced traction fields).
+ * Maps canonical field names to their extraction patterns so the corroboration
+ * pass can count how many DPU pages produce the same normalised value.
+ */
+const CORROBORATION_PATTERNS: Readonly<Record<string, RegExp>> = {
+	raise_amount:  RAISE_AMOUNT_PATTERN,
+	valuation_post: VALUATION_POST_PATTERN,
+	valuation_pre:  VALUATION_PRE_PATTERN,
+	arr_value:     ARR_VALUE_PATTERN,
+	mrr_value:     MRR_VALUE_PATTERN,
+	revenue_value: REVENUE_VALUE_PATTERN,
+	customer_count: CUSTOMER_COUNT_PATTERN,
+	growth_rate:   GROWTH_RATE_PATTERN,
+};
+
+/**
+ * Count how many distinct DPU pages produce the same normalised value as `targetNorm`.
+ * Used to set `corroboration_count` on deck-sourced CanonicalFields.
+ *
+ * Only pages whose match normalises to `targetNorm` are counted.
+ * Returns 0 when `pages` is empty or no match is found.
+ */
+function countCorroboratedPages(
+	pages: DpuPage[],
+	pattern: RegExp,
+	targetNorm: string
+): number {
+	const seenRefs = new Set<string>();
+	for (const page of pages) {
+		const m = pattern.exec(page.text ?? "");
+		if (!m) continue;
+		const norm = normalizeAmountForConflict(m[0].slice(0, 80));
+		if (norm !== targetNorm) continue;
+		seenRefs.add(dpuEvidenceRef(page.document_id, page.page_index));
+	}
+	return seenRefs.size;
+}
+
+/**
+ * Enrich deck-sourced Computable canonical fields with a corroboration_count.
+ *
+ * For each field in CORROBORATION_PATTERNS that is Computable and deck-sourced,
+ * count the distinct DPU pages that agree on the same normalised value.
+ * XLSX-sourced fields are already authoritative — they skip corroboration.
+ */
+function enrichCorroboration(fields: CanonicalField[], pages: DpuPage[]): void {
+	for (const field of fields) {
+		if (field.computability !== "Computable") continue;
+		if (field.source === "xlsx") continue;
+		if (!field.value) continue;
+		const pattern = CORROBORATION_PATTERNS[field.field];
+		if (!pattern) continue;
+		const targetNorm = normalizeAmountForConflict(field.value);
+		field.corroboration_count = countCorroboratedPages(pages, pattern, targetNorm);
+	}
 }
 
 /**
@@ -2656,7 +2973,7 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 	const raiseAmountConflict = findConflictInMatches("raise_amount", raiseAmountMatches);
 	if (raiseAmountConflict) conflicts.push(raiseAmountConflict);
 
-	fields.push(evalCanonicalField("raise_terms", "raise_amount", dpuPages, evidenceSnippets, RAISE_AMOUNT_PATTERN, P2_REASON.NO_RAISE_AMOUNT_MENTION, dpuLoadFailed, detectRaiseInTextSources));
+	fields.push(evalCanonicalField("raise_terms", "raise_amount", dpuPages, evidenceSnippets, RAISE_AMOUNT_PATTERN, P2_REASON.NO_RAISE_AMOUNT_MENTION, dpuLoadFailed, detectRaiseInTextSources, undefined, FACT_PLAUSIBILITY_GUARDS.raise_amount));
 	fields.push(evalCanonicalField("raise_terms", "raise_round", dpuPages, evidenceSnippets, RAISE_ROUND_PATTERN, P2_REASON.NO_RAISE_ROUND_MENTION, dpuLoadFailed));
 	fields.push(evalCanonicalField("raise_terms", "raise_instrument", dpuPages, evidenceSnippets, RAISE_INSTRUMENT_PATTERN, P2_REASON.NO_RAISE_INSTRUMENT_MENTION, dpuLoadFailed));
 	fields.push(evalCanonicalField("raise_terms", "raise_cap", dpuPages, evidenceSnippets, RAISE_CAP_PATTERN, P2_REASON.NO_RAISE_CAP_MENTION, dpuLoadFailed));
@@ -2700,7 +3017,7 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 	// ── Traction Signal ────────────────────────────────────────────────────────
 	// mrr_value: prefer XLSX saas_kpis; fall back to text pattern.
 	{
-		const textResult = evalCanonicalField("traction_signal", "mrr_value", dpuPages, evidenceSnippets, MRR_VALUE_PATTERN, P2_REASON.NO_MRR_VALUE_MENTION, dpuLoadFailed);
+		const textResult = evalCanonicalField("traction_signal", "mrr_value", dpuPages, evidenceSnippets, MRR_VALUE_PATTERN, P2_REASON.NO_MRR_VALUE_MENTION, dpuLoadFailed, detectMrrInTextSources, NumericContextSuppressReason.MRR_MARKET_CONTEXT_TAINT);
 		const kpi = inputs.saasKpis;
 		if (kpi?.derived?.mrr_latest != null) {
 			const xlsxValue = `$${kpi.derived.mrr_latest.toLocaleString("en-US")} MRR (${kpi.periods[0] ?? "latest"}, XLSX)`;
@@ -2719,7 +3036,7 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 	}
 	// arr_value: prefer XLSX saas_kpis (derived ARR or ARR from MRR×12); fall back to text pattern.
 	{
-		const textResult = evalCanonicalField("traction_signal", "arr_value", dpuPages, evidenceSnippets, ARR_VALUE_PATTERN, P2_REASON.NO_ARR_VALUE_MENTION, dpuLoadFailed, detectArrInTextSources, P2_REASON.ARR_MARKET_CONTEXT_TAINT);
+		const textResult = evalCanonicalField("traction_signal", "arr_value", dpuPages, evidenceSnippets, ARR_VALUE_PATTERN, P2_REASON.NO_ARR_VALUE_MENTION, dpuLoadFailed, detectArrInTextSources, P2_REASON.ARR_MARKET_CONTEXT_TAINT, FACT_PLAUSIBILITY_GUARDS.arr_value);
 		const kpi = inputs.saasKpis;
 		const arrVal = kpi?.derived?.arr_latest ?? null;
 		if (arrVal != null && kpi) {
@@ -2742,7 +3059,7 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 	// revenue_value: prefer XLSX financial statement; fall back to text pattern.
 	// Rule: XLSX is authoritative for revenue when available (structured data > OCR text).
 	{
-		const textResult = evalCanonicalField("traction_signal", "revenue_value", dpuPages, evidenceSnippets, REVENUE_VALUE_PATTERN, P2_REASON.NO_REVENUE_VALUE_MENTION, dpuLoadFailed);
+		const textResult = evalCanonicalField("traction_signal", "revenue_value", dpuPages, evidenceSnippets, REVENUE_VALUE_PATTERN, P2_REASON.NO_REVENUE_VALUE_MENTION, dpuLoadFailed, detectRevenueInTextSources, NumericContextSuppressReason.REVENUE_MARKET_CONTEXT_TAINT, FACT_PLAUSIBILITY_GUARDS.revenue_value);
 		const fs = inputs.bestFinancialStatement;
 		if (fs?.derived?.revenue_latest !== undefined) {
 			const xlsxValue = `$${fs.derived.revenue_latest.toLocaleString("en-US")} (${fs.periods[0] ?? "latest"} revenue from XLSX)`;
@@ -2793,7 +3110,7 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 		}
 	}
 
-	fields.push(evalCanonicalField("traction_signal", "customer_count", dpuPages, evidenceSnippets, CUSTOMER_COUNT_PATTERN, P2_REASON.NO_CUSTOMER_COUNT_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("traction_signal", "customer_count", dpuPages, evidenceSnippets, CUSTOMER_COUNT_PATTERN, P2_REASON.NO_CUSTOMER_COUNT_MENTION, dpuLoadFailed, detectCustomerCountInTextSources, undefined, FACT_PLAUSIBILITY_GUARDS.customer_count));
 
 	// ── Use of Funds (XLSX structured → text → ask-slide → ICA cascade) ────────
 	// Priority: (1) XLSX UoF parser (most reliable structured data),
@@ -2996,6 +3313,11 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 		return { category: cat, status: hasComputable ? "Present" : "Missing" };
 	});
 
+	// ── Corroboration pass: count agreeing pages before confidence evaluation ──
+	// Only applies to deck-sourced fields in CORROBORATION_PATTERNS.
+	// XLSX fields are already authoritative; they skip this step.
+	enrichCorroboration(fields, dpuPages);
+
 	// ── PR36.6: Annotate each canonical field with its evidence confidence level ──
 	for (const field of fields) {
 		const hasConflict = conflicts.some((c) => c.field === field.field);
@@ -3006,6 +3328,7 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 				source: field.source,
 				reasonCode: field.reasonCode,
 				hasConflict,
+				corroborationCount: field.corroboration_count ?? 0,
 			}),
 		).level;
 	}

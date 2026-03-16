@@ -10,7 +10,7 @@
  *   0.8 — Single-source: found in exactly 1 document
  *   0.5 — Conflicted: 2+ documents disagree on the normalised value
  *
- * When values conflict the field is still fused (longest value wins as a
+ * When values conflict the field is still fused (richest-source candidate wins as a
  * representative) but a FusedConflict entry is emitted and confidence is capped
  * at 0.5.
  *
@@ -24,7 +24,21 @@
  */
 
 import type { RenderPackage } from "../../contracts/investor-insights/schemas";
-import { isCandidateTaintedByFundAumContext } from "./resolve-raise-amount";
+import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "./resolve-raise-amount";
+import {
+	ARR_TAINT_WINDOW,
+	ARR_MARKET_TAINT_RE,
+	ARR_COMPANY_OWNERSHIP_RE,
+	MRR_TAINT_WINDOW,
+	MRR_MARKET_TAINT_RE,
+	MRR_COMPANY_OWNERSHIP_RE,
+	REVENUE_TAINT_WINDOW,
+	REVENUE_MARKET_TAINT_RE,
+	REVENUE_COMPANY_OWNERSHIP_RE,
+	CUSTOMER_TAINT_WINDOW,
+	CUSTOMER_COMPETITOR_TAINT_RE,
+	CUSTOMER_COMPANY_OWNERSHIP_RE,
+} from "./numeric-context-taxonomy";
 import {
 	type TemporalScope,
 	classifyTemporalScope,
@@ -32,6 +46,7 @@ import {
 	isProjectedScope,
 	temporalScopeLabel,
 	type CrossSourceReconciliationStatus,
+	FACT_PLAUSIBILITY_GUARDS,
 } from "@dealdecision/core";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -416,42 +431,157 @@ interface DocMatch {
 	 * temporal scope classification. Includes text before and after the match.
 	 */
 	context_window: string;
+	/**
+	 * Richness score for this match's source page.
+	 * Used to select the most informative candidate when multiple matches exist.
+	 * Higher = more reliable/contextual evidence.
+	 */
+	page_richness_score: number;
+}
+
+// ── Traction metric context guards ────────────────────────────────────────────
+
+/** Returns true when the ARR match context indicates an external market figure. */
+function isFusionArrTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - ARR_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + ARR_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (ARR_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return ARR_MARKET_TAINT_RE.test(window);
+}
+
+/** Returns true when the MRR match context indicates an external market figure. */
+function isFusionMrrTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - MRR_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + MRR_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (MRR_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return MRR_MARKET_TAINT_RE.test(window);
+}
+
+/** Returns true when the revenue match context indicates a market/competitor figure. */
+function isFusionRevenueTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - REVENUE_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + REVENUE_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (REVENUE_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return REVENUE_MARKET_TAINT_RE.test(window);
+}
+
+/** Returns true when the customer count context indicates a competitor/benchmark figure. */
+function isFusionCustomerCountTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - CUSTOMER_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + CUSTOMER_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (CUSTOMER_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return CUSTOMER_COMPETITOR_TAINT_RE.test(window);
+}
+
+// ── Page richness scoring ─────────────────────────────────────────────────────
+
+/**
+ * Keywords indicating a dedicated KPI, financial summary, or traction context.
+ * Pages with these markers are richer evidence sources than incidental mentions.
+ */
+const KPI_RICHNESS_KEYWORDS_RE =
+	/\b(?:KPI|key\s+metrics?|traction|financial\s+summary|financial\s+highlights?|revenue\s+summary|P&L|income\s+statement|balance\s+sheet|financials?)\b/i;
+
+const SECTION_RICHNESS_LABEL_RE =
+	/\b(?:Financials?|Traction|Metrics?|Performance|Growth|Summary|Highlights?)\b/i;
+
+/**
+ * Score the richness of a page as an evidence source.
+ *
+ * Scoring components:
+ *   - Text length: longer pages are richer evidence contexts (capped at 10 pts)
+ *   - KPI keyword presence: dedicated financial summary page bonus (+5 pts)
+ *   - Section label markers: financial section heading bonus (+2 pts)
+ *   - Dollar sign density: more figures = more financial context (+0–5 pts)
+ *
+ * Higher score → prefer this page's match over lower-scoring alternatives.
+ */
+function scorePageRichness(pageText: string): number {
+	let score = 0;
+	// Base: text length (longer pages have more context)
+	score += Math.min(pageText.length / 200, 10);
+	// Bonus for KPI/financial summary keywords
+	if (KPI_RICHNESS_KEYWORDS_RE.test(pageText)) score += 5;
+	// Bonus for section label markers
+	if (SECTION_RICHNESS_LABEL_RE.test(pageText)) score += 2;
+	// Bonus for dollar sign density (multiple figures = financial context)
+	const dollarCount = (pageText.match(/\$/g) ?? []).length;
+	score += Math.min(dollarCount, 5);
+	return score;
 }
 
 /**
- * Scan sorted pages for a single document and return the first regex match.
- * Pages must already be ordered by page_index ascending (processor.ts guarantees
- * ORDER BY document_id ASC, page_index ASC).
+ * Scan ALL pages of a document and return the match from the richest page.
+ *
+ * Unlike the previous `findFirstMatchInDoc`, this function:
+ *   1. Collects all valid (non-tainted) matches across every page.
+ *   2. Scores each page by richness (text length + KPI indicators).
+ *   3. Returns the match from the highest-richness page.
+ *
+ * This prevents a brief incidental mention on page 1 from overriding a full
+ * KPI slide with the same metric on page 8.
+ *
+ * Pages must already be ordered by page_index ascending.
  */
-function findFirstMatchInDoc(
+function findBestMatchInDoc(
 	docPages: DpuPageLike[],
 	field: string,
 	pattern: RegExp
 ): DocMatch | null {
+	const candidates: (DocMatch & { _richness: number })[] = [];
+
 	for (const page of docPages) {
-		const m = pattern.exec(page.text ?? "");
+		const text = page.text ?? "";
+		const m = pattern.exec(text);
 		if (!m) continue;
-		// Guard: skip money-first raise_amount matches whose context contains
-		// market-size language ("$11B market", "$8B TAM — investment opportunity").
-		if (field === "raise_amount" && isFusionRaiseTainted(page.text ?? "", m.index, m[0].length)) continue;
-		// PR26 guard: skip raise_amount matches on pages that contain fund-management /
-		// AUM language ("$100M Alternatives Fund", "AUM", "LP commitment", etc.).
-		// Mirrors the PR24 guard in resolve-raise-amount.ts and promote-slide-facts.ts.
-		if (field === "raise_amount" && isCandidateTaintedByFundAumContext(page.text ?? "")) continue;
+
+		// ── Field-specific context guards ──────────────────────────────────────
+		if (field === "raise_amount") {
+			if (isFusionRaiseTainted(text, m.index, m[0].length)) continue;
+			if (isCandidateTaintedByFundAumContext(text)) continue;
+			// PR36.5: skip volume-metric pages (cars financed, GMV, etc.)
+			if (isCandidateTaintedByVolumeMetric(text) && !hasStrongRaiseSignal(text)) continue;
+		}
+		if (field === "arr_value"      && isFusionArrTainted(text, m.index, m[0].length))          continue;
+		if (field === "mrr_value"      && isFusionMrrTainted(text, m.index, m[0].length))          continue;
+		if (field === "revenue_value"  && isFusionRevenueTainted(text, m.index, m[0].length))      continue;
+		if (field === "customer_count" && isFusionCustomerCountTainted(text, m.index, m[0].length)) continue;
+
+		// ── Page-level plausibility guard ───────────────────────────────────────
+		// Applied after window-based taint checks for a second layer of defense.
+		// Uses full page text to reject semantic category mismatches.
+		const plausibilityGuard = FACT_PLAUSIBILITY_GUARDS[field];
+		if (plausibilityGuard) {
+			const snippet = m[0].slice(0, 120);
+			const guardResult = plausibilityGuard(field, text, snippet);
+			if (!guardResult.allowed) continue;
+		}
+
 		const snippet = m[0].slice(0, 120);
-		// Capture a 400-char context window for temporal scope classification
 		const ctxStart = Math.max(0, m.index - 150);
-		const ctxEnd = Math.min((page.text ?? "").length, m.index + m[0].length + 150);
-		const context_window = (page.text ?? "").slice(ctxStart, ctxEnd);
-		return {
+		const ctxEnd   = Math.min(text.length, m.index + m[0].length + 150);
+		const context_window = text.slice(ctxStart, ctxEnd);
+		const richness = scorePageRichness(text);
+
+		candidates.push({
 			document_id: page.document_id,
 			value: cleanValue(field, snippet),
 			normalized: normalizeForConflict(snippet),
 			evidence_ref: dpuEvidenceRef(page.document_id, page.page_index),
 			context_window,
-		};
+			page_richness_score: richness,
+			_richness: richness,
+		});
 	}
-	return null;
+
+	if (candidates.length === 0) return null;
+
+	// Return the candidate from the richest page
+	return candidates.reduce((best, c) => c._richness > best._richness ? c : best);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -496,10 +626,10 @@ export function fuseDealCanonicalFacts(
 	for (const fieldDef of FUSION_FIELDS) {
 		const { field, category, pattern, semantic_role, classify_temporal } = fieldDef;
 
-		// Collect the first match found in each document
+		// Collect the best match found in each document (richness-scored, context-gated)
 		const docMatches: DocMatch[] = [];
 		for (const [, docPages] of byDoc) {
-			const match = findFirstMatchInDoc(docPages, field, pattern);
+			const match = findBestMatchInDoc(docPages, field, pattern);
 			if (match) docMatches.push(match);
 		}
 
@@ -524,9 +654,12 @@ export function fuseDealCanonicalFacts(
 			winner = docMatches[0]!;
 			confidence = docMatches.length >= 2 ? 1.0 : 0.8;
 		} else {
-			// Cross-document conflict: pick the candidate with the longest raw value
-			// as the representative winner; cap confidence at 0.5
-			winner = docMatches.reduce((a, b) => (b.value.length > a.value.length ? b : a));
+			// Cross-document conflict: pick the candidate from the richest source page
+			// as the representative winner; cap confidence at 0.5.
+			// (Richness score prefers structured KPI/financial pages over incidental mentions.)
+			winner = docMatches.reduce((a, b) =>
+				b.page_richness_score > a.page_richness_score ? b : a
+			);
 			confidence = 0.5;
 			conflicts.push({
 				field,

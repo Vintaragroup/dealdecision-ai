@@ -171,3 +171,111 @@ export const VALUATION_COMPETITOR_TAINT_RE =
  */
 export const VALUATION_COMPANY_OWNERSHIP_RE =
 	/\b(?:our\s+(?:company\s+)?valuation|we\s+are\s+valued\s+at|we(?:'re|\s+are)\s+(?:currently\s+)?valued|company\s+(?:is\s+)?valued\s+at|post[-\s]money\s+valuation|pre[-\s]money\s+valuation|our\s+SAFE|our\s+cap)\b/i;
+
+// ── MRR context guard constants ───────────────────────────────────────────────
+
+/** Window size (chars on each side of match) used for MRR context checks. */
+export const MRR_TAINT_WINDOW = 120;
+
+/**
+ * MRR market-size taint regex.
+ *
+ * Fires when the context window around an MRR match contains market/segment
+ * language indicating the MRR figure describes an external market rather than
+ * the company's own metric.
+ *
+ * Examples that SHOULD taint:
+ *   - "total MRR market of $500M"             → "market" near MRR
+ *   - "industry MRR pool: $2B"                → "industry" near MRR
+ *   - "MRR market opportunity: $300M"          → "market opportunity"
+ *   - "TAM expressed as MRR: $50M"            → TAM near MRR
+ *
+ * Examples that should NOT taint:
+ *   - "our MRR is $200K"                      → company ownership
+ *   - "MRR reached $50K in Q3"                → growth narrative
+ *   - "current MRR: $120K"                    → traction slide
+ */
+export const MRR_MARKET_TAINT_RE =
+	/\b(?:TAM|SAM|SOM|total\s+addressable|serviceable\s+addressable|serviceable\s+obtainable|addressable\s+market|market\s+size|market\s+segment|market\s+opportunity|industry\s+MRR|MRR\s+market|MRR\s+segment|MRR\s+pool|segment|sector|industry)\b|(?<!-)market(?!\w)/i;
+
+/**
+ * Safe MRR company-ownership signals.
+ * When any of these appear within window, the taint check is skipped.
+ *
+ * Includes:
+ *   - Possessive forms: "our MRR", "my MRR", "company MRR", "current MRR"
+ *   - Verb forms: "MRR is/was/of/reached/grew/hit/:"
+ *   - Growth narrative: "we reached $X MRR", "achieving $X MRR"
+ *   - Bare label: "MRR $X" — when MRR immediately precedes a dollar amount,
+ *     it is acting as a traction-slide metric label (always company-owned).
+ *     (Separate alternation — no trailing word boundary required.)
+ */
+export const MRR_COMPANY_OWNERSHIP_RE =
+	/\b(?:our\s+MRR|my\s+MRR|we\s+(?:have|reached?|hit|grew|achieved?)\s+(?:\$[\d,.]+\s*[BMKbmk]?\s+)?MRR|MRR\s+(?:is|was|of|reached?|grows?|grew|hit|:)|current\s+MRR|company(?:'?s?)?\s+MRR|achieving\s+(?:\$[\d,.]+\s*[BMKbmk]?\s+)?MRR)\b|\bMRR\s+\$/i;
+
+// ── Revenue context guard constants ──────────────────────────────────────────
+
+/** Window size (chars on each side of match) used for revenue context checks. */
+export const REVENUE_TAINT_WINDOW = 150;
+
+/**
+ * Revenue market-size taint regex.
+ *
+ * Fires when the context window around a revenue match contains market/sector
+ * language indicating the revenue figure describes an external market or a
+ * competitor rather than the company's own revenue.
+ *
+ * Examples that SHOULD taint:
+ *   - "market revenue opportunity: $5B"       → "market revenue"
+ *   - "industry revenue pool of $2B"          → "industry revenue"
+ *   - "total addressable revenue: $10B"       → "total addressable"
+ *   - "competitor revenue: $8B"               → "competitor" near revenue
+ *   - "sector revenue: $3B"                   → sector context
+ *
+ * Examples that should NOT taint:
+ *   - "our revenue is $500K"                  → company ownership
+ *   - "revenue reached $1M in 2024"           → growth narrative
+ *   - "annual revenue: $800K"                 → company metric
+ */
+export const REVENUE_MARKET_TAINT_RE =
+	/\b(?:TAM|SAM|SOM|total\s+addressable|serviceable\s+addressable|serviceable\s+obtainable|addressable\s+market|market\s+(?:size|revenue|revenues?)|market\s+opportunity|industry\s+revenue|sector\s+revenue|competitor(?:'?s?)?\s+revenue|peer\s+revenue|benchmark\s+revenue|revenue\s+(?:market|pool|opportunity|potential))\b|(?<!-)market(?!\w)/i;
+
+/**
+ * Safe revenue company-ownership signals.
+ * When any of these appear within window, revenue market taint is overridden.
+ */
+export const REVENUE_COMPANY_OWNERSHIP_RE =
+	/\b(?:our\s+revenues?|my\s+revenues?|we\s+(?:generated?|earned?|achieved?|recorded?|reported?)\s+(?:\$[\d,.]+\s*[BMKbmk]?\s+)?revenues?|revenues?\s+(?:is|was|of|reached?|grew|hit|:)|current\s+revenues?|company(?:'?s?)?\s+revenues?|annual\s+revenues?\s*(?:is|was|of|:)|achieving\s+(?:\$[\d,.]+\s*[BMKbmk]?\s+)?revenues?)\b/i;
+
+// ── Customer count context guard constants ────────────────────────────────────
+
+/** Window size (chars on each side of match) used for customer count checks. */
+export const CUSTOMER_TAINT_WINDOW = 150;
+
+/**
+ * Customer count competitor/external taint regex.
+ *
+ * Fires when the context window around a customer count match contains signals
+ * that the count belongs to a competitor or is an industry benchmark rather
+ * than the company's own customer base.
+ *
+ * Examples that SHOULD taint:
+ *   - "competitors serve 10,000 customers"    → "competitor" near count
+ *   - "industry average of 500 customers"     → "industry average"
+ *   - "publicly traded peers have 50K users"  → "publicly traded peers"
+ *   - "market leader with 1M customers"       → "market leader"
+ *
+ * Examples that should NOT taint:
+ *   - "we have 120 customers"                 → company ownership
+ *   - "our customer base: 450"                → company metric
+ *   - "currently serving 200 clients"         → active company context
+ */
+export const CUSTOMER_COMPETITOR_TAINT_RE =
+	/\b(?:competitor(?:s)?|rival(?:s)?|industry\s+(?:leader|average|benchmark)|market\s+leader|publicly\s+traded|comparable\s+compan|peer(?:s|\s+group)?|benchmark|sector\s+average|comps?|third.party|existing\s+(?:players?|companies)|incumbent|established\s+player|competitive\s+(?:landscape|analysis|overview))\b/i;
+
+/**
+ * Safe customer count company-ownership signals.
+ * When any of these appear within window, competitor taint is overridden.
+ */
+export const CUSTOMER_COMPANY_OWNERSHIP_RE =
+	/\b(?:our\s+customers?|we\s+(?:have|serve|work\s+with|signed?|onboarded?)\s+\d|we\s+(?:currently\s+)?(?:have|serve)\s+(?:over\s+)?\d|customer\s+(?:count|base|list|number)|current\s+customers?|company(?:'?s?)?\s+customers?|active\s+customers?|paying\s+customers?|signed\s+customers?)\b/i;

@@ -168,11 +168,14 @@ export function computeEvidenceConfidence(
  * canonical field entry.  Called in stage-2-deterministic.ts after the full
  * fields + conflicts lists are assembled.
  *
- * @param computability - Field computability
- * @param evidenceRef   - Evidence reference string (null = no reference)
- * @param source        - Source classification from the extraction pipeline
- * @param reasonCode    - Slot reason code from extraction
- * @param hasConflict   - True when this field.name appears in the conflicts list
+ * @param computability      - Field computability
+ * @param evidenceRef        - Evidence reference string (null = no reference)
+ * @param source             - Source classification from the extraction pipeline
+ * @param reasonCode         - Slot reason code from extraction
+ * @param hasConflict        - True when this field.name appears in the conflicts list
+ * @param corroborationCount - Number of distinct evidence sources that agree on this value.
+ *                             When ≥ 2, evidence_count is set to 2 → enables VERIFIED tier.
+ *                             Defaults to 0 (no explicit corroboration count supplied).
  * @param externalCorroborated - True when Phase 7 external diligence confirms it
  */
 export function buildConfidenceSignals({
@@ -181,6 +184,7 @@ export function buildConfidenceSignals({
   source,
   reasonCode,
   hasConflict,
+  corroborationCount = 0,
   externalCorroborated = false,
 }: {
   computability: "Computable" | "NotComputable";
@@ -188,6 +192,8 @@ export function buildConfidenceSignals({
   source: "xlsx" | "deck" | "derived" | "unknown" | null | undefined;
   reasonCode: string | null | undefined;
   hasConflict: boolean;
+  /** Number of distinct evidence refs that agree on this value (enables VERIFIED when ≥ 2). */
+  corroborationCount?: number;
   externalCorroborated?: boolean;
 }): EvidenceConfidenceSignals {
   const isDerived = typeof reasonCode === "string" && reasonCode.startsWith("DERIVED_FROM_");
@@ -195,9 +201,15 @@ export function buildConfidenceSignals({
     ? "derived"
     : (source ?? "unknown");
 
+  // Corroboration count drives evidence_count:
+  //   ≥ 2 independent refs agree → evidence_count = 2 → VERIFIED tier
+  //   exactly 1 ref (or a non-null evidenceRef with no explicit count) → 1 → STRONG_EVIDENCE
+  //   0 → no traceable reference → WEAK_EVIDENCE
+  const evidenceCount = corroborationCount >= 2 ? 2 : (evidenceRef != null ? 1 : 0);
+
   return {
     computability,
-    evidence_count: evidenceRef != null ? 1 : 0,
+    evidence_count: evidenceCount,
     source_type: resolvedSource,
     has_cross_source_conflict: hasConflict,
     // Fields that have passed stage-2 deterministic extraction are treated as

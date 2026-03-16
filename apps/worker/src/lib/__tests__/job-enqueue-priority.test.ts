@@ -20,9 +20,9 @@ vi.mock("@dealdecision/core", () => ({
 
 // ── Helper: grab the options object passed to queue.add ─────────────────────
 function capturedQueueAddOptions(): Record<string, unknown> {
-  const calls = mockQueueAdd.mock.calls;
+  const calls = mockQueueAdd.mock.calls as unknown[][];
   if (calls.length === 0) throw new Error("queue.add was not called");
-  return (calls[0][2] ?? {}) as Record<string, unknown>;
+  return ((calls[0][2] as Record<string, unknown>) ?? {});
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────

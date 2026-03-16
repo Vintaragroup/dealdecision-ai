@@ -354,6 +354,24 @@ export {
   buildConfidenceSignals,
 } from "./evidence/evidence-confidence-evaluator";
 
+export {
+  EvidenceSourceStrength,
+  classifySourceStrength,
+  isSourceTainted,
+  isStrongSource,
+} from "./evidence/evidence-source-strength";
+
+// ============================================================================
+// Fact Plausibility Guards
+// ============================================================================
+// Page-level context guards for canonical field extraction.
+// Guards reject facts when source page lacks appropriate semantic context.
+export type {
+  FactPlausibilityResult,
+  FactPlausibilityGuard,
+} from "./fact-plausibility-guards";
+export { FACT_PLAUSIBILITY_GUARDS } from "./fact-plausibility-guards";
+
 // ============================================================================
 // Fact Promotion Gate (PR36.6)
 // ============================================================================

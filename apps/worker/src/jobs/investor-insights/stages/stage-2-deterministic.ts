@@ -90,6 +90,15 @@ import type { CrossSourceReconciliationSummary } from "../../../lib/cross-source
 import type { FinancialCoverageV1, FinancialConflictV1 } from "@dealdecision/core";
 import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "../resolve-raise-amount.js";
 import {
+	ARR_TAINT_WINDOW,
+	VALUATION_TAINT_WINDOW,
+	ARR_MARKET_TAINT_RE,
+	ARR_COMPANY_OWNERSHIP_RE,
+	VALUATION_COMPETITOR_TAINT_RE,
+	VALUATION_COMPANY_OWNERSHIP_RE,
+	NumericContextSuppressReason,
+} from "../numeric-context-taxonomy.js";
+import {
 	selectBestNarrativeCandidate,
 	rankNarrativeCandidates,
 	TOPIC_MIN_THRESHOLD,
@@ -856,6 +865,124 @@ function detectRaiseAllMatchesForConflict(
 }
 
 // ── Market-sizing triad extractor ─────────────────────────────────────────────
+
+// ── ARR context guard ─────────────────────────────────────────────────────────
+
+/**
+ * Returns true when the context window around an ARR match contains market/segment
+ * language indicating the ARR figure describes an external market rather than the
+ * company's own metric.
+ *
+ * Company-ownership override: if ARR_COMPANY_OWNERSHIP_RE fires in the window,
+ * the match is never tainted regardless of market keywords present.
+ *
+ * True-positive examples (tainted → suppressed):
+ *   "The $200M ARR market segment"          → "market segment" near ARR
+ *   "ARR market size: $1.5B"               → "market size" near ARR
+ *   "industry ARR pool of $300M"           → "industry" near ARR
+ *
+ * True-negative examples (not tainted → kept):
+ *   "Our ARR is $200M"                     → COMPANY_OWNERSHIP override fires
+ *   "ARR reached $10M in Q3"              → no market language in window
+ *   "$3M ARR growing 200% YoY"            → traction slide
+ */
+function isArrMatchTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - ARR_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + ARR_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	// Company ownership override — skip further taint check
+	if (ARR_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return ARR_MARKET_TAINT_RE.test(window);
+}
+
+/**
+ * Context-gated detect function for arr_value.
+ * Skips ARR matches whose context window contains market/industry language.
+ * Falls back to unfiltered evidence snippets (already short clips).
+ */
+function detectArrInTextSources(
+	pattern: RegExp,
+	dpuPages: DpuPage[],
+	evidenceSnippets: EvidenceSnippet[]
+): { snippet: string; ref: string } | null {
+	for (const page of dpuPages) {
+		const text = page.text ?? "";
+		const m = pattern.exec(text);
+		if (m && !isArrMatchTainted(text, m.index, m[0].length)) {
+			return { snippet: m[0].slice(0, 80), ref: dpuEvidenceRef(page.document_id, page.page_index) };
+		}
+	}
+	// Evidence snippets are short contextual clips — use unfiltered (less likely to contain market language)
+	for (const ev of evidenceSnippets) {
+		const text = ev.claim_text_norm ?? ev.claim_text ?? "";
+		const m = pattern.exec(text);
+		if (m) {
+			const prefix = ev.id.replace(/-/g, "").slice(0, 8);
+			return { snippet: m[0].slice(0, 80), ref: `evidence:item:${prefix}` };
+		}
+	}
+	return null;
+}
+
+// ── Valuation competitor context guard ────────────────────────────────────────
+
+/**
+ * Returns true when the context window around a valuation match contains signals
+ * that the valuation belongs to a competitor or external entity rather than the
+ * company presenting the deck.
+ *
+ * Form A (post-money explicit prefix) is never tainted — it unambiguously refers
+ * to the company's own transaction valuation.
+ *
+ * Company-ownership override: if VALUATION_COMPANY_OWNERSHIP_RE fires in the window,
+ * the match is never tainted.
+ *
+ * True-positive examples (tainted → suppressed):
+ *   "Our competitor has a $8B valuation"   → "competitor" near valuation
+ *   "industry leader valued at $8B"       → "industry leader"
+ *   "comparable companies at $8B val"     → "comparable"
+ *   "publicly traded comps at $8B"        → "publicly traded"
+ *
+ * True-negative examples (not tainted → kept):
+ *   "post-money valuation $10M"           → form A, never tainted
+ *   "we are valued at $10M"              → COMPANY_OWNERSHIP override
+ *   "$6MM Valuation — our SAFE cap"       → "our" in window
+ */
+function isValuationMatchTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const matchText = text.slice(matchIndex, matchIndex + matchLength);
+	// Form A: explicit post-money prefix — never tainted (unambiguous company transaction)
+	if (/^post[-\s]money/i.test(matchText)) return false;
+	const start  = Math.max(0, matchIndex - VALUATION_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + VALUATION_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	// Company ownership override
+	if (VALUATION_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return VALUATION_COMPETITOR_TAINT_RE.test(window);
+}
+
+/**
+ * Context-gated detect function for valuation_post.
+ * Skips valuation matches whose context window contains competitor/external signals.
+ *
+ * NOTE: Evidence snippets are intentionally NOT used as a fallback here. Short clips
+ * lack the surrounding context (e.g., a "Competitive Landscape" slide heading) needed
+ * to verify ownership. A missed valuation is safer than surfacing a competitor's figure.
+ */
+function detectValuationPostInTextSources(
+	pattern: RegExp,
+	dpuPages: DpuPage[],
+	_evidenceSnippets: EvidenceSnippet[]
+): { snippet: string; ref: string } | null {
+	for (const page of dpuPages) {
+		const text = page.text ?? "";
+		const m = pattern.exec(text);
+		if (m && !isValuationMatchTainted(text, m.index, m[0].length)) {
+			return { snippet: m[0].slice(0, 80), ref: dpuEvidenceRef(page.document_id, page.page_index) };
+		}
+	}
+	// Evidence snippets intentionally not used — see doc comment above.
+	return null;
+}
 
 /**
  * Detects a line containing all three market-sizing labels TAM, SAM, SOM.
@@ -2153,6 +2280,9 @@ const P2_REASON = {
 	NO_REVENUE_VALUE_MENTION: "NO_REVENUE_VALUE_MENTION",
 	NO_GROWTH_RATE_MENTION: "NO_GROWTH_RATE_MENTION",
 	NO_CUSTOMER_COUNT_MENTION: "NO_CUSTOMER_COUNT_MENTION",
+	// Context-guard suppression reason codes (numeric-context-taxonomy phase)
+	ARR_MARKET_CONTEXT_TAINT: NumericContextSuppressReason.ARR_MARKET_CONTEXT_TAINT,
+	VALUATION_COMPETITOR_CONTEXT_TAINT: NumericContextSuppressReason.VALUATION_COMPETITOR_CONTEXT_TAINT,
 } as const;
 
 // ── Phase 2 sub-field patterns (compile once) ────────────────────────────────
@@ -2273,6 +2403,12 @@ interface CanonicalField {
 	source?: "xlsx" | "deck" | "derived" | null;
 	/** Evidence confidence level — computed by evidence-confidence-evaluator after extraction (PR36.6). */
 	confidence?: EvidenceConfidenceLevel;
+	/**
+	 * When a context guard (ARR market taint, valuation competitor taint, etc.)
+	 * suppresses a match, the raw tainted value is stored here for audit purposes.
+	 * Never surfaced in canonicalFieldsBody — only available in the conflicts/withheld body.
+	 */
+	suppressedValue?: string;
 }
 
 interface ConflictEntry {
@@ -2456,7 +2592,16 @@ function findConflictInMatches(
 	};
 }
 
-/** Evaluate a single canonical sub-field via first-match detection (DPU → evidence fallback). */
+/**
+ * Evaluate a single canonical sub-field via first-match detection (DPU → evidence fallback).
+ *
+ * When `taintedReasonCode` is provided and `detectFn` returns null, this function
+ * performs a secondary check with the unfiltered `detectInTextSources`. If that
+ * unfiltered check finds a match (meaning the pattern fires but `detectFn` rejected
+ * it as context-tainted), the returned field uses `taintedReasonCode` and records
+ * the tainted snippet in `suppressedValue` for the audit trail — it is still
+ * NotComputable (value=null) so it never reaches the governed narrative corpus.
+ */
 function evalCanonicalField(
 	category: string,
 	field: string,
@@ -2465,7 +2610,8 @@ function evalCanonicalField(
 	pattern: RegExp,
 	reasonCode: string,
 	dpuLoadFailed: boolean,
-	detectFn: (p: RegExp, pages: DpuPage[], ev: EvidenceSnippet[]) => { snippet: string; ref: string } | null = detectInTextSources
+	detectFn: (p: RegExp, pages: DpuPage[], ev: EvidenceSnippet[]) => { snippet: string; ref: string } | null = detectInTextSources,
+	taintedReasonCode?: string
 ): CanonicalField {
 	if (dpuLoadFailed) {
 		return { category, field, computability: "NotComputable", value: null, evidenceRef: null, reasonCode: SLOT_REASON_CODES.DPU_LOAD_FAILED };
@@ -2473,6 +2619,21 @@ function evalCanonicalField(
 	const hit = detectFn(pattern, pages, evidenceSnippets);
 	if (hit) {
 		return { category, field, computability: "Computable", value: cleanCanonicalValue(field, hit.snippet), evidenceRef: hit.ref, reasonCode: null };
+	}
+	// When a taint code is supplied, check whether the raw unfiltered pattern fires.
+	// If it does, the clean detectFn rejected a tainted match → emit the taint code with audit value.
+	if (taintedReasonCode) {
+		const rawHit = detectInTextSources(pattern, pages, evidenceSnippets);
+		if (rawHit) {
+			return {
+				category, field,
+				computability: "NotComputable",
+				value: null,
+				evidenceRef: null,
+				reasonCode: taintedReasonCode,
+				suppressedValue: cleanCanonicalValue(field, rawHit.snippet),
+			};
+		}
 	}
 	return { category, field, computability: "NotComputable", value: null, evidenceRef: null, reasonCode };
 }
@@ -2505,7 +2666,7 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 
 	// ── Valuation Terms ────────────────────────────────────────────────────────
 	fields.push(evalCanonicalField("valuation_terms", "valuation_pre", dpuPages, evidenceSnippets, VALUATION_PRE_PATTERN, P2_REASON.NO_VALUATION_PRE_MENTION, dpuLoadFailed));
-	fields.push(evalCanonicalField("valuation_terms", "valuation_post", dpuPages, evidenceSnippets, VALUATION_POST_PATTERN, P2_REASON.NO_VALUATION_POST_MENTION, dpuLoadFailed));
+	fields.push(evalCanonicalField("valuation_terms", "valuation_post", dpuPages, evidenceSnippets, VALUATION_POST_PATTERN, P2_REASON.NO_VALUATION_POST_MENTION, dpuLoadFailed, detectValuationPostInTextSources, P2_REASON.VALUATION_COMPETITOR_CONTEXT_TAINT));
 	fields.push(evalCanonicalField("valuation_terms", "valuation_safe_cap", dpuPages, evidenceSnippets, VALUATION_SAFE_CAP_PATTERN, P2_REASON.NO_VALUATION_SAFE_CAP_MENTION, dpuLoadFailed));
 
 	// ── Use of Funds ───────────────────────────────────────────────────────────
@@ -2558,7 +2719,7 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 	}
 	// arr_value: prefer XLSX saas_kpis (derived ARR or ARR from MRR×12); fall back to text pattern.
 	{
-		const textResult = evalCanonicalField("traction_signal", "arr_value", dpuPages, evidenceSnippets, ARR_VALUE_PATTERN, P2_REASON.NO_ARR_VALUE_MENTION, dpuLoadFailed);
+		const textResult = evalCanonicalField("traction_signal", "arr_value", dpuPages, evidenceSnippets, ARR_VALUE_PATTERN, P2_REASON.NO_ARR_VALUE_MENTION, dpuLoadFailed, detectArrInTextSources, P2_REASON.ARR_MARKET_CONTEXT_TAINT);
 		const kpi = inputs.saasKpis;
 		const arrVal = kpi?.derived?.arr_latest ?? null;
 		if (arrVal != null && kpi) {
@@ -2862,7 +3023,8 @@ function formatCanonicalFieldLine(f: CanonicalField): string {
 		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=${f.reasonCode ?? "none"} | source=${src} | confidence=${conf}`;
 	}
 	const conf = f.confidence ?? "UNKNOWN";
-	return `category=${f.category} | field=${f.field} | computability=NotComputable | value=none | evidence=none | reason=${f.reasonCode ?? "UNKNOWN"} | source=unknown | confidence=${conf}`;
+	const suppressedPart = f.suppressedValue ? ` | suppressed_value="${f.suppressedValue}"` : "";
+	return `category=${f.category} | field=${f.field} | computability=NotComputable | value=none | evidence=none | reason=${f.reasonCode ?? "UNKNOWN"} | source=unknown | confidence=${conf}${suppressedPart}`;
 }
 
 function formatConflictLine(c: ConflictEntry): string {
@@ -3376,4 +3538,9 @@ export {
 	buildProductSignalsBundleSection,
 	buildGtmSignalsBundleSection,
 	buildThesisInputs,
+	// Context guard functions — exported for unit tests
+	isArrMatchTainted,
+	detectArrInTextSources,
+	isValuationMatchTainted,
+	detectValuationPostInTextSources,
 };

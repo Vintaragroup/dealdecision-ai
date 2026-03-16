@@ -72,11 +72,32 @@ export async function buildGovernedSummarySection(
 ): Promise<{ section: RenderPackage["sections"][number]; record: GovernedSummaryRecord } | null> {
 	try {
 		const phase2Result = extractPhase2Result(inputs);
-		const canonicalFieldsBody = phase2Result.fields.map(formatCanonicalFieldLine).join("\n");
-		const conflictsBody =
-			phase2Result.conflicts.length > 0
-				? phase2Result.conflicts.map(formatConflictLine).join("\n")
-				: null;
+
+		// Phase 4 (numeric-context gate): exclude CONFLICTING-confidence fields from
+		// canonicalFieldsBody so that unresolved cross-source conflicts cannot be
+		// presented as definitive facts in the governed narrative.
+		// The values are still visible in conflictsBody as WITHHELD notices, so the
+		// LLM knows to hedge language appropriately for those fields.
+		const safeFields = phase2Result.fields.filter(
+			(f) => f.confidence !== "CONFLICTING"
+		);
+		const withheldConflictedFields = phase2Result.fields.filter(
+			(f) => f.confidence === "CONFLICTING"
+		);
+		const canonicalFieldsBody = safeFields.map(formatCanonicalFieldLine).join("\n");
+
+		// Build conflicts body, augmented with withheld-conflict notices for any
+		// CONFLICTING-confidence Computable fields that were excluded above.
+		const conflictLines = phase2Result.conflicts.map(formatConflictLine);
+		for (const f of withheldConflictedFields) {
+			if (f.computability === "Computable" && f.value !== null) {
+				conflictLines.push(
+					`WITHHELD field=${f.field} | reason=CONFLICTING_FIELD_SUPPRESSED | value_withheld="${f.value}" | confidence=CONFLICTING`
+				);
+			}
+		}
+		const conflictsBody = conflictLines.length > 0 ? conflictLines.join("\n") : null;
+
 		const slotsSection = buildInsightSlotsSection(inputs);
 		const insightSlotsBody =
 			typeof slotsSection.body === "string" && slotsSection.body.trim().length > 0

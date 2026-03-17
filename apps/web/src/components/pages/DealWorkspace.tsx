@@ -6128,7 +6128,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
 
   return (
-    <div className="flex-1 overflow-auto">
+    <div>
       {workspaceDebugEnabled ? (
         <div
           data-testid="build-stamp"

@@ -848,6 +848,12 @@
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 4;
   }
+  .scrollbar-none {
+    scrollbar-width: none;
+    &::-webkit-scrollbar {
+      display: none;
+    }
+  }
   .\!table {
     display: table !important;
   }

@@ -43,3 +43,18 @@
      2. Update the comment above to reflect the change
      3. Run: pnpm style:drift:update
    ============================================================================= */
+
+/* =============================================================================
+   CUSTOM UTILITIES
+   ============================================================================= */
+
+/* scrollbar-none: hide scrollbars while preserving scroll behaviour.
+   Tailwind v4 does not ship this as a core utility — defined here so
+   `overflow-x-auto scrollbar-none` works in the tab nav strip and
+   the ShadCN <Tabs> list without a visible scrollbar. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

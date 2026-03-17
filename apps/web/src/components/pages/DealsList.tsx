@@ -19,7 +19,6 @@ import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAu
 import { useAuth } from '@clerk/clerk-react';
 import { 
   Search,
-  Plus,
   Filter,
   Download,
   Grid3x3,
@@ -615,15 +614,6 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                   onClick={() => setShowExportModal(true)}
                 >
                   Export
-                </Button>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  darkMode={darkMode}
-                  icon={<Plus className="w-4 h-4" />}
-                  onClick={onNewDeal}
-                >
-                  New Deal
                 </Button>
               </div>
             </div>

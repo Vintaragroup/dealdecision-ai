@@ -1,0 +1,26 @@
+Script started on Fri Mar 13 00:17:52 2026
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h  end_heredoc_if_stuck() { :; }; end_heredoc_if_stuck[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h  python3 /tmp/fix_detailed_static.py[?2004l
+Written 1203 bytes. Lines: 39
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h  npx tsc --noEmit 2>&1 | head -60; echo "exit: $?"[?2004l
+npm warn Unknown project config "package-manager". This will stop working in the next major version of npm.
+exit: 0
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h  wait; echo "tsc done"[?2004l
+tsc done
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h  npx tsc --noEmit 2>&1 | grep -v "^npm warn" | head -50; echo "EXIT:$?"[?2004l
+^C
+EXIT:130
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h  echo "still waiting"[?2004l
+still waiting
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h  npx tsc --noEmit 2>&1 | grep -v "^npm warn"; echo "EXIT:$?"[?2004l
+^C
+EXIT:130
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h  echo "checking"[?2004l
+checking
+[1m[7m%[27m[1m[0m                                                                                                                                                                                             [0m[27m[24m[Jryanmorrow@Ryans-MBP web % [K[?2004h

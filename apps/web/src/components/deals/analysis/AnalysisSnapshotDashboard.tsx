@@ -29,7 +29,7 @@ import {
   Briefcase,
 } from 'lucide-react';
 import { Button } from '../../ui/button';
-import type { DealFormData } from '../../NewDealModal';
+import type { DealFormData } from '../../Modal_Legacy/NewDealModal';
 import { useUserRole } from '../../../contexts/UserRoleContext';
 import { ToastContainer } from '../../ui/Toast';
 import { useLocalToasts } from '../../../lib/useLocalToasts';
@@ -211,7 +211,7 @@ export function AnalysisSnapshotDashboard({
               </div>
             </div>
             <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              Overall Score
+              Deal Score
             </p>
             <p className="text-xs mt-1" style={{ color: getScoreColor(analysis.overallScore) }}>
               {analysis.grade}

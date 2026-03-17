@@ -16,6 +16,7 @@ import { describe, it, expect } from "vitest";
 import {
   parseMoneyToMillions,
   isCandidateTaintedByMarketContext,
+  isCandidateTaintedByFundAumContext,
   hasStrongRaiseSignal,
   resolveRaiseAmount,
   MAGNITUDE_THRESHOLD_M,
@@ -298,5 +299,121 @@ describe("resolveRaiseAmount — null result when all candidates rejected or abs
       ],
     });
     expect(result.raise_amount).toBeNull();
+  });
+});
+
+// ─── isCandidateTaintedByFundAumContext ───────────────────────────────────────
+
+describe("isCandidateTaintedByFundAumContext", () => {
+  it("detects 'Alternatives Fund'", () => {
+    expect(isCandidateTaintedByFundAumContext("$100M Alternatives Fund raising from institutional LPs")).toBe(true);
+  });
+
+  it("detects 'AUM'", () => {
+    expect(isCandidateTaintedByFundAumContext("$500M AUM across the portfolio")).toBe(true);
+  });
+
+  it("detects 'assets under management'", () => {
+    expect(isCandidateTaintedByFundAumContext("$2B in assets under management")).toBe(true);
+  });
+
+  it("detects 'limited partner'", () => {
+    expect(isCandidateTaintedByFundAumContext("$250M limited partner commitment to the vehicle")).toBe(true);
+  });
+
+  it("detects 'hedge fund'", () => {
+    expect(isCandidateTaintedByFundAumContext("We are a $50M hedge fund focused on crypto assets")).toBe(true);
+  });
+
+  it("detects 'private equity fund'", () => {
+    expect(isCandidateTaintedByFundAumContext("$300M private equity fund investing in Series B")).toBe(true);
+  });
+
+  it("does NOT taint '$2M Pre-Seed raise'", () => {
+    expect(isCandidateTaintedByFundAumContext("Raising $2M Pre-Seed to fund product and GTM")).toBe(false);
+  });
+
+  it("does NOT taint clean SAFE sentence", () => {
+    expect(isCandidateTaintedByFundAumContext("Seeking $1.5M via SAFE note for 18-month runway")).toBe(false);
+  });
+
+  it("does NOT taint '$100M TAM' — TAM is market_context, not fund_aum", () => {
+    expect(isCandidateTaintedByFundAumContext("TAM of $100M in the SMB accounting space")).toBe(false);
+  });
+});
+
+// ─── resolveRaiseAmount — Rule 2b: fund/AUM context ──────────────────────────
+
+describe("resolveRaiseAmount — Rule 2b: fund/AUM context (regression: $100M Alternatives Fund)", () => {
+  it("$100M Alternatives Fund → rejected with fund_aum_context", () => {
+    const result = resolveRaiseAmount({
+      stage: "Seed",
+      candidates: [
+        {
+          value: "$100M",
+          context: "$100M Alternatives Fund raising capital from institutional limited partners.",
+          source: "deck",
+          evidence_ref: null,
+        },
+      ],
+    });
+    expect(result.raise_amount).toBeNull();
+    expect(result.rejected_candidates).toHaveLength(1);
+    expect(result.rejected_candidates[0]!.reason).toBe("fund_aum_context");
+  });
+
+  it("$2M Pre-Seed → accepted when no fund/AUM language", () => {
+    const result = resolveRaiseAmount({
+      stage: "Seed",
+      candidates: [
+        {
+          value: "$2M",
+          context: "We are raising $2M Pre-Seed to grow our engineering team and launch in Q3.",
+          source: "deck",
+          evidence_ref: null,
+        },
+      ],
+    });
+    expect(result.raise_amount).toBe("$2M");
+    expect(result.rejected_candidates).toHaveLength(0);
+  });
+
+  it("$100M Alternatives Fund alongside $2M Pre-Seed → only $2M accepted", () => {
+    const result = resolveRaiseAmount({
+      stage: "Seed",
+      candidates: [
+        {
+          value: "$100M",
+          context: "$100M Alternatives Fund vehicle for LP capital.",
+          source: "deck",
+          evidence_ref: null,
+        },
+        {
+          value: "$2M",
+          context: "We are raising $2M pre-seed for runway.",
+          source: "deck",
+          evidence_ref: null,
+        },
+      ],
+    });
+    expect(result.raise_amount).toBe("$2M");
+    expect(result.rejected_candidates).toHaveLength(1);
+    expect(result.rejected_candidates[0]!.reason).toBe("fund_aum_context");
+  });
+
+  it("'$100M TAM' is rejected as market_context_taint, not fund_aum_context (rule 2 fires first)", () => {
+    const result = resolveRaiseAmount({
+      stage: "Seed",
+      candidates: [
+        {
+          value: "$100M",
+          context: "TAM of $100M in the SMB accounting software market.",
+          source: "deck",
+          evidence_ref: null,
+        },
+      ],
+    });
+    expect(result.raise_amount).toBeNull();
+    expect(result.rejected_candidates[0]!.reason).toBe("market_context_taint");
   });
 });

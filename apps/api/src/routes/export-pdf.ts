@@ -137,7 +137,7 @@ export async function registerExportPdfRoutes(
             config,
             requested_by: userId,
           },
-          { jobId, removeOnComplete: true, removeOnFail: false }
+          { jobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
         );
       } catch (err) {
         app.log.error(err, "[export-pdf] enqueue failed");

@@ -6,7 +6,7 @@ import {
   User, 
   RotateCcw
 } from 'lucide-react';
-import { DealFormData } from '../NewDealModal';
+import { DealFormData } from '../Modal_Legacy/NewDealModal';
 import { apiChatDeal, apiRegenerateInvestorInsights } from '../../lib/apiClient';
 import type { DealChatActionV1, DealChatSourceV1 } from '@dealdecision/contracts';
 import { EvidenceChip } from '../evidence/EvidenceChip';

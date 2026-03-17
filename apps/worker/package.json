@@ -45,6 +45,7 @@
     "@dealdecision/contracts": "workspace:*",
     "@dealdecision/core": "workspace:*",
     "@napi-rs/canvas": "^0.1.84",
+    "@tavily/core": "^0.7.2",
     "bullmq": "^5.21.6",
     "docx": "^8.5.0",
     "ioredis": "^5.4.1",

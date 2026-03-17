@@ -53,7 +53,8 @@ async function queryFacts(
        metric_key, metric_label, period_type, period_label,
        value::float8, unit, currency, confidence, reconciliation_status,
        sheet_name, page_number, row_index, col_index,
-       source_pointer, evidence_id, excerpt
+       source_pointer, evidence_id, excerpt,
+       slide_type, slide_title
      FROM public.financial_facts_v1
      WHERE deal_id = $1::uuid
      ${metricClause}
@@ -98,6 +99,8 @@ function rowToFact(r: Record<string, unknown>): FinancialFactV1 {
     source_pointer:r["source_pointer"] != null ? String(r["source_pointer"]) : undefined,
     evidence_id:   r["evidence_id"]    != null ? String(r["evidence_id"])    : undefined,
     excerpt:       r["excerpt"]        != null ? String(r["excerpt"])        : undefined,
+    slide_type:    r["slide_type"]     != null ? String(r["slide_type"])     : undefined,
+    slide_title:   r["slide_title"]    != null ? String(r["slide_title"])    : undefined,
   };
 }
 

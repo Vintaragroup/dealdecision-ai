@@ -341,8 +341,10 @@ describe("Raw DPU page_text is never passed to generateFn", () => {
 			"financialReconciliationBody",
 			"conflictsBody",
 			"productNarrativeBody",
+			"contradictionMarkersBody",
 			"coverageNote",
 			"dealName",
+			"canonicalCompanyName",
 		]);
 
 		const FORBIDDEN_PATTERNS = [

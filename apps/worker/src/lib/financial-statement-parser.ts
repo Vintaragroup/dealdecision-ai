@@ -25,6 +25,9 @@
 
 // ─── Public types ──────────────────────────────────────────────────────────────
 
+import type { TemporalScope } from "@dealdecision/core";
+import { classifyTemporalScope, extractYearFromLabel } from "@dealdecision/core";
+
 export type FinancialStatementV1 = {
 	schema_version: "financial_statement_v1";
 	/** Provenance — document UUID and DPU page evidence ref. */
@@ -39,6 +42,20 @@ export type FinancialStatementV1 = {
 	 * Quarterly strings: ["Q1 2026", "Q2 2026", ...] (v2+).
 	 */
 	periods: string[];
+	/**
+	 * Temporal scope for each period in `periods` (parallel array).
+	 *
+	 * Derived by comparing each period year against the current calendar year,
+	 * with additional keyword signals from the XLSX sheet row labels (e.g.,
+	 * "Pro Forma", "Projected", "Forecast" → all future years become "projected").
+	 *
+	 * Example: periods=["2024","2025","2026","2027"] with a Pro Forma row
+	 *   → period_scopes=["historical","current","projected","projected"]
+	 *
+	 * Use isProjectedScope(period_scopes[i]) before presenting period[i] as
+	 * the company's current actual performance.
+	 */
+	period_scopes?: TemporalScope[];
 	/** Annual revenue by period (key = period label). */
 	revenue?: Record<string, number>;
 	/** Total expenses by period. */
@@ -379,6 +396,29 @@ export function parseFinancialStatementV1(
 	}
 
 	// ── Assemble result ──────────────────────────────────────────────────────
+
+	// Compute per-period temporal scopes.
+	// First scan row labels for any explicit forward-looking indicator
+	// ("Pro Forma", "Projected", "Forecast", "Plan") that would affect scope.
+	const PRO_FORMA_RE = /\b(pro\s*forma|projected|forecast(?:ed)?|plan(?:ned)?|budget(?:ed)?|estimated|expected|forward[-\s]looking)\b/i;
+	let sheetHasForwardLookingLabel = false;
+	for (const rawRow of rowsPreview) {
+		if (!rawRow || typeof rawRow !== "object" || Array.isArray(rawRow)) continue;
+		const row = rawRow as Record<string, unknown>;
+		const colA = typeof row["col_A"] === "string" ? row["col_A"] : "";
+		if (PRO_FORMA_RE.test(colA)) { sheetHasForwardLookingLabel = true; break; }
+	}
+	// Build period_scopes: classify each period using year arithmetic +
+	// sheet-level forward-looking hint.
+	const currentYear = new Date().getFullYear();
+	const period_scopes: TemporalScope[] = periods.map((p) => {
+		const year = extractYearFromLabel(p);
+		// If the sheet has a "Pro Forma" label, and this year is >= current year,
+		// force "projected" regardless of whether the year itself is future.
+		if (sheetHasForwardLookingLabel && year !== null && year >= currentYear) return "projected";
+		return classifyTemporalScope(year, p, undefined, currentYear);
+	});
+
 	const result: FinancialStatementV1 = {
 		schema_version: "financial_statement_v1",
 		source: {
@@ -386,6 +426,7 @@ export function parseFinancialStatementV1(
 			page_ref: source.pageRef,
 		},
 		periods,
+		period_scopes,
 		...(seriesMap["revenue"] ? { revenue: seriesMap["revenue"] } : {}),
 		...(seriesMap["total_expenses"] ? { total_expenses: seriesMap["total_expenses"] } : {}),
 		...(seriesMap["gross_profit"] ? { gross_profit: seriesMap["gross_profit"] } : {}),

@@ -35,14 +35,13 @@ import type { InvestorInsightsReport, InvestorInsightsSection } from '../../lib/
 import {
   EmptyFallback,
   EvidencePill,
-  fieldLabel,
-  parseCanonicalFieldsBody,
-  CanonicalFieldRow,
   GovernedSummarySection,
   ConflictsSection,
   GateStateSection,
   CoverageSnapshotSection,
 } from './InvestorInsightsTab';
+import { fieldLabel, parseCanonicalFieldsBody } from './investorInsightsUtils';
+import type { CanonicalFieldRow } from './investorInsightsUtils';
 import { DealTermsCard } from './DealTermsCard';
 import { MarketAnalysisCard } from './MarketAnalysisCard';
 import { FinancialAnalysisSection } from './analysis/FinancialAnalysisSection';

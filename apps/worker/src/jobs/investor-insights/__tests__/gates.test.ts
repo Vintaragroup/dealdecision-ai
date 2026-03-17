@@ -432,3 +432,131 @@ describe("repairGateStateInReport", () => {
 		expect(oldG3?.reason_code).toBe("GATE_STRUCTURED_JSON_UNREADABLE");
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G5 bootstrap regression — circular dependency fix
+//
+// G5 must pass regardless of governed_llm_overviews row count so that net-new
+// deals can complete their first governed synthesis run without pre-existing
+// overlay rows. These tests encode the formerly broken behaviour.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("G5 — advisory-only (bootstrap-safe)", () => {
+	/** Pool that routes all gate queries normally but returns 0 for G5. */
+	function makeNoOverlayPool(): Pool {
+		return {
+			query: (queryArg: unknown) => {
+				const sql =
+					typeof queryArg === "string" ? queryArg
+					: typeof queryArg === "object" && queryArg !== null
+					? (queryArg as { text?: string }).text ?? ""
+					: "";
+				const s = sql.toLowerCase();
+				if (s.includes("deals") && s.includes("where") && s.includes("id") && !s.includes("documents")) {
+					return Promise.resolve({ rows: [{ id: TEST_CTX.dealId }], rowCount: 1 });
+				}
+				if (s.includes("documents") && s.includes("deal_id") && !s.includes("visual") && !s.includes("document_page")) {
+					return Promise.resolve({ rows: [{ c: "1" }], rowCount: 1 });
+				}
+				if (s.includes("document_page_understanding") && s.includes("count") && !s.includes("coalesce")) {
+					return Promise.resolve({ rows: [{ c: "21" }], rowCount: 1 });
+				}
+				if (s.includes("coalesce") && s.includes("page_text")) {
+					return Promise.resolve({ rows: [{ total: "21", non_empty: "21" }], rowCount: 1 });
+				}
+				if (s.includes("exists") && s.includes("visual_extractions") && !s.includes("limit")) {
+					return Promise.resolve({ rows: [{ exists: true }], rowCount: 1 });
+				}
+				if (s.includes("visual_extractions") && s.includes("limit")) {
+					return Promise.resolve({ rows: [{ raw_json: JSON.stringify({ segment_key: "traction" }) }], rowCount: 1 });
+				}
+				if (s.includes("evidence_items")) {
+					return Promise.resolve({ rows: [{ c: "10" }], rowCount: 1 });
+				}
+				if (s.includes("governed_llm_overviews")) {
+					// 0 rows: net-new deal, no prior overlay exists
+					return Promise.resolve({ rows: [{ c: "0" }], rowCount: 1 });
+				}
+				return Promise.resolve({ rows: [], rowCount: 0 });
+			},
+		} as unknown as Pool;
+	}
+
+	/** Pool where the governed_llm_overviews query throws a DB error. */
+	function makeG5ErrorPool(): Pool {
+		return {
+			query: (queryArg: unknown) => {
+				const sql =
+					typeof queryArg === "string" ? queryArg
+					: typeof queryArg === "object" && queryArg !== null
+					? (queryArg as { text?: string }).text ?? ""
+					: "";
+				const s = sql.toLowerCase();
+				if (s.includes("deals") && s.includes("where") && s.includes("id") && !s.includes("documents")) {
+					return Promise.resolve({ rows: [{ id: TEST_CTX.dealId }], rowCount: 1 });
+				}
+				if (s.includes("documents") && s.includes("deal_id") && !s.includes("visual") && !s.includes("document_page")) {
+					return Promise.resolve({ rows: [{ c: "1" }], rowCount: 1 });
+				}
+				if (s.includes("document_page_understanding") && s.includes("count") && !s.includes("coalesce")) {
+					return Promise.resolve({ rows: [{ c: "21" }], rowCount: 1 });
+				}
+				if (s.includes("coalesce") && s.includes("page_text")) {
+					return Promise.resolve({ rows: [{ total: "21", non_empty: "21" }], rowCount: 1 });
+				}
+				if (s.includes("exists") && s.includes("visual_extractions") && !s.includes("limit")) {
+					return Promise.resolve({ rows: [{ exists: true }], rowCount: 1 });
+				}
+				if (s.includes("visual_extractions") && s.includes("limit")) {
+					return Promise.resolve({ rows: [{ raw_json: JSON.stringify({ segment_key: "traction" }) }], rowCount: 1 });
+				}
+				if (s.includes("evidence_items")) {
+					return Promise.resolve({ rows: [{ c: "10" }], rowCount: 1 });
+				}
+				if (s.includes("governed_llm_overviews")) {
+					return Promise.reject(new Error("relation does not exist"));
+				}
+				return Promise.resolve({ rows: [], rowCount: 0 });
+			},
+		} as unknown as Pool;
+	}
+
+	it("G5 passes when governed_llm_overviews count is 0 (bootstrap — first synthesis run)", async () => {
+		const pool = makeNoOverlayPool();
+		const state = await evaluateGates(pool, TEST_CTX);
+		const g5 = state.results.find((r) => r.gate === "G5")!;
+		expect(g5.passed).toBe(true);
+		expect(g5.actual).toBe(0);
+	});
+
+	it("all_passed is true when governed_llm_overviews count is 0 and all other gates pass", async () => {
+		const pool = makeNoOverlayPool();
+		const state = await evaluateGates(pool, TEST_CTX);
+		expect(state.all_passed).toBe(true);
+	});
+
+	it("G5 passes when governed_llm_overviews DB query throws (advisory — non-blocking)", async () => {
+		const pool = makeG5ErrorPool();
+		const state = await evaluateGates(pool, TEST_CTX);
+		const g5 = state.results.find((r) => r.gate === "G5")!;
+		expect(g5.passed).toBe(true);
+	});
+
+	it("all_passed is true even when G5 DB query throws and all other gates pass", async () => {
+		const pool = makeG5ErrorPool();
+		const state = await evaluateGates(pool, TEST_CTX);
+		expect(state.all_passed).toBe(true);
+	});
+
+	it("G5 records actual=N when prior overlay rows exist (context available)", async () => {
+		// Standard routed pool returns { c: "1" } for G5 — prior context present.
+		const pool = makeRoutedPool([
+			{ rows: [{ exists: true }] },
+			{ rows: [{ raw_json: JSON.stringify({ segment_key: "traction" }) }] },
+		]);
+		const state = await evaluateGates(pool, TEST_CTX);
+		const g5 = state.results.find((r) => r.gate === "G5")!;
+		expect(g5.passed).toBe(true);
+		expect(g5.actual).toBe(1); // prior overlay context available
+	});
+});

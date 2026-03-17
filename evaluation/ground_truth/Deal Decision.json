@@ -1,0 +1,14 @@
+{
+  "_schema": "ground_truth_v1",
+  "_notes": "Deal Decision (DealDecisionAI) — AI deal analysis platform for investment teams. B2B SaaS / beta. DB name: 'deal decision' (id=517be946). Ground truth derived from product profile v1 generated 2026-03-11. The_ask extracted from pitch deck: $2M raise.",
+  "deal_name": "deal decision",
+  "deal_id": "517be946-cab9-4bc1-8982-9522ff9dab32",
+  "slots": {
+    "company_description": "Deal Decision is an AI-powered platform for investment teams that automates deal screening, analysis, and decision-making",
+    "solution_summary": "Deal Intelli OS provides end-to-end deal lifecycle management enabling investment teams to screen, analyze, monitor, and report on deals",
+    "target_customer": "Investment teams at seed funds, growth-stage VCs, institutional PE/VC, and angel syndicates",
+    "ai_claims_present": true,
+    "ai_evidence_strength": "strong"
+  },
+  "financials": {}
+}

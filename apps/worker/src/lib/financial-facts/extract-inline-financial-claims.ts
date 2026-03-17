@@ -36,6 +36,7 @@ import {
 import {
   parseNumericToken,
   extractPeriodFromText,
+  inferCurrencyCode,
   type ParsedNumeric,
 } from "./extract-financial-table-claims";
 import { normalizeMetricKey } from "./financial-metric-aliases";
@@ -80,6 +81,20 @@ const KNOWN_INLINE_METRIC_KEYS = new Set<string>([
 const FINANCE_KW_PATTERN =
   /\b(revenue|arr|mrr|burn|runway|gross|ebitda|cogs|valuation|raise|raising|raised|seed|series|forecast|opex|margin|invest|gmv|nrr|churn|retention|ltv|cac|arpu|headcount|funding|capital|cash|profit|loss|income|cost|salary|expense|expense|salary)\b/i;
 
+/**
+ * Matches example/scenario context lines — same semantics as the kpi_tile extractor.
+ * Prevents customer/portfolio example economics from becoming company-level facts.
+ */
+const EXAMPLE_CONTEXT_RE =
+  /\b(?:use[\s-]case|use_case|scenario|hypothetical|illustrative|case\s+study|sample\s+(?:merchant|customer|client|scenario|economics)|merchant\s+example|customer\s+example|fi\s+example|institution\s+example|example\s+(?:economics|customer|merchant|client|institution))\b/i;
+
+/** Market-size projection phrases — see extract-kpi-tile-claims.ts for rationale. */
+const MARKET_PROJECTION_RE =
+  /\bper\s+(?:sam|som|tam)\b|%\s*of\s+(?:tam|sam|som)\b|\bsam\s+arr\b|\bsom\s+arr\b|\bsam\s+mrr\b|\bsom\s+mrr\b/i;
+
+/** Metric keys suppressed when a market-projection context is detected. */
+const MARKET_PROJECTION_SENSITIVE_KEYS = new Set(["arr", "mrr", "revenue", "gtv", "gmv"]);
+
 // ─── Public types ─────────────────────────────────────────────────────────────
 
 export interface ExtractInlineFinancialClaimsOpts {
@@ -88,6 +103,14 @@ export interface ExtractInlineFinancialClaimsOpts {
   page_number?: number;
   /** Optional page registry id for source_pointer disambiguation */
   page_id?: string;
+  /**
+   * Resolved slide type from DPU payload (resolved_slide_type).
+   * When provided, the value is stamped on each emitted fact.
+   * Confidence adjustment is handled separately by applySlideAwareness().
+   */
+  slide_type?: string;
+  /** Human-readable slide title from DPU payload. */
+  slide_title?: string;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -120,7 +143,7 @@ export function extractInlineFinancialClaims(
       const extracted = tryExtractInlineClaim(line);
       if (!extracted) continue;
 
-      const { rawLabel, parsed, period_label, matchStart, matchEnd } = extracted;
+      const { rawLabel, parsed, currency, period_label, matchStart, matchEnd } = extracted;
 
       // ── Noise gate: finance keyword within ±40 chars of numeric match ──────
       const windowStart = Math.max(0, matchStart - 40);
@@ -133,6 +156,19 @@ export function extractInlineFinancialClaims(
 
       // Discard if key is not in the known set (would be a fallback slug)
       if (!KNOWN_INLINE_METRIC_KEYS.has(metric_key)) continue;
+
+      // Guard: skip example/use-case/scenario lines — customer/portfolio examples
+      // should not contribute company-level facts.
+      if (EXAMPLE_CONTEXT_RE.test(line)) continue;
+
+      // Guard: skip market-size projection context for revenue/ARR/MRR/GTV/GMV.
+      // "Per SAM ARR", "% of SOM" etc. are market-capture projections, not traction.
+      if (MARKET_PROJECTION_SENSITIVE_KEYS.has(metric_key) && MARKET_PROJECTION_RE.test(line)) continue;
+
+      // Guard: burn_rate requires an explicit "burn" keyword in the line.
+      // Prevents labels like "Monthly Cash Out" from aliasing to burn_rate
+      // without clear burn context.
+      if (metric_key === "burn_rate" && !/\bburn\b/i.test(line)) continue;
 
       const period_type: FinancialFactPeriodType =
         period_label === "current" ? "unknown" : inferPeriodType(period_label);
@@ -167,11 +203,14 @@ export function extractInlineFinancialClaims(
         period_label,
         value:         parsed.value,
         unit:          parsed.unit,
+        currency,
         confidence:    "medium",
         reconciliation_status: "unknown",
         page_number:   opts.page_number,
         source_pointer,
         excerpt:       capFactExcerpt(line),
+        slide_type:    opts.slide_type,
+        slide_title:   opts.slide_title,
       };
 
       claims.push(fact);
@@ -188,6 +227,7 @@ export function extractInlineFinancialClaims(
 interface InlineClaim {
   rawLabel: string;
   parsed: ParsedNumeric;
+  currency?: string;
   period_label: string;
   /** start index in `line` of the matched numeric token */
   matchStart: number;
@@ -205,7 +245,7 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
   // false positives; prevents P3 from stealing "raised $X" as a vague label.
   // Sentence: "raising/raised/raise/seeking/investing $X"
   const raiseMatch = line.match(
-    /(?:raising|raised|raise|seeking|investing)\s+([\$\u20ac\u00a3\u00a5\u20b9][\d,.]+[KkMmBbTt]?)/i,
+    /(?:raising|raised|raise|seeking|investing)\s+([\$\u20ac\u00a3\u00a5\u20b9][\d,.]+(?:\s*[KkMmBbTt](?!\w))?)/i,
   );
   if (raiseMatch) {
     const valueStr = raiseMatch[1]!;
@@ -217,6 +257,7 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
       return {
         rawLabel: "raise amount",   // maps to raise_amount via alias
         parsed,
+        currency: parsed.unit === "currency" ? inferCurrencyCode(valueStr) : undefined,
         period_label,
         matchStart,
         matchEnd,
@@ -235,23 +276,28 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
     const valuePart = colonMatch[2].trim();
     // Only take the first token of valuePart for numeric parsing (avoid picking
     // up unrelated text after the numeric)
-    const firstToken = valuePart.split(/\s+/)[0] ?? valuePart;
-    const parsed = parseNumericToken(firstToken);
+    // Extract value token, allowing an optional space-separated scale suffix
+    // e.g. "$2.5 M" or "$2.5M" — both captured as one token for parseNumericToken.
+    const valueTokenMatch = valuePart.match(
+      /^([$€£¥₹][\d,.]+(?:\s*[KkMmBbTt](?!\w))?|\d[\d,.]+(?:\s*[KkMmBbTt](?!\w))?%?)/,
+    );
+    const valueToken = valueTokenMatch?.[1] ?? (valuePart.split(/\s+/)[0] ?? valuePart);
+    const parsed = parseNumericToken(valueToken);
     if (parsed) {
-      const matchStart = line.indexOf(firstToken, colonMatch[1].length + 1);
-      const matchEnd = matchStart + firstToken.length;
+      const matchStart = line.indexOf(valueToken, colonMatch[1].length + 1);
+      const matchEnd = matchStart < 0 ? line.length : matchStart + valueToken.length;
       const period_label =
         extractPeriodFromText(valuePart) ??
         extractPeriodFromText(line) ??
         "current";
-      return { rawLabel, parsed, period_label, matchStart, matchEnd };
+      return { rawLabel, parsed, currency: parsed.unit === "currency" ? inferCurrencyCode(valueToken) : undefined, period_label, matchStart, matchEnd };
     }
   }
 
   // P3: "Label $value" — label runs up to currency symbol
   // Pattern: word(s) followed by $/$€/etc + number
   const labelBeforeValue = line.match(
-    /\b([A-Za-z][A-Za-z0-9\s%/&(),.'-]{1,50}?)\s+([$\u20ac\u00a3\u00a5\u20b9][\d,.]+[KkMmBbTt]?)/,
+    /\b([A-Za-z][A-Za-z0-9\s%/&(),.'-]{1,50}?)\s+([\$\u20ac\u00a3\u00a5\u20b9][\d,.]+(?:\s*[KkMmBbTt](?!\w))?)/,
   );
   if (labelBeforeValue) {
     const rawLabel = labelBeforeValue[1].trim();
@@ -261,13 +307,13 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
       const matchStart = line.indexOf(valueStr, labelBeforeValue.index ?? 0);
       const matchEnd = matchStart + valueStr.length;
       const period_label = extractPeriodFromText(line) ?? "current";
-      return { rawLabel, parsed, period_label, matchStart, matchEnd };
+      return { rawLabel, parsed, currency: parsed.unit === "currency" ? inferCurrencyCode(valueStr) : undefined, period_label, matchStart, matchEnd };
     }
   }
 
   // P4: "$value Label" — value first, then label
   const valueBeforeLabel = line.match(
-    /([$\u20ac\u00a3\u00a5\u20b9][\d,.]+[KkMmBbTt]?)\s+([A-Za-z][A-Za-z0-9\s%/&(),.'-]{1,50})/,
+    /([\$\u20ac\u00a3\u00a5\u20b9][\d,.]+(?:\s*[KkMmBbTt](?!\w))?)\s+([A-Za-z][A-Za-z0-9\s%/&(),.'-]{1,50})/,
   );
   if (valueBeforeLabel) {
     const valueStr = valueBeforeLabel[1];
@@ -277,7 +323,7 @@ function tryExtractInlineClaim(line: string): InlineClaim | null {
       const matchStart = line.indexOf(valueStr, valueBeforeLabel.index ?? 0);
       const matchEnd = matchStart + valueStr.length;
       const period_label = extractPeriodFromText(line) ?? "current";
-      return { rawLabel, parsed, period_label, matchStart, matchEnd };
+      return { rawLabel, parsed, currency: parsed.unit === "currency" ? inferCurrencyCode(valueStr) : undefined, period_label, matchStart, matchEnd };
     }
   }
 

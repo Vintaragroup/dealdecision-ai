@@ -8,21 +8,43 @@
  * Pure function — no DB access, no side effects. All DB gathering happens
  * upstream in loadCoverageSnapshot(); this module only computes from the result.
  *
- * Binding thresholds (v1):
+ * Binding thresholds (v1 — revised for single pitch-deck workflows):
  *   E0  docs_count          >= 1
  *   E1  expected_pages_total >= 1
- *   E2  coverage_pct         >= 0.55  (dpu_nonempty_pages / expected_pages_total)
- *   E3  evidence_count       >= 25
+ *   E2  coverage_pct         >= 0.30  (dpu_nonempty_pages / expected_pages_total)
+ *           Lowered from 0.55: image-heavy pitch decks (cover slides, full-chart
+ *           pages) commonly produce < 55% non-empty DPU text even with good
+ *           content. 30% still filters structurally unusable documents.
+ *   E3  evidence_count       >= 10
+ *           Lowered from 25: single pitch-deck deals with 17–40 DPU pages
+ *           realistically produce 10–20 evidence items. The former threshold
+ *           of 25 over-blocked valid single-deck workflows. 10 remains a
+ *           meaningful minimum for LLM-grounded synthesis.
  *   E4  hard_missing_pages_total === 0  (only evaluated when input is provided)
  */
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-/** Coverage fraction threshold (E2). 55% of pages must have non-empty DPU text. */
-export const EVIDENCE_GATE_COVERAGE_THRESHOLD = 0.55;
+/**
+ * Coverage fraction threshold (E2).
+ * 30% of pages must have non-empty DPU text.
+ *
+ * Rationale: image-heavy pitch decks (cover slides, full-chart slides, diagram
+ * pages) commonly produce empty page_text even when the document is content-rich.
+ * The original 0.55 threshold over-blocked valid single-deck workflows.
+ * 0.30 still rejects structurally unusable documents (< 1/3 pages have any text).
+ */
+export const EVIDENCE_GATE_COVERAGE_THRESHOLD = 0.30;
 
-/** Minimum evidence item count (E3). */
-export const EVIDENCE_GATE_MIN_EVIDENCE_COUNT = 25;
+/**
+ * Minimum evidence item count (E3).
+ * 10 evidence items minimum before governed synthesis is allowed.
+ *
+ * Rationale: single pitch-deck deals with 17–40 DPU pages realistically produce
+ * 10–20 evidence items. The original 25 threshold over-blocked valid single-deck
+ * workflows. 10 remains a meaningful minimum for grounded LLM synthesis.
+ */
+export const EVIDENCE_GATE_MIN_EVIDENCE_COUNT = 10;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

@@ -8,8 +8,9 @@ import { render, screen } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { InvestorInsightsTab } from '../components/workspace/InvestorInsightsTab';
+import { CoverageSnapshotSection, InvestorInsightsTab } from '../components/workspace/InvestorInsightsTab';
 import { apiGetInvestorInsights } from '../lib/apiClient';
+import type { InvestorInsightsSection } from '../lib/apiClient';
 
 vi.mock('../lib/apiClient', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/apiClient')>();
@@ -54,18 +55,20 @@ function makeReport(body: string) {
   } as any;
 }
 
+function makeSection(body: string): InvestorInsightsSection {
+  return { key: 'coverage_snapshot', title: 'Coverage Snapshot', kind: 'message', body } as InvestorInsightsSection;
+}
+
 describe('InvestorInsightsTab – coverage_snapshot section', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  test('renders metric rows as a 2-column table', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(COVERAGE_BODY_NO_ERRORS));
-
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-1" />);
+  test('renders metric rows as a 2-column table', () => {
+    render(<CoverageSnapshotSection section={makeSection(COVERAGE_BODY_NO_ERRORS)} darkMode={false} />);
 
     // Column headers
-    await screen.findByText('Metric');
+    screen.getByText('Metric');
     screen.getByText('Value');
 
     // A few representative row labels (key → humanised label)
@@ -74,22 +77,18 @@ describe('InvestorInsightsTab – coverage_snapshot section', () => {
     screen.getByText('Coverage Query Errors');
   });
 
-  test('no warning banner when coverage_query_errors is "none"', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(COVERAGE_BODY_NO_ERRORS));
+  test('no warning banner when coverage_query_errors is "none"', () => {
+    render(<CoverageSnapshotSection section={makeSection(COVERAGE_BODY_NO_ERRORS)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-2" />);
-
-    await screen.findByText('Docs Count');
+    screen.getByText('Docs Count');
 
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
-  test('warning banner is shown when coverage_query_errors is not "none"', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(COVERAGE_BODY_WITH_ERRORS));
+  test('warning banner is shown when coverage_query_errors is not "none"', () => {
+    render(<CoverageSnapshotSection section={makeSection(COVERAGE_BODY_WITH_ERRORS)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-3" />);
-
-    await screen.findByText('Docs Count');
+    screen.getByText('Docs Count');
 
     // The alert role and error value text should both be present.
     const alert = screen.getByRole('alert');
@@ -97,12 +96,10 @@ describe('InvestorInsightsTab – coverage_snapshot section', () => {
     expect(alert.textContent).toMatch(/dpu_counts/);
   });
 
-  test('warning banner text includes the specific error value', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(COVERAGE_BODY_WITH_ERRORS));
+  test('warning banner text includes the specific error value', () => {
+    render(<CoverageSnapshotSection section={makeSection(COVERAGE_BODY_WITH_ERRORS)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-4" />);
-
-    await screen.findByRole('alert');
+    screen.getByRole('alert');
 
     expect(screen.getByText(/coverage query errors detected/i)).toBeTruthy();
   });
@@ -129,7 +126,7 @@ describe('InvestorInsightsTab – coverage_snapshot section', () => {
     expect(screen.queryByText('Metric')).toBeNull();
   });
 
-  test('low-coverage amber banner shown when dpu_nonempty_pages / dpu_page_count < 0.6', async () => {
+  test('low-coverage amber banner shown when dpu_nonempty_pages / dpu_page_count < 0.6', () => {
     const lowCoverageBody = [
       'docs_count: 2',
       'dpu_page_count: 10',
@@ -141,11 +138,9 @@ describe('InvestorInsightsTab – coverage_snapshot section', () => {
       'coverage_query_errors: none',
     ].join('\n');
 
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(lowCoverageBody));
+    render(<CoverageSnapshotSection section={makeSection(lowCoverageBody)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-lc" />);
-
-    await screen.findByText('Docs Count');
+    screen.getByText('Docs Count');
 
     const banner = screen.getByTestId('low-coverage-banner');
     expect(banner).toBeTruthy();
@@ -153,7 +148,7 @@ describe('InvestorInsightsTab – coverage_snapshot section', () => {
     expect(banner.textContent).toMatch(/3\/10/);
   });
 
-  test('low-coverage banner NOT shown when ratio >= 0.6', async () => {
+  test('low-coverage banner NOT shown when ratio >= 0.6', () => {
     const okBody = [
       'docs_count: 2',
       'dpu_page_count: 10',
@@ -165,27 +160,23 @@ describe('InvestorInsightsTab – coverage_snapshot section', () => {
       'coverage_query_errors: none',
     ].join('\n');
 
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(okBody));
+    render(<CoverageSnapshotSection section={makeSection(okBody)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-ok" />);
-
-    await screen.findByText('Docs Count');
+    screen.getByText('Docs Count');
 
     expect(screen.queryByTestId('low-coverage-banner')).toBeNull();
   });
 
-  test('low-coverage banner NOT shown when dpu_page_count is 0', async () => {
+  test('low-coverage banner NOT shown when dpu_page_count is 0', () => {
     const noPages = [
       'dpu_page_count: 0',
       'dpu_nonempty_pages: 0',
       'coverage_query_errors: none',
     ].join('\n');
 
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(makeReport(noPages));
+    render(<CoverageSnapshotSection section={makeSection(noPages)} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-cov-zero" />);
-
-    await screen.findByText('Dpu Page Count');
+    screen.getByText('Dpu Page Count');
 
     expect(screen.queryByTestId('low-coverage-banner')).toBeNull();
   });

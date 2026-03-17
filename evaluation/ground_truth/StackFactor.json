@@ -1,0 +1,25 @@
+{
+  "_schema": "ground_truth_v1",
+  "_notes": "Ground truth for StackFactor. Full product profile present.",
+  "deal_name": "StackFactor",
+  "deal_id": "adb2a1cf-bbb1-4f3b-8735-e2249415124f",
+  "slots": {
+    "company_description": "StackFactor is a company that focuses on managing organizational transitions and staffing projects",
+    "problem_statement": "Organizations face challenges in managing transitions and staffing projects effectively",
+    "solution_summary": "StackFactor offers a platform that embeds capability intelligence into project staffing and organizational transitions",
+    "target_customer": "Organizations undergoing transitions and needing project staffing solutions",
+    "product_type": "SaaS",
+    "delivery_model": "B2B SaaS",
+    "product_maturity": "MVP",
+    "core_workflow": ["Manage organizational transitions", "Staff projects with validated proficiency"],
+    "core_features": ["Capability intelligence integration", "Project staffing management", "Organizational transition support"],
+    "differentiation_claims": ["Trusted by Wipro", "Global alliance and reseller partner"],
+    "integrations_or_dependencies": ["WEGA delivery platform"],
+    "ai_claims_present": false,
+    "ai_usage_type": "none",
+    "ai_evidence_strength": "none"
+  },
+  "financials": {
+    "revenue": 0
+  }
+}

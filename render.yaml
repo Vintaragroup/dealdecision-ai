@@ -1,4 +1,16 @@
-# Render Blueprint
+# =============================================================================
+# RENDER BLUEPRINT — PRODUCTION DEPLOYMENT ONLY
+#
+# This file is read by Render.com to provision production services.
+# DO NOT add local-dev settings here. Local dev lives in docker-compose.dev.yml.
+#
+# Secrets (OPENAI_API_KEY, DATABASE_URL, CLERK_SECRET_KEY, R2_*, etc.) are
+# configured in the Render dashboard — NOT committed to this file.
+#
+# VITE_API_BASE_URL and VITE_CLERK_PUBLISHABLE_KEY must ALSO be set as Docker
+# Build Arguments in the Render dashboard (Service → Settings → Build & Deploy
+# → Docker Build Arguments) so they are baked into the Vite bundle at build time.
+# =============================================================================
 #
 # Goal: Docker-based deployment for both API + worker that matches local Docker dev.
 # - No shared filesystem assumptions between services.
@@ -7,9 +19,6 @@
 # Web UI (dealdecision-web) uses apps/web/Dockerfile which runs `pnpm run build`
 # (Vite output: apps/web/build/) and serves via `pnpm preview`. This matches
 # the local Docker dev stack exactly — no separate static-site service.
-# IMPORTANT: VITE_API_BASE_URL and VITE_CLERK_PUBLISHABLE_KEY must also be set
-# as Docker Build Arguments in the Render dashboard (Service → Settings →
-# Build & Deploy → Docker Build Arguments) so they are baked into the bundle.
 
 services:
   - type: web

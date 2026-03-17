@@ -4,7 +4,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { waitFor } from '@testing-library/react';
 
-import { NewDealModal } from '../components/NewDealModal';
+import { NewDealModal } from '../components/Modal_Legacy/NewDealModal';
 
 vi.mock('../lib/apiClient', () => {
   return {

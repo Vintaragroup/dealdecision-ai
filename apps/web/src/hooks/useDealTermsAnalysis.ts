@@ -11,7 +11,8 @@
  *  - Re-runs whenever dealId or the canonical_fields fingerprint changes.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { parseCanonicalFieldsBody } from '../components/workspace/InvestorInsightsTab';
+import { parseCanonicalFieldsBody } from '../components/workspace/investorInsightsUtils';
+import { isRaiseTermExcluded } from '../lib/confidenceDisplayPolicy';
 import {
   apiPostDealTermsAnalysis,
   type DealTermsAnalysisResult,
@@ -53,6 +54,8 @@ export function extractRaiseTermFields(
   for (const row of rows) {
     const key = row.field.toLowerCase().trim();
     if (Object.prototype.hasOwnProperty.call(fields, key) && row.value != null) {
+      // PR36.7: Do not promote CONFLICTING or SUPPRESSED canonical fields into deal terms synthesis
+      if (isRaiseTermExcluded(row.confidence)) continue;
       fields[key] = row.value;
     }
   }

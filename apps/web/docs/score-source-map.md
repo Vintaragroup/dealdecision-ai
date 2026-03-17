@@ -1,9 +1,10 @@
 # Score Source Map — Deal Workspace UI
 
-> **Discovery-only document. Written after the Phase 5 envelope-fallback fix.**
+> **Updated: v1 cleanup pass (March 2026). Covers both scoring pipelines.**
 > No business logic was changed to produce this file. All data traced from live code.
 >
-> Last updated: phase 6 discovery pass (score_sources audit).
+> Last updated: v1 score cleanup pass — added Pipeline B (`limited_scoring_v1`) documentation,
+> renamed `investorScore` → `reportBandScore`, updated `canonicalScoreLabel` text.
 
 ---
 
@@ -11,7 +12,7 @@
 
 | Variable | File : Line | Type | Description |
 |---|---|---|---|
-| `investorScore` | `DealWorkspace.tsx:135` | `number` (state, init=0) | React state; set in `loadReport` callback via `resolveCanonicalScore(report)`. Serves as pre-report fallback. |
+| `reportBandScore` | `DealWorkspace.tsx:146` | `number` (state, init=0) | React state; set in `loadReport` callback via `resolveCanonicalScore(report)` (Pipeline A only). Serves as pre-report fallback for `fundamentalsScore0_100`. **Previously named `investorScore`** — renamed in v1 cleanup pass to reflect actual source. **Not related to `limited_scoring_v1`.** |
 | `fundamentalsScore0_100` | `DealWorkspace.tsx:1480–1482` | `number \| null` | `Math.round(dealFromApi.score)` (DB field) → fallback `investorScore`. Primary "DB calibration" score. |
 | `fundabilityScore0_100` | `DealWorkspace.tsx:1487` | `number \| null` | `extractFundabilityScore0_100(dealFromApi)` — active only when `scoreSource === 'fundability_v1'`. |
 | `displayScoreSourceV1` | `DealWorkspace.tsx:1488–1489` | `'fundamentals' \| 'fundability_v1'` | Context selector. `'fundability_v1'` only when explicit and non-null; otherwise `'fundamentals'`. |
@@ -27,12 +28,12 @@
 | UI Surface | Component : Element | Variable Bound | Runtime Value (typical) | Source Object | Exact Field Path | API Endpoint |
 |---|---|---|---|---|---|---|
 | **TopSection radial gauge** | `DealWorkspaceTopSection` : SVG ring (`data-testid="radial-score-chart"`) | `score={reportView.score}` | **82** (from `score_band_v2`) | `reportEnvelope.metadata` OR `reportFromApi.metadata` | `.score_band_v2.overall_score` | `GET /api/v1/deals/:id/report` |
-| **TopSection score label** | `DealWorkspaceTopSection` : score label text | `scoreLabel={canonicalScoreLabel}` | `"Fundamentals score"` | derived from `reportView.scoreSource` | n/a — display string | — |
+| **TopSection score label** | `DealWorkspaceTopSection` : score label text | `scoreLabel={canonicalScoreLabel}` | `"Deal Score"` (when report applied); `"Fundamentals score"` (pre-report) | derived from `reportView.scoreSource` | n/a — display string | — |
 | **TopSection band label** | `DealWorkspaceTopSection` : band badge | `scoreBandLabel={safeText(reportMeta.score_band_v2.label)}` | `"Strong"` / `"Moderate"` etc. | `reportMeta` (inner or envelope) | `.score_band_v2.label` | `GET /api/v1/deals/:id/report` |
-| **Overview tab "XX / 100"** | `DealWorkspaceOverviewComp` : scoreText span (L715) | `score0_100={decisionTileScore0_100 ?? displayScore ?? investorScore}` | 82 (from `dealFromApi.score`) | `dealFromApi` | `.score` (DB field) | `GET /api/v1/deals/:id` |
+| **Overview tab "XX / 100"** | `DealWorkspaceOverviewComp` : scoreText span (L715) | `score0_100={decisionTileScore0_100 ?? displayScore ?? reportBandScore}` | 82 (from `dealFromApi.score`) | `dealFromApi` | `.score` (DB field) | `GET /api/v1/deals/:id` |
 | **Overview tab decision label** | `DealWorkspaceOverviewComp` : decision badge | `decisionLabel={decisionTileLabel}` | `"CONSIDER"` / `"FUND"` / `"PASS"` | `decisionTileScore0_100` → `scoreToWorkspaceDecision()` | n/a — threshold function | — |
 | **Data-panel display score** | `DealWorkspace.tsx` inline (header area) | `displayScore` | 82 (from `fundamentalsScore0_100`) | `dealFromApi` | `.score` (DB field) | `GET /api/v1/deals/:id` |
-| **investorScore state** (pre-report fallback) | `DealWorkspace.tsx` React state | `investorScore` | 82 once report loads | `report.metadata` or `report.overallScore` | `resolveCanonicalScore(report)` cascade | `GET /api/v1/deals/:id/report` |
+| **reportBandScore state** (pre-report fallback) | `DealWorkspace.tsx` React state | `reportBandScore` | 82 once report loads | `report.metadata` or `report.overallScore` | `resolveCanonicalScore(report)` cascade | `GET /api/v1/deals/:id/report` |
 
 ---
 
@@ -207,3 +208,104 @@ before implementation.
 | [apps/web/src/lib/resolveCanonicalScore.ts](../src/lib/resolveCanonicalScore.ts) | Pure canonical score resolver |
 | [apps/web/src/lib/dealScore.ts](../src/lib/dealScore.ts) | `extractFundabilityScore0_100` |
 | [apps/api/src/routes/reports.ts](../../api/src/routes/reports.ts) | `attachScoreBandAndGuardrailV2` — API write path |
+
+---
+
+## 9. Pipeline B — `limited_scoring_v1` (Investor Insights Tab)
+
+> This section documents the **second, completely separate** scoring system. It has no
+> connection to Pipeline A (`score_band_v2`) at any layer. The two systems coexist and are
+> **isolated by design** for v1.
+
+### 9.1 Overview
+
+| Dimension | Value |
+|---|---|
+| **Computed by** | `computeLimitedScoringV1()` in `apps/worker/src/jobs/investor-insights/limited-scoring-v1.ts` |
+| **Data loader** | `apps/worker/src/jobs/investor-insights/stages/stage-2-deterministic.ts` |
+| **Stored in** | `investor_insight_reports.render_package.sections` — section with `key = 'limited_scoring_v1'`, serialized as YAML-like text body |
+| **API route** | `GET /api/v1/deals/:id/investor-insights` → verbatim passthrough of `render_package` |
+| **Frontend hook** | `useInvestorInsights(dealId)` in `apps/web/src/hooks/useInvestorInsights.ts` |
+| **Frontend parse** | `parseLimitedScoringBody(section.body)` → `LimitedScoringV1` struct |
+| **Frontend adapter** | `adaptReportToInsightsData()` → `InvestorInsightsData` |
+| **UI label** | "Insights Score" (CircularScore in Executive view); score chip next to recommendation pill (Quick/Detailed views) |
+
+### 9.2 Score Fields
+
+| Field in `LimitedScoringV1` | Description | Maps to in `InvestorInsightsData` |
+|---|---|---|
+| `overall_limited_score` | Overall investor insights score (0–100) | `deal_signals.overall_score` AND `analysis_modules.investment_thesis.score` |
+| `market_presence_score` | Market sizing / presence sub-score | `analysis_modules.market_opportunity.score` |
+| `traction_signal_score` | Traction momentum sub-score | `analysis_modules.traction_growth.score` |
+| `deal_terms_score` | Deal terms / structure sub-score | `analysis_modules.financial_outlook.score` |
+| `completeness_score` | Data completeness (not surfaced in UI modules) | not mapped to a UI module |
+| `scoring_confidence` | `'high' \| 'medium' \| 'low' \| 'not_scoreable'` | `deal_signals.confidence_level` |
+
+### 9.3 Source Chain
+
+```
+computeLimitedScoringV1() [worker]
+  → YAML text body
+  → investor_insight_reports.render_package.sections[key='limited_scoring_v1'].body
+
+GET /api/v1/deals/:id/investor-insights
+  → render_package (verbatim passthrough, no score transform)
+
+useInvestorInsights(dealId) [InvestorInsightsTab.tsx]
+  → parseLimitedScoringBody(section.body) → LimitedScoringV1
+  → adaptReportToInsightsData()
+      deal_signals.overall_score        = overall_limited_score
+      analysis_modules.investment_thesis.score = overall_limited_score
+      analysis_modules.market_opportunity.score = market_presence_score
+      analysis_modules.traction_growth.score    = traction_signal_score
+      analysis_modules.financial_outlook.score  = deal_terms_score
+  → InvestorInsightsData
+
+Executive view  → InvestorInsightsExecutiveStatic → ExecutiveBrief
+  → <CircularScore score={deal_signals.overall_score} label="Insights Score" />
+  → <ScoreCard score={mod.score} /> × 4 modules
+
+Quick view      → InvestorInsightsQuickStatic → ExecutiveInsightSection
+  → score chip (overall_score, colored) + recommendation pill
+  → QuickInsightCards → InsightModuleCard (compact) × N
+
+Detailed view   → InvestorInsightsDetailedStatic → ExecutiveInsightSection
+  → score chip (overall_score, colored) + recommendation pill
+  → InsightModuleCard (expanded) × N with ScoreBar
+```
+
+### 9.4 UI Surfaces (Pipeline B only)
+
+| Surface | Component | Score shown | View mode |
+|---|---|---|---|
+| Investor Insights circular gauge | `ExecutiveBrief` → `CircularScore` | `deal_signals.overall_score` | Executive only |
+| Score chip next to recommendation pill | `ExecutiveInsightSection` | `signals.overall_score` | Quick + Detailed |
+| Module score bars + numbers (compact) | `QuickInsightCards` → `InsightModuleCard` | `analysis_modules[id].score` | Quick |
+| Module score bars + numbers (expanded) | `InvestorInsightsDetailedStatic` → `InsightModuleCard` | `analysis_modules[id].score` | Detailed |
+| Executive module score cards | `ExecutiveBrief` → `ScoreCard` | `analysis_modules[id].score` | Executive |
+
+### 9.5 Key Files
+
+| File | Role |
+|---|---|
+| [apps/worker/src/jobs/investor-insights/limited-scoring-v1.ts](../../worker/src/jobs/investor-insights/limited-scoring-v1.ts) | Scoring engine — computes all sub-scores and `overall_limited_score` |
+| [apps/web/src/types/investor-insights.ts](../src/types/investor-insights.ts) | `LimitedScoringV1` interface, `parseLimitedScoringBody()`, `adaptReportToInsightsData()` |
+| [apps/web/src/hooks/useInvestorInsights.ts](../src/hooks/useInvestorInsights.ts) | Fetches `GET /api/v1/deals/:id/investor-insights` |
+| [apps/web/src/components/workspace/investor-insights/InvestorInsightsTab.tsx](../src/components/workspace/investor-insights/InvestorInsightsTab.tsx) | Main tab component — sole call site for `adaptReportToInsightsData()` |
+| [apps/web/src/components/workspace/investor-insights/ExecutiveBrief.tsx](../src/components/workspace/investor-insights/ExecutiveBrief.tsx) | Renders `CircularScore` (overall) + `ScoreCard` × 4 modules |
+| [apps/web/src/components/workspace/investor-insights/ExecutiveInsightSection.tsx](../src/components/workspace/investor-insights/ExecutiveInsightSection.tsx) | Score chip + recommendation pill (Quick/Detailed views) |
+| [apps/web/src/components/workspace/investor-insights/InsightModuleCard.tsx](../src/components/workspace/investor-insights/InsightModuleCard.tsx) | Module-level score bar + number (compact and expanded variants) |
+| [apps/api/src/routes/deals/investor-insights.routes.ts](../../api/src/routes/deals/investor-insights.routes.ts) | API passthrough — serves `render_package` verbatim, no score transform |
+
+### 9.6 Intentional Isolation
+
+Pipeline A and Pipeline B are **architecturally isolated**. This is intentional for v1:
+
+- `resolveCanonicalScore.ts` is unaware of `limited_scoring_v1`.
+- `dealScore.ts` is unaware of `limited_scoring_v1`.
+- `DealWorkspace.tsx` calls `useInvestorInsights()` for deterministic text slots and status only — never for score derivation.
+- `InvestorInsightsTab.tsx` calls `useInvestorInsights()` independently, separate from the DealWorkspace hook instance.
+- The TopSection gauge (`score_band_v2` / Pipeline A) and the Investor Insights `CircularScore` (`overall_limited_score` / Pipeline B) are two distinct scores with distinct labels. Users see "Deal Score" on the gauge and "Insights Score" in the Executive view.
+
+Any future decision to merge or align the two systems is a product-level choice and should not be made implicitly.
+

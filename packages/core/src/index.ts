@@ -232,6 +232,7 @@ export type {
   FinancialFactPeriodType,
   FinancialFactConfidence,
   FinancialFactReconciliationStatus,
+  CrossSourceReconciliationStatus,
 } from "./financial-facts/financial-fact-v1";
 export {
   isFiniteFactValue,
@@ -332,3 +333,78 @@ export {
   buildPromptPolicyBlock,
   enforceAnswerSanity,
 } from "./chat/answer-policy-v1";
+
+// ============================================================================
+// Evidence Confidence Layer (PR36.6)
+// ============================================================================
+// Classifies every canonical fact with a confidence level before promotion to
+// investor-facing output surfaces. Pure, deterministic, no LLM calls.
+export {
+  EVIDENCE_CONFIDENCE_LEVEL,
+  ALL_CONFIDENCE_LEVELS,
+} from "./evidence/evidence-confidence";
+export type {
+  EvidenceConfidenceLevel,
+  EvidenceConfidenceSignals,
+  FactConfidenceState,
+} from "./evidence/evidence-confidence";
+
+export {
+  computeEvidenceConfidence,
+  buildConfidenceSignals,
+} from "./evidence/evidence-confidence-evaluator";
+
+export {
+  EvidenceSourceStrength,
+  classifySourceStrength,
+  isSourceTainted,
+  isStrongSource,
+} from "./evidence/evidence-source-strength";
+
+// ============================================================================
+// Fact Plausibility Guards
+// ============================================================================
+// Page-level context guards for canonical field extraction.
+// Guards reject facts when source page lacks appropriate semantic context.
+export type {
+  FactPlausibilityResult,
+  FactPlausibilityGuard,
+} from "./fact-plausibility-guards";
+export { FACT_PLAUSIBILITY_GUARDS } from "./fact-plausibility-guards";
+
+// ============================================================================
+// Fact Promotion Gate (PR36.6)
+// ============================================================================
+// Per-surface promotion rules: determines if a confidence level permits
+// promotion to deal_overview, display_facts, governed_summary etc.
+export {
+  getFactPromotionPolicy,
+  isFactPromotable,
+  getUncertaintyLabel,
+  isDefinitiveFact,
+} from "./governance/fact-promotion-gate";
+export type {
+  PromotionSurface,
+  FactPromotionPolicy,
+} from "./governance/fact-promotion-gate";
+
+// ============================================================================
+// Temporal Scope (Phase 1 — pipeline hardening)
+// ============================================================================
+// Canonical temporal classification primitive. Replaces scattered
+// looksLikeFutureYear / isForecast logic across financial-statement-parser,
+// deal-fusion, and stage-2-deterministic.
+export type { TemporalScope } from "./temporal/temporal-scope";
+export {
+  classifyTemporalScope,
+  extractYearFromLabel,
+  isProjectedScope,
+  temporalScopeLabel,
+} from "./temporal/temporal-scope";
+
+// ============================================================================
+// Field Typing Rules / TypedMetric (Phase 1 — now wired)
+// ============================================================================
+// Previously orphaned. Now has temporal_scope threaded through it and is
+// exported for use in investor-insights extraction.
+export type { FieldTypeV1, TypedMetric, EvidenceRef } from "./fields/field-typing-rules";

@@ -42,6 +42,7 @@ vi.mock("../lib/queue", () => {
 
 vi.mock("../lib/job-progress", () => ({
 	updateJobProgress: vi.fn(async () => undefined),
+	emitJobProgress: vi.fn(async () => undefined),
 }));
 
 // Keep the real vision retry logic so VISION_REQUEST_START is emitted,

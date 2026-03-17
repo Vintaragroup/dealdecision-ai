@@ -83,8 +83,16 @@ export interface GovernedExecutiveSummaryArgs {
 	/** Pre-formatted coverage note (injected by caller, not the LLM). */
 	coverageNote: string;
 	dealName?: string;
+	/**
+	 * Canonical company name resolved from document evidence.
+	 * When present and different from dealName, the Deal Identity block will
+	 * note both so the LLM uses the correct name from the deck.
+	 */
+	canonicalCompanyName?: string | null;
 	/** Product/narrative text from non-financial deck pages. */
 	productNarrativeBody?: string | null;
+	/** PR36.9: Serialized contradiction markers body. */
+	contradictionMarkersBody?: string | null;
 }
 
 export type GovernedExecutiveSummaryResult =
@@ -150,8 +158,16 @@ export interface GovernedExecutiveSummaryFingerprintInputs {
 	governanceVersion?: string | null;
 	/** Deal name for cache invalidation when name is first set. */
 	dealNameText?: string | null;
+	/**
+	 * Canonical company name for cache invalidation (Fix F).
+	 * When canonical identity newly resolves or changes, the fingerprint must
+	 * change so the cached exec summary is not reused with the old identity.
+	 */
+	canonicalCompanyNameText?: string | null;
 	/** Product narrative text for cache invalidation. */
 	productNarrativeText?: string | null;
+	/** PR36.9: Contradiction markers text for cache invalidation. */
+	contradictionMarkersText?: string | null;
 }
 
 /**
@@ -180,7 +196,9 @@ export function computeGovernedExecSummaryFingerprintV1(
 		engine_version: inputs.engineVersion ?? null,
 		governance_version: inputs.governanceVersion ?? null,
 		deal_name: inputs.dealNameText ?? null,
+		canonical_company_name: inputs.canonicalCompanyNameText ?? null,
 		product_narrative: inputs.productNarrativeText ? normalizeForFingerprint(inputs.productNarrativeText) : null,
+		contradiction_markers: inputs.contradictionMarkersText ? normalizeForFingerprint(inputs.contradictionMarkersText) : null,
 	};
 	// JSON.stringify with sorted keys for determinism
 	const orderedKeys = Object.keys(obj).sort() as Array<keyof typeof obj>;
@@ -241,8 +259,16 @@ export interface ResolveGovernedExecSummaryArgs {
 	/** GOVERNANCE_VERSION pin for fingerprint. */
 	governanceVersion: string;
 	dealName?: string;
+	/**
+	 * Canonical company name resolved from document evidence.
+	 * When present and different from dealName, the Deal Identity block will
+	 * note both so the LLM uses the correct name from the deck.
+	 */
+	canonicalCompanyName?: string | null;
 	/** Product/narrative text from non-financial deck pages. */
 	productNarrativeBody?: string | null;
+	/** PR36.9: Serialized contradiction markers body. */
+	contradictionMarkersBody?: string | null;
 	/**
 	 * Injectable generate function — defaults to `generateGovernedExecSummaryV1`.
 	 * Overriding in tests avoids any real LLM calls.
@@ -280,7 +306,9 @@ export async function resolveGovernedExecSummaryWithCache(
 		engineVersion,
 		governanceVersion,
 		dealName,
+		canonicalCompanyName,
 		productNarrativeBody,
+		contradictionMarkersBody,
 		generateFn = generateGovernedExecSummaryV1,
 	} = args;
 
@@ -304,7 +332,9 @@ export async function resolveGovernedExecSummaryWithCache(
 		engineVersion,
 		governanceVersion,
 		dealNameText: dealName ?? null,
+		canonicalCompanyNameText: canonicalCompanyName ?? null,
 		productNarrativeText: productNarrativeBody ?? null,
+		contradictionMarkersText: contradictionMarkersBody ?? null,
 	});
 
 	// ── Determine cache miss reason ───────────────────────────────────────────
@@ -359,8 +389,8 @@ export async function resolveGovernedExecSummaryWithCache(
 		financialReconciliationBody,
 		conflictsBody,
 		coverageNote,
-		dealName,
-		productNarrativeBody,
+		dealName,		canonicalCompanyName,		productNarrativeBody,
+		contradictionMarkersBody,
 	});
 
 	if (result.ok) {
@@ -472,7 +502,13 @@ const SYSTEM_PROMPT =
 	"12. No sentence may begin with the company name more than once across all paragraphs.\n" +
 	"13. Return ONLY valid JSON with exactly these keys:\n" +
 	'    { "headline": "...", "summary_paragraphs": [...], "strengths": [...], "risks": [...], "open_questions": [...] }\n' +
-	"14. No markdown. No code fences. No extra keys.";
+	"14. No markdown. No code fences. No extra keys.\n" +
+	"15. NARRATIVE EVIDENCE CONTRADICTIONS (PR36.9): When a '## Narrative Evidence Contradictions' section appears in the corpus:\n" +
+	"    - A topic marked status=CONFLICTING: do NOT write a confident settled claim about that topic. " +
+	"State instead: 'Materials present conflicting signals regarding [topic].'\n" +
+	"    - A topic marked status=MIXED: qualify language — e.g. 'Materials suggest [claim] with mixed framing.' " +
+	"or 'Evidence is not fully consistent regarding [topic].'\n" +
+	"    - Do NOT invent reconciliation between conflicting claims. Preserve the uncertainty rather than choosing one interpretation.";
 
 /**
  * Call gpt-4o-mini to generate a governed executive summary from canonical inputs.
@@ -488,8 +524,17 @@ export async function generateGovernedExecSummaryV1(
 	const parts: string[] = [];
 
 	// 1. Deal Identity
-	if (args.dealName) {
-		parts.push(`## Deal Identity\nDeal name: ${args.dealName}`);
+	const displayName = args.canonicalCompanyName ?? args.dealName;
+	if (displayName) {
+		const hasCanonicalMismatch =
+			args.canonicalCompanyName &&
+			args.dealName &&
+			args.canonicalCompanyName.toLowerCase() !== args.dealName.toLowerCase();
+
+		const identityNote = hasCanonicalMismatch
+			? `Deal name: ${args.canonicalCompanyName} (as named in submitted materials; entered as "${args.dealName}")`
+			: `Deal name: ${displayName}`;
+		parts.push(`## Deal Identity\n${identityNote}`);
 	}
 
 	// 2. Product Narrative — always inject a section; if absent, provide explicit placeholder
@@ -520,6 +565,9 @@ export async function generateGovernedExecSummaryV1(
 
 	// 8. Conflicts
 	if (args.conflictsBody) parts.push(`## Conflicting Fields\n${args.conflictsBody}`);
+
+	// 9. Narrative evidence contradictions (PR36.9)
+	if (args.contradictionMarkersBody) parts.push(`## Narrative Evidence Contradictions\n${args.contradictionMarkersBody}`);
 
 	// Require at least one substantive section beyond the product placeholder
 	const hasSubstantiveData = !!(args.canonicalFieldsBody || args.insightSlotsBody);

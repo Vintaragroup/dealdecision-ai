@@ -38,6 +38,7 @@ type ButtonProps = React.ComponentProps<"button"> &
     asChild?: boolean;
     loading?: boolean;
     icon?: React.ReactNode;
+    iconPosition?: 'left' | 'right'; // consumed for API compatibility; not used in render
     darkMode?: boolean; // consumed for API compatibility; styling handled via .dark CSS context
   };
 
@@ -48,6 +49,7 @@ function Button({
   asChild = false,
   loading = false,
   icon,
+  iconPosition: _iconPosition,
   darkMode: _darkMode,
   children,
   disabled,

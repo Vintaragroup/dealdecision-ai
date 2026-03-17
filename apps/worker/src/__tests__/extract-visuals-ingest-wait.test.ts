@@ -35,6 +35,11 @@ vi.mock("../lib/job-progress", () => ({
 		getMocks().updateJobProgress = fn;
 		return fn;
 	})(),
+	emitJobProgress: (() => {
+		const fn = vi.fn(async () => undefined);
+		getMocks().emitJobProgress = fn;
+		return fn;
+	})(),
 }));
 
 vi.mock("../lib/visual-extraction", async (importOriginal) => {
@@ -169,7 +174,8 @@ describe("extract_visuals ingest_not_complete wait", () => {
 				.filter((v: any) => typeof v === "string");
 			expect(statuses).not.toContain("failed");
 			// Should have emitted at least one blocked-stage progress update.
-			const stages = (updateJobProgress.mock.calls ?? [])
+			const emitJobProgress = getMocks().emitJobProgress as any;
+			const stages = (emitJobProgress.mock.calls ?? [])
 				.map((c: any[]) => c?.[1]?.stage)
 				.filter((v: any) => typeof v === "string");
 			expect(stages).toContain("blocked");

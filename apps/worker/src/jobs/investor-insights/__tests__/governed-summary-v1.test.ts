@@ -343,6 +343,27 @@ describe("serializeGovernedSummaryBody / parseGovernedSummaryBody", () => {
 		expect(parsed!.validated).toBe(true);
 	});
 
+	it("round-trips evidence_refs when present", () => {
+		const withRefs = {
+			...FIXTURE,
+			evidence_refs: [
+				"550e8400-e29b-41d4-a716-446655440000",
+				"550e8400-e29b-41d4-a716-446655440001",
+			],
+		};
+		const body = serializeGovernedSummaryBody(withRefs);
+		expect(body).toContain("Evidence References");
+
+		const parsed = parseGovernedSummaryBody(body);
+		expect(parsed).not.toBeNull();
+		expect(parsed!.evidence_refs).toEqual(withRefs.evidence_refs);
+	});
+
+	it("does not emit Evidence References section when evidence_refs is empty/absent", () => {
+		const body = serializeGovernedSummaryBody(FIXTURE);
+		expect(body).not.toContain("Evidence References");
+	});
+
 	it("returns null when delimiter is missing", () => {
 		const result = parseGovernedSummaryBody("No delimiter here.");
 		expect(result).toBeNull();

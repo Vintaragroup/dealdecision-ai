@@ -127,9 +127,9 @@ export function Team({ darkMode }: TeamProps) {
   return (
     <div className={`h-full flex ${darkMode ? 'bg-[#0a0a0b]' : 'bg-gray-50'}`}>
       {/* Main Content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden py-6 px-6">
         {/* Header */}
-        <div className={`border-b px-6 py-4 ${
+        <div className={`border-b px-6 py-4 rounded-xl ${
           darkMode ? 'bg-[#18181b] border-white/10' : 'bg-white border-gray-200'
         }`}>
           <div className="flex items-center justify-between mb-4">

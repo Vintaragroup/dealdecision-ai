@@ -10,7 +10,7 @@ import {
 import { Input } from '../ui/input';
 import { ToastContainer, ToastType, useToastQueue } from '../ui/Toast';
 import { DocumentsTab } from '../documents/DocumentsTab';
-import { DealFormData } from '../NewDealModal';
+import { DealFormData } from '../Modal_Legacy/NewDealModal';
 import { AnimatedCounter } from '../AnimatedCounter';
 import { ExportReportModal } from '../ExportReportModal';
 import { TemplateExportModal } from '../TemplateExportModal';

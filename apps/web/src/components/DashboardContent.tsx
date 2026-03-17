@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Button } from './ui/button';
-import { Plus, FileText, BarChart3 } from 'lucide-react';
+import { FileText, BarChart3 } from 'lucide-react';
 import { QuickStatsBar } from './widgets/QuickStatsBar';
 import { ActiveDealsWidget } from './widgets/ActiveDealsWidget';
 import { ActivityFeed } from './widgets/ActivityFeed';
@@ -272,13 +272,6 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
           >
             <BarChart3 className="w-4 h-4" />
             <span className="hidden sm:inline">Analytics</span>
-          </Button>
-          <Button 
-            className="gap-2 text-sm"
-            onClick={onNewDeal}
-          >
-            <Plus className="w-4 h-4" />
-            New Deal
           </Button>
         </div>
       </div>

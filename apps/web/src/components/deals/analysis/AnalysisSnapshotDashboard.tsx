@@ -29,7 +29,7 @@ import {
   Briefcase,
 } from 'lucide-react';
 import { Button } from '../../ui/button';
-import type { DealFormData } from '../../NewDealModal';
+import type { DealFormData } from '../../Modal_Legacy/NewDealModal';
 import { useUserRole } from '../../../contexts/UserRoleContext';
 import { ToastContainer } from '../../ui/Toast';
 import { useLocalToasts } from '../../../lib/useLocalToasts';

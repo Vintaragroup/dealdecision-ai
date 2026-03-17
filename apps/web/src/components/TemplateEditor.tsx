@@ -30,7 +30,7 @@ import {
 import { Button } from './ui/button';
 import { AITextGenerator } from './editor/AITextGenerator';
 import { AIImageGenerator } from './editor/AIImageGenerator';
-import { DealFormData } from './NewDealModal';
+import { DealFormData } from './Modal_Legacy/NewDealModal';
 
 interface TemplateEditorProps {
   isOpen: boolean;

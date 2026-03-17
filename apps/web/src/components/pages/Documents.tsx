@@ -4,7 +4,7 @@ import { DocumentUpload } from '../documents/DocumentUpload';
 import { DocumentLibrary } from '../documents/DocumentLibrary';
 import { DocumentBatchUploadModal } from '../documents/DocumentBatchUploadModal';
 import { DealExtractionReportModal } from '../documents/DealExtractionReportModal';
-import { NewDealModal } from '../NewDealModal';
+import { NewDealModal } from '../newDeal_Modal';
 import type { Document as ApiDocument } from '@dealdecision/contracts';
 import { apiGetDeals, apiGetDocuments, apiRetryDocument, isLiveBackend } from '../../lib/apiClient';
 import { useAuth } from '@clerk/clerk-react';
@@ -118,7 +118,7 @@ export function Documents({ darkMode }: DocumentsProps) {
   }, [documents]);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 py-6 px-6">
       {/* Header */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-0">
         <div>

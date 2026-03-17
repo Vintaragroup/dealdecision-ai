@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Modal } from './ui/Modal';
-import { Button } from './ui/button';
-import { Input } from './ui/input';
-import { Select } from './ui/select';
-import { Textarea } from './ui/textarea';
+import { Modal } from '../ui/Modal';
+import { Button } from '../ui/button';
+import { Input } from '../ui/input';
+import { Select } from '../ui/select';
+import { Textarea } from '../ui/textarea';
 import { 
   Rocket, 
   DollarSign, 
@@ -14,9 +14,9 @@ import {
   ArrowRight,
   PartyPopper
 } from 'lucide-react';
-import { AnimatedCounter } from './AnimatedCounter';
-import { apiCreateDeal, apiCreateDealDraft, apiGetDeal, apiUploadDocument } from '../lib/apiClient';
-import { ToastContainer, ToastType } from './ui/Toast';
+import { AnimatedCounter } from '../AnimatedCounter';
+import { apiCreateDeal, apiCreateDealDraft, apiGetDeal, apiUploadDocument } from '../../lib/apiClient';
+import { ToastContainer, ToastType } from '../ui/Toast';
 
 import type { Deal } from '@dealdecision/contracts';
 

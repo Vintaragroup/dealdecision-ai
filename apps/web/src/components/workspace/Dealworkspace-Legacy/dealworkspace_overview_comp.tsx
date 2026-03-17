@@ -1,7 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from 'react';
 import { ChevronDown, Package, Users, DollarSign, TrendingUp, Shield, ArrowRight, AlertCircle, Lightbulb } from 'lucide-react';
-import type { EvidenceResolveResult } from '../../lib/apiClient';
-import { deriveGatingState, shouldSuppressNoCitation, computeSlotChipPolicy } from '../../lib/badgePolicy';
+import type { EvidenceResolveResult } from '../../../lib/apiClient';
+import { deriveGatingState, shouldSuppressNoCitation, computeSlotChipPolicy } from '../../../lib/badgePolicy';
 
 type FieldEvidenceRef = {
   source_document_id: string;

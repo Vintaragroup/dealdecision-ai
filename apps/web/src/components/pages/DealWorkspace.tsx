@@ -23,8 +23,9 @@ import { adaptReportToInsightsData } from '../../types/investor-insights';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
-import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
-import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
+import { DealWorkspaceHeader } from '../workspace/DealWorkspaceTopSection';
+import { DealOverviewTab } from '../workspace/DealOverviewTab';
+import { DealWorkspaceOverviewComp } from '../workspace/Dealworkspace-Legacy/dealworkspace_overview_comp';
 import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
 import { resolveCanonicalScore, type ResolvedScore } from '../../lib/resolveCanonicalScore';
@@ -55,6 +56,8 @@ import { useUserRole } from '../../contexts/UserRoleContext';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { extractFundabilityScore0_100 } from '../../lib/dealScore';
 import { filterMismatchedScoreItems, stripScoreFractions, stripScoreFractionsFromItems } from '../../lib/sanitizeScorePhrases';
+import { buildWorkspaceViewModel } from '../workspace/builders/buildWorkspaceViewModel';
+import type { WorkspaceViewModelInputs } from '../workspace/builders/buildWorkspaceViewModel';
 import {
   PolarAngleAxis,
   PolarGrid,
@@ -3171,6 +3174,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     ? canonicalScoreView.score0_100
     : null;
 
+  // [SIGNAL-CONTRACT] Lifted from the render IIFE so buildWorkspaceViewModel can consume
+  // them for concerns/icReadiness/signalData without duplication.
+  const filteredStrengths = filterMismatchedScoreItems(topSectionStrengths, canonicalScoreForSanitizer);
+  const filteredWeaknesses = filterMismatchedScoreItems(topSectionWeaknesses, canonicalScoreForSanitizer);
+
   // [SCORE-CONTRACT] Final one-liner for TopSection Deal Snapshot.
   // Priority order (first non-empty wins):
   //   1. score_driver_one_liner from structured_summary (topsection_v1 builder, deterministic).
@@ -4680,6 +4688,100 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const dealStageRaw = reportView.stageRaw;
   const dealStageLabel = reportView.stageLabel ?? '—';
 
+  // ── WorkspaceViewModel ────────────────────────────────────────────────────
+  // Single transform layer: all view-layer inputs → typed ViewModel consumed
+  // by DealWorkspaceHeader and DealOverviewTab. Eliminates hardcoded placeholders:
+  //   concerns=0, icReadiness=72 default, tam='—', signals=[].
+  const vmPipelineStatus: WorkspaceViewModelInputs['pipelineStatus'] = (() => {
+    const s = (dealFromApi as any)?.stage ?? '';
+    if (['closed_invested', 'closed_passed', 'closed_lost', 'archived'].includes(s)) return 'Closed';
+    if (['on_hold', 'paused'].includes(s)) return 'On Hold';
+    return 'Active';
+  })();
+
+  const vmDiligencePhase: WorkspaceViewModelInputs['diligencePhase'] = (() => {
+    const s = dealStageRaw ?? '';
+    if (s === 'intake') return 'Initial Screening';
+    if (s === 'under_review') return 'Early Diligence';
+    if (s === 'in_diligence') return 'Deep Diligence';
+    if (s === 'ready_decision') return 'IC Prep';
+    if (s === 'term_sheet') return 'Term Sheet';
+    return 'Early Diligence';
+  })();
+
+  const vmVerdict: WorkspaceViewModelInputs['verdict'] = (() => {
+    const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
+      ? (reportFromApi as any).metadata
+      : ((reportEnvelope as any)?.report?.metadata && typeof (reportEnvelope as any).report.metadata === 'object')
+        ? (reportEnvelope as any).report.metadata
+        : null;
+    if (Boolean((reportMeta as any)?.hard_pass_guardrail_v2?.triggered)) return 'HARD_PASS';
+    if (decisionLabel === 'FUND') return 'INVEST';
+    if (decisionLabel === 'CONSIDER') return 'CONSIDER';
+    return 'PASS';
+  })();
+
+  const vmEvidenceCoverage: WorkspaceViewModelInputs['evidenceCoverage'] =
+    decisionTileConfidenceBand === 'high' ? 'Strong'
+    : decisionTileConfidenceBand === 'med' ? 'Moderate'
+    : 'Limited';
+
+  const vm = useMemo(() => buildWorkspaceViewModel({
+    displayName,
+    dealDescription: (dealInfo as any)?.description || topSectionScoreDriverOneLiner || '',
+    dealStageLabel,
+    dealStageRaw: dealStageRaw ?? '',
+    industry: profileEdits.industry ?? '—',
+    lastUpdated: dealInfo?.updatedTime ?? undefined,
+    analyzing,
+    reportViewScore: reportView.score,
+    verdict: vmVerdict,
+    blockers: blockersCount ?? 0,
+    filteredStrengths,
+    filteredWeaknesses,
+    confidenceBand: decisionTileConfidenceBand,
+    coverageRatio: scoreExplanationV1?.coverage_ratio ?? null,
+    evidenceCoverage: vmEvidenceCoverage,
+    governedDealOneLiner: governedDealOneLinerDisplay,
+    governedProduct: governedKeyFacts.product.value,
+    governedMarket: governedKeyFacts.market.value,
+    governedBusinessModel: governedKeyFacts.businessModel.value,
+    governedRaise: governedKeyFacts.raise.value,
+    selectedHeaderReady: selectedHeader.ready,
+    raiseValue: selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null,
+    raiseLabel: selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null,
+    revenueValue: selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null,
+    revenueTileLabel: revenueCoveragePolicy.kpiTileLabel,
+    revenueAllowed: revenueCoveragePolicy.allow,
+    growthValue: selectedHeader.ready ? (selectedHeader.growth.value ?? null) : null,
+    growthLabel: selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null,
+    customersValue: selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null,
+    customersLabel: selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null,
+    businessModelValue: (selectedHeader.ready ? selectedHeader.business_model.value : null)
+      || authoritativeBusinessModel.value
+      || workspaceOverviewModel.keyFacts.business_model.value
+      || null,
+    businessModelLabel: selectedHeader.ready ? (selectedHeader.business_model.label ?? null) : null,
+    runwayTileValue: runwayTileValue ?? null,
+    burnTileValue: burnTileValue ?? null,
+    reportStructuredGrowthValue: reportStructuredGrowthValue ?? null,
+    tamValue: (overviewV2 as any)?.market_size ?? (overviewV2 as any)?.tam ?? null,
+    topSectionDealType,
+    pipelineStatus: vmPipelineStatus,
+    diligencePhase: vmDiligencePhase,
+    insightsScore: canonicalScoreView.score0_100 ?? 0,
+    insightsConfidence: topSectionConfidence,
+  }), [
+    displayName, dealInfo, topSectionScoreDriverOneLiner, dealStageLabel, dealStageRaw,
+    profileEdits.industry, analyzing, reportView.score, vmVerdict, blockersCount,
+    filteredStrengths, filteredWeaknesses, decisionTileConfidenceBand,
+    scoreExplanationV1, vmEvidenceCoverage, governedDealOneLinerDisplay,
+    governedKeyFacts, selectedHeader, revenueCoveragePolicy, runwayTileValue,
+    burnTileValue, reportStructuredGrowthValue, overviewV2, authoritativeBusinessModel,
+    workspaceOverviewModel, topSectionDealType, vmPipelineStatus, vmDiligencePhase,
+    canonicalScoreView, topSectionConfidence,
+  ]);
+
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {
       const raw = err.message ?? '';
@@ -6030,14 +6132,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         }`}>
           <div className="flex flex-col sm:flex-row items-start justify-between gap-4 sm:gap-0 sm:mb-6">
             <div className="flex-1">
-              <div className="flex items-center gap-3 mb-3">
-                <h1 className={`text-2xl ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {displayName}
-                </h1>
-                <span className="px-3 py-1 bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] text-white text-xs rounded-full shadow-[0_0_12px_rgba(99,102,241,0.4)]">
-                  {displayType === 'seed' ? 'Seed' : displayType === 'series-a' ? 'Series A' : displayType === 'series-b' ? 'Series B' : displayType === 'series-c' ? 'Series C' : displayType === 'series-d' ? 'Series D+' : 'Series A'}
-                </span>
-              </div>
               {dealId && (
                 <CanonicalIdentityRenameBanner
                   dealId={dealId}
@@ -6047,53 +6141,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   onRenameSuccess={refreshDealFromApi}
                 />
               )}
-              {/* Improved Metadata Layout - Single Flowing Row */}
-              <div className={`text-sm flex flex-wrap items-center gap-x-4 gap-y-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                <span className="flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5" />
-                  Updated 2h ago
-                </span>
-                <span className={`${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>•</span>
-                <span className="flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5" />
-                  Created {dealInfo?.createdDate || 'Unknown'}
-                </span>
-                <span className={`${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>•</span>
-                <span className="flex items-center gap-1.5">
-                  <Eye className="w-3.5 h-3.5" />
-                  Data not available
-                </span>
-              </div>
-
-              <div className="mt-2 flex flex-wrap items-center gap-3 text-xs sm:text-sm">
-                <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                  DIO: {dioMeta?.dioVersionId ? dioMeta.dioVersionId : 'Not generated'}
-                </span>
-                {typeof dioMeta?.dioRunCount === 'number' && (
-                  <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                    Runs: {dioMeta.dioRunCount}
-                    {typeof dioMeta.dioAnalysisVersion === 'number' ? ` (latest v${dioMeta.dioAnalysisVersion})` : ''}
-                  </span>
-                )}
-                <span className={`px-2 py-1 rounded-full ${darkMode ? 'bg-blue-500/10 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>
-                  Status: {dioMeta?.dioStatus ?? 'unknown'}
-                </span>
-                {dealStageRaw && (
-                  <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                    Stage: {dealStageLabel}
-                  </span>
-                )}
-                {dioMeta?.lastAnalyzedAt && (
-                  <span className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Last analyzed: {new Date(dioMeta.lastAnalyzedAt).toLocaleString()}
-                  </span>
-                )}
-                {jobStatus && (
-                  <span className={`${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
-                    Job: {jobStatus}{jobId ? ` (${jobId})` : ''}
-                  </span>
-                )}
-              </div>
             </div>
             
             {/* Streamlined Action Buttons - 3 Main + More Menu */}
@@ -6652,70 +6699,104 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                   ? (reportEnvelope as any).report.metadata
                   : null;
 
+              const headerVerdict: 'INVEST' | 'CONSIDER' | 'PASS' | 'HARD_PASS' =
+                Boolean((reportMeta as any)?.hard_pass_guardrail_v2?.triggered)
+                  ? 'HARD_PASS'
+                  : decisionLabel === 'FUND'
+                    ? 'INVEST'
+                    : decisionLabel === 'CONSIDER'
+                      ? 'CONSIDER'
+                      : 'PASS';
+
+              // filteredStrengths / filteredWeaknesses are lifted to module scope above
+              // (after canonicalScoreForSanitizer) so the vm useMemo can use them.
+
+              const headerSignals: Array<{ label: string; type: 'positive' | 'negative' | 'neutral' | 'warning' }> = [
+                ...filteredStrengths.slice(0, 2).map((s) => ({ label: s, type: 'positive' as const })),
+                ...filteredWeaknesses.slice(0, 2).map((w) => ({ label: w, type: 'negative' as const })),
+              ];
+
+              // Normalize any residual snake_case machine keys to Title Case. Safe no-op on human-readable strings.
+              const _toHeaderTitleCase = (s: string) =>
+                /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(s.trim())
+                  ? s.trim().split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+                  : s;
+              const headerPrimaryIssues = filteredWeaknesses.map(_toHeaderTitleCase);
+              const headerDealType = _toHeaderTitleCase(topSectionDealType);
+
+              const headerPipelineStatus: 'Active' | 'On Hold' | 'Closed' = (() => {
+                const s = (dealFromApi as any)?.stage ?? '';
+                if (['closed_invested', 'closed_passed', 'closed_lost', 'archived'].includes(s)) return 'Closed';
+                if (['on_hold', 'paused'].includes(s)) return 'On Hold';
+                return 'Active';
+              })();
+
+              const headerDiligencePhase: 'Initial Screening' | 'Early Diligence' | 'Deep Diligence' | 'IC Prep' | 'Term Sheet' = (() => {
+                const s = dealStageRaw ?? '';
+                if (s === 'intake') return 'Initial Screening';
+                if (s === 'under_review') return 'Early Diligence';
+                if (s === 'in_diligence') return 'Deep Diligence';
+                if (s === 'ready_decision') return 'IC Prep';
+                if (s === 'term_sheet') return 'Term Sheet';
+                return 'Early Diligence';
+              })();
+
+              const headerEvidenceCoverage: 'Strong' | 'Moderate' | 'Limited' =
+                decisionTileConfidenceBand === 'high' ? 'Strong'
+                : decisionTileConfidenceBand === 'med' ? 'Moderate'
+                : 'Limited';
+
+              const headerEvidenceConfidence: number =
+                decisionTileConfidenceBand === 'high' ? 85
+                : decisionTileConfidenceBand === 'med' ? 60
+                : decisionTileConfidenceBand === 'low' ? 35
+                : 0;
+
               return (
-                <DealWorkspaceTopSection
+                <DealWorkspaceHeader
                   darkMode={darkMode}
-                  loading={!reportReady}
+                  dealName={displayName}
+                  dealDescription={(dealInfo as any)?.description || topSectionScoreDriverOneLiner || ''}
+                  stage={dealStageLabel}
+                  raiseAmount={selectedHeader.ready ? (selectedHeader.raise.value ?? '—') : '—'}
+                  industry={profileEdits.industry ?? '—'}
                   score={reportView.score}
-                  scoreAvailable={reportView.applied}
-                  canonicalScoreSource={reportView.applied ? reportView.scoreSource : 'none'}
-                  scoreLabel={canonicalScoreLabel}
-                  scoreBandLabel={safeText((reportMeta as any)?.score_band_v2?.label)}
-                  hardPassGuardrailTriggered={Boolean((reportMeta as any)?.hard_pass_guardrail_v2?.triggered)}
-                  hardPassGuardrailNote={safeText((reportMeta as any)?.hard_pass_guardrail_v2?.note)}
-                  // Criteria snapshot: contains raw analytical scores. Keep debug-only so it never
-                  // contradicts the canonical score in user-facing UI.
-                  hardPassGuardrailCriteriaSnapshot={workspaceDebugEnabled ? ((reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null) : null}
-                  rawOverallScore={(reportFromApi as any)?.overallScore ?? null}
-                  decisionV1={(reportMeta as any)?.decision_v1 ?? null}
-                  // [TOPSECTION-V1] TopSection summary = score_driver_one_liner (never governed overlay hero_summary).
-                  dealSummaryShort={topSectionScoreDriverOneLiner || null}
-                  dealSummary={structuredDealSummaryLong ? structuredDealSummaryLong : ''}
-                  dealSummaryTitle={'Deal Snapshot'}
-                  dealSummarySource={'canonical'}
-                  strengths={filterMismatchedScoreItems(topSectionStrengths, canonicalScoreForSanitizer)}
-                  weaknesses={filterMismatchedScoreItems(topSectionWeaknesses, canonicalScoreForSanitizer)}
-                  actionsToImprove={filterMismatchedScoreItems(topSectionActionsToImprove, canonicalScoreForSanitizer)}
-                  raise={selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null}
-                  raiseLabel={selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null}
-                  raiseConflict={false}
-                  raiseConflictOverlayValue={null}
-                  revenue={selectedHeader.ready ? (revenueCoveragePolicy.allow ? (selectedHeader.revenue.value ?? null) : null) : null}
-                  revenueLabel={reportStructuredRevenueLabel}
-                  revenueTooltip={reportStructuredRevenueTooltip}
-                  revenueConflict={false}
-                  revenueConflictOverlayValue={null}
-                  burn={selectedHeader.ready ? burnTileValue : null}
-                  burnLabel={null}
-                  burnTooltip={selectedHeader.ready ? burnRunwayCoveragePolicy.burnTooltip : null}
-                  burnConflict={false}
-                  burnConflictOverlayValue={null}
-                  runway={selectedHeader.ready ? runwayTileValue : null}
-                  runwayLabel={null}
-                  runwayTooltip={selectedHeader.ready ? burnRunwayCoveragePolicy.runwayTooltip : null}
-                  runwayConflict={false}
-                  runwayConflictOverlayValue={null}
-                  growth={selectedHeader.ready ? (safeText(reportStructuredGrowthValue) || selectedHeader.growth.value || null) : null}
-                  growthLabel={reportStructuredGrowthLabel}
-                  growthNote={reportStructuredGrowthNote}
-                  growthTooltip={reportStructuredGrowthTooltip}
-                  growthConflict={false}
-                  growthConflictOverlayValue={null}
-                  customers={selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null}
-                  customersLabel={reportStructuredCustomersLabel}
-                  customersTooltip={reportStructuredCustomersTooltip}
-                  customersConflict={false}
-                  customersConflictOverlayValue={null}
-                  businessModel={selectedHeader.ready ? (selectedHeader.business_model.value ?? null) : null}
-                  businessModelLabel={selectedHeader.business_model.label ?? null}
-                  businessModelTooltip={authoritativeBusinessModel.is_arbitrated
-                    ? `Evidence-backed arbitration${typeof authoritativeBusinessModel.confidence === 'number' ? ` (confidence ${Math.round(authoritativeBusinessModel.confidence * 100)}%)` : ''}`
-                    : null}
-                  businessModelConflict={false}
-                  businessModelConflictOverlayValue={null}
-                  dealType={reportView.dealType}
-                  confidence={topSectionConfidence}
-                  verified={decisionTileConfidenceBand === 'high'}
+                  verdict={headerVerdict}
+                  primaryIssues={headerPrimaryIssues}
+                  blockers={blockersCount ?? 0}
+                  concerns={vm.header.concerns}
+                  icReadiness={vm.header.icReadiness}
+                  strengths={filteredStrengths.length}
+                  metrics={{
+                    financials: [
+                      { label: selectedHeader.ready ? (selectedHeader.raise.label ?? 'Raise') : 'Raise', value: selectedHeader.ready ? (selectedHeader.raise.value ?? '—') : '—' },
+                      { label: revenueCoveragePolicy.kpiTileLabel, value: selectedHeader.ready && revenueCoveragePolicy.allow ? (selectedHeader.revenue.value ?? '—') : '—' },
+                      { label: 'Runway', value: runwayTileValue ?? '—' },
+                      { label: 'Burn', value: burnTileValue ?? '—' },
+                    ],
+                    traction: [
+                      { label: selectedHeader.ready ? (selectedHeader.growth.label ?? 'Growth') : 'Growth', value: selectedHeader.ready ? (safeText(reportStructuredGrowthValue) || selectedHeader.growth.value || '—') : '—' },
+                      { label: selectedHeader.ready ? (selectedHeader.customers.label ?? 'Customers') : 'Customers', value: selectedHeader.ready ? (selectedHeader.customers.value ?? '—') : '—' },
+                    ],
+                    deal: [
+                      { label: 'Stage', value: dealStageLabel },
+                      { label: 'Type', value: headerDealType },
+                    ],
+                    businessModel: [
+                      { label: selectedHeader.ready ? (selectedHeader.business_model.label ?? 'Model') : 'Model', value: (selectedHeader.ready ? selectedHeader.business_model.value : null) || authoritativeBusinessModel.value || workspaceOverviewModel.keyFacts.business_model.value || 'Unknown' },
+                    ],
+                  }}
+                  lastUpdated={dealInfo?.updatedTime ?? undefined}
+                  pipelineStatus={headerPipelineStatus}
+                  diligencePhase={headerDiligencePhase}
+                  evidenceCoverage={headerEvidenceCoverage}
+                  evidenceConfidence={headerEvidenceConfidence}
+                  onRefreshInsights={runAIAnalysis}
+                  onUploadDocument={() => setActiveTab('documents')}
+                  onMoreActions={() => setShowMoreActions(true)}
+                  analyzing={analyzing}
+                  isFounder={false /* no isFounder in useUserRole(); awaiting future role expansion */}
+                  signals={headerSignals}
                 />
               );
             })()}
@@ -6724,6 +6805,49 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         </div>
 
         {/* Tabs Section */}
+
+        {workspaceDebugEnabled && (
+          <details
+            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
+              darkMode
+                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+            }`}
+          >
+            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+              Debug → DIO State
+            </summary>
+            <div className={`px-4 pb-4 flex flex-wrap items-center gap-3 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                DIO: {dioMeta?.dioVersionId ? dioMeta.dioVersionId : 'Not generated'}
+              </span>
+              {typeof dioMeta?.dioRunCount === 'number' && (
+                <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                  Runs: {dioMeta.dioRunCount}
+                  {typeof dioMeta.dioAnalysisVersion === 'number' ? ` (latest v${dioMeta.dioAnalysisVersion})` : ''}
+                </span>
+              )}
+              <span className={`px-2 py-1 rounded-full ${darkMode ? 'bg-blue-500/10 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>
+                Status: {dioMeta?.dioStatus ?? 'unknown'}
+              </span>
+              {dealStageRaw && (
+                <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                  Stage: {dealStageLabel}
+                </span>
+              )}
+              {dioMeta?.lastAnalyzedAt && (
+                <span className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  Last analyzed: {new Date(dioMeta.lastAnalyzedAt).toLocaleString()}
+                </span>
+              )}
+              {jobStatus && (
+                <span className={`${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
+                  Job: {jobStatus}{jobId ? ` (${jobId})` : ''}
+                </span>
+              )}
+            </div>
+          </details>
+        )}
 
         {workspaceDebugEnabled && debugApiIsEnabled() && (
           <details
@@ -7860,387 +7984,43 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Overview Tab */}
             {activeTab === 'overview' && (
-              <div className="space-y-6">
-                <InvestmentQuestionsPanel
-                  darkMode={darkMode}
-                  insightsData={overviewInsightsData}
-                  dealScore={reportView.applied ? reportView.score : null}
-                  scoreBand={scoreExplanationV1?.band ?? null}
-                  dealScoreLabel={canonicalScoreLabel}
-                  snapshotSummary={scoreExplanationV1?.snapshot_summary ?? null}
-                  topSectionConfidence={topSectionConfidence}
-                />
-                {hasGovernedOverview ? (
-                  <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('muted')}`}>
-                            phase: {String(governedOverview.llm_phase_mode ?? '—')}
-                          </span>
-                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('muted')}`}>
-                            created: {governedOverview.created_at ? new Date(governedOverview.created_at).toLocaleString() : '—'}
-                          </span>
-                          {governedQualityFlags.provider_error ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>provider_error</span>
-                          ) : null}
-                          {governedQualityFlags.model_output_not_json ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>model_output_not_json</span>
-                          ) : null}
-                          {governedQualityFlags.guard_degraded ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('warning')}`}>guard_degraded</span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {governedOverlayDegraded ? (
-                          <Button
-                            variant={darkMode ? 'secondary' : 'outline'}
-                            onClick={() => setShowGovernedOverlayPanel((v) => !v)}
-                            className="text-xs"
-                          >
-                            {showGovernedOverlayPanel ? 'Hide overlay' : 'Show overlay'}
-                          </Button>
-                        ) : null}
-                        <Button
-                          variant={darkMode ? 'secondary' : 'outline'}
-                          onClick={() => {
-                            // Keep overlay + cards in sync by refreshing both persisted overlay and /report.
-                            loadReport({ force: true }).catch(() => {
-                              // handled via state
-                            });
-                            governedOverview.refresh({ force: true }).catch(() => {
-                              // handled via hook state
-                            });
-                          }}
-                          className="text-xs"
-                        >
-                          Refresh overlay
-                        </Button>
-                      </div>
-                    </div>
-
-                    {governedOverlayDegraded ? (
-                      null
-                    ) : null}
-
-                    {(showGovernedOverlayPanel || !governedOverlayDegraded) ? (
-                      <div className="mt-4">
-                        <DealWorkspaceOverviewComp
-                          darkMode={darkMode}
-                          documentTitles={documentTitles}
-                          showFieldEvidence={true}
-                          dealOneLiner={governedDealOneLinerDisplay}
-                          product={governedKeyFacts.product.value}
-                          marketIcp={governedKeyFacts.market.value}
-                          businessModel={governedKeyFacts.businessModel.value}
-                          raiseTerms={governedKeyFacts.raise.value}
-                          dealOneLinerEvidenceRefs={governedKeyFactEvidenceRefs.one_liner}
-                          productEvidenceRefs={governedKeyFactEvidenceRefs.product}
-                          marketIcpEvidenceRefs={governedKeyFactEvidenceRefs.market}
-                          businessModelEvidenceRefs={governedKeyFactEvidenceRefs.businessModel}
-                          raiseTermsEvidenceRefs={governedKeyFactEvidenceRefs.raise}
-                          productEvidenceIds={governedKeyFactEvidenceIds.product}
-                          marketIcpEvidenceIds={governedKeyFactEvidenceIds.market}
-                          businessModelEvidenceIds={governedKeyFactEvidenceIds.businessModel}
-                          raiseTermsEvidenceIds={governedKeyFactEvidenceIds.raise}
-                          resolvedEvidence={resolvedEvidence}
-                          productProvenance={governedKeyFacts.product.provenance}
-                          marketIcpProvenance={governedKeyFacts.market.provenance}
-                          businessModelProvenance={governedKeyFacts.businessModel.provenance}
-                          raiseTermsProvenance={governedKeyFacts.raise.provenance}
-                          dealSummaryParagraphs={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.paragraphs}
-                          dealSummaryStrengths={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.strengths}
-                          dealSummaryRisks={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.risks}
-                          dealSummaryOpenQuestions={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.open_questions}
-                          dealSummaryTractionSignals={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.traction_signals}
-                          dealSummaryKeyRisksDetected={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.key_risks_detected}
-                          dealSummaryStrengthEvidenceRefs={governedKeyFactEvidenceRefs.strengths}
-                          dealSummaryRiskEvidenceRefs={governedKeyFactEvidenceRefs.concerns}
-                          dealSummaryOpenQuestionsEvidenceRefs={governedKeyFactEvidenceRefs.open_questions}
-                          dealSummaryTractionSignalsEvidenceRefs={governedKeyFactEvidenceRefs.traction}
-                          kpiTiles={overlayKpiTiles}
-                          dealSummarySourceLabel={'Overlay (non-authoritative)'}
-                          score0_100={canonicalScoreView.score0_100}
-                          scoreSource={canonicalScoreView.scoreSource}
-                          reportApplied={canonicalScoreView.reportApplied}
-                          decisionLabel={decisionTileLabel}
-                          confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
-                          confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
-                          rationale={decisionTileRationale}
-                          strengths={filterMismatchedScoreItems(overlayStrengths, canonicalScoreForSanitizer)}
-                          openItems={filterMismatchedScoreItems(overlayOpenItems, canonicalScoreForSanitizer)}
-                          coverageGaps={missingChips}
-                          interpretationStatus={governedOverlayStatusUi}
-                          interpretationSource={'persisted' as any}
-                          interpretationText={governedInterpretationText}
-                          interpretationClaims={governedInterpretationClaims}
-                          interpretationDisclosures={governedInterpretationDisclosures}
-                          llmPhaseMode={governedOverview.llm_phase_mode ?? ((dealData as any)?.llm_phase_mode ?? null)}
-                          interpretationErrorCode={null}
-                          onRequestInterpretation={() => {
-                            governedOverview.refresh({ force: true }).catch(() => {
-                              // handled via hook state
-                            });
-                          }}
-                          onViewFullAnalysis={() => setActiveTab('evidence')}
-                          onOpenInvestorInsights={() => setActiveTab('investor-insights')}
-                          investorInsightsStatus={investorInsights.status === 'error' ? undefined : (investorInsights.report?.status ?? undefined)}
-                          reportEvidenceGate={investorInsights.status === 'error' ? null : (investorInsights.report?.status_summary?.evidence_gate ?? investorInsights.report?.render_package?.evidence_gate ?? null)}
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div
-                    className={`backdrop-blur-xl border rounded-xl p-6 w-full ${
-                      governedOverlayDegraded
-                        ? (darkMode ? 'bg-amber-500/5 border-amber-500/40' : 'bg-amber-50 border-amber-200/70')
-                        : (darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50')
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(governedOverlayDegraded ? 'warning' : 'muted')}`}>
-                            phase: {String(governedOverview.llm_phase_mode ?? '—')}
-                          </span>
-                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('muted')}`}>
-                            created: {governedOverview.created_at ? new Date(governedOverview.created_at).toLocaleString() : '—'}
-                          </span>
-                          {governedQualityFlags.provider_error ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>provider_error</span>
-                          ) : null}
-                          {governedQualityFlags.model_output_not_json ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>model_output_not_json</span>
-                          ) : null}
-                          {governedQualityFlags.guard_degraded ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('warning')}`}>guard_degraded</span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <Button
-                        variant={darkMode ? 'secondary' : 'outline'}
-                        onClick={() => {
-                          governedOverview.refresh({ force: true }).catch(() => {
-                            // handled via hook state
-                          });
-                        }}
-                        className="text-xs"
-                      >
-                        Refresh overlay
-                      </Button>
-                    </div>
-
-                    <div className="mt-4">
-                      {governedOverview.status === 'loading' ? (
-                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Loading governed overlay…</div>
-                      ) : !hasGovernedOverview ? (
-                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                          {overlayPostAnalyzeState === 'polling'
-                            ? 'Overlay still processing… refreshing automatically.'
-                            : overlayPostAnalyzeState === 'timeout'
-                              ? 'Overlay still processing… refresh overlay or retry analysis.'
-                              : 'Run analysis to generate governed overlay.'}
-                        </div>
-                      ) : (
-                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                          {/* Overlay quality flags are shown via chips; detailed reasoning is in debug/diagnostics. */}
-                          
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Evidence & Coverage section must remain visible below the canonical overview component */}
-                <EvidenceCoverageSection
-                  documentsReviewedCount={Object.keys(documentTitles).length}
-                  productBand={getBandForCategory('Product')}
-                  marketBand={getBandForCategory('Market/ICP')}
-                  teamBand={getBandForCategory('Team')}
-                  risksBand={getBandForCategory('Risks')}
-                  isRunning={isFullProcessActive || analyzing}
-                  lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null}
-                />
-
-                <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Deterministic (authoritative)</div>
-                      <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                        Canonical output from the deterministic report pipeline.
-                      </div>
-                    </div>
-                    <Button
-                      variant={darkMode ? 'secondary' : 'outline'}
-                      onClick={() => {
-                        deterministicToggleTouchedRef.current = true;
-                        setShowDeterministicAuthoritative((v) => !v);
-                      }}
-                    >
-                      {showDeterministicAuthoritative ? 'Hide Deterministic (Authoritative)' : 'Show Deterministic (Authoritative)'}
-                    </Button>
-                  </div>
-
-                  {showDeterministicAuthoritative ? (
-                    <div className="mt-4">
-                      <DealWorkspaceOverviewComp
-                        darkMode={darkMode}
-                        dealOneLiner={workspaceOverviewModel.summaries.short.value}
-                        product={workspaceOverviewModel.keyFacts.product.value}
-                        marketIcp={workspaceOverviewModel.keyFacts.market.value}
-                        businessModel={workspaceOverviewModel.keyFacts.business_model.value}
-                        raiseTerms={workspaceOverviewModel.keyFacts.raise_terms.value}
-                        productProvenance={{ source: workspaceOverviewModel.keyFacts.product.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.product.origin === 'overlay' ? 'governed' : 'deterministic' }}
-                        marketIcpProvenance={{ source: workspaceOverviewModel.keyFacts.market.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.market.origin === 'overlay' ? 'governed' : 'deterministic' }}
-                        businessModelProvenance={{ source: workspaceOverviewModel.keyFacts.business_model.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.business_model.origin === 'overlay' ? 'governed' : 'deterministic' }}
-                        raiseTermsProvenance={{ source: workspaceOverviewModel.keyFacts.raise_terms.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.raise_terms.origin === 'overlay' ? 'governed' : 'deterministic' }}
-                        dealSummaryParagraphs={workspaceOverviewModel.summaries.long.paragraphs}
-                        kpiTiles={deterministicKpiTiles}
-                        dealSummarySourceLabel={dealSummarySourceLabel}
-                        dealSummaryCitations={canonicalCitations ?? undefined}
-                        score0_100={canonicalScoreView.score0_100}
-                        scoreSource={canonicalScoreView.scoreSource}
-                        reportApplied={canonicalScoreView.reportApplied}
-                        decisionLabel={decisionTileLabel}
-                        confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
-                        confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
-                        rationale={decisionTileRationale}
-                        strengths={filterMismatchedScoreItems(decisionTileStrengths, canonicalScoreForSanitizer)}
-                        openItems={filterMismatchedScoreItems(decisionTileOpenItemsAll, canonicalScoreForSanitizer)}
-                        coverageGaps={missingChips}
-                        interpretationStatus={governedOverlayStatusUi}
-                        interpretationSource={hasGovernedOverview ? ('persisted' as any) : ('none' as any)}
-                        interpretationText={governedInterpretationText}
-                        interpretationClaims={hasGovernedOverview ? governedInterpretationClaims : []}
-                        interpretationDisclosures={hasGovernedOverview ? governedInterpretationDisclosures : []}
-                        llmPhaseMode={governedOverview.llm_phase_mode ?? ((dealData as any)?.llm_phase_mode ?? null)}
-                        interpretationErrorCode={null}
-                        onRequestInterpretation={() => {
-                          governedOverview.refresh({ force: true }).catch(() => {
-                            // handled via hook state
-                          });
-                        }}
-                        onViewFullAnalysis={() => setActiveTab('evidence')}
-                        onOpenInvestorInsights={() => setActiveTab('investor-insights')}
-                        investorInsightsStatus={investorInsights.status === 'error' ? undefined : (investorInsights.report?.status ?? undefined)}
-                        reportEvidenceGate={investorInsights.status === 'error' ? null : (investorInsights.report?.status_summary?.evidence_gate ?? investorInsights.report?.render_package?.evidence_gate ?? null)}
-                      />
-
-                      <div className="mt-6">
-                        <FinancialCoveragePanel
-                          darkMode={darkMode}
-                          financialCoverage={authoritativeFinancialCoverageV1.value}
-                          documentTitles={documentTitles}
-                          burnHasNumeric={burnHasNumeric}
-                          runwayHasNumeric={runwayHasNumeric}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-
-          <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis diagnostics</div>
-                <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  {analysisDiagnosticsStatus === 'loading'
-                    ? 'Loading latest diagnostics snapshot…'
-                    : (analysisDiagnostics ? 'Latest snapshot loaded.' : 'No diagnostics yet — run analysis to generate.')}
-                </div>
-              </div>
-              {analysisDiagnostics ? (
-                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                  {analysisDiagnostics.created_at ? `Updated ${new Date(analysisDiagnostics.created_at).toLocaleString()}` : null}
-                </div>
-              ) : null}
-            </div>
-
-            {analysisDiagnosticsError ? (
-              <div className={`mt-3 text-xs ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
-                {analysisDiagnosticsError}
-              </div>
-            ) : null}
-
-            {analysisDiagnostics ? (
-              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report</div>
-                  <div className={`text-xs font-mono break-all ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{analysisDiagnostics.report_id}</div>
-                  <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>phase: {String(analysisDiagnostics.llm_phase_mode ?? '—')}</div>
-
-                  <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    <span>
-                      Header latest: {typeof dioMeta?.dioAnalysisVersion === 'number' ? `v${dioMeta.dioAnalysisVersion}` : '—'}
-                    </span>
-                    <span className={`mx-2 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>·</span>
-                    <span>
-                      Loaded: {typeof (reportEnvelope as any)?.version === 'number' ? `v${(reportEnvelope as any).version}` : '—'}
-                      {typeof (reportArtifact as any)?.analysis_version === 'number' ? ` (artifact v${(reportArtifact as any).analysis_version})` : ''}
-                    </span>
-                  </div>
-
-                  {(
-                    typeof dioMeta?.dioAnalysisVersion === 'number' &&
-                    typeof (reportArtifact as any)?.analysis_version === 'number' &&
-                    dioMeta.dioAnalysisVersion !== (reportArtifact as any).analysis_version
-                  ) ? (
-                    <div className={`mt-1 text-xs ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
-                      Version mismatch: header v{dioMeta.dioAnalysisVersion} ≠ artifact v{String((reportArtifact as any).analysis_version)}
-                    </div>
-                  ) : null}
-
-                  {typeof (reportArtifact as any)?.dio_id === 'string' && (reportArtifact as any).dio_id ? (
-                    <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      artifact.dio_id: <span className="font-mono break-all">{String((reportArtifact as any).dio_id)}</span>
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage</div>
-                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Deterministic coverage ratio: {typeof analysisDiagnostics.deterministic_coverage_ratio === 'number' ? `${Math.round(analysisDiagnostics.deterministic_coverage_ratio * 100)}%` : '—'}
-                  </div>
-                  <div className={`mt-1 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Citation integrity: {typeof analysisDiagnostics.citation_integrity_percent === 'number' ? `${Math.round(analysisDiagnostics.citation_integrity_percent)}%` : '—'}
-                  </div>
-                </div>
-
-                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Guard</div>
-                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Hallucination count: {typeof analysisDiagnostics.hallucination_count === 'number' ? analysisDiagnostics.hallucination_count : '—'}
-                  </div>
-                  <div className={`mt-1 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Numeric claims without evidence: {typeof analysisDiagnostics.numeric_claims_without_evidence === 'number' ? analysisDiagnostics.numeric_claims_without_evidence : '—'}
-                  </div>
-                </div>
-
-                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Drift</div>
-                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Semantic drift score: {typeof analysisDiagnostics.semantic_drift_score === 'number' ? analysisDiagnostics.semantic_drift_score.toFixed(4) : '—'}
-                  </div>
-                  {(
-                    typeof analysisDiagnostics.provider_error_count === 'number' ||
-                    typeof analysisDiagnostics.model_output_truncated_count === 'number' ||
-                    typeof analysisDiagnostics.model_output_not_json_count === 'number' ||
-                    typeof analysisDiagnostics.guard_degraded_count === 'number'
-                  ) ? (
-                    <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Errors: provider={analysisDiagnostics.provider_error_count ?? '—'} · trunc={analysisDiagnostics.model_output_truncated_count ?? '—'} · nonjson={analysisDiagnostics.model_output_not_json_count ?? '—'} · guard={analysisDiagnostics.guard_degraded_count ?? '—'}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-          </div>
-              </div>
+              <DealOverviewTab
+                darkMode={darkMode}
+                companyName={displayName}
+                companyDescription={governedDealOneLinerDisplay}
+                snapshotFacts={{
+                  raise: selectedHeader.ready ? (selectedHeader.raise.value ?? '—') : '—',
+                  arr: selectedHeader.ready && revenueCoveragePolicy.allow ? (selectedHeader.revenue.value ?? '—') : '—',
+                  growth: selectedHeader.ready ? (safeText(reportStructuredGrowthValue) || selectedHeader.growth.value || '—') : '—',
+                  customers: selectedHeader.ready ? (selectedHeader.customers.value ?? '—') : '—',
+                  tam: vm.overview.snapshotFacts.tam,
+                }}
+                signals={vm.overview.signalData}
+                financials={[
+                  { label: selectedHeader.ready ? (selectedHeader.raise.label ?? 'Raise') : 'Raise', value: selectedHeader.ready ? (selectedHeader.raise.value ?? '—') : '—' },
+                  { label: revenueCoveragePolicy.kpiTileLabel, value: selectedHeader.ready && revenueCoveragePolicy.allow ? (selectedHeader.revenue.value ?? '—') : '—' },
+                  { label: 'Runway', value: runwayTileValue ?? '—' },
+                  { label: 'Burn', value: burnTileValue ?? '—' },
+                ]}
+                traction={[
+                  { label: selectedHeader.ready ? (selectedHeader.growth.label ?? 'Growth') : 'Growth', value: selectedHeader.ready ? (safeText(reportStructuredGrowthValue) || selectedHeader.growth.value || '—') : '—' },
+                  { label: selectedHeader.ready ? (selectedHeader.customers.label ?? 'Customers') : 'Customers', value: selectedHeader.ready ? (selectedHeader.customers.value ?? '—') : '—' },
+                ]}
+                deal={[
+                  { label: 'Stage', value: dealStageLabel },
+                  { label: 'Type', value: topSectionDealType },
+                ]}
+                businessModel={[
+                  { label: selectedHeader.ready ? (selectedHeader.business_model.label ?? 'Model') : 'Model', value: (selectedHeader.ready ? selectedHeader.business_model.value : null) || authoritativeBusinessModel.value || workspaceOverviewModel.keyFacts.business_model.value || 'Unknown' },
+                ]}
+                productSummary={governedKeyFacts.product.value}
+                marketSummary={governedKeyFacts.market.value}
+                businessModelSummary={governedKeyFacts.businessModel.value}
+                raiseTerms={governedKeyFacts.raise.value}
+                insightsScore={canonicalScoreView.score0_100 ?? 0}
+                insightsConfidence={topSectionConfidence}
+                onOpenInsights={() => setActiveTab('investor-insights')}
+              />
             )}
 
             {/* Documents Tab */}

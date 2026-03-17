@@ -153,6 +153,15 @@ describe("inferPeriodType", () => {
     ["LTM",      "ttm"],
     ["current",  "unknown"],
     ["P0",       "unknown"],
+    // Standalone quarter labels
+    ["Q1",       "quarterly"],
+    ["Q2",       "quarterly"],
+    ["Q3",       "quarterly"],
+    ["Q4",       "quarterly"],
+    // Half-year and YTD → annual (year-scoped aggregations)
+    ["YTD",      "annual"],
+    ["H1 2024",  "annual"],
+    ["H2 2025",  "annual"],
   ] as const)("inferPeriodType(%s) === %s", (label, expected) => {
     expect(inferPeriodType(label)).toBe(expected);
   });

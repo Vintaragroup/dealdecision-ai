@@ -102,6 +102,8 @@ export type RaiseAmountCandidate = {
 
 export type RejectReason =
   | "market_context_taint"
+  | "fund_aum_context"
+  | "volume_metric_taint"
   | "magnitude_no_strong_verb"
   | "no_candidates";
 
@@ -141,6 +143,58 @@ export function parseMoneyToMillions(text: string): number | null {
     k: 0.001,     thousand: 0.001,
   };
   return num * (multiplier[suffix] ?? 1);
+}
+
+/**
+ * Fund/AUM context taint regex.
+ *
+ * Rejects raise candidates whose context contains fund-management language that
+ * clearly indicates the amount describes AUM or a vehicle size, not a fundraise ask.
+ *
+ * Examples rejected:
+ *   "$100M Alternatives Fund" — alternatives fund is the vehicle, not an ask
+ *   "$500M AUM" — assets under management, not a raise
+ *   "$250M LP commitment" — LP/GP mechanics, not the company's own ask
+ */
+export const FUND_AUM_CONTEXT_RE =
+  /\b(?:alternatives?\s+fund|alternative\s+investment|aum|assets?\s+under\s+management|fund\s+size|investment\s+vehicle|limited\s+partners?(?:hip)?|\blp\b|general\s+partners?(?:hip)?|\bgp\b|fund\s+of\s+funds?|carried\s+interest|management\s+fee|endowment\s+fund|hedge\s+fund|private\s+equity\s+fund|venture\s+capital\s+fund|family\s+office|feeder\s+fund|co[\s-]invest)\b/i;
+
+/**
+ * Returns true when the candidate context contains fund-management / AUM language
+ * that indicates the amount describes a vehicle or portfolio, not a fundraise ask.
+ */
+export function isCandidateTaintedByFundAumContext(context: string): boolean {
+  return FUND_AUM_CONTEXT_RE.test(context);
+}
+
+/**
+ * VOLUME_NOT_RAISE_RE: Operational volume / portfolio metrics that are frequently
+ * mistaken for raise amounts because they appear near large currency figures.
+ *
+ * Pattern covers the Carmoola-class failure: "cars financed = £100M" / "GMV $50M"
+ * where the money figure represents a throughput metric, NOT a fundraise ask.
+ *
+ * Rejected contexts include:
+ *   - Car / vehicle lending throughput: "cars financed", "cars on finance", "vehicles originated"
+ *   - Lending / mortgage origination volumes: "loan volume", "originations", "mortgage originations"
+ *   - Fintech transaction throughput: "GMV", "gross merchandise value", "gross transaction value"
+ *   - Deployed capital (VC/debt funds): "capital deployed", "capital invested"
+ *   - Budget / operational plans: "annual budget", "operating budget", "total budget"
+ *   - Portfolio / book size: "loan book", "book size", "loan portfolio", "debt facility"
+ *   - Operational KPIs often misread as raise: "total processed", "total facilitated"
+ *
+ * Conservative anchoring: all patterns require a specific noun phrase, not bare keywords,
+ * to minimise false positives against legitimate raise clauses.
+ */
+export const VOLUME_NOT_RAISE_RE =
+  /\b(?:cars?\s+(?:financed?|on\s+finance|sold|originated?|written)|vehicles?\s+(?:financed?|sold|originated?|written)|mortgages?\s+(?:originated?|funded|processed|written)|loans?\s+(?:originated?|funded|processed|written|disbursed)|loan\s+(?:volume|book|portfolio|originations?|size)|mortgage\s+(?:volume|originations?|book|completions?)|originations?\b|gross\s+(?:merchandise|transaction)\s+value|\bGMV\b|capital\s+deployed(?:\s+to\s+date)?|capital\s+invested(?:\s+to\s+date)?|total\s+(?:loans?|capital|debt)\s+(?:deployed|invested|originated?|disbursed)|annual\s+(?:operating\s+)?budget|total\s+(?:operating\s+)?budget|booked\s+volume|loan\s+book\b|book\s+(?:size|value)|debt\s+(?:facility|book|portfolio)|credit\s+facility\s+(?:size|outstanding|limit)|total\s+(?:facilitated|processed|transacted))\b/i;
+
+/**
+ * Returns true when the candidate context contains operational volume / portfolio
+ * language indicating the money amount is a throughput metric, not a fundraise ask.
+ */
+export function isCandidateTaintedByVolumeMetric(context: string): boolean {
+  return VOLUME_NOT_RAISE_RE.test(context);
 }
 
 /**
@@ -227,6 +281,25 @@ export function resolveRaiseAmount({
       continue;
     }
 
+    // Rule 2b: fund/AUM context taint — rejects "$100M Alternatives Fund" etc.
+    // Applied before magnitude check: fund/AUM language is deterministically wrong
+    // regardless of amount size, stage, or raise-verb proximity.
+    if (isCandidateTaintedByFundAumContext(ctx)) {
+      rejected.push({ candidate, reason: "fund_aum_context" });
+      continue;
+    }
+
+    // Rule 2c: volume metric taint — rejects operational throughput / portfolio metrics
+    // that masquerade as raise amounts (Carmoola-class: "cars financed = £100M").
+    // GMV, loan originations, loan book, car finance throughput, annual budget, etc.
+    // Only applied when no strong unambiguous raise verb is present immediately nearby,
+    // so legitimate "we are raising £100M and have financed 5,000 cars" slides are
+    // not rejected (the STRONG_RAISE_VERB_RE check allows them through).
+    if (isCandidateTaintedByVolumeMetric(ctx) && !hasStrongRaiseSignal(ctx)) {
+      rejected.push({ candidate, reason: "volume_metric_taint" });
+      continue;
+    }
+
     // Rule 3: magnitude sanity — only for early stages
     if (earlyStage) {
       const amountM = parseMoneyToMillions(candidate.value);
@@ -239,17 +312,42 @@ export function resolveRaiseAmount({
       }
     }
 
-    // Candidate survived both checks — accept it.
-    return {
+    // Candidate survived all checks — accept it.
+    const accepted: ResolveRaiseAmountResult = {
       raise_amount: candidate.value,
       source: candidate.source,
       evidence_ref: candidate.evidence_ref ?? null,
       rejected_candidates: rejected,
       from_raise_terms_override: false,
     };
+    try {
+      console.log(
+        JSON.stringify({
+          event: "RAISE_CANDIDATE_SELECTED",
+          raise_amount: accepted.raise_amount,
+          source: accepted.source,
+          evidence_ref: accepted.evidence_ref,
+          rejected_count: rejected.length,
+          rejected_reasons: rejected.map((r) => r.reason),
+        })
+      );
+    } catch { /* ignore */ }
+    return accepted;
   }
 
   // No surviving candidate.
+  if (rejected.length > 0) {
+    try {
+      console.log(
+        JSON.stringify({
+          event: "RAISE_CANDIDATE_REJECTED",
+          reason: "all_candidates_rejected",
+          rejected_count: rejected.length,
+          rejected_reasons: rejected.map((r) => ({ value: r.candidate.value, reason: r.reason })),
+        })
+      );
+    } catch { /* ignore */ }
+  }
   return {
     raise_amount: null,
     source: null,

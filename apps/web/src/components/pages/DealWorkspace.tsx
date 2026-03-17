@@ -10,19 +10,22 @@ import {
 import { Input } from '../ui/input';
 import { ToastContainer, ToastType, useToastQueue } from '../ui/Toast';
 import { DocumentsTab } from '../documents/DocumentsTab';
-import { DealFormData } from '../NewDealModal';
+import { DealFormData } from '../Modal_Legacy/NewDealModal';
 import { AnimatedCounter } from '../AnimatedCounter';
 import { ExportReportModal } from '../ExportReportModal';
 import { TemplateExportModal } from '../TemplateExportModal';
 import { AnalysisTab } from '../workspace/AnalysisTab';
 import { DataTab } from '../workspace/DataTab';
 import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
-import { InvestorInsightsTab } from '../workspace/InvestorInsightsTab';
+import { InvestorInsightsTab } from '../workspace/investor-insights/InvestorInsightsTab';
+import { InvestmentQuestionsPanel } from '../workspace/InvestmentQuestionsPanel';
+import { adaptReportToInsightsData } from '../../types/investor-insights';
 import { ShareModal } from '../collaboration/ShareModal';
 import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
-import { DealWorkspaceTopSection } from '../workspace/DealWorkspaceTopSection';
-import { DealWorkspaceOverviewComp } from '../workspace/dealworkspace_overview_comp';
+import { DealWorkspaceHeader } from '../workspace/DealWorkspaceTopSection';
+import { DealOverviewTab } from '../workspace/DealOverviewTab';
+import { DealWorkspaceOverviewComp } from '../workspace/Dealworkspace-Legacy/dealworkspace_overview_comp';
 import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
 import { resolveCanonicalScore, type ResolvedScore } from '../../lib/resolveCanonicalScore';
@@ -33,6 +36,7 @@ import { selectAuthoritativeFinancialCoverageV1 } from '../../lib/selectors/sele
 import { selectAuthoritativeBurnV1 } from '../../lib/selectors/selectAuthoritativeBurnV1';
 import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthoritativeRunwayV1';
 import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
+import { selectDeterministicOverviewSlotsV1 } from '../../lib/selectors/selectDeterministicOverviewSlotsV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
@@ -44,11 +48,17 @@ import { derivePhaseBInsights } from '../../lib/phaseb-findings';
 import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
 import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
 import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
+import { chooseGovernedKeyFact } from '../../lib/chooseGovernedKeyFact';
+import { CanonicalIdentityRenameBanner } from '../deal/CanonicalIdentityRenameBanner';
+import { deriveGatingState, shouldSuppressNeedsReview } from '../../lib/badgePolicy';
 import { useAsyncStaleGuard } from '../../lib/hooks/useAsyncStaleGuard';
 import { useUserRole } from '../../contexts/UserRoleContext';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { extractFundabilityScore0_100 } from '../../lib/dealScore';
 import { filterMismatchedScoreItems, stripScoreFractions, stripScoreFractionsFromItems } from '../../lib/sanitizeScorePhrases';
+import { buildWorkspaceViewModel } from '../workspace/builders/buildWorkspaceViewModel';
+import type { WorkspaceViewModelInputs } from '../workspace/builders/buildWorkspaceViewModel';
+import { WorkspaceDebugPanel } from '../workspace/WorkspaceDebugPanel';
 import {
   PolarAngleAxis,
   PolarGrid,
@@ -92,7 +102,8 @@ import {
   Zap,
   Link2,
   MoreVertical,
-  Edit
+  Edit,
+  Terminal
 } from 'lucide-react';
 
 interface DealWorkspaceProps {
@@ -140,7 +151,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const buildStamp = import.meta.env.VITE_BUILD_STAMP ?? 'dev';
 
-  const [investorScore, setInvestorScore] = useState(0);
+  // reportBandScore: cached score_band_v2.overall_score from the analytical pipeline report.
+  // Set in loadReport() via resolveCanonicalScore. NOT related to limited_scoring_v1 (Investor Insights).
+  const [reportBandScore, setReportBandScore] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
   const { toasts, push: _pushToast, dismiss: removeToast } = useToastQueue();
   const [showExportModal, setShowExportModal] = useState(false);
@@ -149,6 +162,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [showCommentsPanel, setShowCommentsPanel] = useState(false);
   const [comments, setComments] = useState<Array<{ id: string; user: string; message: string; timestamp: Date }>>([]);
   const [showMoreActions, setShowMoreActions] = useState(false);
+  const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [showScoreBreakdown, setShowScoreBreakdown] = useState(false);
   const [showScoreTraceDebug, setShowScoreTraceDebug] = useState(false);
   const [showAllMissingChips, setShowAllMissingChips] = useState(false);
@@ -787,17 +801,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (isStale(keyAtStart)) return;
       setReportFromApi((report && typeof report === 'object') ? (report as DealReport) : null);
 
-      // Use the canonical resolver so investorScore (and thus fundamentalsScore0_100 /
+      // Use the canonical resolver so reportBandScore (and thus fundamentalsScore0_100 /
       // decisionTileScore0_100) reflects the calibrated band score, not just overallScore.
       // Priority: score_band_v2.overall_score → overallScore → (no update).
       if (ready) {
         const { score: _canonicalForInvestor } = resolveCanonicalScore(report);
         if (_canonicalForInvestor != null) {
           if (isStale(keyAtStart)) return;
-          setInvestorScore(_canonicalForInvestor);
+          setReportBandScore(_canonicalForInvestor);
         } else if (typeof (report as any)?.overallScore === 'number' && Number.isFinite((report as any).overallScore)) {
           if (isStale(keyAtStart)) return;
-          setInvestorScore(Math.round((report as any).overallScore));
+          setReportBandScore(Math.round((report as any).overallScore));
         }
       }
     } catch (err: any) {
@@ -1299,7 +1313,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     score:
       (typeof dealFromApi.score === 'number' && Number.isFinite(dealFromApi.score))
         ? dealFromApi.score
-        : investorScore,
+        : reportBandScore,
     updatedTime: dealFromApi.updated_at ? new Date(dealFromApi.updated_at).toLocaleDateString() : 'Recently',
     createdDate: dealFromApi.created_at ? new Date(dealFromApi.created_at).toLocaleDateString() : 'Unknown',
     description:
@@ -1505,7 +1519,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const fundamentalsScore0_100: number | null = (() => {
     if (typeof dealFromApi?.score === 'number' && Number.isFinite(dealFromApi.score)) return Math.round(dealFromApi.score);
-    if (typeof investorScore === 'number' && Number.isFinite(investorScore)) return Math.round(investorScore);
+    if (typeof reportBandScore === 'number' && Number.isFinite(reportBandScore)) return Math.round(reportBandScore);
     return null;
   })();
   const dioStatus = (dealFromApi as any)?.dioStatus ?? undefined;
@@ -2326,6 +2340,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const authoritativeProductTextV1 = authoritativeProductSummaryV1.value ?? '';
   const authoritativeMarketTextV1 = authoritativeMarketSummaryV1.value ?? '';
 
+  // PR22: deterministic Overview-tab fallback slots (from investor-insights render_package).
+  // Used as a last-resort fallback when authoritative governed/structured-summary values are absent.
+  const deterministicOverviewSlots = useMemo(() => {
+    return selectDeterministicOverviewSlotsV1(investorInsights.report ?? null);
+  }, [investorInsights.report]);
+
   const canonicalTiers = canonicalDealSummaryReady && (canonicalDealSummaryV1 as any)?.tiers && typeof (canonicalDealSummaryV1 as any).tiers === 'object'
     ? (canonicalDealSummaryV1 as any).tiers
     : null;
@@ -2978,7 +2998,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       if (typeof displayScore === 'number' && Number.isFinite(displayScore)) return Math.round(displayScore);
       const fromDealInfo = (dealInfo as any)?.score;
       if (typeof fromDealInfo === 'number' && Number.isFinite(fromDealInfo)) return Math.round(fromDealInfo);
-      if (typeof investorScore === 'number' && Number.isFinite(investorScore)) return Math.round(investorScore);
+      if (typeof reportBandScore === 'number' && Number.isFinite(reportBandScore)) return Math.round(reportBandScore);
       return 0;
     })();
 
@@ -3120,7 +3140,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     reportArtifact,
     decisionScoreExplanation,
     displayScore,
-    investorScore,
+    reportBandScore,
     dealInfo,
     dealFromApi,
     canonicalDealSummaryReady,
@@ -3139,7 +3159,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // Canonical score label: when the report is loaded (score = report.overallScore),
   // label it "Overall Score". Only use the sub-engine label ("Fundamentals" / "Fundability")
   // as a fallback when showing a pre-report estimate.
-  const canonicalScoreLabel: string = reportView.applied ? 'Overall Score' : displayScoreLabel;
+  const canonicalScoreLabel: string = reportView.applied ? 'Deal Score' : displayScoreLabel;
 
   // canonicalScoreView: single score truth shared by ALL score-bearing UI surfaces
   // (TopSection gauge AND Overview tab). score0_100 is null when report is not yet applied
@@ -3156,6 +3176,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const canonicalScoreForSanitizer: number | null = canonicalScoreView.reportApplied
     ? canonicalScoreView.score0_100
     : null;
+
+  // [SIGNAL-CONTRACT] Lifted from the render IIFE so buildWorkspaceViewModel can consume
+  // them for concerns/icReadiness/signalData without duplication.
+  const filteredStrengths = filterMismatchedScoreItems(topSectionStrengths, canonicalScoreForSanitizer);
+  const filteredWeaknesses = filterMismatchedScoreItems(topSectionWeaknesses, canonicalScoreForSanitizer);
 
   // [SCORE-CONTRACT] Final one-liner for TopSection Deal Snapshot.
   // Priority order (first non-empty wins):
@@ -3241,7 +3266,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       String(_bandScore ?? 'na'),
       String(_canonical ?? 'na'),
       String(fundamentalsScore0_100 ?? 'na'),
-      String(investorScore),
+      String(reportBandScore),
       String((dealFromApi as any)?.score ?? 'na'),
       String(displayScore ?? 'na'),
       String(reportView.score),
@@ -3261,7 +3286,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         'reportFromApi.metadata.score_band_v2.overall_score': _bandScore,
         'reportEnvelope.metadata.score_band_v2.overall_score': _envelopeLevelBandScore,
         'dealFromApi.score': (dealFromApi as any)?.score ?? null,
-        investorScore,
+        reportBandScore,
       },
       // Canonical resolution
       resolved: {
@@ -3294,7 +3319,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
   }, [
     dealId, reportVersion, dioMeta, reportFromApi, reportEnvelope, reportReady,
-    fundamentalsScore0_100, investorScore, dealFromApi, displayScore, displayScoreLabel,
+    fundamentalsScore0_100, reportBandScore, dealFromApi, displayScore, displayScoreLabel,
     reportView, canonicalScoreLabel, canonicalScoreView, decisionTileLabel,
   ]);
 
@@ -3464,9 +3489,30 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return null;
   })();
 
-  const overviewProductCanonical = authoritativeProductTextV1 || (canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
-  const overviewMarketIcpCanonical = authoritativeMarketTextV1 || (canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
-  const overviewBusinessModelCanonical = authoritativeBusinessModel.value || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
+  // PR22: deterministic slot fallbacks are injected before the '—' defaults so
+  // they activate only when both authoritative and phase1 DIO values are absent.
+  const _productBase = (canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : null)
+    ?? (overviewProduct !== '—' ? overviewProduct : null);
+  const _marketBase = (canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : null)
+    ?? (overviewMarketIcp !== '—' ? overviewMarketIcp : null);
+  const _businessModelBase = authoritativeBusinessModel.value
+    || (reportView.applied ? (reportView.businessModel !== '—' ? reportView.businessModel : null) : null)
+    || (overviewBusinessModel !== '—' ? overviewBusinessModel : null);
+
+  const overviewProductCanonical =
+    authoritativeProductTextV1
+    || _productBase
+    || deterministicOverviewSlots.product?.value
+    || overviewProduct;
+  const overviewMarketIcpCanonical =
+    authoritativeMarketTextV1
+    || _marketBase
+    || deterministicOverviewSlots.market?.value
+    || overviewMarketIcp;
+  const overviewBusinessModelCanonical =
+    _businessModelBase
+    || deterministicOverviewSlots.business_model?.value
+    || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
   const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
   const splitTierDeepToParagraphs = (raw: string): string[] => {
     const normalized = String(raw ?? '')
@@ -3655,6 +3701,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     governedInterpretationText,
   ]);
 
+  const overviewInsightsData = useMemo(() => {
+    if (!investorInsights.report) return null;
+    return adaptReportToInsightsData(investorInsights.report, displayName);
+  }, [investorInsights.report, displayName]);
+
   const kpiMissingTooltip = 'Not extracted from evidence';
   const overlayKpiTiles = useMemo(() => {
     // When /report is ready, keep the governed overlay KPIs consistent with report.structured_summary
@@ -3771,6 +3822,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const ovMissing = workspaceMirrorVM.missing;
     const ovFacts = ovMissing ? null : (workspaceMirrorVM.facts as any);
 
+    // Derive report gating state for badge suppression.
+    // When the evidence gate blocked LLM stages from running, "Needs review"
+    // is misleading — there is nothing governed to review.
+    const reportGating = deriveGatingState({
+      reportStatus: investorInsights.report?.status,
+      evidenceGate:
+        investorInsights.report?.status_summary?.evidence_gate ??
+        investorInsights.report?.render_package?.evidence_gate,
+    });
+    const suppressNeedsReview = shouldSuppressNeedsReview(reportGating);
+
     const asClean = (v: unknown): string => {
       const s = typeof v === 'string' ? v.trim() : '';
       return s && s !== '—' ? s : '';
@@ -3780,40 +3842,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       deterministic: string;
       overlay?: { value: string | null; quality?: string; source?: 'governed' | 'deterministic' | 'missing' } | null;
       preferDeterministic?: boolean;
-    }): { value: string; provenance: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }; fromOverlay: boolean } => {
-      const overlayVal = asClean(opts.overlay?.value);
-      const overlaySource = opts.overlay?.source;
-      const overlayQuality = opts.overlay?.quality;
-
-      const detVal = asClean(opts.deterministic);
-      if (opts.preferDeterministic) {
-        if (detVal) return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
-        if (overlayVal) return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
-        return { value: keyFactMissingText, provenance: { source: 'missing' }, fromOverlay: false };
-      }
-
-      if (overlayVal && overlaySource === 'governed') {
-        return { value: overlayVal, provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
-      }
-      const detDisplayable = detVal ? deterministicIsDisplayable(detVal) : false;
-
-      // Deterministic may override overlay only when it looks display-safe.
-      if (detVal && detDisplayable) {
-        return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
-      }
-
-      if (overlayVal) {
-        // Overlay phrasing is preferred when deterministic looks like OCR soup / slide dump.
-        return { value: overlayVal, provenance: { source: 'deterministic', needsReview: overlayQuality === 'fallback' }, fromOverlay: true };
-      }
-
-      // If deterministic is present but not display-safe and there's no overlay, fall back to deterministic anyway.
-      if (detVal) {
-        return { value: detVal, provenance: { source: 'deterministic' }, fromOverlay: false };
-      }
-
-      return { value: keyFactMissingText, provenance: { source: 'missing' }, fromOverlay: false };
-    };
+    }): { value: string; provenance: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }; fromOverlay: boolean } =>
+      chooseGovernedKeyFact({
+        ...opts,
+        suppressNeedsReview,
+        missingText: keyFactMissingText,
+        isDisplayable: deterministicIsDisplayable,
+      });
 
     const product = chooseGovernedFirst({
       deterministic: overviewProductCanonical,
@@ -3839,7 +3874,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
 
     return { product, market, businessModel, raise };
-  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1]);
+  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1, investorInsights.report]);
 
   const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -4065,9 +4100,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (typeof dealInfo?.score === 'number') {
       debugLogger.logAPIData('DealWorkspace', 'displayScore', displayScore, 'From dealInfo.score (API data)');
     } else {
-      debugLogger.logFallbackData('DealWorkspace', 'displayScore', displayScore, `No API score available, using fallback investorScore (${investorScore})`);
+      debugLogger.logFallbackData('DealWorkspace', 'displayScore', displayScore, `No API score available, using fallback reportBandScore (${reportBandScore})`);
     }
-  }, [displayScore, investorScore]);
+  }, [displayScore, reportBandScore]);
 
   const loadEvidence = async () => {
     if (!dealId) return;
@@ -4655,6 +4690,111 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const dealStageRaw = reportView.stageRaw;
   const dealStageLabel = reportView.stageLabel ?? '—';
+
+  // ── WorkspaceViewModel ────────────────────────────────────────────────────
+  // Single transform layer: all view-layer inputs → typed ViewModel consumed
+  // by DealWorkspaceHeader and DealOverviewTab. Eliminates hardcoded placeholders:
+  //   concerns=0, icReadiness=72 default, tam='—', signals=[].
+  const vmPipelineStatus: WorkspaceViewModelInputs['pipelineStatus'] = (() => {
+    const s = (dealFromApi as any)?.stage ?? '';
+    if (['closed_invested', 'closed_passed', 'closed_lost', 'archived'].includes(s)) return 'Closed';
+    if (['on_hold', 'paused'].includes(s)) return 'On Hold';
+    return 'Active';
+  })();
+
+  const vmDiligencePhase: WorkspaceViewModelInputs['diligencePhase'] = (() => {
+    const s = dealStageRaw ?? '';
+    if (s === 'intake') return 'Initial Screening';
+    if (s === 'under_review') return 'Early Diligence';
+    if (s === 'in_diligence') return 'Deep Diligence';
+    if (s === 'ready_decision') return 'IC Prep';
+    if (s === 'term_sheet') return 'Term Sheet';
+    return 'Early Diligence';
+  })();
+
+  const vmVerdict: WorkspaceViewModelInputs['verdict'] = (() => {
+    const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
+      ? (reportFromApi as any).metadata
+      : ((reportEnvelope as any)?.report?.metadata && typeof (reportEnvelope as any).report.metadata === 'object')
+        ? (reportEnvelope as any).report.metadata
+        : null;
+    if (Boolean((reportMeta as any)?.hard_pass_guardrail_v2?.triggered)) return 'HARD_PASS';
+    if (decisionLabel === 'FUND') return 'INVEST';
+    if (decisionLabel === 'CONSIDER') return 'CONSIDER';
+    return 'PASS';
+  })();
+
+  const vmEvidenceCoverage: WorkspaceViewModelInputs['evidenceCoverage'] =
+    decisionTileConfidenceBand === 'high' ? 'Strong'
+    : decisionTileConfidenceBand === 'med' ? 'Moderate'
+    : 'Limited';
+
+  const vm = useMemo(() => buildWorkspaceViewModel({
+    displayName,
+    dealDescription: (dealInfo as any)?.description || topSectionScoreDriverOneLiner || '',
+    dealStageLabel,
+    dealStageRaw: dealStageRaw ?? '',
+    industry: profileEdits.industry ?? '—',
+    lastUpdated: dealInfo?.updatedTime ?? undefined,
+    analyzing,
+    reportViewScore: reportView.score,
+    verdict: vmVerdict,
+    blockers: blockersCount ?? 0,
+    filteredStrengths,
+    filteredWeaknesses,
+    confidenceBand: decisionTileConfidenceBand,
+    coverageRatio: scoreExplanationV1?.coverage_ratio ?? null,
+    evidenceCoverage: vmEvidenceCoverage,
+    governedDealOneLiner: governedDealOneLinerDisplay,
+    governedProduct: governedKeyFacts.product.value,
+    governedMarket: governedKeyFacts.market.value,
+    governedBusinessModel: governedKeyFacts.businessModel.value,
+    governedRaise: governedKeyFacts.raise.value,
+    selectedHeaderReady: selectedHeader.ready,
+    raiseValue: selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null,
+    raiseLabel: selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null,
+    revenueValue: selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null,
+    revenueTileLabel: revenueCoveragePolicy.kpiTileLabel,
+    revenueAllowed: revenueCoveragePolicy.allow,
+    growthValue: selectedHeader.ready ? (selectedHeader.growth.value ?? null) : null,
+    growthLabel: selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null,
+    customersValue: selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null,
+    customersLabel: selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null,
+    businessModelValue: (selectedHeader.ready ? selectedHeader.business_model.value : null)
+      || authoritativeBusinessModel.value
+      || workspaceOverviewModel.keyFacts.business_model.value
+      || null,
+    businessModelLabel: selectedHeader.ready ? (selectedHeader.business_model.label ?? null) : null,
+    runwayTileValue: runwayTileValue ?? null,
+    burnTileValue: burnTileValue ?? null,
+    reportStructuredGrowthValue: reportStructuredGrowthValue ?? null,
+    // TAM: prefer phase1 AI-extracted numeric market size, then fall back to
+    // display_facts_v1.market_icp.text from the governed payload (which may
+    // mention market size in its ICP description). Neither is a structured KPI.
+    tamValue: (overviewV2 as any)?.market_size
+      ?? (overviewV2 as any)?.tam
+      ?? (() => {
+        try {
+          const dfv1 = (governedOverview as any)?.overview?.overview_json?.display_facts_v1;
+          return (dfv1?.market_icp?.text || dfv1?.market?.text) ?? null;
+        } catch { return null; }
+      })()
+      ?? null,
+    topSectionDealType,
+    pipelineStatus: vmPipelineStatus,
+    diligencePhase: vmDiligencePhase,
+    insightsScore: canonicalScoreView.score0_100 ?? 0,
+    insightsConfidence: topSectionConfidence,
+  }), [
+    displayName, dealInfo, topSectionScoreDriverOneLiner, dealStageLabel, dealStageRaw,
+    profileEdits.industry, analyzing, reportView.score, vmVerdict, blockersCount,
+    filteredStrengths, filteredWeaknesses, decisionTileConfidenceBand,
+    scoreExplanationV1, vmEvidenceCoverage, governedDealOneLinerDisplay,
+    governedKeyFacts, selectedHeader, revenueCoveragePolicy, runwayTileValue,
+    burnTileValue, reportStructuredGrowthValue, overviewV2, authoritativeBusinessModel,
+    workspaceOverviewModel, topSectionDealType, vmPipelineStatus, vmDiligencePhase,
+    canonicalScoreView, topSectionConfidence,
+  ]);
 
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {
@@ -6006,61 +6146,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         }`}>
           <div className="flex flex-col sm:flex-row items-start justify-between gap-4 sm:gap-0 sm:mb-6">
             <div className="flex-1">
-              <div className="flex items-center gap-3 mb-3">
-                <h1 className={`text-2xl ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {displayName}
-                </h1>
-                <span className="px-3 py-1 bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] text-white text-xs rounded-full shadow-[0_0_12px_rgba(99,102,241,0.4)]">
-                  {displayType === 'seed' ? 'Seed' : displayType === 'series-a' ? 'Series A' : displayType === 'series-b' ? 'Series B' : displayType === 'series-c' ? 'Series C' : displayType === 'series-d' ? 'Series D+' : 'Series A'}
-                </span>
-              </div>
-              {/* Improved Metadata Layout - Single Flowing Row */}
-              <div className={`text-sm flex flex-wrap items-center gap-x-4 gap-y-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                <span className="flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5" />
-                  Updated 2h ago
-                </span>
-                <span className={`${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>•</span>
-                <span className="flex items-center gap-1.5">
-                  <Calendar className="w-3.5 h-3.5" />
-                  Created {dealInfo?.createdDate || 'Unknown'}
-                </span>
-                <span className={`${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>•</span>
-                <span className="flex items-center gap-1.5">
-                  <Eye className="w-3.5 h-3.5" />
-                  Data not available
-                </span>
-              </div>
-
-              <div className="mt-2 flex flex-wrap items-center gap-3 text-xs sm:text-sm">
-                <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                  DIO: {dioMeta?.dioVersionId ? dioMeta.dioVersionId : 'Not generated'}
-                </span>
-                {typeof dioMeta?.dioRunCount === 'number' && (
-                  <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                    Runs: {dioMeta.dioRunCount}
-                    {typeof dioMeta.dioAnalysisVersion === 'number' ? ` (latest v${dioMeta.dioAnalysisVersion})` : ''}
-                  </span>
-                )}
-                <span className={`px-2 py-1 rounded-full ${darkMode ? 'bg-blue-500/10 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>
-                  Status: {dioMeta?.dioStatus ?? 'unknown'}
-                </span>
-                {dealStageRaw && (
-                  <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                    Stage: {dealStageLabel}
-                  </span>
-                )}
-                {dioMeta?.lastAnalyzedAt && (
-                  <span className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    Last analyzed: {new Date(dioMeta.lastAnalyzedAt).toLocaleString()}
-                  </span>
-                )}
-                {jobStatus && (
-                  <span className={`${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
-                    Job: {jobStatus}{jobId ? ` (${jobId})` : ''}
-                  </span>
-                )}
-              </div>
+              {dealId && (
+                <CanonicalIdentityRenameBanner
+                  dealId={dealId}
+                  currentDealName={displayName}
+                  canonicalIdentity={investorInsights.report?.render_package?.canonical_identity}
+                  darkMode={darkMode}
+                  onRenameSuccess={refreshDealFromApi}
+                />
+              )}
             </div>
             
             {/* Streamlined Action Buttons - 3 Main + More Menu */}
@@ -6425,6 +6519,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                           <Link2 className="w-4 h-4" />
                           Copy Link
                         </button>
+                        {workspaceDebugEnabled && (
+                          <>
+                            <div className={`h-px my-1 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
+                            <button
+                              onClick={() => {
+                                setShowMoreActions(false);
+                                setShowDebugPanel(true);
+                              }}
+                              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
+                                darkMode
+                                  ? 'hover:bg-white/10 text-gray-300'
+                                  : 'hover:bg-gray-100 text-gray-700'
+                              }`}
+                            >
+                              <Terminal className="w-4 h-4" />
+                              Debug
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </>
@@ -6612,85 +6725,84 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           })()}
 
           <div className="mt-6">
-            {(() => {
-              const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
-                ? (reportFromApi as any).metadata
-                : ((reportEnvelope as any)?.report?.metadata && typeof (reportEnvelope as any).report.metadata === 'object')
-                  ? (reportEnvelope as any).report.metadata
-                  : null;
-
-              return (
-                <DealWorkspaceTopSection
-                  darkMode={darkMode}
-                  loading={!reportReady}
-                  score={reportView.score}
-                  scoreAvailable={reportView.applied}
-                  canonicalScoreSource={reportView.applied ? reportView.scoreSource : 'none'}
-                  scoreLabel={canonicalScoreLabel}
-                  scoreBandLabel={safeText((reportMeta as any)?.score_band_v2?.label)}
-                  hardPassGuardrailTriggered={Boolean((reportMeta as any)?.hard_pass_guardrail_v2?.triggered)}
-                  hardPassGuardrailNote={safeText((reportMeta as any)?.hard_pass_guardrail_v2?.note)}
-                  // Criteria snapshot: contains raw analytical scores. Keep debug-only so it never
-                  // contradicts the canonical score in user-facing UI.
-                  hardPassGuardrailCriteriaSnapshot={workspaceDebugEnabled ? ((reportMeta as any)?.hard_pass_guardrail_v2?.criteria_snapshot ?? null) : null}
-                  rawOverallScore={(reportFromApi as any)?.overallScore ?? null}
-                  decisionV1={(reportMeta as any)?.decision_v1 ?? null}
-                  // [TOPSECTION-V1] TopSection summary = score_driver_one_liner (never governed overlay hero_summary).
-                  dealSummaryShort={topSectionScoreDriverOneLiner || null}
-                  dealSummary={structuredDealSummaryLong ? structuredDealSummaryLong : ''}
-                  dealSummaryTitle={'Deal Snapshot'}
-                  dealSummarySource={'canonical'}
-                  strengths={filterMismatchedScoreItems(topSectionStrengths, canonicalScoreForSanitizer)}
-                  weaknesses={filterMismatchedScoreItems(topSectionWeaknesses, canonicalScoreForSanitizer)}
-                  actionsToImprove={filterMismatchedScoreItems(topSectionActionsToImprove, canonicalScoreForSanitizer)}
-                  raise={selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null}
-                  raiseLabel={selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null}
-                  raiseConflict={false}
-                  raiseConflictOverlayValue={null}
-                  revenue={selectedHeader.ready ? (revenueCoveragePolicy.allow ? (selectedHeader.revenue.value ?? null) : null) : null}
-                  revenueLabel={reportStructuredRevenueLabel}
-                  revenueTooltip={reportStructuredRevenueTooltip}
-                  revenueConflict={false}
-                  revenueConflictOverlayValue={null}
-                  burn={selectedHeader.ready ? burnTileValue : null}
-                  burnLabel={null}
-                  burnTooltip={selectedHeader.ready ? burnRunwayCoveragePolicy.burnTooltip : null}
-                  burnConflict={false}
-                  burnConflictOverlayValue={null}
-                  runway={selectedHeader.ready ? runwayTileValue : null}
-                  runwayLabel={null}
-                  runwayTooltip={selectedHeader.ready ? burnRunwayCoveragePolicy.runwayTooltip : null}
-                  runwayConflict={false}
-                  runwayConflictOverlayValue={null}
-                  growth={selectedHeader.ready ? (safeText(reportStructuredGrowthValue) || selectedHeader.growth.value || null) : null}
-                  growthLabel={reportStructuredGrowthLabel}
-                  growthNote={reportStructuredGrowthNote}
-                  growthTooltip={reportStructuredGrowthTooltip}
-                  growthConflict={false}
-                  growthConflictOverlayValue={null}
-                  customers={selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null}
-                  customersLabel={reportStructuredCustomersLabel}
-                  customersTooltip={reportStructuredCustomersTooltip}
-                  customersConflict={false}
-                  customersConflictOverlayValue={null}
-                  businessModel={selectedHeader.ready ? (selectedHeader.business_model.value ?? null) : null}
-                  businessModelLabel={selectedHeader.business_model.label ?? null}
-                  businessModelTooltip={authoritativeBusinessModel.is_arbitrated
-                    ? `Evidence-backed arbitration${typeof authoritativeBusinessModel.confidence === 'number' ? ` (confidence ${Math.round(authoritativeBusinessModel.confidence * 100)}%)` : ''}`
-                    : null}
-                  businessModelConflict={false}
-                  businessModelConflictOverlayValue={null}
-                  dealType={reportView.dealType}
-                  confidence={topSectionConfidence}
-                  verified={decisionTileConfidenceBand === 'high'}
-                />
-              );
-            })()}
+            {/* Header fully sourced from WorkspaceViewModel — no inline derivation. */}
+            <DealWorkspaceHeader
+              darkMode={darkMode}
+              dealName={vm.header.dealName}
+              dealDescription={vm.header.dealDescription}
+              stage={vm.header.stage}
+              raiseAmount={vm.header.raiseAmount}
+              industry={vm.header.industry}
+              score={vm.header.score}
+              verdict={vm.header.verdict}
+              primaryIssues={vm.header.primaryIssues}
+              blockers={vm.header.blockers}
+              concerns={vm.header.concerns}
+              icReadiness={vm.header.icReadiness}
+              strengths={vm.header.strengths}
+              metrics={vm.header.metrics}
+              lastUpdated={vm.header.lastUpdated}
+              pipelineStatus={vm.header.pipelineStatus}
+              diligencePhase={vm.header.diligencePhase}
+              evidenceCoverage={vm.header.evidenceCoverage}
+              evidenceConfidence={vm.header.evidenceConfidence}
+              onRefreshInsights={runAIAnalysis}
+              onUploadDocument={() => setActiveTab('documents')}
+              onMoreActions={() => setShowMoreActions(true)}
+              analyzing={vm.header.analyzing}
+              isFounder={false /* no isFounder in useUserRole(); awaiting future role expansion */}
+              signals={vm.header.signals}
+            />
           </div>
 
         </div>
 
         {/* Tabs Section */}
+
+        <WorkspaceDebugPanel open={showDebugPanel} onOpenChange={setShowDebugPanel} darkMode={darkMode}>
+
+        {workspaceDebugEnabled && (
+          <details
+            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
+              darkMode
+                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+            }`}
+          >
+            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+              Debug → DIO State
+            </summary>
+            <div className={`px-4 pb-4 flex flex-wrap items-center gap-3 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+              <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                DIO: {dioMeta?.dioVersionId ? dioMeta.dioVersionId : 'Not generated'}
+              </span>
+              {typeof dioMeta?.dioRunCount === 'number' && (
+                <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                  Runs: {dioMeta.dioRunCount}
+                  {typeof dioMeta.dioAnalysisVersion === 'number' ? ` (latest v${dioMeta.dioAnalysisVersion})` : ''}
+                </span>
+              )}
+              <span className={`px-2 py-1 rounded-full ${darkMode ? 'bg-blue-500/10 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>
+                Status: {dioMeta?.dioStatus ?? 'unknown'}
+              </span>
+              {dealStageRaw && (
+                <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
+                  Stage: {dealStageLabel}
+                </span>
+              )}
+              {dioMeta?.lastAnalyzedAt && (
+                <span className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  Last analyzed: {new Date(dioMeta.lastAnalyzedAt).toLocaleString()}
+                </span>
+              )}
+              {jobStatus && (
+                <span className={`${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
+                  Job: {jobStatus}{jobId ? ` (${jobId})` : ''}
+                </span>
+              )}
+            </div>
+          </details>
+        )}
 
         {workspaceDebugEnabled && debugApiIsEnabled() && (
           <details
@@ -6986,6 +7098,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             </div>
           </details>
         )}
+
+        </WorkspaceDebugPanel>
 
         <div className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
           darkMode
@@ -7825,378 +7939,26 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               </div>
             )}
 
-            {/* Overview Tab */}
+            {/* Overview Tab — fully sourced from WorkspaceViewModel. */}
             {activeTab === 'overview' && (
-              <div className="space-y-6">
-                {hasGovernedOverview ? (
-                  <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('muted')}`}>
-                            phase: {String(governedOverview.llm_phase_mode ?? '—')}
-                          </span>
-                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('muted')}`}>
-                            created: {governedOverview.created_at ? new Date(governedOverview.created_at).toLocaleString() : '—'}
-                          </span>
-                          {governedQualityFlags.provider_error ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>provider_error</span>
-                          ) : null}
-                          {governedQualityFlags.model_output_not_json ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>model_output_not_json</span>
-                          ) : null}
-                          {governedQualityFlags.guard_degraded ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('warning')}`}>guard_degraded</span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {governedOverlayDegraded ? (
-                          <Button
-                            variant={darkMode ? 'secondary' : 'outline'}
-                            onClick={() => setShowGovernedOverlayPanel((v) => !v)}
-                            className="text-xs"
-                          >
-                            {showGovernedOverlayPanel ? 'Hide overlay' : 'Show overlay'}
-                          </Button>
-                        ) : null}
-                        <Button
-                          variant={darkMode ? 'secondary' : 'outline'}
-                          onClick={() => {
-                            // Keep overlay + cards in sync by refreshing both persisted overlay and /report.
-                            loadReport({ force: true }).catch(() => {
-                              // handled via state
-                            });
-                            governedOverview.refresh({ force: true }).catch(() => {
-                              // handled via hook state
-                            });
-                          }}
-                          className="text-xs"
-                        >
-                          Refresh overlay
-                        </Button>
-                      </div>
-                    </div>
-
-                    {governedOverlayDegraded ? (
-                      null
-                    ) : null}
-
-                    {(showGovernedOverlayPanel || !governedOverlayDegraded) ? (
-                      <div className="mt-4">
-                        <DealWorkspaceOverviewComp
-                          darkMode={darkMode}
-                          documentTitles={documentTitles}
-                          showFieldEvidence={true}
-                          dealOneLiner={governedDealOneLinerDisplay}
-                          product={governedKeyFacts.product.value}
-                          marketIcp={governedKeyFacts.market.value}
-                          businessModel={governedKeyFacts.businessModel.value}
-                          raiseTerms={governedKeyFacts.raise.value}
-                          dealOneLinerEvidenceRefs={governedKeyFactEvidenceRefs.one_liner}
-                          productEvidenceRefs={governedKeyFactEvidenceRefs.product}
-                          marketIcpEvidenceRefs={governedKeyFactEvidenceRefs.market}
-                          businessModelEvidenceRefs={governedKeyFactEvidenceRefs.businessModel}
-                          raiseTermsEvidenceRefs={governedKeyFactEvidenceRefs.raise}
-                          productEvidenceIds={governedKeyFactEvidenceIds.product}
-                          marketIcpEvidenceIds={governedKeyFactEvidenceIds.market}
-                          businessModelEvidenceIds={governedKeyFactEvidenceIds.businessModel}
-                          raiseTermsEvidenceIds={governedKeyFactEvidenceIds.raise}
-                          resolvedEvidence={resolvedEvidence}
-                          productProvenance={governedKeyFacts.product.provenance}
-                          marketIcpProvenance={governedKeyFacts.market.provenance}
-                          businessModelProvenance={governedKeyFacts.businessModel.provenance}
-                          raiseTermsProvenance={governedKeyFacts.raise.provenance}
-                          dealSummaryParagraphs={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.paragraphs}
-                          dealSummaryStrengths={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.strengths}
-                          dealSummaryRisks={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.risks}
-                          dealSummaryOpenQuestions={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.open_questions}
-                          dealSummaryTractionSignals={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.traction_signals}
-                          dealSummaryKeyRisksDetected={workspaceMirrorVM.missing ? [] : workspaceMirrorVM.key_risks_detected}
-                          dealSummaryStrengthEvidenceRefs={governedKeyFactEvidenceRefs.strengths}
-                          dealSummaryRiskEvidenceRefs={governedKeyFactEvidenceRefs.concerns}
-                          dealSummaryOpenQuestionsEvidenceRefs={governedKeyFactEvidenceRefs.open_questions}
-                          dealSummaryTractionSignalsEvidenceRefs={governedKeyFactEvidenceRefs.traction}
-                          kpiTiles={overlayKpiTiles}
-                          dealSummarySourceLabel={'Overlay (non-authoritative)'}
-                          score0_100={canonicalScoreView.score0_100}
-                          scoreSource={canonicalScoreView.scoreSource}
-                          reportApplied={canonicalScoreView.reportApplied}
-                          decisionLabel={decisionTileLabel}
-                          confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
-                          confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
-                          rationale={decisionTileRationale}
-                          strengths={filterMismatchedScoreItems(overlayStrengths, canonicalScoreForSanitizer)}
-                          openItems={filterMismatchedScoreItems(overlayOpenItems, canonicalScoreForSanitizer)}
-                          coverageGaps={missingChips}
-                          interpretationStatus={governedOverlayStatusUi}
-                          interpretationSource={'persisted' as any}
-                          interpretationText={governedInterpretationText}
-                          interpretationClaims={governedInterpretationClaims}
-                          interpretationDisclosures={governedInterpretationDisclosures}
-                          llmPhaseMode={governedOverview.llm_phase_mode ?? ((dealData as any)?.llm_phase_mode ?? null)}
-                          interpretationErrorCode={null}
-                          onRequestInterpretation={() => {
-                            governedOverview.refresh({ force: true }).catch(() => {
-                              // handled via hook state
-                            });
-                          }}
-                          onViewFullAnalysis={() => setActiveTab('evidence')}
-                          onOpenInvestorInsights={() => setActiveTab('investor-insights')}
-                          investorInsightsStatus={investorInsights.status === 'error' ? undefined : (investorInsights.report?.status ?? undefined)}
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <div
-                    className={`backdrop-blur-xl border rounded-xl p-6 w-full ${
-                      governedOverlayDegraded
-                        ? (darkMode ? 'bg-amber-500/5 border-amber-500/40' : 'bg-amber-50 border-amber-200/70')
-                        : (darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50')
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Overlay (non-authoritative)</div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(governedOverlayDegraded ? 'warning' : 'muted')}`}>
-                            phase: {String(governedOverview.llm_phase_mode ?? '—')}
-                          </span>
-                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('muted')}`}>
-                            created: {governedOverview.created_at ? new Date(governedOverview.created_at).toLocaleString() : '—'}
-                          </span>
-                          {governedQualityFlags.provider_error ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>provider_error</span>
-                          ) : null}
-                          {governedQualityFlags.model_output_not_json ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('danger')}`}>model_output_not_json</span>
-                          ) : null}
-                          {governedQualityFlags.guard_degraded ? (
-                            <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass('warning')}`}>guard_degraded</span>
-                          ) : null}
-                        </div>
-                      </div>
-                      <Button
-                        variant={darkMode ? 'secondary' : 'outline'}
-                        onClick={() => {
-                          governedOverview.refresh({ force: true }).catch(() => {
-                            // handled via hook state
-                          });
-                        }}
-                        className="text-xs"
-                      >
-                        Refresh overlay
-                      </Button>
-                    </div>
-
-                    <div className="mt-4">
-                      {governedOverview.status === 'loading' ? (
-                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Loading governed overlay…</div>
-                      ) : !hasGovernedOverview ? (
-                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                          {overlayPostAnalyzeState === 'polling'
-                            ? 'Overlay still processing… refreshing automatically.'
-                            : overlayPostAnalyzeState === 'timeout'
-                              ? 'Overlay still processing… refresh overlay or retry analysis.'
-                              : 'Run analysis to generate governed overlay.'}
-                        </div>
-                      ) : (
-                        <div className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                          {/* Overlay quality flags are shown via chips; detailed reasoning is in debug/diagnostics. */}
-                          
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Evidence & Coverage section must remain visible below the canonical overview component */}
-                <EvidenceCoverageSection
-                  documentsReviewedCount={Object.keys(documentTitles).length}
-                  productBand={getBandForCategory('Product')}
-                  marketBand={getBandForCategory('Market/ICP')}
-                  teamBand={getBandForCategory('Team')}
-                  risksBand={getBandForCategory('Risks')}
-                  isRunning={isFullProcessActive || analyzing}
-                  lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null}
-                />
-
-                <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Deterministic (authoritative)</div>
-                      <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                        Canonical output from the deterministic report pipeline.
-                      </div>
-                    </div>
-                    <Button
-                      variant={darkMode ? 'secondary' : 'outline'}
-                      onClick={() => {
-                        deterministicToggleTouchedRef.current = true;
-                        setShowDeterministicAuthoritative((v) => !v);
-                      }}
-                    >
-                      {showDeterministicAuthoritative ? 'Hide Deterministic (Authoritative)' : 'Show Deterministic (Authoritative)'}
-                    </Button>
-                  </div>
-
-                  {showDeterministicAuthoritative ? (
-                    <div className="mt-4">
-                      <DealWorkspaceOverviewComp
-                        darkMode={darkMode}
-                        dealOneLiner={workspaceOverviewModel.summaries.short.value}
-                        product={workspaceOverviewModel.keyFacts.product.value}
-                        marketIcp={workspaceOverviewModel.keyFacts.market.value}
-                        businessModel={workspaceOverviewModel.keyFacts.business_model.value}
-                        raiseTerms={workspaceOverviewModel.keyFacts.raise_terms.value}
-                        productProvenance={{ source: workspaceOverviewModel.keyFacts.product.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.product.origin === 'overlay' ? 'governed' : 'deterministic' }}
-                        marketIcpProvenance={{ source: workspaceOverviewModel.keyFacts.market.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.market.origin === 'overlay' ? 'governed' : 'deterministic' }}
-                        businessModelProvenance={{ source: workspaceOverviewModel.keyFacts.business_model.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.business_model.origin === 'overlay' ? 'governed' : 'deterministic' }}
-                        raiseTermsProvenance={{ source: workspaceOverviewModel.keyFacts.raise_terms.origin === 'missing' ? 'missing' : workspaceOverviewModel.keyFacts.raise_terms.origin === 'overlay' ? 'governed' : 'deterministic' }}
-                        dealSummaryParagraphs={workspaceOverviewModel.summaries.long.paragraphs}
-                        kpiTiles={deterministicKpiTiles}
-                        dealSummarySourceLabel={dealSummarySourceLabel}
-                        dealSummaryCitations={canonicalCitations ?? undefined}
-                        score0_100={canonicalScoreView.score0_100}
-                        scoreSource={canonicalScoreView.scoreSource}
-                        reportApplied={canonicalScoreView.reportApplied}
-                        decisionLabel={decisionTileLabel}
-                        confidenceLabel={`${decisionTileConfidenceLabelShort} confidence`}
-                        confidenceVerified={decisionTileConfidenceBand !== 'unknown'}
-                        rationale={decisionTileRationale}
-                        strengths={filterMismatchedScoreItems(decisionTileStrengths, canonicalScoreForSanitizer)}
-                        openItems={filterMismatchedScoreItems(decisionTileOpenItemsAll, canonicalScoreForSanitizer)}
-                        coverageGaps={missingChips}
-                        interpretationStatus={governedOverlayStatusUi}
-                        interpretationSource={hasGovernedOverview ? ('persisted' as any) : ('none' as any)}
-                        interpretationText={governedInterpretationText}
-                        interpretationClaims={hasGovernedOverview ? governedInterpretationClaims : []}
-                        interpretationDisclosures={hasGovernedOverview ? governedInterpretationDisclosures : []}
-                        llmPhaseMode={governedOverview.llm_phase_mode ?? ((dealData as any)?.llm_phase_mode ?? null)}
-                        interpretationErrorCode={null}
-                        onRequestInterpretation={() => {
-                          governedOverview.refresh({ force: true }).catch(() => {
-                            // handled via hook state
-                          });
-                        }}
-                        onViewFullAnalysis={() => setActiveTab('evidence')}
-                        onOpenInvestorInsights={() => setActiveTab('investor-insights')}
-                        investorInsightsStatus={investorInsights.status === 'error' ? undefined : (investorInsights.report?.status ?? undefined)}
-                      />
-
-                      <div className="mt-6">
-                        <FinancialCoveragePanel
-                          darkMode={darkMode}
-                          financialCoverage={authoritativeFinancialCoverageV1.value}
-                          documentTitles={documentTitles}
-                          burnHasNumeric={burnHasNumeric}
-                          runwayHasNumeric={runwayHasNumeric}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                </div>
-
-          <div className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis diagnostics</div>
-                <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  {analysisDiagnosticsStatus === 'loading'
-                    ? 'Loading latest diagnostics snapshot…'
-                    : (analysisDiagnostics ? 'Latest snapshot loaded.' : 'No diagnostics yet — run analysis to generate.')}
-                </div>
-              </div>
-              {analysisDiagnostics ? (
-                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                  {analysisDiagnostics.created_at ? `Updated ${new Date(analysisDiagnostics.created_at).toLocaleString()}` : null}
-                </div>
-              ) : null}
-            </div>
-
-            {analysisDiagnosticsError ? (
-              <div className={`mt-3 text-xs ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
-                {analysisDiagnosticsError}
-              </div>
-            ) : null}
-
-            {analysisDiagnostics ? (
-              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report</div>
-                  <div className={`text-xs font-mono break-all ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{analysisDiagnostics.report_id}</div>
-                  <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>phase: {String(analysisDiagnostics.llm_phase_mode ?? '—')}</div>
-
-                  <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    <span>
-                      Header latest: {typeof dioMeta?.dioAnalysisVersion === 'number' ? `v${dioMeta.dioAnalysisVersion}` : '—'}
-                    </span>
-                    <span className={`mx-2 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>·</span>
-                    <span>
-                      Loaded: {typeof (reportEnvelope as any)?.version === 'number' ? `v${(reportEnvelope as any).version}` : '—'}
-                      {typeof (reportArtifact as any)?.analysis_version === 'number' ? ` (artifact v${(reportArtifact as any).analysis_version})` : ''}
-                    </span>
-                  </div>
-
-                  {(
-                    typeof dioMeta?.dioAnalysisVersion === 'number' &&
-                    typeof (reportArtifact as any)?.analysis_version === 'number' &&
-                    dioMeta.dioAnalysisVersion !== (reportArtifact as any).analysis_version
-                  ) ? (
-                    <div className={`mt-1 text-xs ${darkMode ? 'text-amber-200' : 'text-amber-700'}`}>
-                      Version mismatch: header v{dioMeta.dioAnalysisVersion} ≠ artifact v{String((reportArtifact as any).analysis_version)}
-                    </div>
-                  ) : null}
-
-                  {typeof (reportArtifact as any)?.dio_id === 'string' && (reportArtifact as any).dio_id ? (
-                    <div className={`mt-1 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      artifact.dio_id: <span className="font-mono break-all">{String((reportArtifact as any).dio_id)}</span>
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage</div>
-                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Deterministic coverage ratio: {typeof analysisDiagnostics.deterministic_coverage_ratio === 'number' ? `${Math.round(analysisDiagnostics.deterministic_coverage_ratio * 100)}%` : '—'}
-                  </div>
-                  <div className={`mt-1 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Citation integrity: {typeof analysisDiagnostics.citation_integrity_percent === 'number' ? `${Math.round(analysisDiagnostics.citation_integrity_percent)}%` : '—'}
-                  </div>
-                </div>
-
-                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Guard</div>
-                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Hallucination count: {typeof analysisDiagnostics.hallucination_count === 'number' ? analysisDiagnostics.hallucination_count : '—'}
-                  </div>
-                  <div className={`mt-1 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Numeric claims without evidence: {typeof analysisDiagnostics.numeric_claims_without_evidence === 'number' ? analysisDiagnostics.numeric_claims_without_evidence : '—'}
-                  </div>
-                </div>
-
-                <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Drift</div>
-                  <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    Semantic drift score: {typeof analysisDiagnostics.semantic_drift_score === 'number' ? analysisDiagnostics.semantic_drift_score.toFixed(4) : '—'}
-                  </div>
-                  {(
-                    typeof analysisDiagnostics.provider_error_count === 'number' ||
-                    typeof analysisDiagnostics.model_output_truncated_count === 'number' ||
-                    typeof analysisDiagnostics.model_output_not_json_count === 'number' ||
-                    typeof analysisDiagnostics.guard_degraded_count === 'number'
-                  ) ? (
-                    <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Errors: provider={analysisDiagnostics.provider_error_count ?? '—'} · trunc={analysisDiagnostics.model_output_truncated_count ?? '—'} · nonjson={analysisDiagnostics.model_output_not_json_count ?? '—'} · guard={analysisDiagnostics.guard_degraded_count ?? '—'}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
-          </div>
-              </div>
+              <DealOverviewTab
+                darkMode={darkMode}
+                companyName={vm.overview.companyName}
+                companyDescription={vm.overview.companyDescription}
+                snapshotFacts={vm.overview.snapshotFacts}
+                signals={vm.overview.signalData}
+                financials={vm.overview.financials}
+                traction={vm.overview.traction}
+                deal={vm.overview.deal}
+                businessModel={vm.overview.businessModel}
+                productSummary={vm.overview.productSummary}
+                marketSummary={vm.overview.marketSummary}
+                businessModelSummary={vm.overview.businessModelSummary}
+                raiseTerms={vm.overview.raiseTerms}
+                insightsScore={vm.overview.insightsScore}
+                insightsConfidence={vm.overview.insightsConfidence}
+                onOpenInsights={() => setActiveTab('investor-insights')}
+              />
             )}
 
             {/* Documents Tab */}
@@ -8810,7 +8572,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Investor Insights Tab */}
             {activeTab === 'investor-insights' && (
-              <InvestorInsightsTab dealId={dealId || 'demo'} darkMode={darkMode} />
+              <InvestorInsightsTab dealId={dealId || 'demo'} dealName={displayName} darkMode={darkMode} />
             )}
 
             {/* Reports Generated Tab */}

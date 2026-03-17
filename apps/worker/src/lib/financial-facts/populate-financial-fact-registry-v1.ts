@@ -36,7 +36,16 @@ import {
 import {
   extractInlineFinancialClaims,
 } from "./extract-inline-financial-claims";
+import {
+  extractChartFactClaims,
+  inferChartMetricKey,
+} from "./extract-chart-fact-claims";
+import { extractKpiTileClaims } from "./extract-kpi-tile-claims";
 import { reconcileFinancialFactsV1 } from "./reconcile-financial-facts-v1";
+import {
+  applySlideAwareness,
+  FINANCIAL_SLIDE_TYPES,
+} from "./slide-aware-confidence-v1.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -58,7 +67,9 @@ const SOURCE_KIND_RANK: Record<string, number> = {
   pdf_table:    4,
   xlsx:         3,
   pdf_kpi_line: 2,
+  kpi_tile:     2,
   deck:         1,
+  chart_pixel:  1,
   unknown:      0,
 };
 
@@ -70,6 +81,14 @@ export interface PopulateFinancialFactRegistryV1Opts {
   document_id?: string;
   /** If true (default), skip pages with no detected financial content */
   skip_non_financial?: boolean;
+  /**
+   * Set to true when the target document is a spreadsheet (XLSX / Excel).
+   * When set, extracted facts will carry source_kind="xlsx" rather than
+   * "pdf_table", ensuring the ranking step correctly identifies spreadsheet
+   * provenance.  Does NOT change the ranking table — excel-origin data still
+   * participates in dedup against pdf_table rows from other documents.
+   */
+  xlsx_doc?: boolean;
 }
 
 export interface PopulateFinancialFactRegistryV1Result {
@@ -84,8 +103,16 @@ export interface PopulateFinancialFactRegistryV1Result {
   facts_inline:         number;
   /** Facts dropped by confidence-based dedup (lower-rank duplicate removed) */
   facts_merged:         number;
+  /** Facts tagged source_kind="kpi_tile" (KPI tile callout extraction) */
+  facts_kpi:            number;
+  /** Facts tagged source_kind="chart_pixel" (bar chart pixel extraction) */
+  facts_chart:          number;
+  /** Facts tagged source_kind="xlsx" (only when xlsx_doc=true) */
+  facts_xlsx:           number;
   /** Candidate pages rejected by the detectFinancialTableCandidate guard */
   candidates_rejected:  number;
+  /** Duplicate facts deleted after cross-document dedup (same value+metric+period) */
+  facts_deduplicated:   number;
   errors:               string[];
 }
 
@@ -103,8 +130,12 @@ export async function populateFinancialFactRegistryV1(
     facts_upserted:      0,
     pages_expanded:      0,
     facts_inline:        0,
+    facts_kpi:           0,
     facts_merged:        0,
+    facts_chart:         0,
+    facts_xlsx:          0,
     candidates_rejected: 0,
+    facts_deduplicated:  0,
     errors:              [],
   };
 
@@ -166,9 +197,19 @@ export async function populateFinancialFactRegistryV1(
           (await fetchDpuText(pool, pageRow.document_id, pageRow.page_index));
         if (!text) continue;
 
+        // Fetch slide classification context from DPU payload (non-fatal)
+        const slideCtx = await fetchDpuSlideContext(
+          pool, pageRow.document_id, pageRow.page_index,
+        );
+
         // Guard: skip pages with no financial signal
+        // Exception: pages classified as financial slide types bypass this guard
+        // since the slide classification is stronger evidence than text density.
+        const isFinancialSlide = slideCtx.slide_type != null &&
+          FINANCIAL_SLIDE_TYPES.has(slideCtx.slide_type);
         if (
           opts.skip_non_financial !== false &&
+          !isFinancialSlide &&
           !detectFinancialTableCandidate(text)
         ) {
           result.candidates_rejected++;
@@ -177,10 +218,13 @@ export async function populateFinancialFactRegistryV1(
 
         // ── 3. Extract: table claims ─────────────────────────────────────────
         const tableExtracted = extractFinancialTableClaims(text, {
-          deal_id:     opts.deal_id,
-          document_id: pageRow.document_id,
-          page_number: pageRow.page_index,
-          page_id:     pageRow.page_id,
+          deal_id:              opts.deal_id,
+          document_id:          pageRow.document_id,
+          page_number:          pageRow.page_index,
+          page_id:              pageRow.page_id,
+          source_kind_override: opts.xlsx_doc ? "xlsx" : undefined,
+          slide_type:           slideCtx.slide_type ?? undefined,
+          slide_title:          slideCtx.slide_title ?? undefined,
         });
 
         // ── 4. Extract: inline KPI claims ────────────────────────────────────
@@ -189,14 +233,52 @@ export async function populateFinancialFactRegistryV1(
           document_id: pageRow.document_id,
           page_number: pageRow.page_index,
           page_id:     pageRow.page_id,
+          slide_type:  slideCtx.slide_type ?? undefined,
+          slide_title: slideCtx.slide_title ?? undefined,
         });
 
-        const pageFacts = [...tableExtracted, ...inlineExtracted];
+        // ── 4c. Extract: KPI tile claims ─────────────────────────────────────
+        const kpiExtracted = extractKpiTileClaims(text, {
+          deal_id:     opts.deal_id,
+          document_id: pageRow.document_id,
+          page_number: pageRow.page_index,
+          page_id:     pageRow.page_id,
+          slide_type:  slideCtx.slide_type ?? undefined,
+          slide_title: slideCtx.slide_title ?? undefined,
+        });
+
+        // ── 4a. Apply slide-aware confidence adjustments ─────────────────────
+        const tableAware  = applySlideAwareness(tableExtracted,  slideCtx.slide_type, slideCtx.slide_title);
+        const inlineAware = applySlideAwareness(inlineExtracted, slideCtx.slide_type, slideCtx.slide_title);
+        const kpiAware    = applySlideAwareness(kpiExtracted,    slideCtx.slide_type, slideCtx.slide_title);
+
+        const pageFacts = [...tableAware, ...inlineAware, ...kpiAware];
         if (pageFacts.length === 0) continue;
 
         result.pages_with_data++;
-        result.facts_extracted += tableExtracted.length;
-        result.facts_inline    += inlineExtracted.length;
+        result.facts_extracted += tableAware.length;
+        result.facts_inline    += inlineAware.length;
+        result.facts_kpi       += kpiAware.length;
+
+        // Guard: log warning when xlsx_doc is set but a table fact has no source_kind
+        if (opts.xlsx_doc) {
+          for (const f of tableAware) {
+            if (!f.source_kind) {
+              console.warn(
+                JSON.stringify({
+                  event: "FINANCIAL_FACT_XLSX_SOURCE_MISSING",
+                  deal_id: opts.deal_id,
+                  document_id: pageRow.document_id,
+                  page_index: pageRow.page_index,
+                  metric_key: f.metric_key,
+                  ts: new Date().toISOString(),
+                }),
+              );
+            } else {
+              result.facts_xlsx++;
+            }
+          }
+        }
 
         allExtracted.push(...pageFacts);
       } catch (pageErr: unknown) {
@@ -205,6 +287,45 @@ export async function populateFinancialFactRegistryV1(
           `page doc=${pageRow.document_id} idx=${pageRow.page_index}: ${msg}`,
         );
       }
+    }
+
+    // ── 4b. XLSX observability: emit structured log when XLSX tables produced facts ─
+    if (opts.xlsx_doc && result.facts_xlsx > 0) {
+      console.log(
+        JSON.stringify({
+          event:         "XLSX_FINANCIAL_FACTS_DETECTED",
+          deal_id:       opts.deal_id,
+          document_id:   opts.document_id ?? null,
+          fact_count:    result.facts_xlsx,
+          ts:            new Date().toISOString(),
+        }),
+      );
+    }
+
+    // ── 5. Chart pixel extraction (visual_extractions → chart_pixel facts) ──
+    try {
+      const chartRows = await queryChartExtractions(pool, opts);
+      for (const row of chartRows) {
+        try {
+          const chartFacts = extractChartFactClaims(row.structured_json, {
+            deal_id:          opts.deal_id,
+            document_id:      row.document_id,
+            visual_asset_id:  row.visual_asset_id,
+            page_number:      row.page_index,
+            slide_type:       row.slide_type ?? undefined,
+            slide_title:      row.slide_title ?? undefined,
+            dpu_text:         row.dpu_text ?? undefined,
+          });
+          result.facts_chart += chartFacts.length;
+          allExtracted.push(...chartFacts);
+        } catch (chartErr: unknown) {
+          const msg = chartErr instanceof Error ? chartErr.message : String(chartErr);
+          result.errors.push(`chart va=${row.visual_asset_id} pg=${row.page_index}: ${msg}`);
+        }
+      }
+    } catch (chartQueryErr: unknown) {
+      const msg = chartQueryErr instanceof Error ? chartQueryErr.message : String(chartQueryErr);
+      result.errors.push(`chart query: ${msg}`);
     }
 
     // ── 5. Confidence-based dedup across all pages ───────────────────────────
@@ -218,7 +339,10 @@ export async function populateFinancialFactRegistryV1(
     // ── 7. Upsert ────────────────────────────────────────────────────────────
     const upserted = await upsertFinancialFactsV1(pool, reconciled);
     result.facts_upserted = upserted;
-  } catch (topErr: unknown) {
+    // ── 8. Cross-document value-level dedup ────────────────────────────────────
+    // Delete duplicate facts accumulated across separate per-document runs.
+    // Keeps the lexicographically smallest fact_id (deterministic).
+    result.facts_deduplicated = await deduplicateFactsByValueForDeal(pool, opts.deal_id);  } catch (topErr: unknown) {
     const msg = topErr instanceof Error ? topErr.message : String(topErr);
     result.errors.push(`populate top-level: ${msg}`);
   }
@@ -244,19 +368,60 @@ interface MergeResult {
  * Within the same rank, keep both (different source_pointer means different
  * extraction context — may reflect conflicting readings).
  *
+ * Projection safety: if the existing fact carries a realized temporal_scope
+ * (historical | current) and the incoming fact carries a projected scope
+ * (projected | scenario | target), the incoming fact is dropped regardless of
+ * its source_kind rank.  This prevents workbook forecast columns from
+ * displacing confirmed actuals.
+ *
+ * Sanity pre-filter: facts with implausibly small values for specific currency
+ * metrics (e.g. burn_rate < $1K) are dropped before rank-based selection.
+ *
  * Never downgrades confidence. Returns a new array.
  */
+
+/**
+ * Minimum plausible absolute value (currency unit) per metric.
+ * Facts below this threshold are discarded during merge, regardless of source.
+ */
+const CURRENCY_SANITY_MIN: Record<string, number> = {
+  burn_rate: 1_000,  // $1K/month — below this is implausibly small for any funded company
+};
+
 export function mergeFactsByConfidence(facts: FinancialFactV1[]): MergeResult {
+  // Sanity pre-filter: remove facts with implausibly small currency values.
+  const sanitized = facts.filter((f) => {
+    const min = CURRENCY_SANITY_MIN[f.metric_key];
+    return !(min !== undefined && f.unit === "currency" && Math.abs(f.value) < min);
+  });
+
   // Map key → best fact seen so far (by source rank)
   const best = new Map<string, FinancialFactV1>();
-  let droppedCount = 0;
+  let droppedCount = facts.length - sanitized.length; // count sanity-filtered as dropped
 
-  for (const fact of facts) {
+  const isRealizedScope = (scope: string | undefined) =>
+    scope === "historical" || scope === "current";
+  const isProjectedScopeLocal = (scope: string | undefined) =>
+    scope === "projected" || scope === "scenario" || scope === "target";
+
+  for (const fact of sanitized) {
     const key = `${fact.metric_key}:${fact.period_label}`;
     const existing = best.get(key);
 
     if (!existing) {
       best.set(key, fact);
+      continue;
+    }
+
+    // Projection safety: realized facts always win over projected ones.
+    if (isRealizedScope(existing.temporal_scope) && isProjectedScopeLocal(fact.temporal_scope)) {
+      droppedCount++;
+      continue;
+    }
+    // Inverse: if incoming is realized and existing is projected, replace.
+    if (isProjectedScopeLocal(existing.temporal_scope) && isRealizedScope(fact.temporal_scope)) {
+      best.set(key, fact);
+      droppedCount++;
       continue;
     }
 
@@ -292,16 +457,56 @@ function emitExpansionSummary(
       candidates_rejected:   result.candidates_rejected,
       facts_extracted_table: result.facts_extracted,
       facts_extracted_inline:result.facts_inline,
+      facts_kpi:             result.facts_kpi,
+      facts_chart:           result.facts_chart,
+      facts_xlsx:            result.facts_xlsx,
       facts_after_merge:     result.facts_upserted + result.facts_merged,
       facts_derived:         result.facts_derived,
       facts_upserted:        result.facts_upserted,
       facts_merged_dropped:  result.facts_merged,
+      facts_deduplicated:    result.facts_deduplicated,
       errors:                result.errors.length,
     }),
   );
 }
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────
+
+/**
+ * Delete duplicate financial facts for a deal that share the same
+ * (metric_key, period_label, value, source_kind). Keeps the lexicographically
+ * smallest fact_id (deterministic).
+ *
+ * This handles cross-document duplicates: when the same document is uploaded
+ * twice or when two documents contain the same KPI tile, separate populate runs
+ * insert two identical facts with different fact_ids. This cleanup removes the
+ * extra copy.
+ *
+ * Returns the number of rows deleted.
+ */
+async function deduplicateFactsByValueForDeal(pool: Pool, deal_id: string): Promise<number> {
+  try {
+    const result = await pool.query(
+      `DELETE FROM financial_facts_v1
+       USING (
+         SELECT fact_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY deal_id, metric_key, period_label, value::text, source_kind
+                  ORDER BY fact_id
+                ) AS rn
+         FROM financial_facts_v1
+         WHERE deal_id = $1
+       ) ranked
+       WHERE financial_facts_v1.fact_id = ranked.fact_id
+         AND financial_facts_v1.deal_id = $1
+         AND ranked.rn > 1`,
+      [deal_id],
+    );
+    return result.rowCount ?? 0;
+  } catch {
+    return 0;
+  }
+}
 
 interface CandidatePageRow {
   page_id: string;
@@ -380,7 +585,7 @@ async function fetchDpuText(
   pageIndex: number,
 ): Promise<string | null> {
   const { rows } = await pool.query<{ page_text: string | null }>(
-    `SELECT COALESCE(payload->>'normalized_text', payload->>'page_text') AS page_text
+    `SELECT COALESCE(NULLIF(payload->>'normalized_text', ''), payload->>'page_text') AS page_text
      FROM public.document_page_understanding
      WHERE document_id = $1::uuid
        AND page_index   = $2::int
@@ -389,6 +594,94 @@ async function fetchDpuText(
   );
 
   return rows[0]?.page_text ?? null;
+}
+
+// ─── Slide context helper ─────────────────────────────────────────────────────
+
+interface DpuSlideContext {
+  slide_type:  string | null;
+  slide_title: string | null;
+}
+
+/**
+ * Fetch slide classification metadata from the DPU payload for a single page.
+ *
+ * Returns null values when the DPU row is missing or the payload lacks slide fields.
+ * Never throws.
+ */
+async function fetchDpuSlideContext(
+  pool: Pool,
+  documentId: string,
+  pageIndex: number,
+): Promise<DpuSlideContext> {
+  try {
+    const { rows } = await pool.query<{ slide_type: string | null; slide_title: string | null }>(
+      `SELECT
+         payload->'structured'->>'segment_key' AS slide_type,
+         NULL::text                             AS slide_title
+       FROM public.document_page_understanding
+       WHERE document_id = $1::uuid
+         AND page_index   = $2::int
+       LIMIT 1`,
+      [documentId, pageIndex],
+    );
+    return {
+      slide_type:  rows[0]?.slide_type  ?? null,
+      slide_title: rows[0]?.slide_title ?? null,
+    };
+  } catch {
+    return { slide_type: null, slide_title: null };
+  }
+}
+
+// ─── Chart extraction DB helper ───────────────────────────────────────────────
+
+interface ChartExtractionRow {
+  visual_asset_id: string;
+  document_id: string;
+  page_index: number;
+  structured_json: Record<string, unknown>;
+  slide_type: string | null;
+  slide_title: string | null;
+  dpu_text: string | null;
+}
+
+async function queryChartExtractions(
+  pool: Pool,
+  opts: PopulateFinancialFactRegistryV1Opts,
+): Promise<ChartExtractionRow[]> {
+  const params: unknown[] = [opts.deal_id];
+  const docFilter = opts.document_id ? `AND va.document_id = $2::uuid` : "";
+  if (opts.document_id) params.push(opts.document_id);
+
+  const { rows } = await pool.query<ChartExtractionRow>(
+    `SELECT
+       va.id::text                                              AS visual_asset_id,
+       va.document_id::text,
+       va.page_index,
+       ve.structured_json,
+       dpu.payload->'structured'->>'segment_key'               AS slide_type,
+       NULL::text                                              AS slide_title,
+       COALESCE(
+         dpu.payload->>'normalized_text',
+         dpu.payload->>'page_text'
+       )                                                       AS dpu_text
+     FROM visual_assets va
+     JOIN visual_extractions ve ON ve.visual_asset_id = va.id
+     JOIN documents d ON d.id = va.document_id
+     LEFT JOIN document_page_understanding dpu
+       ON dpu.document_id = va.document_id
+      AND dpu.page_index  = va.page_index
+     WHERE d.deal_id = $1::uuid
+       AND va.asset_type = 'chart'
+       AND (va.quality_flags->>'axis_mapping_succeeded')::boolean = true
+       ${docFilter}
+     ORDER BY va.document_id, va.page_index
+     LIMIT 20`,
+    params,
+  );
+
+  return rows;
 }
 
 

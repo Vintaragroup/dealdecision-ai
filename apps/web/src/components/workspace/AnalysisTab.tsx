@@ -9,7 +9,7 @@ import {
   Target,
 } from 'lucide-react';
 import { Button } from '../ui/button';
-import type { DealFormData } from '../NewDealModal';
+import type { DealFormData } from '../Modal_Legacy/NewDealModal';
 import { ProfessionalReportGenerator } from '../reports/ProfessionalReportGenerator';
 import { OrchestratorFullReportView } from './OrchestratorFullReportView';
 import { Dialog, DialogContent } from '../ui/dialog';

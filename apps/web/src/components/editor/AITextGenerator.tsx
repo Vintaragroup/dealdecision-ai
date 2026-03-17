@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, Sparkles, RefreshCw, Copy, Check } from 'lucide-react';
 import { Button } from '../ui/button';
-import { DealFormData } from '../NewDealModal';
+import { DealFormData } from '../Modal_Legacy/NewDealModal';
 
 interface AITextGeneratorProps {
   isOpen: boolean;

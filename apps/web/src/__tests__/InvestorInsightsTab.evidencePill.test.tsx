@@ -9,33 +9,17 @@ import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import { InvestorInsightsTab } from '../components/workspace/InvestorInsightsTab';
-import { apiGetInvestorInsights } from '../lib/apiClient';
-
-vi.mock('../lib/apiClient', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../lib/apiClient')>();
-  return {
-    ...actual,
-    apiGetInvestorInsights: vi.fn(async () => ({ status: 'not_started' } as any)),
-    apiGenerateInvestorInsights: vi.fn(async () => ({ ok: true })),
-  };
-});
+import { InsightSlotsSection } from '../components/workspace/InvestorInsightsTab';
+import type { InvestorInsightsSection } from '../lib/apiClient';
 
 const EVIDENCE_REF = 'dpu:doc:a1b2c3d4:page:3';
 
-const REPORT_WITH_SLOTS = {
-  status: 'deterministic_only',
-  render_package: {
-    sections: [
-      {
-        key: 'insight_slots',
-        title: 'Insight Slots',
-        kind: 'message',
-        body: `raise_terms: Computable | value="$2M SAFE" | evidence=${EVIDENCE_REF} | reason=none`,
-      },
-    ],
-  },
-} as any;
+const SLOT_SECTION: InvestorInsightsSection = {
+  key: 'insight_slots',
+  title: 'Insight Slots',
+  kind: 'message',
+  body: `raise_terms: Computable | value="$2M SAFE" | evidence=${EVIDENCE_REF} | reason=none`,
+} as InvestorInsightsSection;
 
 describe('InvestorInsightsTab – evidence pill clipboard', () => {
   let writeTextMock: ReturnType<typeof vi.fn>;
@@ -51,11 +35,9 @@ describe('InvestorInsightsTab – evidence pill clipboard', () => {
   });
 
   test('clicking the evidence pill calls clipboard.writeText with the ref', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_SLOTS);
+    render(<InsightSlotsSection section={SLOT_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-clip-1" />);
-
-    const pill = await screen.findByText(EVIDENCE_REF);
+    const pill = screen.getByText(EVIDENCE_REF);
     await userEvent.click(pill);
 
     expect(writeTextMock).toHaveBeenCalledTimes(1);
@@ -63,11 +45,8 @@ describe('InvestorInsightsTab – evidence pill clipboard', () => {
   });
 
   test('pill shows "Copied" immediately after click', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_SLOTS);
+    render(<InsightSlotsSection section={SLOT_SECTION} darkMode={false} />);
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-clip-2" />);
-
-    await screen.findByText(EVIDENCE_REF);
     await userEvent.click(screen.getByText(EVIDENCE_REF));
 
     await screen.findByText('Copied');
@@ -78,10 +57,8 @@ describe('InvestorInsightsTab – evidence pill clipboard', () => {
     // avoids fake timers conflicting with findByText's internal polling.
     const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
 
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue(REPORT_WITH_SLOTS);
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-clip-3" />);
+    render(<InsightSlotsSection section={SLOT_SECTION} darkMode={false} />);
 
-    await screen.findByText(EVIDENCE_REF);
     await userEvent.click(screen.getByText(EVIDENCE_REF));
 
     // "Copied" state is shown immediately.
@@ -95,23 +72,16 @@ describe('InvestorInsightsTab – evidence pill clipboard', () => {
   });
 
   test('evidence cell shows "—" (not a button) when evidence is "none"', async () => {
-    vi.mocked(apiGetInvestorInsights).mockResolvedValue({
-      status: 'deterministic_only',
-      render_package: {
-        sections: [
-          {
-            key: 'insight_slots',
-            title: 'Insight Slots',
-            kind: 'message',
-            body: 'market_claims: NotComputable | value=none | evidence=none | reason=NO_MARKET_CLAIM_MENTION',
-          },
-        ],
-      },
-    } as any);
+    const section: InvestorInsightsSection = {
+      key: 'insight_slots',
+      title: 'Insight Slots',
+      kind: 'message',
+      body: 'market_claims: NotComputable | value=none | evidence=none | reason=NO_MARKET_CLAIM_MENTION',
+    } as InvestorInsightsSection;
 
-    render(<InvestorInsightsTab darkMode={false} dealId="deal-clip-4" />);
+    render(<InsightSlotsSection section={section} darkMode={false} />);
 
-    await screen.findByText('Market Claims');
+    screen.getByText('Market Claims');
 
     // No pill button for "none" evidence — clipboard should not be callable
     await userEvent.click(document.body);

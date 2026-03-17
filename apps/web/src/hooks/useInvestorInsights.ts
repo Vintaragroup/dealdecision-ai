@@ -41,6 +41,7 @@ export function useInvestorInsights(dealId: string | undefined): UseInvestorInsi
           sectionKeys,
           insightSlotsBodyPreview: insightSlotsBody,
           hasRenderPackageGateState,
+          canonical_identity: data.render_package?.canonical_identity ?? null,
         });
       }
       setReport(data);

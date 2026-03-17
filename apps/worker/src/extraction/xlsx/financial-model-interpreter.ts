@@ -1,0 +1,218 @@
+/**
+ * extraction/xlsx/financial-model-interpreter.ts
+ *
+ * Converts a `FinancialTable` (produced by table-detector.ts) into an array
+ * of `TypedMetric` objects using the canonical temporal classification and
+ * field-typing rules from `@dealdecision/core`.
+ *
+ * Design rules:
+ *   - Zero side effects. Pure function — same inputs → same outputs.
+ *   - Uses `classifyTemporalScope()` and `isProjectedScope()` from core.
+ *   - Uses `extractYearFromLabel()` (from core) to find years in headers.
+ *   - Never throws — skips cells that cannot be interpreted.
+ *   - Does NOT produce a TypedMetric when the cell value is null.
+ */
+
+import {
+  classifyTemporalScope,
+  extractYearFromLabel,
+  isProjectedScope,
+} from "@dealdecision/core";
+import type {
+  EvidenceRef,
+  FieldTypeV1,
+  TypedMetric,
+} from "@dealdecision/core";
+
+import { extractScenarioLabels } from "./sheet-classifier.js";
+import type { FinancialTable } from "./table-detector.js";
+
+// ─── Row-label → FieldTypeV1 mapping ─────────────────────────────────────────
+
+/**
+ * Priority-ordered list of row-label matchers.
+ * First match wins. Patterns are lowercased before testing.
+ */
+const ROW_LABEL_RULES: Array<{ pattern: RegExp; field_type: FieldTypeV1 }> = [
+  // ARR / MRR (must precede revenue rule to avoid "arr revenue" mapping wrong)
+  { pattern: /\barr\b|annual recurring rev/i,                     field_type: "arr_v1" },
+  { pattern: /\bmrr\b|monthly recurring rev/i,                    field_type: "mrr_v1" },
+  // Revenue
+  { pattern: /\brevenue\b|\bsales\b|\btop[ -]?line\b/i,           field_type: "revenue_canonical_v1" },
+  { pattern: /\bforecast(?:ed)?\s+rev|\bprojected\s+rev/i,        field_type: "forecast_revenue_v1" },
+  // Market sizing
+  { pattern: /\btam\b|total addr/i,                                field_type: "tam_v1" },
+  { pattern: /\bsam\b|serviceable addr/i,                         field_type: "sam_v1" },
+  { pattern: /\bsom\b|serviceable obt/i,                          field_type: "som_v1" },
+  // EBITDA / net income
+  { pattern: /\bebitda\b|\bnet\s+income\b|\bnet\s+loss\b|\bnet\s+profit\b|\boperating\s+income\b/i, field_type: "ebitda_v1" },
+  // Burn / runway
+  { pattern: /\bburn\b|\bcash\s+consumption\b/i,                  field_type: "burn_rate_v1" },
+  { pattern: /\brunway\b/i,                                        field_type: "runway_months_v1" },
+  // Raise / valuation
+  { pattern: /\b(?:raise|fundrais|round)\b/i,                     field_type: "raise_amount_v1" },
+  { pattern: /\bvaluation\b/i,                                     field_type: "valuation_v1" },
+  // Pipeline
+  { pattern: /\bpipeline\b|\bleads\b|\bopportunities\b/i,        field_type: "pipeline_metric_v1" },
+  // Catch-all
+  { pattern: /.*/,                                                  field_type: "other_metric_v1" },
+];
+
+function resolveFieldType(rowLabel: string): { field_type: FieldTypeV1; typing_reason: string; typing_confidence: number } {
+  const label = rowLabel.trim();
+  for (const rule of ROW_LABEL_RULES) {
+    if (rule.pattern.test(label)) {
+      const canonical = rule.field_type !== "other_metric_v1";
+      return {
+        field_type: rule.field_type,
+        typing_reason: canonical
+          ? `Row label "${label}" matched pattern for ${rule.field_type}`
+          : `Row label "${label}" did not match any canonical pattern; classified as other_metric_v1`,
+        typing_confidence: canonical ? 0.75 : 0.35,
+      };
+    }
+  }
+  // Should never reach here because the catch-all matches everything.
+  return {
+    field_type: "other_metric_v1",
+    typing_reason: `Fallback — no pattern matched for "${rowLabel}"`,
+    typing_confidence: 0.20,
+  };
+}
+
+// ─── Column-header scenario detection ────────────────────────────────────────
+
+/**
+ * Pre-compute per-column scenario info.
+ *
+ * For scenario columns (Base, Upside, Downside, etc.) the temporal scope must
+ * be forced to "scenario" regardless of any year in the header.
+ */
+function buildColumnMeta(
+  columnHeaders: string[],
+  currentYear: number,
+): Array<{ label: string; year: number | null; scenario: string | null; temporal_scope_context: string }> {
+  // extractScenarioLabels identifies which headers are scenario names
+  const scenarioSet = new Set(extractScenarioLabels(columnHeaders));
+
+  return columnHeaders.map((header) => {
+    const year = extractYearFromLabel(header);
+    const isScenario = scenarioSet.has(header);
+    const scenario = isScenario ? header : null;
+
+    // Build a context-text string that drives `classifyTemporalScope`.
+    // Scenario headers should get the "scenario" scope; others rely on year.
+    const context = isScenario
+      ? `${header} scenario`                      // triggers SCENARIO_KEYWORDS
+      : header.includes("E") && year !== null
+        ? `projected forecast ${year}`              // e.g. "2025E"
+        : "";
+
+    return { label: header, year: isScenario ? null : year, scenario, temporal_scope_context: context };
+  });
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+export interface ParseFinancialTableOptions {
+  /** Deal ID — forwarded to EvidenceRef */
+  deal_id: string;
+  /** Optional source document ID */
+  document_id?: string;
+  /** Optional page index within the document */
+  page_index?: number;
+  /** Optional slide title / sheet name for evidence ref */
+  slide_title?: string;
+  /**
+   * Reference year used by `classifyTemporalScope`.
+   * Defaults to the current calendar year when omitted.
+   */
+  currentYear?: number;
+  /**
+   * Minimum confidence threshold for emitting a TypedMetric.
+   * Cells whose typing_confidence falls below this are dropped.
+   * Defaults to 0.20 (keeps everything including catch-all "other_metric_v1").
+   */
+  minConfidence?: number;
+}
+
+/**
+ * Convert a `FinancialTable` into typed metrics.
+ *
+ * Each non-null cell in the table produces at most one TypedMetric.
+ * Cells with null values are silently skipped.
+ *
+ * @param table     Structured financial table from table-detector.ts
+ * @param opts      Interpretation options
+ * @returns         Array of TypedMetric objects; empty when nothing interpretable
+ */
+export function parseFinancialTable(
+  table: FinancialTable,
+  opts: ParseFinancialTableOptions,
+): TypedMetric[] {
+  const currentYear = opts.currentYear ?? new Date().getFullYear();
+  const minConf = opts.minConfidence ?? 0.20;
+  const metrics: TypedMetric[] = [];
+
+  const colMeta = buildColumnMeta(table.column_headers, currentYear);
+
+  const evidence: EvidenceRef = {
+    source_document_id: opts.document_id ?? opts.deal_id,
+    page_index: opts.page_index ?? null,
+    slide_title: opts.slide_title ?? table.sheet_name,
+    snippet: null,
+  };
+
+  for (let rowIdx = 0; rowIdx < table.row_headers.length; rowIdx++) {
+    const rowLabel = table.row_headers[rowIdx]!;
+    const row = table.cell_matrix[rowIdx];
+    if (!row) continue;
+
+    const { field_type, typing_reason, typing_confidence } = resolveFieldType(rowLabel);
+    if (typing_confidence < minConf) continue;
+
+    for (let colIdx = 0; colIdx < colMeta.length; colIdx++) {
+      const cellValue = row[colIdx];
+      if (cellValue === null || cellValue === undefined) continue;
+
+      const col = colMeta[colIdx]!;
+
+      // Determine temporal scope.
+      const temporal_scope = classifyTemporalScope(
+        col.year,
+        col.temporal_scope_context,
+        undefined,
+        currentYear,
+      );
+
+      const projection_blocked = isProjectedScope(temporal_scope);
+
+      // Format raw value string
+      const value_raw = String(cellValue);
+      const periodSuffix = col.scenario
+        ? `[${col.scenario}]`
+        : col.year !== null
+          ? `(${col.year})`
+          : col.label !== ""
+            ? `(${col.label})`
+            : "";
+      const label = `${rowLabel} ${periodSuffix}`.trim();
+
+      metrics.push({
+        field_type,
+        temporal_scope,
+        value_raw,
+        value: Number.isFinite(cellValue) ? cellValue : null,
+        label,
+        confidence: typing_confidence,
+        sources: [evidence],
+        typing_reason: `${typing_reason}; column="${col.label}"`,
+        typing_confidence,
+        projection_blocked,
+        ...(col.scenario !== null ? { scenario: col.scenario } : {}),
+      });
+    }
+  }
+
+  return metrics;
+}

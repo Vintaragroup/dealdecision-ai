@@ -1,5 +1,5 @@
 import { Pool } from "pg";
-import { sanitizeText, sanitizeDeep } from "@dealdecision/core";
+import { sanitizeText, sanitizeDeep, computeEvidenceId } from "@dealdecision/core";
 import { randomUUID } from "crypto";
 
 const envConnectionString = process.env.DATABASE_URL;
@@ -153,6 +153,175 @@ export async function mergeDocumentExtractionMetadata(params: {
   );
 }
 
+// ─── Canonical evidence_items dual-write ────────────────────────────────────
+// After the legacy `evidence` write succeeds, insertEvidence also attempts a
+// best-effort upsert into the canonical `evidence_items` table.  Failures in
+// the canonical write never block the legacy path.  This eliminates new
+// legacy-only drift so Stage-0 loaders eventually stop hitting the legacy
+// fallback for deals processed after this change.
+
+/**
+ * evidence_items table existence: cached for the process lifetime.
+ * null  = not yet checked
+ * true  = table confirmed present (canonical writes active)
+ * false = table absent (migration not applied; canonical writes skipped)
+ */
+let cachedEvidenceItemsExists: boolean | null = null;
+let warnedEvidenceItemsMissing = false;
+
+async function getEvidenceItemsTableExists(pool: Pool): Promise<boolean> {
+  if (cachedEvidenceItemsExists !== null) return cachedEvidenceItemsExists;
+  try {
+    const { rows } = await pool.query<{ oid: string | null }>(
+      "SELECT to_regclass('public.evidence_items') as oid"
+    );
+    cachedEvidenceItemsExists = rows?.[0]?.oid !== null;
+  } catch {
+    cachedEvidenceItemsExists = false;
+  }
+  return cachedEvidenceItemsExists;
+}
+
+/**
+ * Derive the stable citation source_path for an insertEvidence row.
+ * Format: "{source_type}:{document_id|nodoc}:{kind}"
+ *
+ * Collisions within the same (source, doc, kind) are naturally resolved by
+ * computeEvidenceId, which also hashes content_text into the final ID.
+ */
+function deriveEvidenceSourcePath(params: {
+  source: string;
+  document_id?: string | null;
+  kind: string;
+}): string {
+  const docPart = params.document_id ? params.document_id : "nodoc";
+  return `${params.source}:${docPart}:${params.kind}`;
+}
+
+/**
+ * Upsert one evidence_items row for the given params.
+ * Only called after the legacy `evidence` write has already succeeded.
+ * Never rethrows — canonical write failures are logged and swallowed.
+ */
+async function insertEvidenceItemsCanonical(
+  pool: Pool,
+  params: {
+    deal_id: string;
+    document_id?: string | null;
+    source: string;
+    kind: string;
+    text: string;
+    confidence?: number;
+  }
+): Promise<void> {
+  const tableExists = await getEvidenceItemsTableExists(pool);
+  if (!tableExists) {
+    if (!warnedEvidenceItemsMissing) {
+      warnedEvidenceItemsMissing = true;
+      console.warn(
+        JSON.stringify({
+          event: "EVIDENCE_CANONICAL_WRITE_SKIPPED",
+          reason: "evidence_items_table_missing",
+          deal_id: params.deal_id,
+          note: "Apply migration 2026-02-03-001 to enable canonical writes from fetch_evidence",
+        })
+      );
+    }
+    return;
+  }
+
+  const sourcePath = deriveEvidenceSourcePath(params);
+  const tags = [params.source, params.kind].filter(Boolean);
+  const evidenceId = computeEvidenceId({
+    deal_id: params.deal_id,
+    source_type: params.source,
+    source_path: sourcePath,
+    content_text: params.text,
+    tags,
+  });
+
+  try {
+    await pool.query(
+      `INSERT INTO evidence_items (
+         evidence_id,
+         deal_id,
+         source_type,
+         source_path,
+         source_document_id,
+         tags,
+         confidence,
+         extracted_at,
+         content_text,
+         meta
+       ) VALUES ($1, $2::uuid, $3, $4, $5::uuid, $6::text[], $7, now(), $8, $9::jsonb)
+       ON CONFLICT (evidence_id) DO UPDATE SET
+         confidence = GREATEST(evidence_items.confidence, EXCLUDED.confidence),
+         content_text = EXCLUDED.content_text,
+         updated_at = now()`,
+      [
+        evidenceId,
+        sanitizeText(params.deal_id),
+        sanitizeText(params.source),
+        sourcePath,
+        params.document_id ? sanitizeText(params.document_id) : null,
+        tags,
+        params.confidence ?? 0.5,
+        sanitizeText(params.text),
+        JSON.stringify({ writer: "fetch_evidence_dual_write", kind: params.kind }),
+      ]
+    );
+    if (process.env.DDAI_DEBUG_EVIDENCE_WRITES === "1") {
+      console.log(
+        JSON.stringify({
+          event: "EVIDENCE_CANONICAL_WRITE",
+          deal_id: params.deal_id,
+          evidence_id: evidenceId,
+          source_type: params.source,
+          kind: params.kind,
+        })
+      );
+    }
+  } catch (err: any) {
+    console.error(
+      JSON.stringify({
+        event: "EVIDENCE_CANONICAL_WRITE_FAILED",
+        deal_id: params.deal_id,
+        source_type: params.source,
+        kind: params.kind,
+        pg_code: typeof err?.code === "string" ? err.code : undefined,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    );
+    // Never rethrow — canonical write failure must not block the legacy path.
+  }
+}
+
+/** Reset canonical-write caches. Only for test isolation. */
+export function __resetEvidenceItemsExistsCacheForTests(): void {
+  cachedEvidenceItemsExists = null;
+  warnedEvidenceItemsMissing = false;
+}
+
+/**
+ * Pool-injectable canonical write entry point for tests.
+ * Exposes the same insertEvidenceItemsCanonical logic with a custom pool.
+ */
+export async function __insertEvidenceItemsCanonicalWithPoolForTests(
+  pool: unknown,
+  params: {
+    deal_id: string;
+    document_id?: string | null;
+    source: string;
+    kind: string;
+    text: string;
+    confidence?: number;
+  }
+): Promise<void> {
+  await insertEvidenceItemsCanonical(pool as Pool, params);
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+
 export async function insertEvidence(params: {
   deal_id: string;
   document_id?: string | null;
@@ -207,6 +376,14 @@ export async function insertEvidence(params: {
       })
     );
     throw err;
+  }
+
+  // Canonical dual-write: best-effort, never blocks the legacy path.
+  // Deals processed after this change will have evidence_items rows and no
+  // longer trigger the EVIDENCE_SOURCE_LEGACY_FALLBACK read-path signal.
+  await insertEvidenceItemsCanonical(currentPool, params);
+  if (process.env.DDAI_DEBUG_EVIDENCE_WRITES === "1") {
+    console.log(JSON.stringify({ event: "EVIDENCE_DUAL_WRITE", deal_id: params.deal_id, source: params.source, kind: params.kind }));
   }
 }
 

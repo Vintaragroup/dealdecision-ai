@@ -91,6 +91,16 @@ export const RenderSectionSchema = z.object({
   fallback: z.string().optional(),
 });
 
+// ─── Governed-skip observability (WS-B PR20) ────────────────────────────────
+
+export const GovernedSkipSchema = z.object({
+  stage: z.enum(["governed_summary_v1", "governed_executive_summary_v1", "product_profile_v1", "llm_interpretation_v1"]),
+  reason_code: z.string().min(1),
+  ts: z.string().datetime(),
+});
+
+export type GovernedSkipRecord = z.infer<typeof GovernedSkipSchema>;
+
 export const RenderPackageSchema = z.object({
   render_version: z.literal("ui_contract_v1"),
   ui_contract_version: z.string().min(1),
@@ -115,6 +125,65 @@ export const RenderPackageSchema = z.object({
   evidence_gate: EvidenceGateStateSchema.optional(),
 
   no_empty_blocks: z.boolean(),
+
+  // WS-B PR20: governed-skip observability — populated when any LLM stage was skipped.
+  // Optional so pre-existing render packages without this field remain valid.
+  governed_skips: z.array(GovernedSkipSchema).optional(),
+
+  // WS-A PR20: recovery metadata — populated when mode="recover_structured_json".
+  recovery_metadata: z
+    .object({
+      attempted: z.boolean(),
+      attempt_count: z.number().int().min(1),
+      last_attempt_at: z.string().datetime(),
+      last_result: z.enum(["pending", "succeeded", "failed"]),
+      reason_code: z.string().nullable(),
+    })
+    .optional(),
+
+  // Canonical company identity — structured field for UI rename suggestion.
+  // Populated when the canonical identity resolver runs and mismatch detection
+  // is meaningful (confidence high/medium).  Optional so pre-existing render
+  // packages without this field remain valid.
+  canonical_identity: z
+    .object({
+      entered_name: z.string(),
+      canonical_company_name: z.string(),
+      confidence: z.enum(["high", "medium", "low", "none"]),
+      mismatch_flagged: z.boolean(),
+      evidence_summary: z.string().nullable(),
+    })
+    .optional(),
+
+  // PR22: deterministic Overview-tab slot fallbacks.
+  // Populated when DETERMINISTIC_SLOT_FALLBACK_V1=true and at least one
+  // slot was extractable from DPU pages.  Optional so pre-existing render
+  // packages without this field remain valid.
+  deterministic_overview_slots: z
+    .object({
+      product: z
+        .object({
+          value: z.string().min(1),
+          confidence: z.number().min(0).max(1),
+          provenance: z.literal("deterministic_fallback_v1"),
+        })
+        .optional(),
+      market: z
+        .object({
+          value: z.string().min(1),
+          confidence: z.number().min(0).max(1),
+          provenance: z.literal("deterministic_fallback_v1"),
+        })
+        .optional(),
+      business_model: z
+        .object({
+          value: z.string().min(1),
+          confidence: z.number().min(0).max(1),
+          provenance: z.literal("deterministic_fallback_v1"),
+        })
+        .optional(),
+    })
+    .optional(),
 });
 
 export type RenderPackage = z.infer<typeof RenderPackageSchema>;
@@ -125,6 +194,15 @@ export const InvestorInsightsJobSchema = z.object({
   force_recompute: z.boolean().optional(),
   triggered_by: z.string().optional(),
   requested_by_user_id: z.string().optional(),
+  /**
+   * WS-A PR20: Processor execution mode.
+   *
+   * - "standard"                  Default mode. Full pipeline with dedup check.
+   * - "recover_structured_json"   Structured-JSON recovery retry. Skips dedup,
+   *                               records recovery_metadata in render_package,
+   *                               and emits DETERMINISTIC_ONLY_RECOVERY_* events.
+   */
+  mode: z.enum(["standard", "recover_structured_json"]).default("standard"),
 });
 
 export type InvestorInsightsJob = z.infer<typeof InvestorInsightsJobSchema>;

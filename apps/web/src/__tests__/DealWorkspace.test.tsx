@@ -1935,7 +1935,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
 
   // ── Score Consistency Guard ──────────────────────────────────────────────────
 
-  test('[score-guard] radial chart binds to report.overallScore and label reads "Overall Score"', async () => {
+  test('[score-guard] radial chart binds to report.overallScore and label reads "Deal Score"', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({ dioVersionId: 'v1', dioStatus: 'ready', lastAnalyzedAt: '2024-01-02T00:00:00.000Z' } as any);
 
     const { apiGetDealReport } = await import('../lib/apiClient');
@@ -1974,10 +1974,10 @@ describe('DealWorkspace Job Center (live mode)', () => {
     expect(radialChart.getAttribute('aria-label')).toMatch(/82/);
     expect(radialChart.getAttribute('data-canonical-score-source')).toBe('report.overallScore');
 
-    // Score label must read "Overall Score" when bound to report.overallScore.
+    // Score label must read "Deal Score" when bound to report.overallScore.
     const scoreLabel = screen.getByTestId('score-canonical-label');
     expect(scoreLabel).toBeInTheDocument();
-    expect(scoreLabel.textContent?.trim()).toBe('Overall Score');
+    expect(scoreLabel.textContent?.trim()).toBe('Deal Score');
   });
 
   test('[score-guard] when report not ready, score label uses sub-engine label, not "Overall Score"', async () => {
@@ -2002,7 +2002,7 @@ describe('DealWorkspace Job Center (live mode)', () => {
     await screen.findByLabelText('Deal top summary');
 
     // When the report is not ready, canonicalScoreSource is 'none' and label
-    // must NOT be "Overall Score" (it should be "Fundamentals score").
+    // must NOT be "Deal Score" (it should be "Fundamentals score").
     const radialChart = screen.getByTestId('radial-score-chart');
     expect(radialChart.getAttribute('data-canonical-score-source')).toBe('none');
 

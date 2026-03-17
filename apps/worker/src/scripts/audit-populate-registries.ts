@@ -14,9 +14,12 @@ import { populateDealFactRegistryV1 } from "../lib/deal-facts/populate-deal-fact
 import { populateFinancialFactRegistryV1 } from "../lib/financial-facts/populate-financial-fact-registry-v1";
 
 const AUDIT_DEALS: Record<string, string> = {
-	WebMax: "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
-	DealDecision: "517be946-cab9-4bc1-8982-9522ff9dab32",
-	Cinco: "0fcec035-9aa3-4f6e-88fa-818c323add09",
+	"3ICE":       "61ef36dd-391a-4a4e-b30b-1f5d1f19f91e",
+	Cinco:        "0fcec035-9aa3-4f6e-88fa-818c323add09",
+	Palm:         "c4f10092-1c94-4116-b4f0-78874868f92b",
+	Qredible:     "b21b894e-4020-46bd-b753-93b2d2d5fa8f",
+	StackFactor:  "adb2a1cf-bbb1-4f3b-8735-e2249415124f",
+	WebMax:       "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
 };
 
 const VERSION = "page_understanding_v1";
@@ -60,7 +63,8 @@ async function main() {
 		for (const doc of docs) {
 			const { document_id, doc_name, page_count } = doc;
 			const pageEnd = Math.max(1, page_count);
-			console.log(`\n  DOC: ${doc_name} (${document_id})  pages=0-${pageEnd}`);
+			const isXlsx = /\.xlsx?$/i.test(doc_name);
+			console.log(`\n  DOC: ${doc_name} (${document_id})  pages=0-${pageEnd}${isXlsx ? "  [xlsx]" : ""}`);
 
 			// 1. Page Registry v1
 			try {
@@ -96,6 +100,7 @@ async function main() {
 				const ff = await populateFinancialFactRegistryV1(pool as any, {
 					deal_id: dealId,
 					document_id,
+					...(isXlsx ? { xlsx_doc: true } : {}),
 				});
 				console.log(
 					`    financial_facts_v1:    scanned=${ff.pages_scanned}  with_data=${ff.pages_with_data}  extracted=${ff.facts_extracted}  derived=${ff.facts_derived}  upserted=${ff.facts_upserted}  errors=${ff.errors.length}`

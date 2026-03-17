@@ -368,7 +368,9 @@ describe("Phase 5.2 — raw DPU page_text is never passed to generateFn", () => 
 			"financialReconciliationBody",
 			"conflictsBody",
 			"productNarrativeBody",
+			"contradictionMarkersBody",
 			"dealName",
+			"canonicalCompanyName",
 		]);
 
 		// Forbidden raw DPU keys

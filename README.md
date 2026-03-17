@@ -45,6 +45,10 @@ This repository intentionally omits deployment, infrastructure, and environment-
 
 ## Production (set-and-forget)
 
+> **Managed by `render.yaml` (Render) and `vercel.json` (Vercel).**
+> Secrets are set in the Render/Vercel dashboards — not in committed files.
+> Do not add local-dev settings here.
+
 If you deploy with Docker Compose, see `infra/docker-compose.deploy.yml`.
 
 Key knobs:
@@ -107,6 +111,32 @@ Auth notes:
 
 - If your API requires auth, provide `AUTH_TOKEN` (Bearer token).
 - For local/dev docker, you can set `DISABLE_CLERK_AUTH=1` (non-production only).
+
+---
+
+## Configuration File Map
+
+Quick-reference for which file controls which context:
+
+| File | Context | Tracked in git |
+|------|---------|---------------|
+| `docker-compose.dev.yml` | **Local dev** docker stack (`dealdecision-dev`) | ✅ yes |
+| `docker-compose.prod.yml` | Prod-parity local stack (`dealdecision-prod`) | ✅ yes |
+| `docker-compose.yml` | CI / legacy infra dispatcher (not for local dev) | ✅ yes |
+| `infra/docker-compose.yml` | Service definitions for CI dispatcher (legacy ports) | ✅ yes |
+| `render.yaml` | **Production only** — Render.com service blueprint | ✅ yes |
+| `vercel.json` | **Production only** — Vercel frontend routing/headers | ✅ yes |
+| `.env.docker.local` | Dev docker runtime secrets (DB, Redis, OpenAI…) | ❌ gitignored |
+| `.env.docker.local.example` | Template for the above — copy and fill in | ✅ yes |
+| `.env.local` | Host-side tooling outside docker (migrations, scripts) | ❌ gitignored |
+| `.env.example` | Full reference of every known env var | ✅ yes |
+| `apps/web/.env.example` | Web-specific env var reference | ✅ yes |
+
+**Isolation rules:**
+- `develop → production` merges only application code. Dev docker config is isolated in `docker-compose.dev.yml`.
+- Production secrets live in Render/Vercel dashboards — never in committed files.
+- Dev docker secrets live in `.env.docker.local` (gitignored).
+- `docker-compose.yml` and `infra/docker-compose.yml` use **different ports** than `docker-compose.dev.yml` — do not use them for local dev.
 
 ---
 

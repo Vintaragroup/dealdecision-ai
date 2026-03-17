@@ -178,13 +178,15 @@ export type JobType =
 	| 'sync_crm'
 	| 'classify_document'
 	| 'investor_insights'
-	| 'export_report_pdf';
+	| 'export_report_pdf'
+	| 'monitor_deal_signals';
 
 // BullMQ queue names. Keep these centralized so API + worker stay in sync.
 export const QUEUE_NAMES = {
 	ingest_documents: 'ingest_documents',
 	render_document_pages: 'render_document_pages',
 	extract_visuals: 'extract_visuals',
+	finalize_extract_visuals: 'finalize_extract_visuals',
 	deep_scan_visuals: 'deep_scan_visuals',
 	document_intelligence_extract: 'document_intelligence_extract',
 	fetch_evidence: 'fetch_evidence',
@@ -195,6 +197,7 @@ export const QUEUE_NAMES = {
 	populate_document_page_understanding: 'populate_document_page_understanding',
 	investor_insights: 'investor_insights',
 	export_report_pdf: 'export_report_pdf',
+	monitor_deal_signals: 'monitor_deal_signals',
 } as const;
 
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];

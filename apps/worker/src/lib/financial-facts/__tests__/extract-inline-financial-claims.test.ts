@@ -362,3 +362,37 @@ describe("mergeFactsByConfidence", () => {
     expect(droppedCount).toBe(0);
   });
 });
+
+// ─── Scale-unit whitespace-split regression (F1 bug) ─────────────────────────
+
+describe("extractInlineFinancialClaims — whitespace-split scale suffix", () => {
+  it("'ARR $3.5 B' is parsed as $3.5 billion", () => {
+    const facts = extractInlineFinancialClaims("ARR $3.5 B", BASE_OPTS);
+    expect(facts.some((f) => f.value === 3_500_000_000 && f.metric_key === "arr")).toBe(true);
+  });
+
+  it("'Revenue $20 M' is parsed as $20 million", () => {
+    const facts = extractInlineFinancialClaims("Revenue $20 M", BASE_OPTS);
+    expect(facts.some((f) => f.value === 20_000_000 && f.metric_key === "revenue")).toBe(true);
+  });
+
+  it("'TAM $11 B' is parsed as $11 billion", () => {
+    const facts = extractInlineFinancialClaims("TAM $11 B", BASE_OPTS);
+    // TAM is not a canonical metric key in inline extractor — check the value appears correctly
+    // (it may be emitted as a different key or not at all — key guard: no $11_000 confusion)
+    expect(facts.every((f) => f.value !== 11)).toBe(true);
+    if (facts.length > 0) {
+      expect(facts.some((f) => f.value === 11_000_000_000)).toBe(true);
+    }
+  });
+
+  it("'ARR: $2.5 M' colon-separated with space-before-suffix", () => {
+    const facts = extractInlineFinancialClaims("ARR: $2.5 M", BASE_OPTS);
+    expect(facts.some((f) => f.value === 2_500_000 && f.metric_key === "arr")).toBe(true);
+  });
+
+  it("suffix word 'basis' is not treated as scale B", () => {
+    const facts = extractInlineFinancialClaims("Burn Rate $3.5 basis points", BASE_OPTS);
+    expect(facts.every((f) => f.value !== 3_500_000_000)).toBe(true);
+  });
+});

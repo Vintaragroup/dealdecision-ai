@@ -13,6 +13,7 @@
  */
 
 import { createHash } from "crypto";
+import type { TemporalScope } from "../temporal/temporal-scope";
 
 // ─── Unit + source types ──────────────────────────────────────────────────────
 
@@ -26,6 +27,8 @@ export type FinancialFactSourceKind =
   | "xlsx"
   | "pdf_table"
   | "pdf_kpi_line"
+  | "kpi_tile"
+  | "chart_pixel"
   | "deck"
   | "unknown";
 
@@ -39,6 +42,33 @@ export type FinancialFactPeriodType =
 export type FinancialFactConfidence = "high" | "medium" | "low";
 
 export type FinancialFactReconciliationStatus = "ok" | "conflict" | "unknown";
+
+/**
+ * Cross-source reconciliation status for a FinancialFactV1.
+ *
+ * Set by the cross-source reconciliation engine after comparing all facts for
+ * the same metric_key + period_label across source kinds.
+ *
+ * Status semantics:
+ *  supported       — ≥1 deck fact and ≥1 workbook fact exist for this slot and
+ *                    their values agree within per-metric tolerance.
+ *  conflicting     — ≥1 deck fact and ≥1 workbook fact exist but values disagree
+ *                    beyond tolerance.
+ *  deck_only       — Realized (historical/current) fact exists only in deck sources.
+ *  workbook_only   — Realized fact exists only in workbook sources.
+ *  projected_only  — Only projected/scenario facts exist for this slot; no realized
+ *                    fact from any source.
+ *  unresolved      — Insufficient data to determine agreement (e.g. value = 0,
+ *                    non-numeric, or group has a single projected + single realized
+ *                    from the same source).
+ */
+export type CrossSourceReconciliationStatus =
+  | "supported"
+  | "conflicting"
+  | "deck_only"
+  | "workbook_only"
+  | "projected_only"
+  | "unresolved";
 
 // ─── FinancialFactV1 ──────────────────────────────────────────────────────────
 
@@ -84,11 +114,59 @@ export interface FinancialFactV1 {
   confidence: FinancialFactConfidence;
   reconciliation_status?: FinancialFactReconciliationStatus;
 
+  /**
+   * Cross-source reconciliation status — populated by reconcileFinancialFacts()
+   * inside buildFinancialFactRegistryV1() after all sources are merged.
+   *
+   * Indicates whether this fact is corroborated by another source, in conflict,
+   * single-source, or projected-only.  Not persisted to DB (in-memory only for
+   * the current processing run).
+   *
+   * @see CrossSourceReconciliationStatus
+   */
+  cross_source_status?: CrossSourceReconciliationStatus;
+
+  /**
+   * Temporal scope of this financial fact.
+   *
+   * Populated by classifyTemporalScope() using the period_label and surrounding
+   * context text (e.g., column header from the XLSX sheet).
+   *
+   * "projected" or "scenario" means the value MUST NOT be presented as the
+   * company's current actual performance without an explicit qualifier.
+   *
+   * Defaults to "unknown" when the parser cannot determine scope.
+   */
+  temporal_scope?: TemporalScope;
+
+  /**
+   * Scenario label when this fact comes from a named scenario column in a
+   * financial model (e.g. "Base", "Upside", "Downside", "Bear", "Bull").
+   *
+   * Undefined for actuals / single-column models.
+   * Always set when temporal_scope = "scenario".
+   */
+  scenario?: string;
+
   // ── Provenance ────────────────────────────────────────────────────────────
   sheet_name?: string;
   page_number?: number;
   row_index?: number;
   col_index?: number;
+
+  /**
+   * Slide classification type from DPU payload (resolved_slide_type).
+   * e.g. "financials" | "traction" | "raise_terms" | "use_of_funds" | "team" | ...
+   * Populated during Phase 10 slide-aware extraction.  Undefined when no DPU
+   * slide context was available for the source page.
+   */
+  slide_type?: string;
+
+  /**
+   * Human-readable slide title extracted by the DPU pipeline.
+   * Populated alongside slide_type.
+   */
+  slide_title?: string;
 
   /** Stable pointer string: e.g. "sheet=Revenue row_idx=3 col=B value_raw=1200000" */
   source_pointer?: string;
@@ -166,16 +244,21 @@ export function validateFinancialFact(
 /**
  * Infer period_type from a period label string.
  * - "2024", "FY2024" → "annual"
- * - "Q1 2024", "Q3-2025" → "quarterly"
+ * - "Q1 2024", "Q3-2025", "Q1" (standalone) → "quarterly"
  * - "2024-03" → "monthly"
  * - "TTM", "LTM" → "ttm"
+ * - "YTD", "H1 YYYY", "H2 YYYY" → "annual"
  * - Otherwise → "unknown"
  */
 export function inferPeriodType(label: string): FinancialFactPeriodType {
   const s = label.trim();
   if (/^(ttm|ltm)$/i.test(s)) return "ttm";
   if (/^(Q[1-4][\s\-_]\d{4}|\d{4}[\s\-_]Q[1-4])$/i.test(s)) return "quarterly";
+  // Standalone quarter ("Q1", "Q2", ...)
+  if (/^Q[1-4]$/i.test(s)) return "quarterly";
   if (/^\d{4}-\d{2}$/.test(s)) return "monthly";
   if (/^(FY)?\d{4}$/.test(s)) return "annual";
+  // Half-year and YTD: year-scoped aggregations → annual
+  if (/^(YTD|H[12]\s+\d{4}|\d{4}\s+H[12])$/i.test(s)) return "annual";
   return "unknown";
 }

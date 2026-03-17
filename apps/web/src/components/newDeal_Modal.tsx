@@ -254,13 +254,14 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
         </div>
 
         {/* Upload dropzone */}
-        <div
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-          className={`${dropzoneBase} ${dropzoneIdle} ${uploadedFiles.length === 0 ? 'min-h-[140px]' : 'min-h-[72px]'}`}
-        >
+        <div className="px-6 py-6">
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+            className={`px-6 py-6 ${dropzoneBase} ${dropzoneIdle} ${uploadedFiles.length === 0 ? 'min-h-[140px]' : 'min-h-[72px]'}`}
+          >
           <Upload
             className={`${uploadedFiles.length === 0 ? 'w-8 h-8 mb-3' : 'w-5 h-5 mb-1'} text-zinc-400`}
             strokeWidth={1.5}
@@ -282,6 +283,7 @@ export function NewDealModal({ isOpen, onClose, onSuccess, onCreatedDeal, darkMo
             multiple
             className="hidden"
           />
+          </div>
         </div>
 
         {/* File list */}

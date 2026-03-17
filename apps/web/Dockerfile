@@ -34,6 +34,7 @@ ENV VITE_BACKEND_MODE=$VITE_BACKEND_MODE
 ENV VITE_CLERK_PUBLISHABLE_KEY=$VITE_CLERK_PUBLISHABLE_KEY
 
 WORKDIR /app/apps/web
+RUN pnpm css:generate
 RUN pnpm run build
 
 # ----------------------

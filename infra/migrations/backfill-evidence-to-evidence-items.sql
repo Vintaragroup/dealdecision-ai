@@ -182,10 +182,12 @@ SELECT
   wi.deal_id::uuid,
   wi.source_type,
   wi.source_path,
-  -- Only link source_document_id if raw_document_id looks like a valid UUID.
+  -- Only link source_document_id if raw_document_id looks like a valid UUID
+  -- AND the document still exists (guards against orphaned legacy references).
   CASE
     WHEN wi.raw_document_id IS NOT NULL
      AND wi.raw_document_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+     AND EXISTS (SELECT 1 FROM documents d WHERE d.id = wi.raw_document_id::uuid)
     THEN wi.raw_document_id::uuid
     ELSE NULL
   END,

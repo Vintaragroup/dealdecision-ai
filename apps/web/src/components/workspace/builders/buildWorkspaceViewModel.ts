@@ -135,6 +135,17 @@ function deriveIcReadiness(
 }
 
 /**
+ * Normalise snake_case machine keys to Title Case.
+ * Safe no-op on already human-readable strings.
+ * Examples:  "market_traction" → "Market Traction",  "SaaS" → "SaaS".
+ */
+function toTitleCase(s: string): string {
+  return /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(s.trim())
+    ? s.trim().split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+    : s;
+}
+
+/**
  * Derive evidence confidence 0–100 from band.
  */
 function deriveEvidenceConfidence(band: 'high' | 'med' | 'low' | 'unknown'): number {
@@ -251,7 +262,8 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
 
   const dealTiles = [
     { label: 'Stage', value: dealStageLabel },
-    { label: 'Type', value: topSectionDealType || DASH },
+    // Normalise snake_case deal types (e.g. 'series_a' → 'Series A').
+    { label: 'Type', value: toTitleCase(topSectionDealType) || DASH },
   ];
 
   const bmTiles = [
@@ -277,7 +289,8 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     industry,
     score: reportViewScore,
     verdict,
-    primaryIssues: filteredWeaknesses,
+    // Normalise any residual snake_case machine keys to Title Case.
+    primaryIssues: filteredWeaknesses.map(toTitleCase),
     blockers,
     concerns,
     strengths,

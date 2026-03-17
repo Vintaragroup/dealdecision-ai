@@ -29,6 +29,33 @@ const _EVIDENCE_LABEL: Record<
   unknown: 'Limited Evidence',
 };
 
+/**
+ * Contextual description strings that appear beneath the signal title.
+ * These are distinct from the title — they convey evidence context, not
+ * the signal observation itself.
+ */
+const _DESCRIPTION_CONTEXT: Record<
+  'high' | 'med' | 'low' | 'unknown',
+  { strength: string; concern: string }
+> = {
+  high: {
+    strength: 'Supporting evidence found across submitted materials.',
+    concern: 'Flagged during diligence review.',
+  },
+  med: {
+    strength: 'Partially supported by available evidence.',
+    concern: 'Area of potential concern — evidence is partial.',
+  },
+  low: {
+    strength: 'Identified strength — evidence is limited.',
+    concern: 'Risk area — limited evidence to fully assess.',
+  },
+  unknown: {
+    strength: 'Identified strength — evidence not yet assessed.',
+    concern: 'Risk area — evidence not yet assessed.',
+  },
+};
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -44,6 +71,7 @@ export function buildSignalCards(
   band: 'high' | 'med' | 'low' | 'unknown',
 ): WorkspaceSignalCard[] {
   const confidenceFloat = _BAND_CONFIDENCE[band];
+  const ctx = _DESCRIPTION_CONTEXT[band];
   const cards: WorkspaceSignalCard[] = [];
 
   for (const title of strengths) {
@@ -52,7 +80,7 @@ export function buildSignalCards(
     cards.push({
       type: 'strength',
       title: t,
-      description: t,
+      description: ctx.strength,
       confidence: confidenceFloat,
       source: 'score_explanation_v1',
     });
@@ -64,7 +92,7 @@ export function buildSignalCards(
     cards.push({
       type: 'concern',
       title: t,
-      description: t,
+      description: ctx.concern,
       confidence: confidenceFloat,
       source: 'score_explanation_v1',
     });
@@ -86,8 +114,11 @@ export function toOverviewSignalData(
   band: 'high' | 'med' | 'low' | 'unknown',
 ): WorkspaceOverviewSignal[] {
   const positiveLabel = _EVIDENCE_LABEL[band];
+  // Concern cards: lower confidence → less certain label.
+  // 'low' / 'unknown' bands mean we have limited evidence, so concern labels
+  // should reflect that — NOT "Strong Evidence" (which was a semantic inversion).
   const negativeLabel: WorkspaceOverviewSignal['confidence'] =
-    band === 'low' ? 'Strong Evidence' : 'Partial Evidence';
+    band === 'low' || band === 'unknown' ? 'Limited Evidence' : 'Partial Evidence';
 
   let strengthIdx = 0;
   let concernIdx = 0;

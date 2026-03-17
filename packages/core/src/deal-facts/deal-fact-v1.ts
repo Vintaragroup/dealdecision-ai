@@ -14,25 +14,49 @@
  */
 
 import { createHash } from "crypto";
+import type { TemporalScope } from "../temporal/temporal-scope";
 
 // ─── DealFactTypeV1 ──────────────────────────────────────────────────────────
 
 export const DEAL_FACT_TYPES_V1 = [
+  // ── Raise & valuation ──────────────────────────────────────────────────
   "raise_amount",
   "valuation",
   "round_stage",
   "use_of_funds",
+  // ── Market sizing ──────────────────────────────────────────────────────
+  "tam",
+  "sam",
+  "som",
+  // ── Financial metrics (granular — Phase 1 additions) ───────────────────
+  /** Annual recurring revenue — current period. */
+  "arr",
+  /** Monthly recurring revenue — current period. */
+  "mrr",
+  /** Revenue (general — period determined by temporal_scope). */
+  "revenue",
+  /** EBITDA or net income. */
+  "ebitda",
+  /** Monthly / quarterly cash burn. */
+  "burn_rate",
+  /** Cash runway in months. */
+  "runway_months",
+  // ── Business context ───────────────────────────────────────────────────
   "target_customer",
   "business_model",
   "pricing_model",
   "go_to_market",
+  /** Traction metric (catch-all for any KPI not covered by granular types above). */
   "traction_metric",
   "key_customer",
   "key_partner",
+  // ── Competitive & team ─────────────────────────────────────────────────
   "competitor",
   "team_key_role",
+  // ── Product & AI ───────────────────────────────────────────────────────
   "product_capability",
   "ai_usage_claim",
+  // ── Fallbacks ──────────────────────────────────────────────────────────
   "other",
   "unknown",
 ] as const;
@@ -136,8 +160,20 @@ export interface DealFactV1 {
   /** Human-readable label e.g. "Raise", "Valuation", "ARR (2025)" */
   label: string;
   value: DealFactValueV1;
-  /** e.g. "FY2025", "Q3 2026", "as of Jan 2026" */
+  /** e.g. "FY2025", "Q3 2026", "as of Jan 2026" — calendar period label, kept for UI display. */
   timeframe?: string;
+  /**
+   * Temporal scope of this fact — classifies whether the value is historical
+   * (actual/reported), current (TTM/run-rate), projected (forecast/plan),
+   * scenario (sensitivity analysis), target (goal), or unknown.
+   *
+   * For granular financial types (arr, mrr, revenue, ebitda, burn_rate,
+   * runway_months), this field MUST be set by the extractor.
+   * For non-financial types it defaults to "unknown".
+   *
+   * Populated by classifyTemporalScope() from packages/core/src/temporal/.
+   */
+  temporal_scope?: TemporalScope;
   confidence: DealFactConfidence;
   /** 1–6 evidence entries. */
   sources: DealFactEvidenceV1[];

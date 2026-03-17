@@ -11,7 +11,7 @@
  *  - Re-runs whenever dealId or the canonical field fingerprint changes.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { parseCanonicalFieldsBody } from '../components/workspace/InvestorInsightsTab';
+import { parseCanonicalFieldsBody } from '../components/workspace/investorInsightsUtils';
 import {
   apiPostMarketAnalysis,
   type MarketAnalysisResult,

@@ -20,8 +20,29 @@ export function safeJobId(input: string): string {
 }
 
 type QueueLike = {
-  add: (name: string, data: Record<string, unknown>, opts: { jobId: string; removeOnComplete: boolean; removeOnFail: boolean }) => Promise<any>;
+  add: (name: string, data: Record<string, unknown>, opts: {
+    jobId: string;
+    removeOnComplete: boolean;
+    removeOnFail: boolean;
+    attempts?: number;
+    backoff?: { type: string; delay: number };
+    delay?: number;
+  }) => Promise<any>;
 };
+
+/**
+ * Default BullMQ retry options applied to every job enqueue unless explicitly overridden.
+ * Provides 3 attempts with exponential backoff starting at 1 second.
+ *
+ * Jobs that require a different policy (e.g. extract_visuals which uses queue-level
+ * defaultJobOptions with attempts=5) should pass explicit overrides instead.
+ */
+export function defaultBullmqRetryOpts() {
+  return {
+    attempts: 3,
+    backoff: { type: "exponential" as const, delay: 1000 },
+  } as const;
+}
 
 type DbPoolLike = Pick<ReturnType<typeof getPool>, "query">;
 
@@ -282,10 +303,26 @@ export async function enqueueBullmqJob(
   // Always sanitize: BullMQ rejects IDs containing ':'. Callers may pass raw
   // template strings (e.g. from ensure-documents-ready-for-analysis). safeJobId
   // is idempotent for already-clean IDs.
+  const sanitizedJobId = safeJobId(params.jobId);
+  const retryOpts = defaultBullmqRetryOpts();
+  console.log(
+    JSON.stringify({
+      event: "BULLMQ_ENQUEUE",
+      queue: getQueueNameForJobType(params.type),
+      name: params.type,
+      job_id: sanitizedJobId,
+      attempts: retryOpts.attempts,
+      backoff_type: retryOpts.backoff.type,
+      backoff_delay: retryOpts.backoff.delay,
+      deal_id: typeof params.bullPayload.deal_id === "string" ? params.bullPayload.deal_id : undefined,
+      document_id: typeof params.bullPayload.document_id === "string" ? params.bullPayload.document_id : undefined,
+    })
+  );
   await queue.add(params.type, params.bullPayload, {
-    jobId: safeJobId(params.jobId),
+    jobId: sanitizedJobId,
     removeOnComplete: true,
     removeOnFail: false,
+    ...retryOpts,
   });
 }
 

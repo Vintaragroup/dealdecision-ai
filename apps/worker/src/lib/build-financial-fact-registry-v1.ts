@@ -11,6 +11,8 @@
  *   4. Cash flow derived (burn_rate, runway_months → "current")
  *   5. FinancialBenchmark[] from orchestrator segments.financial (medium confidence)
  *   6. Deck financial signals (low confidence, skipped if XLSX data present)
+ *   7. Workbook intelligence facts (Phase 2 XLSX modules) — with projection safety
+ *   8. Cross-source reconciliation (Phase 3) — annotate cross_source_status on every fact
  *
  * Confidence assignment:
  *   - "high"   — XLSX series with reconciliation confidence ≥ 0.7
@@ -32,6 +34,7 @@ import type { CashFlowStatementV1 } from "./cash-flow-parser-v1.js";
 import type { FinancialBenchmark } from "@dealdecision/core";
 import type { DeckFinancialSignalsV1, DeckFinancialMention } from "./deck-financial-signals-v1.js";
 import type { FinancialReconciliationV1 } from "./financial-reconciliation-v1.js";
+import { reconcileFinancialFacts } from "./cross-source-reconciliation.js";
 
 // ─── Inputs ───────────────────────────────────────────────────────────────────
 
@@ -58,6 +61,16 @@ export interface FinancialFactRegistryInputsV1 {
 
   /** Deck financial signals — used as low-confidence fallback. */
   deckSignals?: DeckFinancialSignalsV1 | null;
+
+  /**
+   * Workbook-intelligence facts from Phase 2 XLSX modules
+   * (table-detector → financial-model-interpreter → metric-promoter).
+   *
+   * Merged AFTER all structured parser series.  Projected / scenario workbook
+   * facts are silently dropped when a historical or current fact for the same
+   * metric_key + period_label already exists in the registry (projection safety).
+   */
+  workbookFacts?: FinancialFactV1[];
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
@@ -430,7 +443,61 @@ export function buildFinancialFactRegistryV1(
     }
   }
 
-  return Array.from(map.values());
+  // ── 7. Workbook intelligence facts (Phase 2 XLSX modules) ─────────────────
+  if (inputs.workbookFacts && inputs.workbookFacts.length > 0) {
+    // Two-pass approach:
+    //
+    // Pass 1 — build the full set of realized keys from BOTH the existing
+    //   registry (steps 1-6) AND the workbook facts batch itself.  This makes
+    //   projection safety order-independent within the batch.
+    //
+    // Pass 2 — merge workbook facts, skipping projected/scenario facts for any
+    //   metric+period slot already covered by a realized fact.
+    const realizedKeys = new Set<string>();
+
+    // From the existing registry (steps 1-6):
+    for (const f of map.values()) {
+      if (isRealizedScope(f.temporal_scope)) {
+        realizedKeys.add(`${f.metric_key}:${f.period_label}`);
+      }
+    }
+    // From the workbook batch itself:
+    for (const wf of inputs.workbookFacts) {
+      if (isRealizedScope(wf.temporal_scope) && isFiniteFactValue(wf.value)) {
+        realizedKeys.add(`${wf.metric_key}:${wf.period_label}`);
+      }
+    }
+
+    // Pass 2: merge, applying projection safety.
+    for (const wf of inputs.workbookFacts) {
+      if (!isFiniteFactValue(wf.value)) continue;
+      // Projection safety: drop projected/scenario workbook facts when a
+      // realized (historical/current) fact already exists for the same slot.
+      if (!isRealizedScope(wf.temporal_scope)) {
+        if (realizedKeys.has(`${wf.metric_key}:${wf.period_label}`)) continue;
+      }
+      push(wf);
+    }
+  }
+
+  // ── 8. Cross-source reconciliation (Phase 3) ──────────────────────────────
+  // Annotate every fact with cross_source_status by comparing deck vs workbook
+  // facts for the same metric_key + period_label slot.
+  //
+  // This is a pure in-memory step: cross_source_status is available downstream
+  // during this processing run but is NOT persisted to the DB (the upsert
+  // function uses positional parameters that do not include this column).
+  //
+  // Projection safety is preserved: reconcileFinancialFacts() only compares
+  // realized (historical|current) facts across sources.  Projected / scenario
+  // facts produce "projected_only" or scenario-matched status and are NEVER
+  // promoted to "supported" for current-company performance claims.
+  return reconcileFinancialFacts(Array.from(map.values()));
+}
+
+/** Returns true for temporal_scope values that represent realized/reported data. */
+function isRealizedScope(scope: string | undefined): boolean {
+  return scope === "historical" || scope === "current";
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

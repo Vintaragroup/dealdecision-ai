@@ -10,7 +10,7 @@
  *   0.8 — Single-source: found in exactly 1 document
  *   0.5 — Conflicted: 2+ documents disagree on the normalised value
  *
- * When values conflict the field is still fused (longest value wins as a
+ * When values conflict the field is still fused (richest-source candidate wins as a
  * representative) but a FusedConflict entry is emitted and confidence is capped
  * at 0.5.
  *
@@ -24,6 +24,30 @@
  */
 
 import type { RenderPackage } from "../../contracts/investor-insights/schemas";
+import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "./resolve-raise-amount";
+import {
+	ARR_TAINT_WINDOW,
+	ARR_MARKET_TAINT_RE,
+	ARR_COMPANY_OWNERSHIP_RE,
+	MRR_TAINT_WINDOW,
+	MRR_MARKET_TAINT_RE,
+	MRR_COMPANY_OWNERSHIP_RE,
+	REVENUE_TAINT_WINDOW,
+	REVENUE_MARKET_TAINT_RE,
+	REVENUE_COMPANY_OWNERSHIP_RE,
+	CUSTOMER_TAINT_WINDOW,
+	CUSTOMER_COMPETITOR_TAINT_RE,
+	CUSTOMER_COMPANY_OWNERSHIP_RE,
+} from "./numeric-context-taxonomy";
+import {
+	type TemporalScope,
+	classifyTemporalScope,
+	extractYearFromLabel,
+	isProjectedScope,
+	temporalScopeLabel,
+	type CrossSourceReconciliationStatus,
+	FACT_PLAUSIBILITY_GUARDS,
+} from "@dealdecision/core";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -54,6 +78,46 @@ export interface FusedFact {
 	updated_at: string;
 	/** Ordered history of prior values for this field (most-recent first). */
 	history: FusedFactHistoryEntry[];
+	/**
+	 * Temporal scope of this fused fact.
+	 *
+	 * Populated for traction_signal and market_claims fields where temporal
+	 * context can be reliably detected from the matching text snippet.
+	 *
+	 * "projected" or "scenario" means the fact MUST NOT be presented as the
+	 * company's current performance without an explicit scope qualifier.
+	 *
+	 * undefined = temporal classification was not applicable for this field.
+	 */
+	temporal_scope?: TemporalScope;
+	/**
+	 * Semantic role of this fused fact — maps to the DealFactTypeV1 taxonomy.
+	 *
+	 * Provides an explicit typed role alongside the string field name so that
+	 * downstream consumers can use typed comparisons instead of string matching.
+	 */
+	semantic_role?: string;
+	/**
+	 * Scenario label when this fact originates from a named scenario column in a
+	 * financial model (e.g. "Base", "Upside", "Downside", "Bear", "Bull").
+	 *
+	 * Undefined for actuals and non-scenario extractions.
+	 * Always set when temporal_scope = "scenario".
+	 */
+	scenario?: string;
+	/**
+	 * Cross-source reconciliation status — mirrors FinancialFactV1.cross_source_status.
+	 *
+	 * Populated when a FusedFact is enriched via the financial fact registry
+	 * reconciliation path (buildFinancialFactRegistryV1 step 8).
+	 *
+	 * Indicates whether this fused fact is corroborated by cross-document evidence
+	 * ("supported"), in conflict ("conflicting"), single-source ("deck_only" /
+	 * "workbook_only"), or forward-looking only ("projected_only").
+	 *
+	 * When undefined: reconciliation has not been run or does not apply.
+	 */
+	cross_source_status?: CrossSourceReconciliationStatus;
 }
 
 export interface FusedConflict {
@@ -246,27 +310,38 @@ interface FieldDef {
 	field: string;
 	category: string;
 	pattern: RegExp;
+	/**
+	 * Semantic role mapped to the DealFactTypeV1 taxonomy.
+	 * Carried through to FusedFact.semantic_role.
+	 */
+	semantic_role?: string;
+	/**
+	 * When true, temporal scope classification is run on the matched text
+	 * window for this field. Applies to traction metrics and market claims
+	 * where projected vs. historical scope matters for investment decisions.
+	 */
+	classify_temporal?: boolean;
 }
 
 const FUSION_FIELDS: FieldDef[] = [
-	{ field: "raise_amount",         category: "raise_terms",      pattern: RAISE_AMOUNT_PATTERN },
-	{ field: "raise_round",          category: "raise_terms",      pattern: RAISE_ROUND_PATTERN },
-	{ field: "raise_instrument",     category: "raise_terms",      pattern: RAISE_INSTRUMENT_PATTERN },
-	{ field: "raise_cap",            category: "raise_terms",      pattern: RAISE_CAP_PATTERN },
-	{ field: "raise_discount",       category: "raise_terms",      pattern: RAISE_DISCOUNT_PATTERN },
-	{ field: "valuation_pre",        category: "valuation_terms",  pattern: VALUATION_PRE_PATTERN },
-	{ field: "valuation_post",       category: "valuation_terms",  pattern: VALUATION_POST_PATTERN },
-	{ field: "valuation_safe_cap",   category: "valuation_terms",  pattern: VALUATION_SAFE_CAP_PATTERN },
-	{ field: "use_of_funds_buckets",          category: "use_of_funds",     pattern: USE_OF_FUNDS_BUCKET_PATTERN },
-	{ field: "deck_has_use_of_funds_buckets", category: "use_of_funds",     pattern: DECK_USE_OF_FUNDS_BUCKETS_PATTERN },
-	{ field: "tam_value",            category: "market_claims",    pattern: TAM_VALUE_PATTERN },
-	{ field: "sam_value",            category: "market_claims",    pattern: SAM_VALUE_PATTERN },
-	{ field: "som_value",            category: "market_claims",    pattern: SOM_VALUE_PATTERN },
-	{ field: "mrr_value",            category: "traction_signal",  pattern: MRR_VALUE_PATTERN },
-	{ field: "arr_value",            category: "traction_signal",  pattern: ARR_VALUE_PATTERN },
-	{ field: "revenue_value",        category: "traction_signal",  pattern: REVENUE_VALUE_PATTERN },
-	{ field: "growth_rate",          category: "traction_signal",  pattern: GROWTH_RATE_PATTERN },
-	{ field: "customer_count",       category: "traction_signal",  pattern: CUSTOMER_COUNT_PATTERN },
+	{ field: "raise_amount",         category: "raise_terms",      semantic_role: "raise_amount",   classify_temporal: false, pattern: RAISE_AMOUNT_PATTERN },
+	{ field: "raise_round",          category: "raise_terms",      semantic_role: "round_stage",    classify_temporal: false, pattern: RAISE_ROUND_PATTERN },
+	{ field: "raise_instrument",     category: "raise_terms",      semantic_role: "round_stage",    classify_temporal: false, pattern: RAISE_INSTRUMENT_PATTERN },
+	{ field: "raise_cap",            category: "raise_terms",      semantic_role: "valuation",      classify_temporal: false, pattern: RAISE_CAP_PATTERN },
+	{ field: "raise_discount",       category: "raise_terms",      semantic_role: "raise_amount",   classify_temporal: false, pattern: RAISE_DISCOUNT_PATTERN },
+	{ field: "valuation_pre",        category: "valuation_terms",  semantic_role: "valuation",      classify_temporal: false, pattern: VALUATION_PRE_PATTERN },
+	{ field: "valuation_post",       category: "valuation_terms",  semantic_role: "valuation",      classify_temporal: false, pattern: VALUATION_POST_PATTERN },
+	{ field: "valuation_safe_cap",   category: "valuation_terms",  semantic_role: "valuation",      classify_temporal: false, pattern: VALUATION_SAFE_CAP_PATTERN },
+	{ field: "use_of_funds_buckets",          category: "use_of_funds",     semantic_role: "use_of_funds",   classify_temporal: false, pattern: USE_OF_FUNDS_BUCKET_PATTERN },
+	{ field: "deck_has_use_of_funds_buckets", category: "use_of_funds",     semantic_role: "use_of_funds",   classify_temporal: false, pattern: DECK_USE_OF_FUNDS_BUCKETS_PATTERN },
+	{ field: "tam_value",            category: "market_claims",    semantic_role: "tam",            classify_temporal: true,  pattern: TAM_VALUE_PATTERN },
+	{ field: "sam_value",            category: "market_claims",    semantic_role: "sam",            classify_temporal: true,  pattern: SAM_VALUE_PATTERN },
+	{ field: "som_value",            category: "market_claims",    semantic_role: "som",            classify_temporal: true,  pattern: SOM_VALUE_PATTERN },
+	{ field: "mrr_value",            category: "traction_signal",  semantic_role: "mrr",            classify_temporal: true,  pattern: MRR_VALUE_PATTERN },
+	{ field: "arr_value",            category: "traction_signal",  semantic_role: "arr",            classify_temporal: true,  pattern: ARR_VALUE_PATTERN },
+	{ field: "revenue_value",        category: "traction_signal",  semantic_role: "revenue",        classify_temporal: true,  pattern: REVENUE_VALUE_PATTERN },
+	{ field: "growth_rate",          category: "traction_signal",  semantic_role: "traction_metric", classify_temporal: false, pattern: GROWTH_RATE_PATTERN },
+	{ field: "customer_count",       category: "traction_signal",  semantic_role: "traction_metric", classify_temporal: false, pattern: CUSTOMER_COUNT_PATTERN },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -329,6 +404,21 @@ function cleanValue(field: string, snippet: string): string {
 	return base;
 }
 
+/**
+ * Returns true when a FusedFact should be blocked from promotion to
+ * "current company performance" surfaces (overview headline, governed summary
+ * key metrics) because its temporal scope indicates forward-looking data.
+ *
+ * Safe to call when temporal_scope is undefined — returns false (not blocked).
+ *
+ * Blocked scopes: "projected", "scenario", "target"
+ * Allowed scopes: "historical", "current", "unknown", undefined
+ */
+export function isProjectedFusedFact(fact: FusedFact): boolean {
+	if (!fact.temporal_scope) return false;
+	return isProjectedScope(fact.temporal_scope);
+}
+
 // ─── Per-document matching ────────────────────────────────────────────────────
 
 interface DocMatch {
@@ -336,33 +426,162 @@ interface DocMatch {
 	value: string;
 	normalized: string;
 	evidence_ref: string;
+	/**
+	 * Context window (up to 400 chars) surrounding the match, used for
+	 * temporal scope classification. Includes text before and after the match.
+	 */
+	context_window: string;
+	/**
+	 * Richness score for this match's source page.
+	 * Used to select the most informative candidate when multiple matches exist.
+	 * Higher = more reliable/contextual evidence.
+	 */
+	page_richness_score: number;
+}
+
+// ── Traction metric context guards ────────────────────────────────────────────
+
+/** Returns true when the ARR match context indicates an external market figure. */
+function isFusionArrTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - ARR_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + ARR_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (ARR_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return ARR_MARKET_TAINT_RE.test(window);
+}
+
+/** Returns true when the MRR match context indicates an external market figure. */
+function isFusionMrrTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - MRR_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + MRR_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (MRR_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return MRR_MARKET_TAINT_RE.test(window);
+}
+
+/** Returns true when the revenue match context indicates a market/competitor figure. */
+function isFusionRevenueTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - REVENUE_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + REVENUE_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (REVENUE_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return REVENUE_MARKET_TAINT_RE.test(window);
+}
+
+/** Returns true when the customer count context indicates a competitor/benchmark figure. */
+function isFusionCustomerCountTainted(text: string, matchIndex: number, matchLength: number): boolean {
+	const start  = Math.max(0, matchIndex - CUSTOMER_TAINT_WINDOW);
+	const end    = Math.min(text.length, matchIndex + matchLength + CUSTOMER_TAINT_WINDOW);
+	const window = text.slice(start, end);
+	if (CUSTOMER_COMPANY_OWNERSHIP_RE.test(window)) return false;
+	return CUSTOMER_COMPETITOR_TAINT_RE.test(window);
+}
+
+// ── Page richness scoring ─────────────────────────────────────────────────────
+
+/**
+ * Keywords indicating a dedicated KPI, financial summary, or traction context.
+ * Pages with these markers are richer evidence sources than incidental mentions.
+ */
+const KPI_RICHNESS_KEYWORDS_RE =
+	/\b(?:KPI|key\s+metrics?|traction|financial\s+summary|financial\s+highlights?|revenue\s+summary|P&L|income\s+statement|balance\s+sheet|financials?)\b/i;
+
+const SECTION_RICHNESS_LABEL_RE =
+	/\b(?:Financials?|Traction|Metrics?|Performance|Growth|Summary|Highlights?)\b/i;
+
+/**
+ * Score the richness of a page as an evidence source.
+ *
+ * Scoring components:
+ *   - Text length: longer pages are richer evidence contexts (capped at 10 pts)
+ *   - KPI keyword presence: dedicated financial summary page bonus (+5 pts)
+ *   - Section label markers: financial section heading bonus (+2 pts)
+ *   - Dollar sign density: more figures = more financial context (+0–5 pts)
+ *
+ * Higher score → prefer this page's match over lower-scoring alternatives.
+ */
+function scorePageRichness(pageText: string): number {
+	let score = 0;
+	// Base: text length (longer pages have more context)
+	score += Math.min(pageText.length / 200, 10);
+	// Bonus for KPI/financial summary keywords
+	if (KPI_RICHNESS_KEYWORDS_RE.test(pageText)) score += 5;
+	// Bonus for section label markers
+	if (SECTION_RICHNESS_LABEL_RE.test(pageText)) score += 2;
+	// Bonus for dollar sign density (multiple figures = financial context)
+	const dollarCount = (pageText.match(/\$/g) ?? []).length;
+	score += Math.min(dollarCount, 5);
+	return score;
 }
 
 /**
- * Scan sorted pages for a single document and return the first regex match.
- * Pages must already be ordered by page_index ascending (processor.ts guarantees
- * ORDER BY document_id ASC, page_index ASC).
+ * Scan ALL pages of a document and return the match from the richest page.
+ *
+ * Unlike the previous `findFirstMatchInDoc`, this function:
+ *   1. Collects all valid (non-tainted) matches across every page.
+ *   2. Scores each page by richness (text length + KPI indicators).
+ *   3. Returns the match from the highest-richness page.
+ *
+ * This prevents a brief incidental mention on page 1 from overriding a full
+ * KPI slide with the same metric on page 8.
+ *
+ * Pages must already be ordered by page_index ascending.
  */
-function findFirstMatchInDoc(
+function findBestMatchInDoc(
 	docPages: DpuPageLike[],
 	field: string,
 	pattern: RegExp
 ): DocMatch | null {
+	const candidates: (DocMatch & { _richness: number })[] = [];
+
 	for (const page of docPages) {
-		const m = pattern.exec(page.text ?? "");
+		const text = page.text ?? "";
+		const m = pattern.exec(text);
 		if (!m) continue;
-		// Guard: skip money-first raise_amount matches whose context contains
-		// market-size language ("$11B market", "$8B TAM — investment opportunity").
-		if (field === "raise_amount" && isFusionRaiseTainted(page.text ?? "", m.index, m[0].length)) continue;
+
+		// ── Field-specific context guards ──────────────────────────────────────
+		if (field === "raise_amount") {
+			if (isFusionRaiseTainted(text, m.index, m[0].length)) continue;
+			if (isCandidateTaintedByFundAumContext(text)) continue;
+			// PR36.5: skip volume-metric pages (cars financed, GMV, etc.)
+			if (isCandidateTaintedByVolumeMetric(text) && !hasStrongRaiseSignal(text)) continue;
+		}
+		if (field === "arr_value"      && isFusionArrTainted(text, m.index, m[0].length))          continue;
+		if (field === "mrr_value"      && isFusionMrrTainted(text, m.index, m[0].length))          continue;
+		if (field === "revenue_value"  && isFusionRevenueTainted(text, m.index, m[0].length))      continue;
+		if (field === "customer_count" && isFusionCustomerCountTainted(text, m.index, m[0].length)) continue;
+
+		// ── Page-level plausibility guard ───────────────────────────────────────
+		// Applied after window-based taint checks for a second layer of defense.
+		// Uses full page text to reject semantic category mismatches.
+		const plausibilityGuard = FACT_PLAUSIBILITY_GUARDS[field];
+		if (plausibilityGuard) {
+			const snippet = m[0].slice(0, 120);
+			const guardResult = plausibilityGuard(field, text, snippet);
+			if (!guardResult.allowed) continue;
+		}
+
 		const snippet = m[0].slice(0, 120);
-		return {
+		const ctxStart = Math.max(0, m.index - 150);
+		const ctxEnd   = Math.min(text.length, m.index + m[0].length + 150);
+		const context_window = text.slice(ctxStart, ctxEnd);
+		const richness = scorePageRichness(text);
+
+		candidates.push({
 			document_id: page.document_id,
 			value: cleanValue(field, snippet),
 			normalized: normalizeForConflict(snippet),
 			evidence_ref: dpuEvidenceRef(page.document_id, page.page_index),
-		};
+			context_window,
+			page_richness_score: richness,
+			_richness: richness,
+		});
 	}
-	return null;
+
+	if (candidates.length === 0) return null;
+
+	// Return the candidate from the richest page
+	return candidates.reduce((best, c) => c._richness > best._richness ? c : best);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -405,12 +624,12 @@ export function fuseDealCanonicalFacts(
 	}
 
 	for (const fieldDef of FUSION_FIELDS) {
-		const { field, category, pattern } = fieldDef;
+		const { field, category, pattern, semantic_role, classify_temporal } = fieldDef;
 
-		// Collect the first match found in each document
+		// Collect the best match found in each document (richness-scored, context-gated)
 		const docMatches: DocMatch[] = [];
 		for (const [, docPages] of byDoc) {
-			const match = findFirstMatchInDoc(docPages, field, pattern);
+			const match = findBestMatchInDoc(docPages, field, pattern);
 			if (match) docMatches.push(match);
 		}
 
@@ -435,9 +654,12 @@ export function fuseDealCanonicalFacts(
 			winner = docMatches[0]!;
 			confidence = docMatches.length >= 2 ? 1.0 : 0.8;
 		} else {
-			// Cross-document conflict: pick the candidate with the longest raw value
-			// as the representative winner; cap confidence at 0.5
-			winner = docMatches.reduce((a, b) => (b.value.length > a.value.length ? b : a));
+			// Cross-document conflict: pick the candidate from the richest source page
+			// as the representative winner; cap confidence at 0.5.
+			// (Richness score prefers structured KPI/financial pages over incidental mentions.)
+			winner = docMatches.reduce((a, b) =>
+				b.page_richness_score > a.page_richness_score ? b : a
+			);
 			confidence = 0.5;
 			conflicts.push({
 				field,
@@ -466,6 +688,13 @@ export function fuseDealCanonicalFacts(
 			});
 		}
 
+		// Temporal scope classification (only for fields where it matters)
+		let temporal_scope: TemporalScope | undefined;
+		if (classify_temporal) {
+			const year = extractYearFromLabel(winner.value);
+			temporal_scope = classifyTemporalScope(year, winner.context_window);
+		}
+
 		facts.push({
 			field,
 			category,
@@ -475,6 +704,8 @@ export function fuseDealCanonicalFacts(
 			source_document_id: winner.document_id,
 			updated_at: now,
 			history,
+			temporal_scope,
+			semantic_role,
 		});
 	}
 
@@ -499,8 +730,13 @@ export function buildDealFusionSection(
 	if (result.facts.length > 0) {
 		lines.push("--- fused facts ---");
 		for (const f of result.facts) {
+			const scopePart = f.temporal_scope ? ` | scope=${f.temporal_scope}` : "";
+			const rolePart  = f.semantic_role  ? ` | role=${f.semantic_role}`   : "";
+			const projectedFlag = f.temporal_scope && isProjectedScope(f.temporal_scope)
+				? " [PROJECTED — not current actuals]"
+				: "";
 			lines.push(
-				`field=${f.field} | category=${f.category} | confidence=${f.confidence.toFixed(1)} | value="${f.value}" | evidence=${f.evidence_ref} | doc=${f.source_document_id.slice(0, 8)}`
+				`field=${f.field} | category=${f.category} | confidence=${f.confidence.toFixed(1)} | value="${f.value}"${scopePart}${rolePart} | evidence=${f.evidence_ref} | doc=${f.source_document_id.slice(0, 8)}${projectedFlag}`
 			);
 		}
 	}

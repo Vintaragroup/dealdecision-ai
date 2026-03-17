@@ -1,5 +1,6 @@
 import type { Job } from "bullmq";
 import { sanitizeDeep, sanitizeText } from "@dealdecision/core";
+import type { JobProgressEventV1 } from "@dealdecision/contracts";
 
 import { getPool } from "./db";
 
@@ -268,4 +269,39 @@ export async function updateJobProgress(job: Job, input: UpdateJobProgressInput)
   };
 
   scheduleDbWrite(jobId, pending);
+}
+
+// ── Throttled progress event emitter ─────────────────────────────────────────
+// Module-level cache so per-module callers share the same dedup window.
+const progressEmitCache = new Map<string, { ts: number; stage?: string }>();
+
+/**
+ * Emit a structured job-progress event (JobProgressEventV1) via updateJobProgress,
+ * with a 1-second per-stage dedup window to avoid flooding the DB.
+ *
+ * Exported so processors outside of index.ts can use the same throttling.
+ */
+export async function emitJobProgress(job: Job, progress: JobProgressEventV1): Promise<void> {
+  const jobId = (job.id ?? (job as any).name)?.toString();
+  if (!jobId) return;
+  const now = Date.now();
+  const prev = progressEmitCache.get(jobId);
+  if (prev && prev.stage === progress.stage && now - prev.ts < 1000) return;
+  progressEmitCache.set(jobId, { ts: now, stage: progress.stage });
+
+  await updateJobProgress(job, {
+    stage: progress.stage,
+    current: typeof progress.percent === "number" ? progress.percent : undefined,
+    total: typeof progress.percent === "number" ? 100 : undefined,
+    message: progress.message,
+    meta: (progress as any).meta,
+    page_start:
+      typeof (progress as any)?.meta?.page_start === "number"
+        ? (progress as any).meta.page_start
+        : undefined,
+    page_end:
+      typeof (progress as any)?.meta?.page_end === "number"
+        ? (progress as any).meta.page_end
+        : undefined,
+  });
 }

@@ -1,0 +1,13 @@
+{
+  "_schema": "ground_truth_v1",
+  "_notes": "Ground truth for WebMax. Slots populated from fallback sources only (no product profile). Financials from financial_facts_v1.",
+  "deal_name": "WebMax",
+  "deal_id": "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
+  "slots": {
+    "company_description": "WebMax is focused on revolutionizing digital mortgage solutions",
+    "delivery_model": "SaaS"
+  },
+  "financials": {
+    "revenue": 8000
+  }
+}

@@ -9,10 +9,13 @@ export type EnqueuePersistedJobInput = {
 	job_id?: string;
 	idempotent?: boolean;
   delay_ms?: number;
+  /** BullMQ job priority (lower number = higher priority). Omit to use the queue default. */
+  priority?: number;
   type:
     | "ingest_documents"
     | "render_document_pages"
     | "extract_visuals"
+    | "finalize_extract_visuals"
     | "deep_scan_visuals"
     | "populate_document_page_understanding"
     | "document_intelligence_extract"
@@ -109,11 +112,23 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
   try {
     const delayMsRaw = typeof input.delay_ms === "number" && Number.isFinite(input.delay_ms) ? input.delay_ms : null;
     const delayMs = delayMsRaw != null ? Math.max(0, Math.floor(delayMsRaw)) : 250;
+    // Apply default retry opts for all job types except extract_visuals, which uses
+    // queue-level defaultJobOptions (attempts: 5) set in getQueue("extract_visuals").
+    // Job-level opts take precedence over queue defaultJobOptions, so we must not
+    // override the higher attempts count for extract_visuals jobs.
+    const retryOpts = input.type === "extract_visuals"
+      ? {}
+      : { attempts: 3, backoff: { type: "exponential" as const, delay: 1000 } };
+    const priorityOpt = typeof input.priority === "number" && Number.isFinite(input.priority)
+      ? { priority: Math.max(1, Math.floor(input.priority)) }
+      : {};
     await queue.add(input.type, payload, {
       jobId,
       removeOnComplete: true,
       removeOnFail: false,
       delay: delayMs,
+      ...retryOpts,
+      ...priorityOpt,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

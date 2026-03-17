@@ -8,7 +8,7 @@
  *   3. "deterministic_only" raw text NOT shown (replaced by "AI Governed")
  *   4. EmptyFallback + Regenerate CTA when section absent
  *   5. EmptyFallback when section body has no JSON marker (parse failure)
- *   6. InvestorInsightsTab renders governed_executive_summary_v1 via dedicated renderer
+ *   6. InvestorInsightsTab does NOT render governed_executive_summary_v1 (routed to Report tab — PR36.6A)
  */
 import { render, screen } from '@testing-library/react';
 import React from 'react';
@@ -213,10 +213,10 @@ describe('InvestorReportView — Executive Summary card', () => {
   });
 });
 
-// ─── InvestorInsightsTab — governed_executive_summary_v1 rendering ────────────
+// ─── InvestorInsightsTab — governed_executive_summary_v1 routing (PR36.6A) ──
 
-describe('InvestorInsightsTab — governed_executive_summary_v1 section card', () => {
-  test('renders headline and paragraphs via GovernedExecSummaryV1Section', async () => {
+describe('InvestorInsightsTab — governed_executive_summary_v1 routing (PR36.6A)', () => {
+  test('does NOT render governed_executive_summary_v1 in the Investor Insights tab (routed to Report tab)', async () => {
     const MOCKED_REPORT = {
       status: 'deterministic_only',
       render_package: {
@@ -236,17 +236,19 @@ describe('InvestorInsightsTab — governed_executive_summary_v1 section card', (
 
     render(<InvestorInsightsTab dealId="test-deal-123" darkMode={false} />);
 
-    // Wait for the async data to load
-    const headline = await screen.findByText('StackFactor — SaaS Platform (Seed)');
-    expect(headline).toBeInTheDocument();
+    // Wait for the component to finish loading — all sections are report-only so
+    // decisionSurface is empty and the fallback message renders
+    await screen.findByText(/Data tab/);
 
-    // Verify a paragraph renders (not raw JSON text)
+    // PR36.6A: governed_executive_summary_v1 is filtered by REPORT_SUMMARY_KEYS
+    // and must NOT render inside the Investor Insights tab
+    expect(screen.queryByText('StackFactor \u2014 SaaS Platform (Seed)')).not.toBeInTheDocument();
     expect(
-      screen.getByText('StackFactor builds workflow automation software for logistics operators.'),
-    ).toBeInTheDocument();
+      screen.queryByText('StackFactor builds workflow automation software for logistics operators.'),
+    ).not.toBeInTheDocument();
   });
 
-  test('does NOT render raw JSON in the section body', async () => {
+  test('does NOT render raw JSON or section title for governed_executive_summary_v1', async () => {
     const MOCKED_REPORT = {
       status: 'deterministic_only',
       render_package: {
@@ -265,11 +267,15 @@ describe('InvestorInsightsTab — governed_executive_summary_v1 section card', (
     (apiGetInvestorInsights as ReturnType<typeof vi.fn>).mockResolvedValue(MOCKED_REPORT);
 
     render(<InvestorInsightsTab dealId="test-deal-123" darkMode={false} />);
-    await screen.findByText('StackFactor — SaaS Platform (Seed)');
 
-    // The raw JSON marker should not appear as visible text
+    // Wait for load
+    await screen.findByText(/Data tab/);
+
+    // The raw JSON marker and schema string must not be visible
     expect(screen.queryByText('---governed_executive_summary_v1_json---')).not.toBeInTheDocument();
     expect(screen.queryByText(/schema_version.*governed_executive_summary/)).not.toBeInTheDocument();
+    // The section title card must not render
+    expect(screen.queryByText('AI Executive Summary')).not.toBeInTheDocument();
   });
 });
 

@@ -438,8 +438,35 @@ export function buildWorkspaceMirrorOverviewVM(overview: any): WorkspaceMirrorOv
   const heroPicked = pickString(governedUiCopyOk ? governedUiCopyObj?.hero_summary : null, summary && typeof summary === 'object' ? (summary as any).one_liner : null);
   const productPicked = pickString(governedUiCopyOk ? governedUiCopyObj?.product_solution : null, dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).product_solution : null);
   const marketPicked = pickString(governedUiCopyOk ? governedUiCopyObj?.market_icp : null, dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).market_icp : null);
-  const modelPicked = pickString(governedUiCopyOk ? governedUiCopyObj?.business_model : null, dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).business_model : null);
-  const raisePicked = pickString(governedUiCopyOk ? governedUiCopyObj?.raise_terms : null, dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).raise : null);
+
+  // Business model: governed_ui_copy_v1 → deal_overview_v2 → display_facts_v1.business_model.text
+  // display_facts_v1 text is a last-resort deterministic fallback built from
+  // structured_summary; it only activates when both governed and phase1 raw are absent.
+  const dfBusinessModelText = cleanFactStringOrNull(displayFactsV1Obj?.business_model?.text);
+  const modelPickedBase = pickString(
+    governedUiCopyOk ? governedUiCopyObj?.business_model : null,
+    dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).business_model : null,
+  );
+  const modelPicked: ReturnType<typeof pickString> = modelPickedBase.value
+    ? modelPickedBase
+    : dfBusinessModelText
+      ? { value: dfBusinessModelText, source: 'deterministic' }
+      : { value: null, source: 'missing' };
+
+  // Raise terms: governed_ui_copy_v1 → deal_overview_v2.raise → display_facts_v1.raise_terms.text
+  const dfRaiseTermsText = cleanFactStringOrNull(
+    displayFactsV1Obj?.raise_terms?.text ?? displayFactsV1Obj?.raise?.text,
+  );
+  const raisePickedBase = pickString(
+    governedUiCopyOk ? governedUiCopyObj?.raise_terms : null,
+    dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).raise : null,
+  );
+  const raisePicked: ReturnType<typeof pickString> = raisePickedBase.value
+    ? raisePickedBase
+    : dfRaiseTermsText
+      ? { value: dfRaiseTermsText, source: 'deterministic' }
+      : { value: null, source: 'missing' };
+
   const strengthsPicked = pickList(governedUiCopyOk ? governedUiCopyObj?.strengths : null, dealSummaryV2 && typeof dealSummaryV2 === 'object' ? (dealSummaryV2 as any).strengths : null);
   const concernsPicked = pickList(governedUiCopyOk ? governedUiCopyObj?.concerns : null, dealSummaryV2 && typeof dealSummaryV2 === 'object' ? (dealSummaryV2 as any).risks : null);
   const openQuestionsPicked = pickList(governedUiCopyOk ? governedUiCopyObj?.open_questions : null, dealSummaryV2 && typeof dealSummaryV2 === 'object' ? (dealSummaryV2 as any).open_questions : null);

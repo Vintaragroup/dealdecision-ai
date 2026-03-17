@@ -58,6 +58,7 @@ import { RiskVerificationSection } from './analysis/RiskVerificationSection';
 import { DocumentReadinessCard } from './analysis/DocumentReadinessCard';
 import { ExportReportModal } from '../ExportReportModal';
 import type { ReportSectionKey } from '../deals/analysis/ReportViewConfigModal';
+import { parseGovernedSummaryBody } from './investorInsightsUtils';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
@@ -314,6 +315,138 @@ function GovernedExecutiveSummarySection({
           {parsed.coverage_note}
         </p>
       )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GovernedSummaryBlock — inline renderer for governed_summary_v1
+// (PR36.6A: this section is Report-only; excluded from InvestorInsightsTab)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function GovernedSummaryBlock({
+  section,
+  darkMode,
+}: {
+  section: InvestorInsightsSection;
+  darkMode: boolean;
+}) {
+  const body = typeof section.body === 'string' ? section.body : '';
+  const data = parseGovernedSummaryBody(body);
+
+  if (!data) {
+    return (
+      <EmptyFallback
+        text="AI-Governed Investment Summary could not be parsed. Regenerate Investor Insights to rebuild."
+        darkMode={darkMode}
+      />
+    );
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Provenance badge */}
+      <div className="flex items-center gap-2">
+        <span
+          className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium border ${
+            darkMode
+              ? 'border-[#6366f1]/30 bg-[#6366f1]/15 text-[#a5b4fc]'
+              : 'border-[#6366f1]/25 bg-[#6366f1]/8 text-[#6366f1]'
+          }`}
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-current" />
+          AI Governed
+        </span>
+        {data.validated && (
+          <span
+            className={`inline-flex items-center gap-1 text-xs ${
+              darkMode ? 'text-emerald-400' : 'text-emerald-600'
+            }`}
+          >
+            <CheckCircle2 className="w-3 h-3" />
+            Numeric-parity validated
+          </span>
+        )}
+      </div>
+
+      {/* Executive summary paragraph */}
+      {data.executive_summary && (
+        <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+          {data.executive_summary}
+        </p>
+      )}
+
+      {/* Three-column grid: Strengths / Risks / Open Questions */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {data.strengths.length > 0 && (
+          <div
+            className={`rounded-lg border p-4 ${
+              darkMode
+                ? 'border-emerald-500/25 bg-emerald-500/8'
+                : 'border-emerald-200 bg-emerald-50'
+            }`}
+          >
+            <p
+              className={`text-xs font-semibold uppercase tracking-wide mb-3 ${
+                darkMode ? 'text-emerald-400' : 'text-emerald-700'
+              }`}
+            >
+              Strengths
+            </p>
+            <BulletList
+              items={data.strengths}
+              accent={darkMode ? 'bg-emerald-400' : 'bg-emerald-500'}
+              darkMode={darkMode}
+            />
+          </div>
+        )}
+
+        {data.risks.length > 0 && (
+          <div
+            className={`rounded-lg border p-4 ${
+              darkMode
+                ? 'border-red-500/25 bg-red-500/8'
+                : 'border-red-200 bg-red-50'
+            }`}
+          >
+            <p
+              className={`text-xs font-semibold uppercase tracking-wide mb-3 ${
+                darkMode ? 'text-red-400' : 'text-red-700'
+              }`}
+            >
+              Risks
+            </p>
+            <BulletList
+              items={data.risks}
+              accent={darkMode ? 'bg-red-400' : 'bg-red-500'}
+              darkMode={darkMode}
+            />
+          </div>
+        )}
+
+        {data.open_questions.length > 0 && (
+          <div
+            className={`rounded-lg border p-4 ${
+              darkMode
+                ? 'border-amber-500/25 bg-amber-500/8'
+                : 'border-amber-200 bg-amber-50'
+            }`}
+          >
+            <p
+              className={`text-xs font-semibold uppercase tracking-wide mb-3 ${
+                darkMode ? 'text-amber-400' : 'text-amber-700'
+              }`}
+            >
+              Open Questions
+            </p>
+            <BulletList
+              items={data.open_questions}
+              accent={darkMode ? 'bg-amber-400' : 'bg-amber-500'}
+              darkMode={darkMode}
+            />
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1001,6 +1134,8 @@ export function OrchestratorFullReportView({
     insightReport.render_package?.sections ?? [];
 
   const execSummarySection = findSection(rawSections, 'governed_executive_summary_v1');
+  // PR36.6A: governed_summary_v1 is Report-only (excluded from InvestorInsightsTab via REPORT_SUMMARY_KEYS)
+  const governedSummarySection = findSection(rawSections, 'governed_summary_v1');
 
   const companyLabel = dealName ?? 'this deal';
 
@@ -1115,7 +1250,16 @@ export function OrchestratorFullReportView({
           darkMode={darkMode}
         >
           {execSummarySection ? (
-            <GovernedExecutiveSummarySection section={execSummarySection} darkMode={darkMode} />
+            <>
+              <GovernedExecutiveSummarySection section={execSummarySection} darkMode={darkMode} />
+              {governedSummarySection && (
+                <div className={`mt-4 pt-4 border-t ${darkMode ? 'border-white/10' : 'border-gray-200/70'}`}>
+                  <GovernedSummaryBlock section={governedSummarySection} darkMode={darkMode} />
+                </div>
+              )}
+            </>
+          ) : governedSummarySection ? (
+            <GovernedSummaryBlock section={governedSummarySection} darkMode={darkMode} />
           ) : (
             <EmptyFallback
               text="Executive summary not available. Regenerate to rebuild."

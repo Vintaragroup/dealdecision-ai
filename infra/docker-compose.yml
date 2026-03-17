@@ -1,3 +1,16 @@
+# =============================================================================
+# LEGACY / CI INFRA COMPOSE
+#
+# Used by the root docker-compose.yml dispatcher and by CI.
+# NOT the local dev stack. For local dev use docker-compose.dev.yml instead.
+#
+# Port differences vs docker-compose.dev.yml (the dev canonical stack):
+#   API:      localhost:9000  (dev: 9001)
+#   Web:      localhost:5199  (dev: 4174)
+#   Postgres: localhost:55432 (dev: 55433)
+#   Redis:    localhost:6379  (dev: 6380)
+#   No tsx hot-reload volumes / no dev Dockerfiles
+# =============================================================================
 services:
   postgres:
     image: postgres:16-alpine

@@ -474,4 +474,71 @@ describe("promote slide facts", () => {
 		expect(String((raiseFact as any)?.value_json?.display ?? "")).toContain("$2M");
 		expect((raiseFact as any)?.value_json?.amount?.amount).toBe(2_000_000);
 	});
+
+	it("slideTypeToSegmentKey maps known types and handles edge cases", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+		const fn = __test__.slideTypeToSegmentKey;
+
+		expect(fn("raise_terms")).toBe("raise_terms");
+		expect(fn("market")).toBe("market");
+		expect(fn("financials")).toBe("financials");
+		expect(fn("go_to_market")).toBe("distribution");
+		expect(fn("use_of_funds")).toBe("raise_terms");
+		expect(fn("other")).toBeNull();
+		expect(fn(null)).toBeNull();
+		expect(fn(undefined)).toBeNull();
+		expect(fn("  ")).toBeNull();
+	});
+
+	it("resolved_slide_type on DPU row is used as segment_key fallback", async () => {
+		const { promoteSlideFactsFromDocumentPageUnderstanding } = await import("../promote-slide-facts.js");
+
+		const pool: any = {
+			query: async (sql: string, params?: any[]) => {
+				const q = String(sql);
+				if (q.includes("SELECT 1 FROM evidence_items")) {
+					return { rows: [{ ok: 1 }], rowCount: 1 };
+				}
+				if (q.includes("FROM public.document_page_understanding")) {
+					return {
+						rows: [
+							{
+								page_index: 0,
+								payload: {
+									source: { extracted_at: "2026-02-01T00:00:00.000Z" },
+									// Simulates PDF DPU row: structured.segment_key is absent (PDF limitation),
+									// but resolved_slide_type was patched in by page-understanding-v1.
+									structured: {
+										kind: "pdf_page",
+										title: "The Ask",
+										bullets: ["Raising $3M Seed SAFE", "$10M valuation cap"],
+									},
+									page_text: "The Ask\nRaising $3M Seed SAFE\n$10M valuation cap",
+									resolved_slide_type: "raise_terms",
+									resolved_slide_type_confidence: 0.85,
+								},
+							},
+						],
+					};
+				}
+				if (q.includes("INSERT INTO evidence_items")) {
+					return { rows: [{ inserted: true }], rowCount: 1 };
+				}
+				return { rows: [], rowCount: 0 };
+			},
+		};
+
+		const res = await promoteSlideFactsFromDocumentPageUnderstanding(pool, {
+			dealId: "11111111-1111-1111-1111-111111111111",
+			documentId: "22222222-2222-2222-2222-222222222222",
+			pageStart: 0,
+			pageEnd: 1,
+			version: "page_understanding_v1",
+		});
+
+		expect(res.ok).toBe(true);
+		// Should extract raise terms from the PDF page using the resolved_slide_type fallback boost.
+		const raiseFact = res.facts.find((f: any) => f?.fact_type === "raise_terms_v1");
+		expect(raiseFact).toBeTruthy();
+	});
 });

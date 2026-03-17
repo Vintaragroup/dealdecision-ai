@@ -395,6 +395,27 @@ function deriveSummary(params: {
 	return { summary, confidence, source: "derived_v1" };
 }
 
+/**
+ * Additively patches existing production DPU rows with slide classification metadata.
+ *
+ * Safety design — Phase 8A fix:
+ *   The previous implementation used INSERT ... ON CONFLICT DO UPDATE which would
+ *   OVERWRITE production rows with an incompatible payload (no text_blocks / page_text).
+ *   This function now performs a targeted JSON-merge UPDATE that ADDS slide fields
+ *   to the existing payload without touching any text fields.
+ *
+ *   Schema safety guard: the WHERE clause only matches rows that have text_blocks
+ *   or page_text, ensuring placeholder rows and non-text rows are never touched.
+ *
+ * Fields added to existing payload (never removed):
+ *   resolved_slide_type, resolved_slide_type_confidence, resolved_slide_type_source,
+ *   slide_title, slide_title_confidence, slide_title_source,
+ *   slide_key_metrics, slide_regions, _slide_patch_version, _slide_patch_generated_at
+ *
+ * Fields preserved (untouched by this function):
+ *   page_text, normalized_text, text_blocks, structured, source, labels, quality_flags,
+ *   page_type, confidence — and any other fields set by the production DPU writer.
+ */
 export async function persistPdfPageUnderstandingV1Shadow(params: {
 	pool: Pool;
 	documentId: string;
@@ -402,18 +423,18 @@ export async function persistPdfPageUnderstandingV1Shadow(params: {
 	fullContent: any;
 	env?: NodeJS.ProcessEnv;
 	now?: string;
-}): Promise<{ persisted_pages: number; attempted_pages: number }> {
+}): Promise<{ persisted_pages: number; attempted_pages: number; skipped_no_target_row: number }> {
 	const env = params.env ?? process.env;
 	const mode = normalizeMode(env.PDF_PAGE_UNDERSTANDING_MODE);
-	if (mode !== "shadow") return { persisted_pages: 0, attempted_pages: 0 };
+	if (mode !== "shadow") return { persisted_pages: 0, attempted_pages: 0, skipped_no_target_row: 0 };
 
 	const fullContent = params.fullContent ?? {};
 	const pdfV2: PdfV2Like | null =
 		(fullContent as any)?.pdf_v2 && typeof (fullContent as any).pdf_v2 === "object" ? ((fullContent as any).pdf_v2 as any) : (fullContent as any);
-	if (!pdfV2 || (pdfV2 as any).status !== "ok") return { persisted_pages: 0, attempted_pages: 0 };
+	if (!pdfV2 || (pdfV2 as any).status !== "ok") return { persisted_pages: 0, attempted_pages: 0, skipped_no_target_row: 0 };
 
 	const pages = Array.isArray((pdfV2 as any)?.pages) ? ((pdfV2 as any).pages as PdfV2PageLike[]) : [];
-	if (pages.length === 0) return { persisted_pages: 0, attempted_pages: 0 };
+	if (pages.length === 0) return { persisted_pages: 0, attempted_pages: 0, skipped_no_target_row: 0 };
 
 	const boilerplate = buildBoilerplateSetFromUnderstanding(pages);
 
@@ -421,6 +442,7 @@ export async function persistPdfPageUnderstandingV1Shadow(params: {
 
 	let attempted = 0;
 	let persisted = 0;
+	let skippedNoTargetRow = 0;
 
 	for (const p of pages) {
 		const pageIndex = clampInt(p?.page_index);
@@ -454,12 +476,6 @@ export async function persistPdfPageUnderstandingV1Shadow(params: {
 		const boundedRegions = normalizedRegions.slice(0, 12);
 		if (boundedRegions.length < 3) continue;
 
-		const ocrV2Raw = (p as any)?.ocr_v2;
-		const ocrV2: OcrV2Like | null = ocrV2Raw && typeof ocrV2Raw === "object" ? (ocrV2Raw as any) : null;
-		const ocrV2Avg = typeof ocrV2?.avg_confidence === "number" && Number.isFinite(ocrV2.avg_confidence) ? clamp01(ocrV2.avg_confidence) : null;
-		const ocrClean = computeOcrV2CleanText(ocrV2);
-
-		const finalText = cleanText((p as any)?.final?.text);
 		const understandingTitle = cleanText(understanding?.title);
 		const understandingTitleConf = typeof understanding?.title_confidence === "number" && Number.isFinite(understanding.title_confidence) ? clamp01(understanding.title_confidence) : 0;
 		const titleCandidatesRaw = Array.isArray(understanding?.title_candidates) ? (understanding.title_candidates as TitleCandidateLike[]) : [];
@@ -472,6 +488,13 @@ export async function persistPdfPageUnderstandingV1Shadow(params: {
 			})
 			.filter((x): x is { text: string; score: number; reasons: string[] } => Boolean(x))
 			.slice(0, 12);
+
+		// Derive title from candidates (same logic as before, used for slide_title patch field).
+		const ocrV2Raw = (p as any)?.ocr_v2;
+		const ocrV2: OcrV2Like | null = ocrV2Raw && typeof ocrV2Raw === "object" ? (ocrV2Raw as any) : null;
+		const ocrV2Avg = typeof ocrV2?.avg_confidence === "number" && Number.isFinite(ocrV2.avg_confidence) ? clamp01(ocrV2.avg_confidence) : null;
+		const ocrClean = computeOcrV2CleanText(ocrV2);
+		const finalText = cleanText((p as any)?.final?.text);
 		const titleRes = deriveTitle({
 			understandingTitle,
 			understandingConf: understandingTitleConf,
@@ -491,35 +514,9 @@ export async function persistPdfPageUnderstandingV1Shadow(params: {
 			? { slide_type: slideType, confidence: slideTypeConf, source: "understanding_v1.slide_type" }
 			: { slide_type: "other", confidence: 0.1, source: "default" };
 
-		const understandingSummary = cleanText(understanding?.summary);
-		const understandingSummaryConf = typeof understanding?.summary_confidence === "number" && Number.isFinite(understanding.summary_confidence)
-			? clamp01(understanding.summary_confidence)
-			: 0;
-
 		const metricsRaw = Array.isArray(understanding?.key_metrics) ? (understanding.key_metrics as MetricLike[]) : [];
-		const metricsNorm = metricsRaw
-			.map((m) => {
-				const value = cleanText((m as any)?.value);
-				if (!value) return null;
-				const label = cleanText((m as any)?.label);
-				const unit = cleanText((m as any)?.unit);
-				const context = cleanText((m as any)?.context);
-				const conf = typeof (m as any)?.conf === "number" && Number.isFinite((m as any).conf) ? clamp01((m as any).conf) : 0;
-				const bbox = coerceNormalizedBBox((m as any)?.source_bbox?.bbox);
-				return { label, value, unit, context, conf, source_bbox: bbox };
-			})
-			.filter((x): x is { label: string; value: string; unit: string; context: string; conf: number; source_bbox: NormalizedBBox | null } => Boolean(x));
 
-		const sumRes = deriveSummary({
-			understandingSummary,
-			understandingConf: understandingSummaryConf,
-			regionsSorted: boundedRegions,
-			metrics: metricsNorm.map((m) => ({ label: m.label, value: m.value, unit: m.unit })),
-			resolvedTitle: titleRes.title,
-			boilerplate,
-		});
-
-		// Fetch synthetic pdf_text_region assets for linking.
+		// Fetch synthetic pdf_text_region assets for metric/region linking.
 		const assetsRes = await params.pool.query(
 			`SELECT id, bbox
 			   FROM visual_assets
@@ -538,7 +535,7 @@ export async function persistPdfPageUnderstandingV1Shadow(params: {
 			})
 			.filter((x): x is { id: string; bbox: NormalizedBBox } => Boolean(x));
 
-		const regionsOut = boundedRegions.map((r, idx) => {
+		const regionsOut = boundedRegions.slice(0, 8).map((r, idx) => {
 			const link = linkToAssets({ bbox: r.bbox }, regionAssets);
 			return {
 				region_index: idx,
@@ -550,7 +547,7 @@ export async function persistPdfPageUnderstandingV1Shadow(params: {
 			};
 		});
 
-		const keyMetricsOut = metricsRaw.map((m: any) => {
+		const keyMetricsOut = metricsRaw.slice(0, 8).map((m: any) => {
 			const sourceBbox = coerceNormalizedBBox(m?.source_bbox?.bbox);
 			const link = sourceBbox ? linkToAssets({ bbox: sourceBbox }, regionAssets) : { linked_asset_id: null, link_reason: "none" as const };
 			return {
@@ -560,52 +557,54 @@ export async function persistPdfPageUnderstandingV1Shadow(params: {
 			};
 		});
 
-		const payload = {
-			version: "page_understanding_v1",
-			generated_at: now,
-			document_id: params.documentId,
-			page_index: pageIndex,
-			inputs: {
-				has_understanding_v1: true,
-				has_ocr_v2: Boolean(ocrV2),
-				has_ocr_v2_text_clean: Boolean(ocrClean.text),
-				region_asset_count: regionAssets.length,
-				ocr_v2_avg_confidence: ocrV2Avg,
-				ocr_v2_kept_blocks: ocrClean.keptBlocks,
-				ocr_v2_total_blocks: ocrClean.totalBlocks,
-			},
-			resolved_title: titleRes.title,
-			resolved_title_confidence: titleRes.confidence,
-			resolved_title_source: titleRes.source,
-			resolved_title_meta: {
-				understanding_title_present: Boolean(understandingTitle),
-				title_candidates_count: titleCandidates.length,
-				boilerplate_key_hits: titleRes.title ? (boilerplate.has(normalizeForBoilerplate(titleRes.title)) ? 1 : 0) : 0,
-			},
+		// Build the PATCH object — only slide classification metadata.
+		// This is the JSON that will be merged into the existing production DPU payload via `||`.
+		// It NEVER contains page_text, text_blocks, structured, or any other text fields.
+		const slidePatch = {
 			resolved_slide_type: slideTypeRes.slide_type,
 			resolved_slide_type_confidence: slideTypeRes.confidence,
 			resolved_slide_type_source: slideTypeRes.source,
-			resolved_summary: sumRes.summary,
-			resolved_summary_confidence: sumRes.confidence,
-			resolved_summary_source: sumRes.source,
-			regions: regionsOut,
-			key_metrics: keyMetricsOut,
+			slide_title: titleRes.title || null,
+			slide_title_confidence: titleRes.confidence,
+			slide_title_source: titleRes.source,
+			slide_key_metrics: keyMetricsOut,
+			slide_regions: regionsOut,
+			_slide_patch_version: "v1",
+			_slide_patch_generated_at: now,
 		};
 
-		await params.pool.query(
-			`INSERT INTO document_page_understanding (document_id, deal_id, page_index, version, payload, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5::jsonb, now(), now())
-			 ON CONFLICT (document_id, page_index, version)
-			 DO UPDATE SET
-			   deal_id = EXCLUDED.deal_id,
-			   payload = EXCLUDED.payload,
-			   created_at = now(),
-			   updated_at = now()`,
-			[params.documentId, params.dealId ?? null, pageIndex, "page_understanding_v1", safeJsonStringify(payload)]
+		// Additively patch the existing production DPU row.
+		//
+		// Safety guards in the WHERE clause:
+		//   1. version = 'page_understanding_v1'  — only touch production rows
+		//   2. text_blocks IS NOT NULL OR page_text != ''  — only patch real text-bearing rows;
+		//      never touch placeholder rows (which lack text).
+		//
+		// If no matching row exists (DPU not yet populated for this page), the UPDATE
+		// returns rowCount=0 and we log skipped_no_target_row. The patch will be applied
+		// on the next pipeline run after DPU population completes.
+		const patchResult = await params.pool.query(
+			`UPDATE document_page_understanding
+			    SET payload = payload || $3::jsonb,
+			        updated_at = now()
+			  WHERE document_id = $1
+			    AND page_index = $2
+			    AND version = 'page_understanding_v1'
+			    AND (
+			        payload->'text_blocks' IS NOT NULL
+			        OR COALESCE(payload->>'page_text', '') <> ''
+			    )
+			RETURNING 1`,
+			[params.documentId, pageIndex, safeJsonStringify(slidePatch)]
 		);
 
-		persisted += 1;
+		const rowCount = typeof (patchResult as any)?.rowCount === "number" ? (patchResult as any).rowCount : 0;
+		if (rowCount > 0) {
+			persisted += 1;
+		} else {
+			skippedNoTargetRow += 1;
+		}
 	}
 
-	return { persisted_pages: persisted, attempted_pages: attempted };
+	return { persisted_pages: persisted, attempted_pages: attempted, skipped_no_target_row: skippedNoTargetRow };
 }

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, Download, Eye, Settings, Check, Edit } from 'lucide-react';
 import { Button } from './ui/button';
-import { DealFormData } from './NewDealModal';
+import { DealFormData } from './Modal_Legacy/NewDealModal';
 import { TemplateCustomizer, TemplateCustomization } from './TemplateCustomizer';
 import { TemplateEditor } from './TemplateEditor';
 import { ToastContainer } from './ui/Toast';

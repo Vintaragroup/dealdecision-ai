@@ -38,6 +38,12 @@ export interface GovernedSummaryV1 {
 	open_questions: string[];
 	/** True when numeric-parity validation passed. */
 	validated: boolean;
+	/**
+	 * IDs of evidence_items records that were available as inputs when this
+	 * summary was generated. Populated deterministically after LLM generation;
+	 * omitted when no evidence snippets were available.
+	 */
+	evidence_refs?: string[];
 }
 
 export interface GovernedSummaryArgs {
@@ -50,8 +56,17 @@ export interface GovernedSummaryArgs {
 	financialReconciliationBody: string | null;
 	conflictsBody: string | null;
 	dealName?: string;
+	/**
+	 * Canonical company name resolved from document evidence (Fix E).
+	 * When present and different from dealName, the Deal Identity block in the
+	 * LLM prompt uses the canonical name so the governed summary reflects the
+	 * deck-facing identity, not the user-entered alias.
+	 */
+	canonicalCompanyName?: string | null;
 	/** Product/narrative text from deck pages (not financial tables). */
 	productNarrativeBody?: string | null;
+	/** PR36.9: Serialized contradiction markers body for this run. */
+	contradictionMarkersBody?: string | null;
 }
 
 export type GovernedSummaryResult =
@@ -110,8 +125,16 @@ export interface GovernedSummaryFingerprintInputs {
 	governanceVersion?: string | null;
 	/** Deal name for cache invalidation when name is first set. */
 	dealNameText?: string | null;
+	/**
+	 * Canonical company name for cache invalidation (Fix F).
+	 * When canonical identity newly resolves or changes, the fingerprint must
+	 * change so the cached summary is not reused with the old identity.
+	 */
+	canonicalCompanyNameText?: string | null;
 	/** Product narrative text for cache invalidation. */
 	productNarrativeText?: string | null;
+	/** PR36.9: Contradiction markers text for cache invalidation. */
+	contradictionMarkersText?: string | null;
 }
 
 /**
@@ -151,7 +174,9 @@ export function computeGovernedSummaryFingerprintV1(
 		engine_version: inputs.engineVersion ?? null,
 		governance_version: inputs.governanceVersion ?? null,
 		deal_name: inputs.dealNameText ?? null,
+		canonical_company_name: inputs.canonicalCompanyNameText ?? null,
 		product_narrative: inputs.productNarrativeText ? normalizeForFingerprint(inputs.productNarrativeText) : null,
+		contradiction_markers: inputs.contradictionMarkersText ? normalizeForFingerprint(inputs.contradictionMarkersText) : null,
 	};
 	// JSON.stringify with sorted keys for determinism
 	const orderedKeys = Object.keys(obj).sort() as Array<keyof typeof obj>;
@@ -188,8 +213,17 @@ export interface ResolveGovernedSummaryArgs {
 	governanceVersion: string;
 	/** Optional deal name for LLM context and fingerprint invalidation. */
 	dealName?: string;
+	/**
+	 * Canonical company name for LLM context and fingerprint invalidation (Fix E + F).
+	 * When present and confidence-worthy, the LLM prompt and fingerprint hash
+	 * should both reflect the canonical name so stale summaries are recomputed
+	 * when canonical identity changes.
+	 */
+	canonicalCompanyName?: string | null;
 	/** Product/narrative text from non-financial deck pages. */
 	productNarrativeBody?: string | null;
+	/** PR36.9: Serialized contradiction markers body. */
+	contradictionMarkersBody?: string | null;
 	/**
 	 * Injectable generate function — defaults to `generateGovernedSummaryV1`.
 	 * Overriding this in tests avoids any real LLM calls.
@@ -226,7 +260,9 @@ export async function resolveGovernedSummaryWithCache(
 		engineVersion,
 		governanceVersion,
 		dealName,
+		canonicalCompanyName,
 		productNarrativeBody,
+		contradictionMarkersBody,
 		generateFn = generateGovernedSummaryV1,
 	} = args;
 
@@ -248,7 +284,9 @@ export async function resolveGovernedSummaryWithCache(
 		engineVersion,
 		governanceVersion,
 		dealNameText: dealName ?? null,
+		canonicalCompanyNameText: canonicalCompanyName ?? null,
 		productNarrativeText: productNarrativeBody ?? null,
+		contradictionMarkersText: contradictionMarkersBody ?? null,
 	});
 
 	// ── Determine cache miss reason (for observability) ──────────────────────
@@ -301,7 +339,11 @@ export async function resolveGovernedSummaryWithCache(
 		financialHealthBody,
 		financialReconciliationBody,
 		conflictsBody,
-		dealName,		productNarrativeBody,	});
+		dealName,
+		canonicalCompanyName,
+		productNarrativeBody,
+		contradictionMarkersBody,
+	});
 
 	if (result.ok) {
 		return {
@@ -520,7 +562,13 @@ const SYSTEM_PROMPT =
 	"5. Keep executive_summary to 2–4 sentences. Each bullet in strengths/risks ≤100 chars. Each open_question ≤120 chars.\n" +
 	"6. Return ONLY valid JSON with exactly these keys:\n" +
 	'   { "executive_summary": "...", "strengths": [...], "risks": [...], "open_questions": [...] }\n' +
-	"7. No markdown. No code fences. No extra keys.";
+	"7. No markdown. No code fences. No extra keys.\n" +
+	"8. NARRATIVE EVIDENCE CONTRADICTIONS (PR36.9): When a '## Narrative Evidence Contradictions' section appears in the corpus:\n" +
+	"   - A topic marked status=CONFLICTING: do NOT write a confident settled claim about that topic. " +
+	"State instead: 'Materials present conflicting signals regarding [topic].'\n" +
+	"   - A topic marked status=MIXED: qualify language — e.g. 'Materials suggest [claim] with mixed framing.' " +
+	"or 'Evidence is not fully consistent regarding [topic].'\n" +
+	"   - Do NOT invent reconciliation between conflicting claims. Preserve the uncertainty rather than choosing one interpretation.";
 
 /**
  * Call gpt-4o-mini to generate a governed executive summary from canonical inputs.
@@ -532,7 +580,17 @@ export async function generateGovernedSummaryV1(
 	// Build canonical corpus for validation and LLM context
 	// Order: identity → product → market/financials (most context-rich first)
 	const parts: string[] = [];
-	if (args.dealName) parts.push(`## Deal Identity\nDeal name: ${args.dealName}`);
+	const _displayName = args.canonicalCompanyName ?? args.dealName;
+	if (_displayName) {
+		const _hasCanonicalMismatch =
+			args.canonicalCompanyName &&
+			args.dealName &&
+			args.canonicalCompanyName.toLowerCase() !== args.dealName.toLowerCase();
+		const _identityNote = _hasCanonicalMismatch
+			? `Deal name: ${args.canonicalCompanyName} (as named in submitted materials; entered as "${args.dealName}")`
+			: `Deal name: ${_displayName}`;
+		parts.push(`## Deal Identity\n${_identityNote}`);
+	}
 	if (args.productNarrativeBody) parts.push(`## Product Narrative\n${args.productNarrativeBody}`);
 	if (args.canonicalFieldsBody) parts.push(`## Canonical Fields\n${args.canonicalFieldsBody}`);
 	if (args.insightSlotsBody) parts.push(`## Insight Slots\n${args.insightSlotsBody}`);
@@ -542,7 +600,7 @@ export async function generateGovernedSummaryV1(
 	if (args.financialHealthBody) parts.push(`## Financial Health Metrics\n${args.financialHealthBody}`);
 	if (args.financialReconciliationBody) parts.push(`## Financial Reconciliation\n${args.financialReconciliationBody}`);
 	if (args.conflictsBody) parts.push(`## Conflicting Fields\n${args.conflictsBody}`);
-
+	if (args.contradictionMarkersBody) parts.push(`## Narrative Evidence Contradictions\n${args.contradictionMarkersBody}`);
 	if (parts.length === 0) {
 		return {
 			ok: false,
@@ -717,6 +775,12 @@ export function serializeGovernedSummaryBody(value: GovernedSummaryV1): string {
 	if (value.open_questions.length > 0) {
 		lines.push(`Open Questions`);
 		value.open_questions.forEach((q) => lines.push(`• ${q}`));
+		lines.push("");
+	}
+
+	if (value.evidence_refs && value.evidence_refs.length > 0) {
+		lines.push(`Evidence References`);
+		lines.push(value.evidence_refs.join(", "));
 		lines.push("");
 	}
 

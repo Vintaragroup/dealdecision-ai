@@ -1,3 +1,18 @@
+# =============================================================================
+# ROOT DISPATCHER — NOT FOR LOCAL DEVELOPMENT
+#
+# This file is a thin dispatcher that extends infra/docker-compose.yml.
+# It is used for CI pipelines and legacy infra testing — NOT day-to-day dev.
+#
+# LOCAL DEV canonical command:
+#   ./scripts/docker/local-dev.sh up
+#   (uses docker-compose.dev.yml, project name: dealdecision-dev)
+#
+# Ports in THIS file differ from the dev stack:
+#   API  → localhost:9000  (dev stack: 9001)
+#   Web  → localhost:5199  (dev stack: 4174)
+#   PG   → localhost:55432 (dev stack: 55433)
+# =============================================================================
 name: infra
 
 services:

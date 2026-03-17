@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { normalizeMetricKey, METRIC_ALIAS_MAP } from "../financial-metric-aliases";
+import { normalizeMetricKey, METRIC_ALIAS_MAP, isKnownMetricKey, KNOWN_CANONICAL_METRIC_KEYS } from "../financial-metric-aliases";
 
 describe("normalizeMetricKey", () => {
   it("returns canonical key for known aliases (case-insensitive)", () => {
@@ -58,5 +58,34 @@ describe("normalizeMetricKey", () => {
 
   it("alias map has at least 30 entries", () => {
     expect(Object.keys(METRIC_ALIAS_MAP).length).toBeGreaterThanOrEqual(30);
+  });
+});
+
+// ─── isKnownMetricKey ─────────────────────────────────────────────────────────
+
+describe("isKnownMetricKey", () => {
+  it("returns true for canonical alias-mapped keys", () => {
+    expect(isKnownMetricKey("revenue")).toBe(true);
+    expect(isKnownMetricKey("arr")).toBe(true);
+    expect(isKnownMetricKey("burn_rate")).toBe(true);
+    expect(isKnownMetricKey("pre_money_valuation")).toBe(true);
+    expect(isKnownMetricKey("net_revenue_retention")).toBe(true);
+  });
+
+  it("returns false for OCR artifact slugs", () => {
+    expect(isKnownMetricKey("and_fortune")).toBe(false);
+    expect(isKnownMetricKey("warehouse_associate_day")).toBe(false);
+    expect(isKnownMetricKey("fortune_500_partner")).toBe(false);
+  });
+
+  it("returns false for job-title slugs", () => {
+    expect(isKnownMetricKey("senior_analyst")).toBe(false);
+    expect(isKnownMetricKey("director_of_engineering")).toBe(false);
+  });
+
+  it("KNOWN_CANONICAL_METRIC_KEYS contains all alias values", () => {
+    for (const val of Object.values(METRIC_ALIAS_MAP)) {
+      expect(KNOWN_CANONICAL_METRIC_KEYS.has(val)).toBe(true);
+    }
   });
 });

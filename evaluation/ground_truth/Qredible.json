@@ -1,0 +1,28 @@
+{
+  "_schema": "ground_truth_v1",
+  "_notes": "Ground truth for Qredible. Full product profile present. All 15 populated slots recorded.",
+  "deal_name": "Qredible",
+  "deal_id": "b21b894e-4020-46bd-b753-93b2d2d5fa8f",
+  "slots": {
+    "company_description": "Qredible connects and empowers regulated industries through an innovative AI and blockchain digital compliance ecosystem",
+    "problem_statement": "Businesses in regulated industries face complex regulatory challenges that require validation, monitoring, and certification of products and services",
+    "solution_summary": "Qredible offers a compliance ecosystem that validates, monitors, and certifies regulated businesses and their products",
+    "target_customer": "Regulated industries",
+    "product_type": "Marketplace",
+    "delivery_model": "SaaS",
+    "product_maturity": "Early stage",
+    "core_workflow": ["Validate regulated businesses", "Monitor compliance", "Certify products"],
+    "core_features": ["AI-enabled compliance management", "Blockchain integration", "Transparency in compliance"],
+    "differentiation_claims": ["World's first AI & blockchain digital compliance ecosystem"],
+    "integrations_or_dependencies": ["Blockchain technology"],
+    "ai_claims_present": true,
+    "ai_usage_summary": "The platform utilizes AI to enhance compliance management processes",
+    "ai_usage_type": "AI-enabled feature",
+    "ai_evidence_strength": "marketing_only"
+  },
+  "financials": {
+    "arr": 381000,
+    "burn_rate": 349,
+    "revenue": 7000
+  }
+}

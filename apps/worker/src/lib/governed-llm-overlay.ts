@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { createHash } from "crypto";
 
+import { computeEvidenceId } from "@dealdecision/core";
 import { OpenAIGPT4oProvider } from "./llm/providers/openai-provider";
 import type { ProviderConfig } from "./llm/types";
 
@@ -1058,7 +1059,11 @@ function coerceSourceArray(value: unknown): Array<{ document_id: string; page_ra
   return out;
 }
 
-async function fetchDpuSnippet(pool: Pool, input: { documentId: string; pageIndex: number }): Promise<string | null> {
+async function fetchDpuSnippet(pool: Pool, input: { documentId: string; pageIndex: number }): Promise<{
+  snippet: string | null;
+  resolved_slide_type: string | null;
+  resolved_slide_type_confidence: number;
+} | null> {
   try {
     const { rows } = await pool.query<{ payload: any }>(
       "SELECT payload FROM document_page_understanding WHERE document_id = $1 AND page_index = $2 AND version = 'page_understanding_v1' LIMIT 1",
@@ -1068,17 +1073,28 @@ async function fetchDpuSnippet(pool: Pool, input: { documentId: string; pageInde
     if (!payload || typeof payload !== "object") return null;
 
     const normalized = clampText((payload as any).normalized_text, 2000);
-    if (normalized && normalized.length >= 40) return normalized;
-
     const blocks = (payload as any).text_blocks && typeof (payload as any).text_blocks === "object" ? (payload as any).text_blocks : null;
-    const snippet = clampText(blocks?.text_snippet, 2000);
-    if (snippet && snippet.length >= 30) return snippet;
+    const snippet = (normalized && normalized.length >= 40)
+      ? normalized
+      : clampText(blocks?.text_snippet, 2000) && (clampText(blocks?.text_snippet, 2000) ?? "").length >= 30
+        ? clampText(blocks?.text_snippet, 2000)
+        : clampText((payload as any).page_text, 2000) && (clampText((payload as any).page_text, 2000) ?? "").length >= 30
+          ? clampText((payload as any).page_text, 2000)
+          : clampText(blocks?.ocr_text, 2000);
 
-    const pageText = clampText((payload as any).page_text, 2000);
-    if (pageText && pageText.length >= 30) return pageText;
+    // Also surface slide classification metadata patched by Phase 8.
+    const resolvedSlideType = typeof (payload as any).resolved_slide_type === "string"
+      ? (payload as any).resolved_slide_type.trim()
+      : null;
+    const resolvedSlideTypeConf = typeof (payload as any).resolved_slide_type_confidence === "number"
+      ? (payload as any).resolved_slide_type_confidence
+      : 0;
 
-    const ocrText = clampText(blocks?.ocr_text, 2000);
-    return ocrText;
+    return {
+      snippet: snippet ?? null,
+      resolved_slide_type: resolvedSlideType || null,
+      resolved_slide_type_confidence: resolvedSlideTypeConf,
+    };
   } catch {
     return null;
   }
@@ -1173,6 +1189,64 @@ async function upsertDisplayFactEvidenceBestEffort(pool: Pool, input: {
        RETURNING ${pkCol} AS id, ${pkCol} AS evidence_id`,
       values
     );
+
+    // ── Best-effort canonical write to evidence_items ─────────────────────
+    // Non-blocking: errors here must never propagate — the function is BestEffort.
+    try {
+      const eiOk = await hasTable(pool, "evidence_items");
+      if (eiOk) {
+        const sourcePath = `display_fact:${input.documentId}:display_fact:${input.field}`;
+        const canonicalId = computeEvidenceId({
+          deal_id: input.dealId,
+          source_type: "display_fact",
+          source_path: sourcePath,
+          content_text: input.snippet,
+          tags: ["display_fact", input.field],
+        });
+        await pool.query(
+          `INSERT INTO evidence_items (
+             evidence_id,
+             deal_id,
+             source_type,
+             source_path,
+             source_document_id,
+             tags,
+             confidence,
+             extracted_at,
+             content_text,
+             meta
+           ) VALUES ($1, $2::uuid, $3, $4, $5::uuid, $6::text[], $7, now(), $8, $9::jsonb)
+           ON CONFLICT (evidence_id) DO UPDATE SET
+             confidence = GREATEST(evidence_items.confidence, EXCLUDED.confidence),
+             content_text = EXCLUDED.content_text,
+             updated_at = now()`,
+          [
+            canonicalId,
+            input.dealId,
+            "display_fact",
+            sourcePath,
+            input.documentId,
+            ["display_fact", input.field],
+            0.75,
+            input.snippet,
+            JSON.stringify({ writer: "display_fact_dual_write", field: input.field }),
+          ]
+        );
+        if (process.env.DDAI_DEBUG_EVIDENCE_WRITES === "1") {
+          console.log(
+            JSON.stringify({
+              event: "EVIDENCE_CANONICAL_WRITE",
+              deal_id: input.dealId,
+              evidence_id: canonicalId,
+              source_type: "display_fact",
+              kind: `display_fact:${input.field}`,
+            })
+          );
+        }
+      }
+    } catch {
+      // Canonical write failure must never block the legacy write result.
+    }
 
     const returned = (rows as any)?.[0] ?? null;
     const picked = (returned as any)?.evidence_id ?? (returned as any)?.id;
@@ -1289,6 +1363,70 @@ function sourceKey(s: { document_id: string; page_range?: [number, number] }): s
   return `${s.document_id}|${String(pr[0])}-${String(pr[1])}`;
 }
 
+/**
+ * Maps a resolved_slide_type value (from the slide classification patch)
+ * to the note string used by gatherGlobalSummarySources / pickSourcesForField.
+ * Returns null if the slide type does not map to a known routing note.
+ */
+function resolvedSlideTypeToNote(slideType: string): string | null {
+  switch (slideType.toLowerCase().trim()) {
+    case "raise_terms":
+    case "use_of_funds":
+      return "global_raise_terms";
+    case "business_model":
+    case "financials":
+    case "go_to_market":
+      return "global_business_model";
+    case "market":
+    case "competition":
+      return "global_market";
+    case "product":
+    case "solution":
+    case "traction":
+    case "problem":
+      return "global_product";
+    case "team":
+    case "risks":
+      return "global_context";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Returns true when a confirmed slide type matches the target field for routing.
+ * Used in pickSourcesForField to prefer slides with confirmed classification.
+ */
+function isSlideTypeMatchForField(
+  slideType: string,
+  field: "product_solution" | "market_icp" | "business_model" | "raise_terms"
+): boolean {
+  const t = slideType.toLowerCase().trim();
+  if (field === "raise_terms") return t === "raise_terms" || t === "use_of_funds";
+  if (field === "business_model") return t === "business_model" || t === "financials" || t === "go_to_market";
+  if (field === "market_icp") return t === "market" || t === "competition";
+  // product_solution
+  return t === "product" || t === "solution" || t === "traction" || t === "problem" || t === "team";
+}
+
+/**
+ * Returns true when a confirmed, high-confidence slide type actively contradicts
+ * a given field — used as a penalty signal in pickSourcesForField.
+ * Only fires for confidence >= 0.6 to avoid penalising uncertain classifications.
+ */
+function isSlideTypeContradiction(
+  slideType: string,
+  field: "product_solution" | "market_icp" | "business_model" | "raise_terms",
+  conf: number
+): boolean {
+  if (conf < 0.6) return false;
+  const t = slideType.toLowerCase().trim();
+  const isRaiseLike = t === "raise_terms" || t === "use_of_funds";
+  if (field === "product_solution" && isRaiseLike) return true;
+  if (field === "market_icp" && isRaiseLike) return true;
+  return false;
+}
+
 function classifySnippetSignals(snippetHead: string): {
   isRaiseTerms: boolean;
   isProduct: boolean;
@@ -1370,19 +1508,34 @@ async function pickSourcesForField(pool: Pool, input: {
   direct = applyDedupePreference(direct);
   if (direct.length > 0) return direct.slice(0, 3);
 
-  // 2) Lightweight snippet classifier (first ~400 chars) as best-effort routing.
+  // 2) Slide type + snippet classifier as best-effort routing.
+  // First check confirmed slide type from Phase 8 patch (stronger signal),
+  // then fall through to lightweight snippet regex. Both are additive.
   const scored: Array<{ s: { document_id: string; page_range?: [number, number]; note?: string }; score: number }> = [];
   for (const s of applyDedupePreference(usableForField)) {
     const startPage = s.page_range?.[0];
     const page = typeof startPage === "number" && Number.isFinite(startPage) ? startPage : null;
     const pageIndex = page != null ? Math.max(0, page - 1) : null;
     if (pageIndex == null) continue;
-    const snippet = await fetchDpuSnippet(pool, { documentId: s.document_id, pageIndex });
+    const pageMeta = await fetchDpuSnippet(pool, { documentId: s.document_id, pageIndex });
+    const snippet = pageMeta?.snippet ?? null;
     const head = (snippet ?? "").slice(0, 400);
     if (!head) continue;
     const signals = classifySnippetSignals(head);
 
     let score = 0;
+
+    // Slide type check: confirmed classification is a stronger signal than snippet regex.
+    const confirmedSlideType = typeof pageMeta?.resolved_slide_type === "string" && pageMeta.resolved_slide_type !== "other"
+      ? pageMeta.resolved_slide_type
+      : null;
+    const slideTypeConf = pageMeta?.resolved_slide_type_confidence ?? 0;
+    if (confirmedSlideType && slideTypeConf >= 0.45) {
+      if (isSlideTypeMatchForField(confirmedSlideType, input.field)) score += 4;
+      if (isSlideTypeContradiction(confirmedSlideType, input.field, slideTypeConf)) score -= 3;
+    }
+
+    // Snippet-based signals (kept as independent additional signal).
     if (input.field === "raise_terms" && signals.isRaiseTerms) score += 3;
     if (input.field === "product_solution" && signals.isProduct) score += 3;
     if (input.field === "market_icp" && signals.isMarketIcp) score += 3;
@@ -1466,6 +1619,8 @@ export async function gatherGlobalSummarySources(
     page_index: number;
     signals: ReturnType<typeof classifySnippetSignals>;
     score: number;
+    resolved_slide_type: string | null;
+    has_confirmed_slide_type: boolean;
   };
   const entries: ScoredEntry[] = [];
   const seenPageKeys = new Set<string>();
@@ -1485,14 +1640,29 @@ export async function gatherGlobalSummarySources(
     if (!snippet || snippet.length < 20) continue;
 
     const signals = classifySnippetSignals(snippet.slice(0, 400));
+    const resolvedSlideType = typeof payload?.resolved_slide_type === 'string'
+      ? payload.resolved_slide_type.trim() : null;
+    const resolvedSlideConf = typeof payload?.resolved_slide_type_confidence === 'number'
+      ? payload.resolved_slide_type_confidence : 0;
+    const hasConfirmedSlideType = Boolean(
+      resolvedSlideType && resolvedSlideType !== 'other' && resolvedSlideConf >= 0.45
+    );
     const score =
       (signals.isProduct ? 2 : 0) +
       (signals.isMarketIcp ? 2 : 0) +
       (signals.isBusinessModel ? 2 : 0) +
       (signals.isRaiseTerms ? 1 : 0) +
-      (snippet.length > 100 ? 1 : 0);
+      (snippet.length > 100 ? 1 : 0) +
+      (hasConfirmedSlideType ? 1 : 0);
 
-    entries.push({ document_id: row.document_id, page_index: row.page_index, signals, score });
+    entries.push({
+      document_id: row.document_id,
+      page_index: row.page_index,
+      signals,
+      score,
+      resolved_slide_type: resolvedSlideType,
+      has_confirmed_slide_type: hasConfirmedSlideType,
+    });
   }
 
   const total_pages = entries.length;
@@ -1547,8 +1717,12 @@ export async function gatherGlobalSummarySources(
 
   const sources: GlobalSummarySource[] = selected.map((e) => {
     const page1Based = e.page_index + 1;
+    const confirmedNote = e.has_confirmed_slide_type
+      ? resolvedSlideTypeToNote(e.resolved_slide_type!)
+      : null;
     const note =
-      e.signals.isProduct
+      confirmedNote ??
+      (e.signals.isProduct
         ? "global_product"
         : e.signals.isMarketIcp
           ? "global_market"
@@ -1556,7 +1730,7 @@ export async function gatherGlobalSummarySources(
             ? "global_business_model"
             : e.signals.isRaiseTerms
               ? "global_raise_terms"
-              : "global_context";
+              : "global_context");
     return { document_id: e.document_id, page_range: [page1Based, page1Based], note };
   });
 
@@ -1595,7 +1769,8 @@ async function generateDisplayFactsV1BestEffort(args: {
       const page = typeof startPage === "number" && Number.isFinite(startPage) ? startPage : null;
       const pageIndex = page != null ? Math.max(0, page - 1) : null;
       if (pageIndex == null) continue;
-      const snippet = await fetchDpuSnippet(args.pool, { documentId: s.document_id, pageIndex });
+      const pageMeta = await fetchDpuSnippet(args.pool, { documentId: s.document_id, pageIndex });
+      const snippet = pageMeta?.snippet ?? null;
       if (!snippet) continue;
       const evidence_id = await upsertDisplayFactEvidenceBestEffort(args.pool, {
         dealId: args.dealId,
@@ -2825,3 +3000,9 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
     return { ok: false, inserted: false, input_hash: null, validation_failed: false };
   }
 }
+
+export const __test__ = {
+  resolvedSlideTypeToNote,
+  isSlideTypeMatchForField,
+  isSlideTypeContradiction,
+};

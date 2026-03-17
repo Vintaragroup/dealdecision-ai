@@ -217,6 +217,8 @@ export interface ParsedCanonicalField {
   reason: string | null;
   /** "xlsx" | "deck" | "derived" | "unknown" */
   source_type: string;
+  /** Evidence confidence level — serialised from stage-2 (PR36.6). e.g. "STRONG_EVIDENCE" */
+  confidence?: string;
 }
 
 /**
@@ -256,6 +258,7 @@ export function parseCanonicalFieldsBody(body: string | null): ParsedCanonicalFi
       evidence,
       reason,
       source_type: parts["source"] ?? "unknown",
+      confidence: parts["confidence"] || undefined,
     });
   }
 

@@ -4,7 +4,14 @@
  * NOTE: Do not import DB/API evidence row types here. We use a lightweight
  * evidence reference shape that can be produced from DPU/promoted facts and
  * consumed by report/UI layers.
+ *
+ * Phase 1 changes:
+ *   - Expanded FieldTypeV1 to cover all key financial metric families.
+ *   - Added temporal_scope to TypedMetric (imported from temporal-scope.ts).
+ *   - TypedMetric is now exported from packages/core/src/index.ts.
  */
+
+import type { TemporalScope } from "../temporal/temporal-scope";
 
 export type EvidenceRef = {
   source_document_id: string;
@@ -19,15 +26,56 @@ export type EvidenceRef = {
 };
 
 export type FieldTypeV1 =
+  // ── Revenue subtypes ────────────────────────────────────────────────────
+  /** Current-period actual / TTM revenue. */
   | "revenue_canonical_v1"
+  /** Revenue attributable specifically to marketing channels. */
   | "marketing_attributed_revenue_v1"
+  /** Forward-looking / forecast revenue. */
   | "forecast_revenue_v1"
+  // ── ARR / MRR ───────────────────────────────────────────────────────────
+  /** Annual recurring revenue (ARR). */
+  | "arr_v1"
+  /** Monthly recurring revenue (MRR). */
+  | "mrr_v1"
+  // ── Market sizing ───────────────────────────────────────────────────────
+  /** Total addressable market (TAM). */
+  | "tam_v1"
+  /** Serviceable addressable market (SAM). */
+  | "sam_v1"
+  /** Serviceable obtainable market (SOM). */
+  | "som_v1"
+  // ── Raise / valuation ───────────────────────────────────────────────────
+  /** Raise ask (investment amount being sought in this round). */
+  | "raise_amount_v1"
+  /** Company valuation (pre- or post-money determined by context). */
+  | "valuation_v1"
+  // ── P&L / unit economics ────────────────────────────────────────────────
+  /** EBITDA or net income. */
+  | "ebitda_v1"
+  /** Monthly / quarterly cash burn rate. */
+  | "burn_rate_v1"
+  /** Cash runway in months. */
+  | "runway_months_v1"
+  // ── Other ───────────────────────────────────────────────────────────────
+  /** Deal returns / exit multiple. */
   | "deal_returns_v1"
+  /** Pipeline / funnel metric (leads, pipeline value, etc.). */
   | "pipeline_metric_v1"
+  /** Any numeric metric that does not fit a more specific type. */
   | "other_metric_v1";
 
 export type TypedMetric = {
   field_type: FieldTypeV1;
+
+  /**
+   * Temporal scope of this value — was it historical (reported), current
+   * (TTM / run-rate), projected (forecast/plan), scenario, or unknown?
+   *
+   * Populated by classifyTemporalScope() from temporal-scope.ts.
+   * "unknown" is the safe default when signals are insufficient.
+   */
+  temporal_scope: TemporalScope;
 
   /** Raw token/value matched from the source (e.g. "$2.476M") */
   value_raw: string;
@@ -49,4 +97,22 @@ export type TypedMetric = {
 
   /** Confidence in the typing decision itself (0..1) */
   typing_confidence: number;
+
+  /**
+   * When true, this metric is blocked from promotion to current-company-status
+   * surfaces (overview, governed summary headline) because it carries projected
+   * or scenario scope.
+   *
+   * Populated by isProjectedScope(temporal_scope).
+   */
+  projection_blocked?: boolean;
+
+  /**
+   * Scenario label when this metric belongs to a named scenario column in a
+   * financial model (e.g. "Base", "Upside", "Downside", "Bear", "Bull").
+   *
+   * Undefined for actuals / historical data.
+   * Always set when temporal_scope = "scenario".
+   */
+  scenario?: string;
 };

@@ -46,6 +46,35 @@ export function r2RenderedPageKey(prefix: string, pageIndex: number): string {
 	return `${safePrefix}/page_${String(idx).padStart(4, "0")}.png`;
 }
 
+/**
+ * Format a rendered-page R2 key from a `rendered_pages_r2.format` template.
+ *
+ * Supports `page_%04d.png` (default), `page_%0Nd.png`, and `page_%d.png`.
+ * Falls back to {@link r2RenderedPageKey} for the default format.
+ */
+export function formatRenderedPageKey(params: {
+	prefix: string;
+	format?: string | null;
+	pageIndex: number;
+}): string {
+	const safePrefix = String(params.prefix ?? "").trim().replace(/\/$/, "");
+	const idx = Number.isFinite(params.pageIndex) ? Math.max(0, Math.floor(params.pageIndex)) : 0;
+	const raw = typeof params.format === "string" ? params.format.trim() : "";
+	const fmt = raw && !raw.includes("/") ? raw : "page_%04d.png";
+	if (fmt === "page_%04d.png") return r2RenderedPageKey(safePrefix, idx);
+	const m = fmt.match(/%0(\d+)d/);
+	if (m) {
+		const width = Number.parseInt(m[1], 10);
+		const padded = String(idx).padStart(
+			Number.isFinite(width) ? Math.max(1, width) : 4,
+			"0"
+		);
+		return `${safePrefix}/${fmt.replace(m[0], padded)}`;
+	}
+	if (fmt.includes("%d")) return `${safePrefix}/${fmt.replace("%d", String(idx))}`;
+	return r2RenderedPageKey(safePrefix, idx);
+}
+
 type LogLike = Pick<Console, "log" | "warn" | "error">;
 
 type FsLike = Pick<typeof fs, "mkdir" | "readdir" | "stat" | "copyFile" | "writeFile">;

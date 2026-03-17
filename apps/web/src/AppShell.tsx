@@ -1,5 +1,6 @@
 import { OnboardingFlow, OnboardingData } from './components/onboarding/OnboardingFlow';
-import { NewDealModal, DealFormData } from './components/NewDealModal';
+import { NewDealModal } from './components/newDeal_Modal';
+import type { DealFormData } from './components/Modal_Legacy/NewDealModal';
 import { useEffect, useMemo, useState } from 'react';
 import type { Deal } from '@dealdecision/contracts';
 import { Sidebar, PageView } from './components/Sidebar';

@@ -2,31 +2,15 @@ import type { Job } from "bullmq";
 import { sanitizeText } from "@dealdecision/core";
 
 import { getPool } from "../lib/db";
-import { updateJobProgress } from "../lib/job-progress";
 import { enqueuePersistedJob } from "../lib/job-enqueue";
 import { makeJobId } from "../lib/job-id";
 import { populateDocumentPageUnderstandingFromVisualExtractions } from "../lib/document-page-understanding";
 import { promoteSlideFactsFromDocumentPageUnderstanding } from "../lib/promote-slide-facts";
 import { populatePageRegistryV1 } from "../lib/page-registry/populate-page-registry-v1";
 import { populateDealFactRegistryV1 } from "../lib/deal-facts/populate-deal-fact-registry-v1";
-import { populateFinancialFactRegistryV1 } from "../lib/financial-facts/populate-financial-fact-registry-v1";
-
-function parseFiniteInt(value: unknown): number | null {
-	const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
-	if (!Number.isFinite(n)) return null;
-	return Math.floor(n);
-}
-
-async function updateJob(job: Job, status: "running" | "failed" | "succeeded", message?: string, progressPct?: number | null) {
-	await updateJobProgress(job, {
-		status: status as any,
-		stage: "status_update",
-		current: typeof progressPct === "number" ? progressPct : undefined,
-		total: typeof progressPct === "number" ? 100 : undefined,
-		message,
-		error: status === "failed" ? message ?? "failed" : undefined,
-	});
-}
+import { populateFinancialFactRegistryV1 } from "../lib/financial-fact-registry";
+import { shouldEmitXlsxFactsMissingGuardrail } from "../lib/visual-extraction";
+import { parseFiniteInt, updateJob } from "../lib/worker-utils";
 
 async function countVisualAssetsForRange(pool: ReturnType<typeof getPool>, args: { documentId: string; pageStart: number; pageEnd: number }) {
 	try {
@@ -77,11 +61,13 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 	const pool = getPool();
 	let resolvedDealId: string | null = dealId || null;
 	let pageCount: number | null = null;
+	let isXlsxDoc = false;
+	let extractionMetadataRaw: any = null;
 
 	if (docId) {
 		try {
-			const { rows } = await pool.query<{ deal_id: string | null; page_count: number | null }>(
-				"SELECT deal_id, page_count FROM documents WHERE id = $1 LIMIT 1",
+			const { rows } = await pool.query<{ deal_id: string | null; page_count: number | null; type: string | null; extraction_metadata: any }>(  
+				"SELECT deal_id, page_count, type, extraction_metadata FROM documents WHERE id = $1 LIMIT 1",
 				[sanitizeText(docId)]
 			);
 			resolvedDealId = resolvedDealId || rows?.[0]?.deal_id || null;
@@ -89,6 +75,15 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 				typeof rows?.[0]?.page_count === "number" && Number.isFinite(rows[0].page_count)
 					? Math.max(0, Math.floor(rows[0].page_count))
 					: null;
+			extractionMetadataRaw = rows?.[0]?.extraction_metadata ?? null;
+			// Detect XLSX: check extraction_metadata.doc_kind or MIME type
+			const docType = (rows?.[0]?.type ?? "").toLowerCase();
+			const docKind = (
+				(rows?.[0]?.extraction_metadata as any)?.doc_kind ??
+				(rows?.[0]?.extraction_metadata as any)?.contentType ??
+				""
+			).toString().toLowerCase();
+			isXlsxDoc = docKind === "excel" || docType.includes("excel") || docType.endsWith("xlsx");
 		} catch {
 			pageCount = null;
 		}
@@ -316,6 +311,7 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 				const finFactResult = await populateFinancialFactRegistryV1(pool as any, {
 					deal_id: resolvedDealId,
 					document_id: docId,
+					xlsx_doc: isXlsxDoc,
 				});
 				console.log(
 					JSON.stringify({
@@ -325,15 +321,43 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 								: "FINANCIAL_FACT_REGISTRY_PDF_ERROR",
 						deal_id: resolvedDealId,
 						document_id: docId,
+						xlsx_doc: isXlsxDoc,
 						pages_scanned: finFactResult.pages_scanned,
 						pages_with_data: finFactResult.pages_with_data,
 						facts_extracted: finFactResult.facts_extracted,
 						facts_derived: finFactResult.facts_derived,
 						facts_upserted: finFactResult.facts_upserted,
+						facts_xlsx: finFactResult.facts_xlsx,
 						errors: finFactResult.errors.slice(0, 3),
 						ts: new Date().toISOString(),
 					})
 				);
+				// Guardrail: XLSX succeeded at the extraction layer but produced 0 xlsx-sourced
+				// financial facts. This is a signal that the xlsx worker ran cleanly but the
+				// financial fact extraction pipeline found nothing — needs investigation.
+				if (shouldEmitXlsxFactsMissingGuardrail({
+					isXlsxDoc,
+					extractionMetadata: extractionMetadataRaw,
+					factsXlsx: finFactResult.facts_xlsx,
+				})) {
+					const xlsxMeta =
+						extractionMetadataRaw &&
+						typeof extractionMetadataRaw === "object"
+							? (extractionMetadataRaw as any).xlsx ?? null
+							: null;
+					console.log(
+						JSON.stringify({
+							event: "XLSX_FACTS_MISSING_AFTER_SUCCESS",
+							deal_id: resolvedDealId,
+							document_id: docId,
+							pages_scanned: finFactResult.pages_scanned,
+							facts_extracted: finFactResult.facts_extracted,
+							facts_upserted: finFactResult.facts_upserted,
+							xlsx_pages_persisted: xlsxMeta?.pages_persisted ?? null,
+							ts: new Date().toISOString(),
+						})
+					);
+				}
 			} catch {
 				// never block job completion
 			}

@@ -68,7 +68,8 @@ GOVERNANCE RULES — MUST FOLLOW:
    - ai_usage_type: "Generative" | "Predictive" | "Recommender" | "Automation" | "Other" | "Unknown" | "None"
    - ai_evidence_strength: "strong" | "weak" | "marketing_only" | "none"
 5. cited_evidence_ids MUST only include IDs from the EVIDENCE section below.
-6. Return exactly this JSON schema — no extra keys:
+6. The "Deal Name" header is a CRM label and may differ from the actual brand name used in the materials. When the slides or OCR text consistently use a different brand name, prefer that brand name in all output fields (e.g. if the deck shows "Cino" throughout, use "Cino" — not the Deal Name).
+7. Return exactly this JSON schema — no extra keys:
 
 {
   "company_description": "<1-2 sentences>",
@@ -113,7 +114,7 @@ export async function generateProductProfileV1(
 
   // Build corpus
   const corpusParts: string[] = [];
-  if (dealName) corpusParts.push(`## Company\n${dealName}`);
+  if (dealName) corpusParts.push(`## Deal Name (CRM label — may differ from brand name in materials)\n${dealName}`);
   corpusParts.push(`## Product Narrative\n${productNarrativeBody.slice(0, 2000)}`);
   if (canonicalFieldsBody) {
     corpusParts.push(`## Context (Stage / Market / Raise)\n${canonicalFieldsBody.slice(0, 800)}`);

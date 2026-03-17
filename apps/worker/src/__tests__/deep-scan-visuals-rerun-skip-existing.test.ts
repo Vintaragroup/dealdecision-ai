@@ -29,6 +29,7 @@ vi.mock("../lib/queue", () => {
 
 vi.mock("../lib/job-progress", () => ({
 	updateJobProgress: vi.fn(async () => undefined),
+        emitJobProgress: vi.fn(async () => undefined),
 }));
 
 vi.mock("../lib/visual-extraction", async (importOriginal) => {

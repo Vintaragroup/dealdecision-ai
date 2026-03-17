@@ -2094,6 +2094,43 @@ export type InvestorInsightsGateResult = {
   actual?: number;
 };
 
+// ─── PR36.9: Contradiction bundle types (mirrored from worker narrative-contradiction-v1) ───
+
+export type NarrativeContradictionStatus = 'none' | 'mixed' | 'conflicting';
+
+export type NarrativeContradictionReason =
+  | 'numeric_divergence'
+  | 'category_divergence'
+  | 'source_divergence'
+  | 'insufficient_overlap';
+
+/**
+ * A single per-topic contradiction detection result persisted by the worker.
+ * Mirrors NarrativeContradictionV1 in narrative-contradiction-v1.ts.
+ */
+export type NarrativeContradictionV1 = {
+  topic: string;
+  status: NarrativeContradictionStatus;
+  reason: NarrativeContradictionReason | null;
+  primary_text: string;
+  secondary_texts: string[];
+  notes: string[];
+};
+
+/**
+ * Bundle of per-topic contradiction records persisted in report_payload.
+ * All keys are optional — the UI must handle absent topics gracefully.
+ */
+export type NarrativeContradictionBundle = {
+  product_differentiation?: NarrativeContradictionV1 | null;
+  go_to_market_strategy?: NarrativeContradictionV1 | null;
+  market_position?: NarrativeContradictionV1 | null;
+  financial_outlook?: NarrativeContradictionV1 | null;
+  capital_and_raise?: NarrativeContradictionV1 | null;
+  traction?: NarrativeContradictionV1 | null;
+  business_quality?: NarrativeContradictionV1 | null;
+};
+
 export type InvestorInsightsSection = {
   key: string;
   title: string;
@@ -2101,6 +2138,40 @@ export type InvestorInsightsSection = {
   items?: unknown[];
   body?: string;
   fallback?: string;
+};
+
+/**
+ * Normalised status summary returned alongside every GET /investor-insights response.
+ * Combines the latest analyze_deal job status with the investor_insight_reports row
+ * so the UI has a single authoritative source for display state.
+ */
+export type InvestorInsightsStatusSummary = {
+  /** Derived from the most recent analyze_deal job row. */
+  analysis_status: 'not_started' | 'running' | 'succeeded' | 'failed';
+  /** Derived from investor_insight_reports.status via mapReportRowStatus. */
+  report_status: 'not_started' | 'running' | 'deterministic_only' | 'ready' | 'succeeded' | 'failed';
+  /** true when a render_package row already exists — UI should render it even while work continues. */
+  has_existing_render_package: boolean;
+  /**
+   * Non-null only when the UI has NO fallback content to show.
+   * Null whenever has_existing_render_package is true.
+   */
+  blocking_reason: 'analysis_failed' | 'report_failed' | string | null;
+  /** ISO timestamp of the most recent activity across job and report rows. Used for stall detection. */
+  last_activity_at: string | null;
+  /** Present when the Evidence Gate v1 was evaluated. */
+  evidence_gate: {
+    passed: boolean;
+    blocking_reason: string | null;
+    coverage_pct: number;
+    evidence_count: number;
+  } | null;
+  /**
+   * Phase 2 first-pass: true when the most recently succeeded analyze_deal run was a
+   * first-pass job (only the first ~10 pages extracted).  Full analysis is still in flight.
+   * The UI can surface a "Quick preview — full analysis incoming" banner.
+   */
+  is_first_pass_result?: boolean;
 };
 
 export type InvestorInsightsReport = {
@@ -2142,9 +2213,32 @@ export type InvestorInsightsReport = {
         hard_missing_pages_total: number | null;
       };
     };
+    /**
+     * Structured canonical company identity — populated when the canonical
+     * identity resolver ran and produced a result.  Use this for the rename
+     * suggestion banner; do NOT parse the debug section body text.
+     */
+    canonical_identity?: {
+      entered_name: string;
+      canonical_company_name: string;
+      confidence: 'high' | 'medium' | 'low' | 'none';
+      mismatch_flagged: boolean;
+      evidence_summary: string | null;
+    };
     [key: string]: unknown;
   };
   updated_at?: string;
+  /**
+   * PR36.9: Per-topic narrative contradiction bundle extracted from report_payload.
+   * Present only when the worker persisted at least one non-null topic record.
+   * UI should always guard with `?? null` before use.
+   */
+  narrative_contradiction_bundle?: NarrativeContradictionBundle | null;
+  /**
+   * Normalised status summary — always present in API responses for this deal.
+   * Combines analyze_deal job state with investor_insight_reports row state.
+   */
+  status_summary?: InvestorInsightsStatusSummary;
 };
 
 export async function apiGetInvestorInsights(dealId: string): Promise<InvestorInsightsReport> {

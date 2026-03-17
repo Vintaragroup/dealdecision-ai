@@ -80,6 +80,8 @@ export function getQueueNameForJobType(type: JobType): QueueName {
       return QUEUE_NAMES.investor_insights;
     case "export_report_pdf":
       return QUEUE_NAMES.export_report_pdf;
+    case "monitor_deal_signals":
+      return QUEUE_NAMES.monitor_deal_signals;
     default: {
       const _exhaustive: never = type;
       return _exhaustive;
@@ -112,6 +114,7 @@ function getQueueForType(type: JobType): QueueLike {
     classify_document: queues.ingestQueue,
     investor_insights: queues.investorInsightsQueue,
     export_report_pdf: queues.exportReportPdfQueue,
+    monitor_deal_signals: queues.monitorDealSignalsQueue,
   };
 
   return queueMap[type];

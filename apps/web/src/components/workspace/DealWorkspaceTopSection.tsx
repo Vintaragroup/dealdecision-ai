@@ -182,20 +182,20 @@ export function DealWorkspaceHeader({
     }`}>
       
       {/* LAYER 1 — DEAL IDENTITY & STATUS */}
-      <div className={`px-6 py-4 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
+      <div className={`px-6 py-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
         <div className="flex items-start justify-between gap-4">
-          <div className="flex-1">
-            <h1 className={`text-lg mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+          <div className="flex-1 min-w-0">
+            <h1 className={`text-2xl font-semibold tracking-tight mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
               {dealName}
             </h1>
             {dealDescription && (
-              <p className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+              <p className={`text-sm leading-relaxed mb-3 max-w-2xl line-clamp-3 ${darkMode ? 'text-gray-300' : 'text-gray-500'}`}>
                 {dealDescription}
               </p>
             )}
             
             {/* Deal Status Strip */}
-            <div className={`text-xs flex items-center gap-2 flex-wrap ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+            <div className={`text-xs flex items-center gap-2 flex-wrap ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
               {!isPlaceholder(stage) && (
                 <>
                   <span className="font-medium">{stage}</span>
@@ -232,7 +232,7 @@ export function DealWorkspaceHeader({
           </div>
           
           {/* Actions */}
-          <div className="flex items-center gap-2">
+          <div className="flex-shrink-0 self-start pt-1 flex items-center gap-4">
             <Button 
               variant="secondary" 
               darkMode={darkMode}
@@ -265,54 +265,54 @@ export function DealWorkspaceHeader({
       </div>
 
       {/* LAYER 2 — INVESTMENT VERDICT & SIGNALS */}
-      <div className={`px-6 py-4 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
-        <div className="flex items-start gap-6">
+      <div className={`px-6 py-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
+        <div className="flex items-start gap-6 min-h-[10rem]">
           {/* Left: Circular Score */}
-          <div className="flex-shrink-0">
-            <div className="relative w-20 h-20">
+          <div className="flex-shrink-0 pr-2">
+            <div className="relative w-24 h-24">
               {/* Circular progress ring */}
-              <svg className="w-20 h-20 transform -rotate-90">
+              <svg className="w-24 h-24 transform -rotate-90">
                 <circle
-                  cx="40"
-                  cy="40"
-                  r="35"
+                  cx="48"
+                  cy="48"
+                  r="42"
                   stroke={darkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.1)'}
                   strokeWidth="5"
                   fill="none"
                 />
                 <circle
-                  cx="40"
-                  cy="40"
-                  r="35"
+                  cx="48"
+                  cy="48"
+                  r="42"
                   stroke={score >= 75 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444'}
                   strokeWidth="5"
                   fill="none"
-                  strokeDasharray={`${(score / 100) * 220} 220`}
+                  strokeDasharray={`${(score / 100) * 264} 264`}
                   strokeLinecap="round"
                   className="transition-all duration-500"
                 />
               </svg>
               {/* Score number */}
               <div className="absolute inset-0 flex items-center justify-center">
-                <span className={`text-xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                <span className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                   {score}
                 </span>
               </div>
             </div>
             {/* Verdict label */}
-            <div className={`text-center mt-1 text-xs font-semibold tracking-wide ${getVerdictColor()}`}>
+            <div className={`text-center mt-1.5 text-xs font-semibold tracking-wide ${getVerdictColor()}`}>
               {verdict}
             </div>
           </div>
 
           {/* Center: Decision Summary */}
-          <div className="flex-1">
+          <div className="flex-1 min-w-0 pl-1">
             {primaryIssues.length > 0 && (
               <>
-                <div className={`text-xs mb-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+                <div className={`text-xs font-medium mb-1.5 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
                   Primary Issues:
                 </div>
-                <ul className={`space-y-0.5 mb-2 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                <ul className={`space-y-1 mb-3 text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                   {primaryIssues.map((issue, idx) => (
                     <li key={idx} className="flex items-start gap-1.5">
                       <span className={darkMode ? 'text-gray-600' : 'text-gray-400'}>•</span>
@@ -342,7 +342,7 @@ export function DealWorkspaceHeader({
 
           {/* Right: AI Signals (if present) */}
           {signals && signals.length > 0 && (
-            <div className="flex-shrink-0 w-40">
+            <div className={`flex-shrink-0 w-44 pl-6 pt-1 ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
               <div className={`text-xs mb-1.5 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                 AI Signals
               </div>
@@ -363,7 +363,7 @@ export function DealWorkspaceHeader({
       </div>
 
       {/* LAYER 3 — DECISION CONFIDENCE (COMPACT) */}
-      <div className={`px-6 py-2.5 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
+      <div className={`px-6 py-4 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
         <div className="flex items-center gap-4 text-xs">
           {/* Confidence */}
           <div 

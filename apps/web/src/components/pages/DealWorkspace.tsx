@@ -4768,7 +4768,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     runwayTileValue: runwayTileValue ?? null,
     burnTileValue: burnTileValue ?? null,
     reportStructuredGrowthValue: reportStructuredGrowthValue ?? null,
-    tamValue: (overviewV2 as any)?.market_size ?? (overviewV2 as any)?.tam ?? null,
+    // TAM: prefer phase1 AI-extracted numeric market size, then fall back to
+    // display_facts_v1.market_icp.text from the governed payload (which may
+    // mention market size in its ICP description). Neither is a structured KPI.
+    tamValue: (overviewV2 as any)?.market_size
+      ?? (overviewV2 as any)?.tam
+      ?? (() => {
+        try {
+          const dfv1 = (governedOverview as any)?.overview?.overview_json?.display_facts_v1;
+          return (dfv1?.market_icp?.text || dfv1?.market?.text) ?? null;
+        } catch { return null; }
+      })()
+      ?? null,
     topSectionDealType,
     pipelineStatus: vmPipelineStatus,
     diligencePhase: vmDiligencePhase,

@@ -56,6 +56,17 @@ const _DESCRIPTION_CONTEXT: Record<
   },
 };
 
+/**
+ * Normalise snake_case machine keys to Title Case so internal field names
+ * never surface directly as signal titles.
+ * Examples: "market_traction" → "Market Traction", "SaaS model" → "SaaS model".
+ */
+function toTitleCase(s: string): string {
+  return /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(s.trim())
+    ? s.trim().split('_').map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+    : s;
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -64,6 +75,10 @@ const _DESCRIPTION_CONTEXT: Record<
  * Strengths → 'strength' type.
  * Weaknesses → 'concern' type.
  * Confidence float derived from overall confidence band.
+ *
+ * Deduplication: titles are compared case-insensitively; the first
+ * occurrence wins. snake_case machine keys are normalised to Title Case
+ * so internal keys never surface as visible signal text.
  */
 export function buildSignalCards(
   strengths: string[],
@@ -73,10 +88,15 @@ export function buildSignalCards(
   const confidenceFloat = _BAND_CONFIDENCE[band];
   const ctx = _DESCRIPTION_CONTEXT[band];
   const cards: WorkspaceSignalCard[] = [];
+  // Deduplication set — tracks normalised lower-case titles across both arrays.
+  const seen = new Set<string>();
 
   for (const title of strengths) {
-    const t = title?.trim();
+    const t = toTitleCase(title?.trim() ?? '');
     if (!t) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     cards.push({
       type: 'strength',
       title: t,
@@ -87,8 +107,11 @@ export function buildSignalCards(
   }
 
   for (const title of weaknesses) {
-    const t = title?.trim();
+    const t = toTitleCase(title?.trim() ?? '');
     if (!t) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     cards.push({
       type: 'concern',
       title: t,

@@ -112,6 +112,30 @@ function asDisplayValue(v: string | null | undefined): string {
 }
 
 /**
+ * Whether a string looks like a structured numeric/formatted KPI value —
+ * i.e., it contains a digit, a percentage, or a money symbol.
+ * Strings that pass contain a real number the user can read.
+ * Strings that fail are qualitative mentions ("Growing", "Multiple") or
+ * junk fallbacks and should be shown as "Mentioned".
+ */
+function looksNumericKpi(v: string): boolean {
+  // Has digits, a $ sign, or a % — treat as numeric/formatted.
+  return /[\d$%]/.test(v);
+}
+
+/**
+ * Display value for traction KPI tiles (Growth, Customers).
+ * When the header is ready and a raw value is available but contains no
+ * numeric content, show "Mentioned" to signal qualitative evidence
+ * rather than showing a confusing textual blob or the no-data "—".
+ */
+function asTractionDisplay(v: string | null | undefined): string {
+  if (!v || v.trim() === '' || v === DASH) return DASH;
+  const trimmed = v.trim();
+  return looksNumericKpi(trimmed) ? trimmed : 'Mentioned';
+}
+
+/**
  * Derive IC readiness 0–100.
  * Priority: coverage_ratio × 100 → band mapping → 0.
  */
@@ -238,12 +262,17 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
 
   const raiseDisplay = selectedHeaderReady ? asDisplayValue(raiseValue) : DASH;
   const revDisplay = selectedHeaderReady && revenueAllowed ? asDisplayValue(revenueValue) : DASH;
+  // Growth: prefer structured report value (numeric); fall back to header value.
+  // If neither is numeric, show 'Mentioned' — qualitative evidence still informs investors.
   const growthDisplay = selectedHeaderReady
-    ? asDisplayValue(reportStructuredGrowthValue) !== DASH
-      ? (reportStructuredGrowthValue as string)
-      : asDisplayValue(growthValue)
+    ? asTractionDisplay(
+        asDisplayValue(reportStructuredGrowthValue) !== DASH
+          ? (reportStructuredGrowthValue as string)
+          : (growthValue ?? null),
+      )
     : DASH;
-  const customersDisplay = selectedHeaderReady ? asDisplayValue(customersValue) : DASH;
+  // Customers: same rule — show 'Mentioned' when evidence is qualitative only.
+  const customersDisplay = selectedHeaderReady ? asTractionDisplay(customersValue ?? null) : DASH;
 
   const financialTiles = [
     { label: selectedHeaderReady ? (raiseLabel ?? 'Raise') : 'Raise', value: raiseDisplay },

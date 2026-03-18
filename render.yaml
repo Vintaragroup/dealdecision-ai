@@ -75,6 +75,8 @@ services:
         sync: false
       - key: R2_S3_ENDPOINT
         sync: false
+      - key: DETERMINISTIC_SCORE_V1_ENABLED
+        value: "1"
 
   - type: worker
     name: dealdecision-worker
@@ -112,6 +114,24 @@ services:
         sync: false
       - key: R2_S3_ENDPOINT
         sync: false
+      - key: PDF_EXTRACT_MODE
+        value: v2_shadow
+      - key: PDF_SLIDE_UNDERSTANDING_MODE
+        value: shadow
+      - key: PDF_PAGE_UNDERSTANDING_MODE
+        value: shadow
+      - key: DDAI_ENABLE_PHASEB_VISUAL_EVIDENCE
+        value: "1"
+      - key: FUNDABILITY_SHADOW_MODE
+        value: "1"
+      - key: FUNDABILITY_SOFT_CAPS
+        value: "1"
+      - key: PDF_V2_OCR_MODE
+        value: "off"
+      - key: PDF_V2_TEXT_REGION_ASSETS_MODE
+        value: "off"
+      - key: DETERMINISTIC_SCORE_V1_ENABLED
+        value: "1"
 
   - type: web
     name: dealdecision-vision-v2

@@ -52,6 +52,7 @@ docs/**
 # Curated top-level docs
 !docs/scoring-and-evidence.md
 !docs/runbook-debugging.md
+!docs/playwright-debugging.md
 
 # Curated Active docs (human-readable only)
 !docs/Active/
@@ -174,4 +175,10 @@ evaluation/db_snapshots/
 
 # Python cache
 evaluation/**/__pycache__/
+
+# Playwright
+playwright/.auth/
+playwright-artifacts/
+playwright-report/
+test-results/
 

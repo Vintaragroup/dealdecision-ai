@@ -5,7 +5,7 @@
   "packageManager": "pnpm@10.28.1",
   "scripts": {
     "debug:force-ocr": "tsx apps/worker/src/scripts/debug-force-ocr-extract-visuals.ts",
-      "report:segments:audit:md": "tsx scripts/segment-classification-audit.ts",
+    "report:segments:audit:md": "tsx scripts/segment-classification-audit.ts",
     "report:segments:audit:all": "tsx scripts/segment-classification-audit-all.ts",
     "report:slide-titles:md": "tsx scripts/export-slide-titles-md.ts",
     "report:unknowns:hotspots": "tsx scripts/unknown-hotspots.ts",
@@ -20,7 +20,6 @@
     "local:up:dev": "docker compose -f docker-compose.local.yml --profile dev up -d --build",
     "local:down": "docker compose -f docker-compose.local.yml down",
     "local:logs": "docker compose -f docker-compose.local.yml logs -f --tail=200",
-
     "legacy:infra:up": "docker compose -f infra/docker-compose.yml up -d",
     "legacy:infra:down": "docker compose -f infra/docker-compose.yml down",
     "infra:up": "node -e \"console.error('LEGACY STACK: infra/docker-compose.yml is deprecated.\\nUse: pnpm local:up (prod-shaped) or pnpm local:up:dev (hot reload).'); process.exit(1)\"",
@@ -48,18 +47,14 @@
     "backfill:document-metadata": "tsx scripts/backfill-document-metadata.ts",
     "report:fundability:compare": "tsx scripts/compare-fundability-v1.ts",
     "report:fundability:compare:md": "tsx scripts/compare-fundability-v1.ts --format md --out-md docs/Active/audit/analizer-debug/fundability-compare.md",
-
     "audit:portfolio:baseline": "pnpm --filter worker audit:investor-insights -- --deal-list tmp/audit_deals.json --concurrency 4",
     "audit:portfolio:delta": "pnpm --filter worker audit:investor-insights -- --deal-list tmp/audit_deals.json --baseline tmp/investor-insights-audit.json --concurrency 4",
     "audit:portfolio:gate:soft": "pnpm --filter worker audit:investor-insights -- --deal-list tmp/audit_deals.json --fail-on PARSE_HAZARD,BAD_EVIDENCE_REF --max-failures 0",
     "audit:portfolio:gate:strict": "pnpm --filter worker audit:investor-insights -- --deal-list tmp/audit_deals.json --fail-on PARSE_HAZARD,BAD_EVIDENCE_REF,MISSING_DPU --max-failures 0",
-
     "repair:portfolio:insight-slots": "pnpm --filter worker repair:insight-slots -- --deal-list tmp/audit_deals.json --concurrency 2",
     "repair:portfolio:insight-slots:dry-run": "pnpm --filter worker repair:insight-slots -- --deal-list tmp/audit_deals.json --dry-run",
-
     "repair:portfolio:gate-state": "pnpm --filter worker repair:gate-state -- --deal-list tmp/audit_deals.json --concurrency 2",
     "repair:portfolio:gate-state:dry-run": "pnpm --filter worker repair:gate-state -- --deal-list tmp/audit_deals.json --dry-run",
-
     "audit:portfolio:coverage:baseline": "pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_deals.json --concurrency 4",
     "audit:portfolio:coverage:baseline:out": "TS=$(date +%Y%m%dT%H%M%SZ) && pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_deals.json --concurrency 4 --out tmp/coverage-baseline-$TS && echo BASELINE_TS=$TS",
     "audit:portfolio:coverage:current:out": "TS=$(date +%Y%m%dT%H%M%SZ) && pnpm --filter worker audit:investor-insights:coverage -- --deal-list tmp/audit_deals.json --concurrency 4 --out tmp/coverage-current-$TS && echo CURRENT_TS=$TS",
@@ -75,10 +70,17 @@
     "proof:financial-reconciliation:3deals": "pnpm --filter worker proof:financial-reconciliation:3deals",
     "proof:multisource-financials:3deals": "pnpm --filter worker proof:multisource-financials:3deals",
     "verify:governed-summary-cache": "pnpm --filter worker verify:governed-summary-cache",
-    "proof:dpu-stale": "node scripts/proof_dpu_stale_recovery.mjs"
+    "proof:dpu-stale": "node scripts/proof_dpu_stale_recovery.mjs",
+
+    "playwright:install": "playwright install chromium",
+    "test:ui": "playwright test",
+    "test:ui:debug": "PLAYWRIGHT_INTERACTIVE=1 playwright test tests/ui/dashboard-debug.spec.ts",
+    "test:ui:login": "playwright test tests/ui/auth.setup.ts --project=setup",
+    "trace:open": "playwright show-trace"
   },
   "devDependencies": {
     "@jest/globals": "^30.2.0",
+    "@playwright/test": "^1.58.2",
     "@types/cli-progress": "^3.11.6",
     "@types/node": "^20.10.0",
     "@types/pg": "^8.15.5",

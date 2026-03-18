@@ -22,6 +22,7 @@ import { buildOverviewPrompt, degradeOverviewV1 } from '@dealdecision/core';
 import { buildInvestmentAnalysisOverviewPrompt, LlmOverviewV1CitationSchema, LlmOverviewV1Schema } from '@dealdecision/core';
 import { loadPromotedFactsForDeal } from '../lib/promoted-facts';
 import { derivePromotedFactsFromDpuForDeal } from '../lib/promoted-facts-from-dpu';
+import { getFinancialFactsForReport } from './financial-facts';
 import { compileDealSummaryV1 } from '../lib/deal-summary-v1';
 import { getSegmentedNodesForDeal } from '../lib/segmented-nodes-for-deal';
 import { inferDeckArchetypeV1 } from '../lib/deck-archetypes';
@@ -98,6 +99,10 @@ const narrationDevCache = new Map<string, NarrationDevCacheValue>();
 
 const stableHash = (input: string): string => createHash('sha256').update(input, 'utf8').digest('hex');
 
+// Increment when the report compiler logic changes so that all cached entries compiled
+// by an older version are automatically treated as stale and recompiled.
+const REPORT_COMPILER_VERSION = 2;
+
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
     const r = await pool.query<{ summary: any }>(
@@ -108,7 +113,10 @@ async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: st
       [dealId, analysisVersion]
     );
     const summary = r.rows?.[0]?.summary ?? null;
-    return summary && typeof summary === 'object' ? summary : null;
+    if (!summary || typeof summary !== 'object') return null;
+    // Bust cache if compiled by an older compiler version.
+    if ((summary as any).__compiler_version !== REPORT_COMPILER_VERSION) return null;
+    return summary;
   } catch (err) {
     void err;
     return null;
@@ -124,6 +132,11 @@ async function upsertIngestionReportSummaryByDealAndVersion(params: {
 }): Promise<{ report_id: string } | null> {
   const { pool, dealId, analysisVersion, summary, documentIds } = params;
   try {
+    // Always stamp the compiler version so future reads can detect stale entries.
+    const versionedSummary =
+      summary && typeof summary === 'object'
+        ? { ...summary, __compiler_version: REPORT_COMPILER_VERSION }
+        : { __compiler_version: REPORT_COMPILER_VERSION };
     const r = await pool.query<{ report_id: string }>(
       `INSERT INTO ingestion_reports (report_id, deal_id, analysis_version, summary, document_ids)
        VALUES ($1, $2, $3, $4::jsonb, $5::text[])
@@ -133,7 +146,7 @@ async function upsertIngestionReportSummaryByDealAndVersion(params: {
          summary = EXCLUDED.summary,
          document_ids = EXCLUDED.document_ids
        RETURNING report_id`,
-      [randomUUID(), dealId, analysisVersion, summary ?? {}, documentIds ?? []]
+      [randomUUID(), dealId, analysisVersion, versionedSummary, documentIds ?? []]
     );
     const row = r.rows?.[0];
     if (!row || typeof row.report_id !== 'string' || !row.report_id.trim()) return null;
@@ -2343,10 +2356,15 @@ export async function registerReportRoutes(
         // Backward compatibility: include the compiled report payload so existing clients
         // can continue to render without needing to understand the readiness envelope.
         let report: any = null;
-        // Prefer a canonical persisted report if present.
+        // Prefer a canonical persisted report if present — but only when it was compiled
+        // by the current compiler version (older entries lack __compiler_version and are recompiled).
         try {
           const persisted = row && row.dio_data && typeof row.dio_data === 'object' ? (row.dio_data as any).report : null;
-          if (persisted && typeof persisted === 'object') {
+          if (
+            persisted &&
+            typeof persisted === 'object' &&
+            (persisted as any).__compiler_version === REPORT_COMPILER_VERSION
+          ) {
             report = persisted;
             logStage('compile.report.persisted', 0, true, { source: 'dio_data.report' });
           }
@@ -2407,11 +2425,10 @@ export async function registerReportRoutes(
         }
       }
 
-            const compiled = await timer.stage('compile.report', async () =>
-              promotedFacts.length > 0
-                ? compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts })
-                : compileDIOToReport(row.dio_data)
-            );
+            const compiled = await timer.stage('compile.report', async () => {
+              const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
+              return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts });
+            });
             logStage('compile.report', compiled.ms, true);
             report = compiled.value;
           }
@@ -3063,10 +3080,15 @@ export async function registerReportRoutes(
 
         // Compile DIO into ReportDTO
         let report: any = null;
-        // Prefer persisted canonical report if present.
+        // Prefer persisted canonical report if present — but only when it was compiled
+        // by the current compiler version (older entries lack __compiler_version and are recompiled).
         try {
           const persisted = row && row.dio_data && typeof row.dio_data === 'object' ? (row.dio_data as any).report : null;
-          if (persisted && typeof persisted === 'object') {
+          if (
+            persisted &&
+            typeof persisted === 'object' &&
+            (persisted as any).__compiler_version === REPORT_COMPILER_VERSION
+          ) {
             report = persisted;
           }
         } catch {
@@ -3080,9 +3102,8 @@ export async function registerReportRoutes(
           } catch {
             promotedFacts = [];
           }
-          report = promotedFacts.length > 0
-            ? compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts })
-            : compileDIOToReport(row.dio_data);
+          const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
+          report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts });
         }
 
         // Backward compatibility: normalize structured KPI shape (order matters).

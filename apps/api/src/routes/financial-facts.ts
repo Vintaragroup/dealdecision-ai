@@ -128,6 +128,25 @@ export async function getFinancialFactsForChat(
 }
 
 /**
+ * Fetch financial facts for the /report route compiler.
+ * Returns up to 200 facts for XLSX-sourced financial data injection.
+ * Fail-open: always returns an empty array on error.
+ */
+export async function getFinancialFactsForReport(
+  pool: PoolLike,
+  dealId: string
+): Promise<FinancialFactV1[]> {
+  try {
+    const tableExists = await hasFinancialFactsTable(pool);
+    if (!tableExists) return [];
+    return await queryFacts(pool, dealId, { limit: 200 });
+  } catch {
+    // Never crash /report on registry read failure
+    return [];
+  }
+}
+
+/**
  * Build a FinancialCoverageV1 for a deal.
  * Fetches all facts then runs buildFinancialCoverageV1 (pure, no LLM).
  * Returns null when the table doesn't exist or facts are absent.

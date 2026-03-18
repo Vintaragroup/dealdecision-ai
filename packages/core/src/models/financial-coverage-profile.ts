@@ -1,4 +1,5 @@
 import { containsMarketSizingLanguage } from '../classifiers/raise-detector.js';
+import type { FinancialFactV1 } from '../financial-facts/financial-fact-v1.js';
 
 export type FinancialCoverageProfileV1 = {
   confidence: 'low' | 'medium' | 'high';
@@ -107,6 +108,7 @@ const flag = (
 export function inferFinancialCoverageProfileV1(input: {
   structured_summary: any;          // use typed path where possible
   promoted_facts?: any[] | null;    // if available in compiler context
+  financial_facts?: FinancialFactV1[] | null;  // typed spreadsheet facts from financial_facts_v1
   documents?: Array<{ document_id: string; kind?: string; mime_type?: string; filename?: string }> | null;
 }): FinancialCoverageProfileV1 {
   const out: FinancialCoverageProfileV1 = {
@@ -127,7 +129,7 @@ export function inferFinancialCoverageProfileV1(input: {
 
   const currentYear = new Date().getFullYear();
 
-  // A) XLSX detection
+  // A) XLSX detection — from document list and from financial_facts source_kind
   const docs: DocumentLike[] = Array.isArray(input.documents) ? input.documents.filter((d) => d && typeof d.document_id === 'string') as any : [];
   const xlsxDocs = docs.filter(isXlsxLikeDocument);
   if (xlsxDocs.length > 0) {
@@ -138,8 +140,25 @@ export function inferFinancialCoverageProfileV1(input: {
         notes: d.filename ? `filename:${d.filename}` : undefined,
       });
     }
-  } else {
-    // Per v1 spec: default to deck when no XLSX-like documents are present.
+  }
+
+  // Also treat xlsx-sourced financial_facts as an XLSX source (so /report with facts
+  // but no explicit document metadata still gets correct source attribution).
+  const typedFacts: FinancialFactV1[] = Array.isArray(input.financial_facts) ? input.financial_facts : [];
+  const xlsxFactDocIds = new Set<string>();
+  for (const f of typedFacts) {
+    if (f.source_kind === 'xlsx' && f.document_id) xlsxFactDocIds.add(f.document_id);
+  }
+  const knownSourceDocIds = new Set(out.sources.map((s) => s.document_id).filter(Boolean));
+  for (const docId of xlsxFactDocIds) {
+    if (!knownSourceDocIds.has(docId)) {
+      out.sources.push({ kind: 'xlsx', document_id: docId, notes: 'financial_facts_v1' });
+      knownSourceDocIds.add(docId);
+    }
+  }
+
+  if (out.sources.length === 0) {
+    // Per v1 spec: default to deck when no XLSX-like sources found.
     out.sources.push({ kind: 'deck' });
   }
 
@@ -262,6 +281,63 @@ export function inferFinancialCoverageProfileV1(input: {
     }
   }
 
+  // F) Typed financial_facts coverage — directly map metric_key to coverage flags.
+  //    This is the primary signal path for XLSX-sourced financial data because
+  //    FinancialFactV1 rows have typed metric_key/value fields, not content_json.text.
+  if (typedFacts.length > 0) {
+    const REVENUE_KEYS = new Set(['revenue', 'arr', 'mrr']);
+    const INCOME_STMT_KEYS = new Set([
+      'gross_profit', 'gross_margin', 'ebitda', 'net_income',
+      'cogs', 'operating_expense', 'opex',
+    ]);
+    const UNIT_ECON_KEYS = new Set(['cac', 'ltv', 'arpu', 'gross_margin', 'churn_pct', 'retention_pct']);
+    const CASH_FLOW_KEYS = new Set(['cash_flow', 'operating_cash_flow', 'free_cash_flow', 'ocf', 'fcf']);
+
+    const isFactProjected = (f: FinancialFactV1): boolean => {
+      if (f.temporal_scope === 'projected' || f.temporal_scope === 'scenario' || f.temporal_scope === 'target') return true;
+      // Period label heuristics: if label contains a future year it's a projection.
+      const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
+      if (yearMatch) {
+        const year = Number(yearMatch[1]);
+        if (looksLikeFutureYear(year, currentYear)) return true;
+      }
+      return false;
+    };
+
+    const factEvidence = (f: FinancialFactV1): EvidenceRefLike | null => {
+      if (!f.document_id && f.page_number == null && !f.source_pointer) return null;
+      return {
+        document_id: f.document_id,
+        page: f.page_number,
+        source_path: f.source_pointer,
+        snippet: f.excerpt,
+      };
+    };
+
+    for (const f of typedFacts) {
+      const mk = f.metric_key.toLowerCase();
+      const ev = factEvidence(f);
+
+      if (REVENUE_KEYS.has(mk)) {
+        if (isFactProjected(f)) {
+          flag(out, 'forecast_revenue_present', ev);
+        } else {
+          flag(out, 'historical_revenue_present', ev);
+        }
+      } else if (INCOME_STMT_KEYS.has(mk)) {
+        flag(out, 'income_statement_present', ev);
+      } else if (mk === 'burn_rate') {
+        flag(out, 'burn_rate_present', ev);
+      } else if (mk === 'runway_months') {
+        flag(out, 'runway_present', ev);
+      } else if (UNIT_ECON_KEYS.has(mk)) {
+        flag(out, 'unit_economics_present', ev);
+      } else if (CASH_FLOW_KEYS.has(mk)) {
+        flag(out, 'cash_flow_present', ev);
+      }
+    }
+  }
+
   // Confidence heuristic
   const coverageKeys = Object.keys(out.coverage) as Array<keyof FinancialCoverageProfileV1['coverage']>;
   const trueCount = coverageKeys.reduce((sum, k) => sum + (out.coverage[k] ? 1 : 0), 0);
@@ -270,7 +346,7 @@ export function inferFinancialCoverageProfileV1(input: {
   else if (trueCount >= 2 && trueCount <= 4) out.confidence = 'medium';
   else out.confidence = 'low';
 
-  // Notes: track whether any evidence explicitly points at XLSX paths.
+  // Notes: track whether any evidence explicitly points at XLSX paths or typed facts.
   const usedXlsxPath = (() => {
     const paths: string[] = [];
     for (const k of coverageKeys) {
@@ -279,9 +355,10 @@ export function inferFinancialCoverageProfileV1(input: {
     }
     return paths.some((p) => p.endsWith('.xlsx') || p.endsWith('.xls') || p.endsWith('.csv') || p.includes('.xlsx#') || p.includes('.csv#'));
   })();
+  const usedXlsxFacts = typedFacts.some((f) => f.source_kind === 'xlsx');
   const notes: string[] = [];
   if (hasXlsx) notes.push('xlsx_present');
-  if (usedXlsxPath) notes.push('xlsx_evidence_used');
+  if (usedXlsxPath || usedXlsxFacts) notes.push('xlsx_evidence_used');
   if (notes.length > 0) out.notes = notes;
 
   return out;

@@ -9,6 +9,7 @@ import { buildDeterministicDealSummaryV1FromStructuredSummary, type Deterministi
 import { buildTopSectionV1FromScoreExplanation, type TopSectionV1 } from './topsection-v1-deterministic.js';
 import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
 import { inferFinancialCoverageProfileV1, type FinancialCoverageProfileV1 } from '../models/financial-coverage-profile.js';
+import type { FinancialFactV1 } from '../financial-facts/financial-fact-v1.js';
 import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
 import { inferStageExpectationsProfileV1, type StageExpectationsProfileV1 } from '../models/stage-expectations-profile.js';
 import { inferBusinessModelSignalProfileV1, type BusinessModelSignalProfileV1 } from '../models/business-model-signal-profile.js';
@@ -1727,10 +1728,116 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
   };
 }
 
-export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedFacts?: PromotedFactInput[] }): ReportDTO {
+/**
+ * Inject XLSX-derived revenue facts into structured_summary.revenue.
+ *
+ * Only activates when financialFacts contains xlsx-sourced revenue/arr/mrr entries.
+ * Prefers XLSX facts over deck-only candidates when confidence is >= current selection.
+ * Deck-derived candidates are preserved in the candidates list for audit trails.
+ */
+function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financialFacts: FinancialFactV1[]): void {
+  const REVENUE_KEYS = new Set(['revenue', 'arr', 'mrr']);
+  const xlsxRevenue = financialFacts.filter(
+    (f) =>
+      REVENUE_KEYS.has(f.metric_key) &&
+      f.source_kind === 'xlsx' &&
+      f.unit === 'currency' &&
+      typeof f.value === 'number' &&
+      Number.isFinite(f.value) &&
+      f.value > 0
+  );
+  if (xlsxRevenue.length === 0) return;
+
+  const confidenceNum = (c: FinancialFactV1['confidence']): number =>
+    c === 'high' ? 0.85 : c === 'medium' ? 0.65 : 0.45;
+
+  const periodTypeScore = (pt: string): number =>
+    pt === 'annual' ? 1 : pt === 'ttm' ? 2 : pt === 'quarterly' ? 3 : 4;
+
+  const isFactProjected = (f: FinancialFactV1): boolean => {
+    if (f.temporal_scope === 'projected' || f.temporal_scope === 'scenario' || f.temporal_scope === 'target') return true;
+    const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
+    if (yearMatch && Number(yearMatch[1]) > new Date().getFullYear()) return true;
+    return false;
+  };
+
+  const sorted = xlsxRevenue.slice().sort((a, b) => {
+    // Prefer realized over projected
+    const aProj = isFactProjected(a) ? 1 : 0;
+    const bProj = isFactProjected(b) ? 1 : 0;
+    if (aProj !== bProj) return aProj - bProj;
+    // Prefer annual
+    const aPS = periodTypeScore(a.period_type);
+    const bPS = periodTypeScore(b.period_type);
+    if (aPS !== bPS) return aPS - bPS;
+    // Prefer most recent period label (lexicographic on "FY2024" etc.)
+    const labelCmp = b.period_label.localeCompare(a.period_label);
+    if (labelCmp !== 0) return labelCmp;
+    return confidenceNum(b.confidence) - confidenceNum(a.confidence);
+  });
+
+  const best = sorted[0];
+  const bestConf = confidenceNum(best.confidence);
+
+  const buildXlsxCandidate = (f: FinancialFactV1, selected: boolean) => {
+    const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
+    return {
+      selected,
+      score: confidenceNum(f.confidence),
+      scope: 'company_financials_table',
+      subtype: isFactProjected(f) ? 'forecast' : 'annual',
+      year: yearMatch ? Number(yearMatch[1]) : null,
+      value_raw: formatUsdShort(f.value),
+      amount: f.value,
+      currency: f.currency ?? 'USD',
+      confidence: confidenceNum(f.confidence),
+      sources: [{ kind: 'xlsx', document_id: f.document_id, metric_key: f.metric_key, period_label: f.period_label }],
+    };
+  };
+
+  const xlsxCandidates = sorted.map((f, i) => buildXlsxCandidate(f, i === 0));
+
+  const currentRevenue = structuredSummary?.revenue;
+  const currentConf = typeof currentRevenue?.confidence === 'number' ? currentRevenue.confidence : 0;
+
+  if (!currentRevenue || currentRevenue.value == null || bestConf >= currentConf) {
+    // XLSX fact wins: use it as the primary selection, keep existing deck candidates for audit.
+    structuredSummary.revenue = {
+      value: {
+        amount: best.value,
+        currency: best.currency ?? 'USD',
+        period: best.period_label ?? null,
+        raw: formatUsdShort(best.value),
+      },
+      confidence: bestConf,
+      sources: [{ kind: 'xlsx', document_id: best.document_id, metric_key: best.metric_key, period_label: best.period_label }],
+      label: best.period_label ?? null,
+      selection_reason: 'xlsx_financial_fact',
+      candidates: [
+        ...xlsxCandidates,
+        ...(Array.isArray(currentRevenue?.candidates) ? currentRevenue.candidates.map((c: any) => ({ ...c, selected: false })) : []),
+      ],
+    };
+  } else {
+    // Deck fact wins on confidence: preserve deck selection but append xlsx candidates.
+    if (!structuredSummary.revenue) return;
+    const existing = Array.isArray(structuredSummary.revenue.candidates)
+      ? structuredSummary.revenue.candidates
+      : [];
+    structuredSummary.revenue.candidates = [...existing, ...xlsxCandidates.map((c) => ({ ...c, selected: false }))];
+  }
+}
+
+export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedFacts?: PromotedFactInput[]; financialFacts?: FinancialFactV1[] | null }): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
   const structuredSummary = buildStructuredSummary(dio, scoreExplanation, opts?.promotedFacts ?? undefined);
+
+  // Inject XLSX-derived revenue facts before revenue display string is computed.
+  if (opts?.financialFacts && opts.financialFacts.length > 0) {
+    injectXlsxRevenueIntoStructuredSummary(structuredSummary, opts.financialFacts);
+  }
+
   const revenueDisplay = revenueDisplayFromStructuredSummary(structuredSummary) ?? revenueDisplayFromPromotedFacts(opts?.promotedFacts);
   const sections = revenueDisplay
     ? base.sections.map((s) => (s.id === 'metric-benchmark' ? { ...s, content: applyRevenueOverrideToMetricBenchmarkContent(s.content, revenueDisplay) } : s))
@@ -1753,6 +1860,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
   const financialCoverage = inferFinancialCoverageProfileV1({
     structured_summary: structuredSummary,
     promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+    financial_facts: Array.isArray(opts?.financialFacts) ? opts!.financialFacts as FinancialFactV1[] : null,
     documents: Array.isArray((dio as any)?.inputs?.documents)
       ? (dio as any).inputs.documents.map((d: any) => ({
           document_id: d?.document_id,

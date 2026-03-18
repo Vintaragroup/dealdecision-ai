@@ -4,6 +4,7 @@ import * as path from 'path';
 import { attachNetworkLogger, printApiSummary, saveNetworkLog } from './helpers/network';
 import { attachConsoleLogger, printConsoleSummary } from './helpers/console';
 import { dumpBrowserStorage, printStorageSummary } from './helpers/storage';
+import { traceAllWidgets, type TraceWidgetOptions } from './helpers/widget-trace';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIG
@@ -25,6 +26,60 @@ const INTERACTIVE = process.env.PLAYWRIGHT_INTERACTIVE === '1';
 
 /** Directory where per-run artifacts (network logs, DOM snapshots) are saved. */
 const ARTIFACTS_DIR = path.resolve(__dirname, '../../playwright-artifacts');
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WIDGET CONFIG
+//
+// Each entry maps a visible dashboard widget (by data-testid) to one or more
+// API endpoint URL fragments whose responses likely populated it.
+//
+// TODO: These are placeholder values. Update them once:
+//   1. data-testid attributes are added to the widget root elements in React
+//      (apps/web/src/components/ — search for major dashboard cards/tables)
+//   2. The real API endpoint paths are confirmed from browser DevTools or
+//      the network log printed by this spec.
+//
+// Widgets without a matching data-testid will be skipped with a warning
+// rather than failing the test.
+// ─────────────────────────────────────────────────────────────────────────────
+const WIDGETS: TraceWidgetOptions[] = [
+  {
+    // TODO: Add data-testid="deals-list" to the deals list container
+    name: 'Deals List',
+    testId: 'deals-list',
+    endpointFragments: ['/deals'],
+  },
+  {
+    // TODO: Add data-testid="deal-summary-card" to the deal summary card
+    name: 'Deal Summary Card',
+    testId: 'deal-summary-card',
+    endpointFragments: ['/deals/summary', '/deals/'],
+  },
+  {
+    // TODO: Add data-testid="analysis-report" to the analysis score panel
+    name: 'Analysis Report / Score',
+    testId: 'analysis-report',
+    endpointFragments: ['/report'],
+  },
+  {
+    // TODO: Add data-testid="investor-insights" to the insights panel
+    name: 'Investor Insights',
+    testId: 'investor-insights',
+    endpointFragments: ['/insights'],
+  },
+  {
+    // TODO: Add data-testid="fundability-panel" to the fundability widget
+    name: 'Fundability Assessment',
+    testId: 'fundability-panel',
+    endpointFragments: ['/fundability', '/report'],
+  },
+  {
+    // TODO: Add data-testid="evidence-panel" to the evidence/citations widget
+    name: 'Evidence Panel',
+    testId: 'evidence-panel',
+    endpointFragments: ['/evidence'],
+  },
+];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SPEC
@@ -136,6 +191,26 @@ test.describe('Dashboard — data flow debug trace', () => {
       }
     }
     console.log('────────────────────────────────────────────\n');
+
+    // ── 10. Widget → endpoint tracing ─────────────────────────────────────
+    // Locates each widget by data-testid, reads its rendered text, and
+    // correlates it to the most likely matching API response.
+    //
+    // Widgets whose data-testid is not present in the DOM are skipped
+    // gracefully with a warning — no test failure.
+    //
+    // TODO: Add data-testid attributes to dashboard widget root elements
+    // and update WIDGETS config above before relying on these results.
+    console.log('[debug] Running widget → endpoint trace…');
+    const widgetResults = await traceAllWidgets(page, network.responses, WIDGETS);
+
+    // Save widget trace results for post-run inspection
+    fs.writeFileSync(
+      path.join(runDir, 'widget-trace.json'),
+      JSON.stringify(widgetResults, null, 2),
+      'utf-8',
+    );
+    console.log(`[debug] Widget trace saved → ${runDir}/widget-trace.json`);
 
     console.log(`\n[debug] Artifacts for this run saved to:\n  ${runDir}`);
     console.log('[debug] Trace file will be in playwright-report/ after the run.\n');

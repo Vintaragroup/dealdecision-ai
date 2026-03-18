@@ -18,6 +18,7 @@ const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:5173';
 const HEADLESS = process.env.HEADLESS === '1';
 
 export default defineConfig({
+  outputDir: 'playwright-artifacts',
   testDir: './tests/ui',
   fullyParallel: false, // Keep sequential for debugging — easier trace inspection
   forbidOnly: !!process.env.CI,
@@ -25,8 +26,12 @@ export default defineConfig({
   workers: 1, // Single worker: simpler trace files, easier to follow
   timeout: 60_000, // Give pages time to load auth + data
 
+  expect: {
+    timeout: 10_000,
+  },
+
   reporter: [
-    ['html', { outputFolder: 'playwright-report', open: 'never' }],
+    ['html', { outputFolder: 'playwright-report', open: process.env.CI ? 'never' : 'on-failure' }],
     ['list'],
   ],
 
@@ -35,7 +40,7 @@ export default defineConfig({
     headless: HEADLESS,
 
     // Tracing: captures DOM snapshots, screenshots, network, and console on every run
-    trace: 'on',
+    trace: process.env.PW_TRACE === '1' ? 'on' : 'retain-on-failure',
     screenshot: 'on',
     video: 'retain-on-failure',
 
@@ -45,6 +50,7 @@ export default defineConfig({
 
     // Preserve Clerk auth state across tests (populated by auth.setup.ts)
     storageState: 'playwright/.auth/user.json',
+
   },
 
   projects: [

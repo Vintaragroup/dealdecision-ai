@@ -18,6 +18,12 @@ import { inferTractionSignalProfileV1, type TractionSignalProfileV1 } from '../m
 import { inferTeamSignalProfileV1, type TeamSignalProfileV1 } from '../models/team-signal-profile.js';
 import { buildStageWeightedScoreInputsV1 } from '../scoring/stage-weighted-score-inputs-v1.js';
 import { scoreStageWeightedV1 } from '../scoring/dimension-scorer-v1.js';
+import {
+  buildFinancialBreakdownV1,
+  buildUnderwritingReadinessV1,
+  type FinancialBreakdownV1,
+  type UnderwritingReadinessV1,
+} from '../models/financial-breakdown-v1.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -29,6 +35,8 @@ type ReportDTO = {
   // Additive deterministic artifact (v1)
   funding_stage_v1?: FundingStageModelV1;
   financial_coverage_v1?: FinancialCoverageProfileV1;
+  financial_breakdown_v1?: FinancialBreakdownV1;
+  underwriting_readiness_v1?: UnderwritingReadinessV1;
   capital_logic_v1?: CapitalLogicProfileV1;
   stage_expectations_v1?: StageExpectationsProfileV1;
   business_model_signal_v1?: BusinessModelSignalProfileV1;
@@ -1871,6 +1879,24 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
       : null,
   });
 
+  const financialBreakdown = buildFinancialBreakdownV1({
+    financial_facts: Array.isArray(opts?.financialFacts) ? (opts!.financialFacts as FinancialFactV1[]) : [],
+    financial_coverage_v1: financialCoverage,
+    structured_summary: structuredSummary,
+    documents: Array.isArray((dio as any)?.inputs?.documents)
+      ? (dio as any).inputs.documents.map((d: any) => ({
+          document_id: d?.document_id,
+          kind: d?.kind,
+          filename: d?.filename,
+        }))
+      : null,
+  });
+
+  const underwritingReadiness = buildUnderwritingReadinessV1({
+    financial_breakdown_v1: financialBreakdown,
+    financial_coverage_v1: financialCoverage,
+  });
+
   const capitalLogic = inferCapitalLogicProfileV1({
     structured_summary: structuredSummary,
     promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
@@ -1925,6 +1951,8 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
 		...base,
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
+    financial_breakdown_v1: financialBreakdown,
+    underwriting_readiness_v1: underwritingReadiness,
     capital_logic_v1: capitalLogic,
     stage_expectations_v1: stageExpectations,
     business_model_signal_v1: businessModelSignal,

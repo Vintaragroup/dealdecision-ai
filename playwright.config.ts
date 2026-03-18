@@ -47,26 +47,15 @@ export default defineConfig({
     // Make network timeline useful
     actionTimeout: 30_000,
     navigationTimeout: 30_000,
-
-    // Preserve Clerk auth state across tests (populated by auth.setup.ts)
-    storageState: 'playwright/.auth/user.json',
-
+    // NOTE: storageState removed — no auth required for interactive inspection.
+    // Re-add when Clerk session caching is needed: storageState: 'playwright/.auth/user.json'
   },
 
   projects: [
-    // ── Auth setup ─────────────────────────────────────────────────────────
-    // Run this once to cache Clerk session. Other projects depend on it.
-    {
-      name: 'setup',
-      testMatch: /auth\.setup\.ts/,
-      use: { storageState: undefined }, // No stored auth — this IS the login step
-    },
-
-    // ── Main debug project (Chromium) ───────────────────────────────────────
+    // ── Single Chromium project — no auth dependency ────────────────────────
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
-      dependencies: ['setup'],
     },
   ],
 });

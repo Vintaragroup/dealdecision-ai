@@ -74,7 +74,7 @@
 
     "playwright:install": "playwright install chromium",
     "test:ui": "playwright test",
-    "test:ui:debug": "PLAYWRIGHT_INTERACTIVE=1 playwright test tests/ui/dashboard-debug.spec.ts",
+    "test:ui:debug": "playwright test tests/ui/debug.spec.ts",
     "test:ui:login": "playwright test tests/ui/auth.setup.ts --project=setup",
     "trace:open": "playwright show-trace"
   },

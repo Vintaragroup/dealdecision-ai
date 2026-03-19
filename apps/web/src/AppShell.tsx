@@ -111,6 +111,8 @@ export default function AppShell() {
   const routeDrivenPage = useMemo(() => pageFromPath(location.pathname), [location.pathname]);
 
   const isRyanAdmin = useMemo(() => {
+    // COSMETIC ONLY — gates logo/component showcase pages (internal dev tools).
+    // Not a security guard. Admin access to /system/admin is DB-backed (platform_access.is_admin).
     if (!userLoaded) return false;
     const email = user?.primaryEmailAddress?.emailAddress;
     return typeof email === 'string' && email.toLowerCase() === 'ryan@vintaragroup.com';

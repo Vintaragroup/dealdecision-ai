@@ -296,6 +296,12 @@ function isProtectedPath(url: string): boolean {
 function isEntitlementExemptPath(url: string): boolean {
   // Admin platform-access provisioning: exempt so an admin can bootstrap users.
   if (url.startsWith('/api/v1/admin/platform-access')) return true;
+  // Admin invite code management: exempt (admin may not have their own access row yet).
+  if (url.startsWith('/api/v1/admin/invite-codes')) return true;
+  // Invite validation: unauthenticated-ish path, does not need entitlement check.
+  if (url.startsWith('/api/v1/invites/validate')) return true;
+  // Invite redemption: signed-in user may have no platform_access row yet.
+  if (url.startsWith('/api/v1/invites/redeem')) return true;
   return false;
 }
 

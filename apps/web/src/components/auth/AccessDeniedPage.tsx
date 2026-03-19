@@ -74,6 +74,14 @@ export function AccessDeniedPage() {
           >
             Contact your AE
           </a>
+          {(code === 'ACCESS_NOT_PROVISIONED' || code === 'ACCESS_PENDING') && (
+            <a
+              href="/invite"
+              className="text-white/40 text-xs hover:text-white/70 transition-colors underline"
+            >
+              Have an invite code?
+            </a>
+          )}
           <button
             type="button"
             onClick={() => signOut({ redirectUrl: '/sign-in' })}

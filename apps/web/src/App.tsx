@@ -11,6 +11,8 @@ import { OrgGate } from './components/auth/OrgGate';
 import { SelectOrg } from './components/pages/SelectOrg';
 import { AccessDeniedPage } from './components/auth/AccessDeniedPage';
 import { InviteOnlyPage } from './components/auth/InviteOnlyPage';
+import { InviteEntryPage } from './components/auth/InviteEntryPage';
+import SystemAdminPage from './components/pages/SystemAdminPage';
 
 function PublicHome() {
   return (
@@ -81,6 +83,19 @@ export default function App() {
 
       {/* Access denied states (returned by backend after successful Clerk auth) */}
       <Route path="/access-denied" element={<AccessDeniedPage />} />
+
+      {/* Invite code redemption — public, no auth required */}
+      <Route path="/invite" element={<InviteEntryPage />} />
+
+      {/* System admin — protected, outside AppShell */}
+      <Route
+        path="/system/admin"
+        element={
+          <ProtectedRoute>
+            <SystemAdminPage />
+          </ProtectedRoute>
+        }
+      />
 
       {/* Protected */}
       <Route

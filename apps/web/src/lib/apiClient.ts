@@ -2602,6 +2602,188 @@ export async function apiGetExportPdfStatus(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Invite Code API
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type InviteValidateResponse = {
+  valid: boolean;
+  code?: string;
+  reason?: string;
+  access_duration_days?: number;
+  email_restricted?: boolean;
+  org_id?: string | null;
+};
+
+export type InviteRedeemResponse = {
+  ok: boolean;
+  access_expires_at: string;
+  access_duration_days: number;
+};
+
+export type AdminCreateInviteBody = {
+  access_duration_days: 3 | 5 | 7 | 14;
+  email?: string;
+  org_id?: string;
+  expires_at?: string;
+  notes?: string;
+};
+
+export type AdminCreateInviteResponse = {
+  ok: boolean;
+  record: {
+    id: string;
+    code: string;
+    email: string | null;
+    org_id: string | null;
+    status: string;
+    access_duration_days: number;
+    expires_at: string | null;
+    created_at: string;
+  };
+  invite_url: string;
+};
+
+export async function apiValidateInvite(code: string, email?: string): Promise<InviteValidateResponse> {
+  return request<InviteValidateResponse>('/api/v1/invites/validate', {
+    method: 'POST',
+    body: JSON.stringify({ code, ...(email ? { email } : {}) }),
+  });
+}
+
+export async function apiRedeemInvite(code: string): Promise<InviteRedeemResponse> {
+  return request<InviteRedeemResponse>('/api/v1/invites/redeem', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function apiAdminCreateInvite(body: AdminCreateInviteBody): Promise<AdminCreateInviteResponse> {
+  const adminToken = getDevAdminToken();
+  return request<AdminCreateInviteResponse>('/api/v1/admin/invite-codes', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Me / current-user API
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type MeAccessResponse = {
+  clerk_user_id: string;
+  access_status: 'active' | 'pending' | 'expired' | 'revoked';
+  access_expires_at: string | null;
+  is_admin: boolean;
+};
+
+export async function apiGetMyAccess(): Promise<MeAccessResponse> {
+  return request<MeAccessResponse>('/api/v1/me/access');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin — Platform Access Management
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type PlatformAccessRecord = {
+  id: string;
+  clerk_user_id: string;
+  org_id: string | null;
+  access_status: 'active' | 'pending' | 'expired' | 'revoked';
+  access_expires_at: string | null;
+  granted_by_user_id: string | null;
+  grant_source: string | null;
+  notes: string | null;
+  is_admin: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function apiAdminListPlatformAccess(opts?: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+}): Promise<{ records: PlatformAccessRecord[]; limit: number; offset: number }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.offset != null) params.set('offset', String(opts.offset));
+  if (opts?.status) params.set('status', opts.status);
+  const qs = params.toString();
+  return request(`/api/v1/admin/platform-access${qs ? `?${qs}` : ''}`);
+}
+
+export async function apiAdminSetAdminStatus(
+  clerkUserId: string,
+  isAdmin: boolean
+): Promise<{ ok: boolean; record: { clerk_user_id: string; access_status: string; is_admin: boolean; updated_at: string } }> {
+  return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/admin-status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ is_admin: isAdmin }),
+  });
+}
+
+export async function apiAdminRevokeAccess(
+  clerkUserId: string
+): Promise<{ ok: boolean; record: { clerk_user_id: string; access_status: string; updated_at: string } }> {
+  return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/revoke`, {
+    method: 'PATCH',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function apiAdminExtendAccess(
+  clerkUserId: string,
+  accessDurationDays: number
+): Promise<{ ok: boolean; record: { clerk_user_id: string; access_status: string; access_expires_at: string; updated_at: string } }> {
+  return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/extend`, {
+    method: 'PATCH',
+    body: JSON.stringify({ access_duration_days: accessDurationDays }),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin — Invite management (additions to existing)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type AdminInviteRecord = {
+  id: string;
+  code: string;
+  email: string | null;
+  org_id: string | null;
+  created_by_user_id: string | null;
+  status: 'active' | 'redeemed' | 'expired' | 'revoked';
+  access_duration_days: number;
+  expires_at: string | null;
+  redeemed_at: string | null;
+  redeemed_by_clerk_user_id: string | null;
+  redeemed_email: string | null;
+  grant_source: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function apiAdminListInvites(opts?: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+}): Promise<{ records: AdminInviteRecord[]; limit: number; offset: number }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.offset != null) params.set('offset', String(opts.offset));
+  if (opts?.status) params.set('status', opts.status);
+  const qs = params.toString();
+  return request(`/api/v1/admin/invite-codes${qs ? `?${qs}` : ''}`);
+}
+
+export async function apiAdminRevokeInvite(code: string): Promise<{ ok: boolean }> {
+  return request(`/api/v1/admin/invite-codes/${encodeURIComponent(code)}/revoke`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const apiClient = {
   get: request,

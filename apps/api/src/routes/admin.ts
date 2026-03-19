@@ -13,48 +13,86 @@ import {
 } from "../lib/feature-flags";
 import { getPool } from "../lib/db";
 
+// ---------------------------------------------------------------------------
+// DB-backed admin check
+// ---------------------------------------------------------------------------
+
 /**
- * Simple admin auth middleware
- * In production, use proper authentication
+ * Returns true if the given Clerk user ID has is_admin = true in platform_access.
+ * This is the authoritative admin check. Never rely on email or orgRole alone.
  */
-function requireAdminAuth(
+async function isDbAdmin(userId: string): Promise<boolean> {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `SELECT is_admin FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
+    [userId]
+  );
+  return rows.length > 0 && rows[0].is_admin === true;
+}
+
+/**
+ * Admin auth middleware — DB-backed.
+ *
+ * Allows if:
+ *   1. Dev auth bypass (DISABLE_CLERK_AUTH=1) — allows locally without DB hit.
+ *   2. ADMIN_TOKEN header match — narrow escape hatch for bootstrap/CLI scripts.
+ *   3. platform_access.is_admin = true for the authenticated Clerk user ID.
+ *
+ * Production intent: path 3 is the normal path. Paths 1 and 2 are narrow
+ * bootstrap helpers that should not be the long-term authorization model.
+ */
+async function requireAdminAuth(
   request: FastifyRequest,
-  reply: FastifyReply,
-  next: () => void
-): void {
-  const orgRole = (request as any)?.auth?.orgRole;
-  if (typeof orgRole === "string" && orgRole.toLowerCase().includes("admin")) {
-    return next();
-  }
+  reply: FastifyReply
+): Promise<boolean> {
+  // Path 1: dev auth bypass — skip DB check entirely.
+  const bypassedAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+  if (bypassedAuth) return true;
 
-  const authHeader = request.headers.authorization;
-  const adminToken = process.env.ADMIN_TOKEN;
-
-  if (!adminToken) {
-    // No admin token configured, allow all in dev
-    if (process.env.NODE_ENV === "development") {
-      return next();
+  // Path 2: explicit ADMIN_TOKEN header — bootstrap/script helper only.
+  // Only honored when ADMIN_TOKEN env var is set to a non-empty value.
+  const adminToken = process.env.ADMIN_TOKEN?.trim();
+  if (adminToken) {
+    const providedToken = request.headers['x-admin-token'] ??
+      request.headers.authorization?.replace(/^Bearer\s+/i, '');
+    if (typeof providedToken === 'string' && providedToken.trim() === adminToken) {
+      return true;
     }
-    reply.status(403).send({ error: "Admin token not configured" });
-    return;
   }
 
-  const token = authHeader?.replace("Bearer ", "");
-  if (token !== adminToken) {
-    reply.status(403).send({ error: "Unauthorized" });
-    return;
+  // Path 3: DB-backed admin check (normal production path).
+  const userId = request.auth?.userId;
+  if (!userId) {
+    reply.status(401).send({ error: 'Unauthorized' });
+    return false;
   }
 
-  next();
+  let adminFlag: boolean;
+  try {
+    adminFlag = await isDbAdmin(userId);
+  } catch (err) {
+    request.log.error({ event: 'admin_check_db_error', err }, 'DB admin check failed');
+    reply.status(503).send({ error: 'Service temporarily unavailable' });
+    return false;
+  }
+
+  if (!adminFlag) {
+    reply.status(403).send({ error: 'Forbidden: admin access required' });
+    return false;
+  }
+
+  return true;
 }
 
 export async function registerAdminRoutes(app: FastifyInstance) {
-  // Apply auth to all admin routes
-  app.addHook("preHandler", (request, reply, next) => {
-    if (request.url.startsWith("/api/v1/admin")) {
-      requireAdminAuth(request, reply, next);
-    } else {
-      next();
+  // DB-backed admin check on all /api/v1/admin/* routes.
+  // Exempt: /api/v1/admin/bootstrap-first-admin (see below — has its own guard).
+  app.addHook("preHandler", async (request, reply) => {
+    if (!request.url.startsWith("/api/v1/admin")) return;
+    if (request.url.startsWith("/api/v1/admin/bootstrap-first-admin")) return;
+    const allowed = await requireAdminAuth(request, reply);
+    if (!allowed) {
+      // reply already sent by requireAdminAuth
     }
   });
 
@@ -75,7 +113,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
   app.get(
     "/api/v1/system/env-check",
     {
-      preHandler: (request, reply, next) => {
+      preHandler: async (request, reply) => {
         // Dev-only endpoint: hide in production.
         // Treat NODE_ENV unset as non-production (common in local Docker dev).
         if (process.env.NODE_ENV === "production") {
@@ -83,14 +121,12 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           return;
         }
 
-        // If an admin token is configured, require it. Otherwise allow in non-production.
+        // If an admin token is configured, require admin auth.
         const adminToken = process.env.ADMIN_TOKEN;
         if (typeof adminToken === "string" && adminToken.trim().length > 0) {
-          requireAdminAuth(request, reply, next);
-          return;
+          await requireAdminAuth(request, reply);
         }
-
-        next();
+        // else: no admin token configured, allow in non-production
       },
     },
     async (request, reply) => {
@@ -322,7 +358,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
   /**
    * GET /api/v1/admin/platform-access
-   * List all platform_access records (paginated).
+   * List all platform_access records (paginated), including is_admin.
    */
   app.get<{ Querystring: { limit?: string; offset?: string; status?: string } }>(
     "/api/v1/admin/platform-access",
@@ -334,7 +370,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const pool = getPool();
       const { rows } = await pool.query(
         `SELECT id, clerk_user_id, org_id, access_status, access_expires_at,
-                granted_by_user_id, grant_source, notes, created_at, updated_at
+                granted_by_user_id, grant_source, notes, is_admin, created_at, updated_at
            FROM platform_access
           ${status ? `WHERE access_status = $3` : ""}
           ORDER BY created_at DESC
@@ -344,4 +380,237 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return reply.send({ records: rows, limit, offset });
     }
   );
+
+  // ─── Admin status management ─────────────────────────────────────────────────
+
+  /**
+   * PATCH /api/v1/admin/platform-access/:clerkUserId/admin-status
+   * Set or clear is_admin for a platform_access row.
+   *
+   * Body: { is_admin: boolean }
+   *
+   * Rules:
+   *   - Only admins can call this (enforced by preHandler).
+   *   - An admin cannot remove their own admin status (safety guard).
+   *   - Returns 409 if the target user does not have a platform_access row.
+   */
+  app.patch<{
+    Params: { clerkUserId: string };
+    Body: { is_admin: boolean };
+  }>(
+    "/api/v1/admin/platform-access/:clerkUserId/admin-status",
+    async (request, reply) => {
+      const { clerkUserId } = request.params;
+      const { is_admin } = request.body ?? {};
+
+      if (typeof is_admin !== "boolean") {
+        return reply.status(400).send({ error: "is_admin must be a boolean" });
+      }
+
+      const actorId = request.auth?.userId;
+
+      // Prevent self-demotion. An admin can only remove their own admin status
+      // through a deliberate separate step — block it here for safety.
+      if (!is_admin && actorId === clerkUserId) {
+        return reply.status(400).send({
+          error: "You cannot remove your own admin status. Have another admin do it.",
+          code: "SELF_DEMOTION_BLOCKED",
+        });
+      }
+
+      const pool = getPool();
+
+      // Verify the target user has a platform_access row.
+      const check = await pool.query(
+        `SELECT id FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
+        [clerkUserId]
+      );
+      if (check.rows.length === 0) {
+        return reply.status(404).send({ error: "No platform_access record found for this user" });
+      }
+
+      const { rows } = await pool.query(
+        `UPDATE platform_access
+            SET is_admin = $1, updated_at = now()
+          WHERE clerk_user_id = $2
+          RETURNING clerk_user_id, access_status, is_admin, updated_at`,
+        [is_admin, clerkUserId]
+      );
+
+      return reply.send({ ok: true, record: rows[0] });
+    }
+  );
+
+  /**
+   * PATCH /api/v1/admin/platform-access/:clerkUserId/revoke
+   * Revoke platform access for a user.
+   */
+  app.patch<{ Params: { clerkUserId: string } }>(
+    "/api/v1/admin/platform-access/:clerkUserId/revoke",
+    async (request, reply) => {
+      const { clerkUserId } = request.params;
+      const actorId = request.auth?.userId;
+
+      const pool = getPool();
+      const { rows } = await pool.query(
+        `UPDATE platform_access
+            SET access_status = 'revoked', updated_at = now(),
+                granted_by_user_id = $2
+          WHERE clerk_user_id = $1
+          RETURNING clerk_user_id, access_status, updated_at`,
+        [clerkUserId, actorId ?? null]
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: "No platform_access record found for this user" });
+      }
+
+      return reply.send({ ok: true, record: rows[0] });
+    }
+  );
+
+  /**
+   * PATCH /api/v1/admin/platform-access/:clerkUserId/extend
+   * Extend (or set) access_expires_at for a user.
+   *
+   * Body: { access_duration_days: number }
+   * Adds N days from now (not from current expiry).
+   */
+  app.patch<{
+    Params: { clerkUserId: string };
+    Body: { access_duration_days: number };
+  }>(
+    "/api/v1/admin/platform-access/:clerkUserId/extend",
+    async (request, reply) => {
+      const { clerkUserId } = request.params;
+      const { access_duration_days } = request.body ?? {};
+
+      if (
+        typeof access_duration_days !== "number" ||
+        !Number.isInteger(access_duration_days) ||
+        access_duration_days < 1 ||
+        access_duration_days > 365
+      ) {
+        return reply.status(400).send({
+          error: "access_duration_days must be an integer between 1 and 365",
+        });
+      }
+
+      const expiresAt = new Date(
+        Date.now() + access_duration_days * 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      const pool = getPool();
+      const { rows } = await pool.query(
+        `UPDATE platform_access
+            SET access_status = 'active',
+                access_expires_at = $2,
+                updated_at = now()
+          WHERE clerk_user_id = $1
+          RETURNING clerk_user_id, access_status, access_expires_at, updated_at`,
+        [clerkUserId, expiresAt]
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: "No platform_access record found for this user" });
+      }
+
+      return reply.send({ ok: true, record: rows[0] });
+    }
+  );
+
+  // ─── Bootstrap endpoint ──────────────────────────────────────────────────────
+
+  /**
+   * POST /api/v1/admin/bootstrap-first-admin
+   * One-time bootstrap: promote a platform_access row to is_admin = true.
+   *
+   * This endpoint is EXEMPT from the preHandler admin check (you need it before
+   * any admin exists). It is instead protected by ADMIN_TOKEN.
+   *
+   * Body: { clerk_user_id: string }
+   *
+   * After Ryan's row is set to is_admin = true, all subsequent admin operations
+   * go through the DB-backed requireAdminAuth path and this endpoint's purpose
+   * is fulfilled. It can remain as a recovery mechanism.
+   */
+  app.post<{ Body: { clerk_user_id: string } }>(
+    "/api/v1/admin/bootstrap-first-admin",
+    {
+      preHandler: async (request, reply) => {
+        // Require ADMIN_TOKEN (or dev bypass). No is_admin check — that's the point.
+        const bypassedAuth = Boolean(request.auth?.claims?.["bypass_auth"]);
+        if (bypassedAuth) return;
+
+        const adminToken = process.env.ADMIN_TOKEN?.trim();
+        if (!adminToken) {
+          reply.status(503).send({
+            error: "ADMIN_TOKEN is not configured. Set it in env to use bootstrap.",
+            code: "ADMIN_TOKEN_NOT_CONFIGURED",
+          });
+          return;
+        }
+
+        const provided =
+          (request.headers["x-admin-token"] as string | undefined) ??
+          request.headers.authorization?.replace(/^Bearer\s+/i, "");
+
+        if (typeof provided !== "string" || provided.trim() !== adminToken) {
+          reply.status(403).send({ error: "Invalid admin token" });
+          return;
+        }
+      },
+    },
+    async (request, reply) => {
+      const { clerk_user_id } = request.body ?? {};
+
+      if (
+        !clerk_user_id ||
+        typeof clerk_user_id !== "string" ||
+        clerk_user_id.trim().length === 0
+      ) {
+        return reply.status(400).send({ error: "clerk_user_id is required" });
+      }
+
+      const pool = getPool();
+
+      // Upsert: if the row doesn't exist yet, create it as active+admin.
+      // If it already exists, just set is_admin = true.
+      const { rows } = await pool.query(
+        `INSERT INTO platform_access (clerk_user_id, access_status, is_admin, grant_source, notes, created_at, updated_at)
+              VALUES ($1, 'active', TRUE, 'admin', 'Bootstrapped as first admin', now(), now())
+         ON CONFLICT (clerk_user_id) DO UPDATE
+              SET is_admin = TRUE, updated_at = now()
+          RETURNING clerk_user_id, access_status, is_admin, updated_at`,
+        [clerk_user_id.trim()]
+      );
+
+      return reply.send({ ok: true, record: rows[0] });
+    }
+  );
+
+  /**
+   * POST /api/v1/admin/invite-codes/:code/revoke
+   * Revoke an active invite code.
+   */
+  app.post<{ Params: { code: string } }>(
+    "/api/v1/admin/invite-codes/:code/revoke",
+    async (request, reply) => {
+      const { code } = request.params;
+      const pool = getPool();
+      const { rows } = await pool.query(
+        `UPDATE invite_codes SET status = 'revoked', updated_at = now()
+          WHERE code = $1 AND status = 'active'
+          RETURNING code, status, updated_at`,
+        [code]
+      );
+      if (rows.length === 0) {
+        return reply.status(404).send({
+          error: "Invite code not found or not in active state",
+        });
+      }
+      return reply.send({ ok: true, record: rows[0] });
+    }
+  );
 }
+

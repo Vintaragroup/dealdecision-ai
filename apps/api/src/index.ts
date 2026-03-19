@@ -24,6 +24,8 @@ import { registerExportPdfRoutes } from "./routes/export-pdf";
 import { registerFinancialFactsRoutes } from "./routes/financial-facts";
 import { registerPagesRoutes } from "./routes/pages";
 import { registerDealFactsRoutes } from "./routes/deal-facts";
+import { registerInviteRoutes } from "./routes/invites";
+import { registerMeRoutes } from "./routes/me";
 import { initializeLLM } from "./lib/llm";
 import { getPool } from "./lib/db";
 import { applyPendingMigrations, getMigrationStatus } from "./lib/migrations";
@@ -214,6 +216,8 @@ async function bootstrap() {
   await registerFinancialFactsRoutes(app);
   await registerPagesRoutes(app);
   await registerDealFactsRoutes(app);
+  await registerInviteRoutes(app);
+  await registerMeRoutes(app);
 }
 
 async function start() {

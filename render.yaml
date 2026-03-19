@@ -81,6 +81,10 @@ services:
       # Set to 0 only during a migration window. Default in code is 1 (enforced).
       - key: PLATFORM_ENTITLEMENT_ENABLED
         value: "1"
+      # Frontend base URL used by invite creation endpoint to build invite_url.
+      # Must match the deployed web app URL (no trailing slash).
+      - key: APP_BASE_URL
+        value: "https://app.dealdecision.ai"
 
   - type: worker
     name: dealdecision-worker

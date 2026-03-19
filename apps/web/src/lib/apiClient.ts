@@ -8,6 +8,13 @@ const META_ENV = (import.meta as any)?.env as any;
 // Local dev default: docker-compose.dev.yml exposes the API on 9001.
 // (VITE_API_BASE_URL remains the authoritative override.)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9001';
+
+const ACCESS_DENIAL_CODES = new Set([
+  'ACCESS_NOT_PROVISIONED',
+  'ACCESS_PENDING',
+  'ACCESS_EXPIRED',
+  'ACCESS_REVOKED',
+]);
 // Default to live for any non-dev build (Render preview/staging builds may not set import.meta.env.PROD).
 // Default to mock only for true local dev.
 const DEFAULT_BACKEND_MODE = META_ENV?.DEV ? 'mock' : 'live';
@@ -414,6 +421,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
           res = refreshed;
           responseJson = await res.json();
           return responseJson as T;
+        }
+      }
+
+      // Redirect to access-denied page for platform entitlement denials.
+      if (res.status === 403) {
+        try {
+          const parsed = JSON.parse(bodyText);
+          if (typeof parsed?.code === 'string' && ACCESS_DENIAL_CODES.has(parsed.code)) {
+            window.location.href = `/access-denied?code=${encodeURIComponent(parsed.code)}`;
+            throw new Error(`Access denied: ${parsed.code}`);
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message.startsWith('Access denied:')) throw e;
+          // not an entitlement denial — fall through to generic error
         }
       }
 

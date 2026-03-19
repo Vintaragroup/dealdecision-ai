@@ -1,15 +1,16 @@
-import { Link, Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes } from 'react-router-dom';
 import {
   SignedIn,
   SignedOut,
   SignIn,
-  SignUp,
 } from '@clerk/clerk-react';
 
 import AppShell from './AppShell';
 import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { OrgGate } from './components/auth/OrgGate';
 import { SelectOrg } from './components/pages/SelectOrg';
+import { AccessDeniedPage } from './components/auth/AccessDeniedPage';
+import { InviteOnlyPage } from './components/auth/InviteOnlyPage';
 
 function PublicHome() {
   return (
@@ -18,12 +19,9 @@ function PublicHome() {
         <h1 className="text-3xl font-semibold">DealDecision AI</h1>
         <p className="text-white/70">Sign in to access your deal workspace.</p>
         <div className="flex gap-3">
-          <Link className="px-4 py-2 rounded bg-[#6366f1]" to="/sign-in">
+          <a className="px-4 py-2 rounded bg-[#6366f1] text-white no-underline" href="/sign-in">
             Sign in
-          </Link>
-          <Link className="px-4 py-2 rounded border border-white/20" to="/sign-up">
-            Sign up
-          </Link>
+          </a>
         </div>
       </div>
     </div>
@@ -62,33 +60,27 @@ export default function App() {
         element={
           <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] px-6 py-10">
             <div className="w-full max-w-md flex justify-center">
+              {/* signUpUrl omitted intentionally — signup is invite-only.
+                  The Clerk "Sign up" link inside the component is suppressed
+                  by the absence of signUpUrl, which shows "Contact us" text.
+                  The Clerk dashboard must also be set to "Restricted sign-ups" /
+                  "Invite only" mode so that self-serve account creation is
+                  blocked at the Clerk level, not just at the UI level. */}
               <SignIn
                 routing="path"
                 path="/sign-in"
-                signUpUrl="/sign-up"
                 afterSignInUrl="/app"
-                afterSignUpUrl="/app"
               />
             </div>
           </div>
         }
       />
-      <Route
-        path="/sign-up/*"
-        element={
-          <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] px-6 py-10">
-            <div className="w-full max-w-md flex justify-center">
-              <SignUp
-                routing="path"
-                path="/sign-up"
-                signInUrl="/sign-in"
-                afterSignInUrl="/app"
-                afterSignUpUrl="/app"
-              />
-            </div>
-          </div>
-        }
-      />
+
+      {/* /sign-up is blocked — redirect to invite-only info page */}
+      <Route path="/sign-up/*" element={<InviteOnlyPage />} />
+
+      {/* Access denied states (returned by backend after successful Clerk auth) */}
+      <Route path="/access-denied" element={<AccessDeniedPage />} />
 
       {/* Protected */}
       <Route

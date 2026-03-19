@@ -12,8 +12,6 @@ import { SelectOrg } from './components/pages/SelectOrg';
 import { AccessDeniedPage } from './components/auth/AccessDeniedPage';
 import { InviteOnlyPage } from './components/auth/InviteOnlyPage';
 import { InviteEntryPage } from './components/auth/InviteEntryPage';
-import SystemAdminPage from './components/pages/SystemAdminPage';
-
 function PublicHome() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] text-white px-6">
@@ -87,15 +85,8 @@ export default function App() {
       {/* Invite code redemption — public, no auth required */}
       <Route path="/invite" element={<InviteEntryPage />} />
 
-      {/* System admin — protected, outside AppShell */}
-      <Route
-        path="/system/admin"
-        element={
-          <ProtectedRoute>
-            <SystemAdminPage />
-          </ProtectedRoute>
-        }
-      />
+      {/* System admin — redirect legacy standalone route to in-shell route */}
+      <Route path="/system/admin" element={<Navigate to="/app/admin" replace />} />
 
       {/* Protected */}
       <Route

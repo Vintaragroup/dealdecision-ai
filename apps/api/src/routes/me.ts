@@ -1,6 +1,8 @@
 /**
  * Me Routes
- * GET /api/v1/me/access — Returns the current user's platform access and admin status.
+ * GET /api/v1/me/access    — Returns the current user's platform access and admin status.
+ * GET /api/v1/me/identity  — Returns the caller's Clerk user ID from their JWT (no DB query).
+ *                            Use this to discover your clerk_user_id when running with real Clerk auth.
  *
  * This is the frontend's source of truth for:
  *   - access_status (used by entitlement checks)
@@ -13,6 +15,27 @@ import type { FastifyInstance } from 'fastify';
 import { getPool } from '../lib/db';
 
 export async function registerMeRoutes(app: FastifyInstance) {
+  /**
+   * GET /api/v1/me/identity
+   * Returns the calling user's Clerk user_id (from JWT `sub`) and org context.
+   * No DB query — purely from the verified auth token.
+   *
+   * Use case: discovering your own clerk_user_id to pass to the bootstrap endpoint.
+   *
+   * Works with both real Clerk JWTs and dev bypass (returns "dev_user" in bypass mode).
+   */
+  app.get('/api/v1/me/identity', async (request, reply) => {
+    const userId = request.auth?.userId;
+    if (!userId) {
+      return reply.status(401).send({ error: 'Unauthorized' });
+    }
+    return reply.send({
+      clerk_user_id: userId,
+      org_id: request.auth?.orgId ?? null,
+      is_dev_bypass: Boolean(request.auth?.claims?.['bypass_auth']),
+    });
+  });
+
   /**
    * GET /api/v1/me/access
    * Returns the authenticated user's access row (safe subset).

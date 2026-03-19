@@ -381,6 +381,174 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   );
 
+  /**
+   * GET /api/v1/admin/users
+   * Returns a merged view of Clerk users (identity) + platform_access (authorization).
+   *
+   * Clerk is the identity source. platform_access is the authorization source.
+   * If CLERK_SECRET_KEY is not configured, returns only platform_access rows with
+   * clerkAvailable: false.
+   *
+   * Users present in Clerk but missing from platform_access are included with
+   * access_status: 'not_provisioned' so admins can see and act on them.
+   */
+  app.get<{ Querystring: { limit?: string } }>(
+    "/api/v1/admin/users",
+    async (request, reply) => {
+      const limit = Math.min(Number(request.query.limit ?? 200), 500);
+      const pool = getPool();
+
+      // Fetch all platform_access rows — keyed by clerk_user_id.
+      const { rows: accessRows } = await pool.query<{
+        id: string;
+        clerk_user_id: string;
+        org_id: string | null;
+        access_status: string;
+        access_expires_at: string | null;
+        granted_by_user_id: string | null;
+        grant_source: string | null;
+        notes: string | null;
+        is_admin: boolean;
+        created_at: string;
+        updated_at: string;
+      }>(
+        `SELECT id, clerk_user_id, org_id, access_status, access_expires_at,
+                granted_by_user_id, grant_source, notes, is_admin, created_at, updated_at
+           FROM platform_access
+          ORDER BY created_at DESC`
+      );
+      const accessByClerkId = new Map(accessRows.map((r) => [r.clerk_user_id, r]));
+
+      // Attempt to fetch users from Clerk Management API.
+      const secretKey = process.env.CLERK_SECRET_KEY?.trim();
+      let clerkAvailable = false;
+      let clerkUsers: Array<{
+        id: string;
+        email: string | null;
+        full_name: string | null;
+        clerk_created_at: string | null;
+      }> = [];
+
+      if (secretKey) {
+        try {
+          const clerkResp = await fetch(
+            `https://api.clerk.com/v1/users?limit=${limit}&order_by=-created_at`,
+            {
+              headers: {
+                Authorization: `Bearer ${secretKey}`,
+                "Content-Type": "application/json",
+              },
+            }
+          );
+          if (clerkResp.ok) {
+            const clerkData = (await clerkResp.json()) as Array<{
+              id: string;
+              email_addresses: Array<{ id: string; email_address: string }>;
+              primary_email_address_id: string | null;
+              first_name: string | null;
+              last_name: string | null;
+              created_at: number;
+            }>;
+            clerkAvailable = true;
+            clerkUsers = clerkData.map((u) => {
+              const primaryEmail =
+                u.email_addresses.find(
+                  (e) => e.id === u.primary_email_address_id
+                )?.email_address ??
+                u.email_addresses[0]?.email_address ??
+                null;
+              const nameParts = [u.first_name, u.last_name].filter(Boolean);
+              return {
+                id: u.id,
+                email: primaryEmail,
+                full_name: nameParts.length > 0 ? nameParts.join(" ") : null,
+                clerk_created_at: u.created_at
+                  ? new Date(u.created_at).toISOString()
+                  : null,
+              };
+            });
+          } else {
+            const errText = await clerkResp.text().catch(() => "");
+            app.log.warn({ status: clerkResp.status, body: errText }, "Clerk API returned error");
+          }
+        } catch (err) {
+          app.log.warn({ err }, "Failed to reach Clerk Management API");
+        }
+      }
+
+      // Build merged records.
+      // If Clerk is available: Clerk users are the base; platform_access enriches.
+      // If Clerk is unavailable: platform_access rows are the base (degraded mode).
+      let records: object[];
+
+      if (clerkAvailable && clerkUsers.length > 0) {
+        const seenClerkIds = new Set<string>();
+        records = clerkUsers.map((cu) => {
+          seenClerkIds.add(cu.id);
+          const access = accessByClerkId.get(cu.id);
+          return {
+            clerk_user_id: cu.id,
+            email: cu.email,
+            full_name: cu.full_name,
+            clerk_created_at: cu.clerk_created_at,
+            // platform_access fields — null if not provisioned
+            id: access?.id ?? null,
+            org_id: access?.org_id ?? null,
+            access_status: access?.access_status ?? "not_provisioned",
+            access_expires_at: access?.access_expires_at ?? null,
+            is_admin: access?.is_admin ?? false,
+            grant_source: access?.grant_source ?? null,
+            notes: access?.notes ?? null,
+            granted_by_user_id: access?.granted_by_user_id ?? null,
+            created_at: access?.created_at ?? null,
+            updated_at: access?.updated_at ?? null,
+          };
+        });
+        // Include any platform_access rows whose Clerk users were not in the Clerk response.
+        for (const row of accessRows) {
+          if (!seenClerkIds.has(row.clerk_user_id)) {
+            records.push({
+              clerk_user_id: row.clerk_user_id,
+              email: null,
+              full_name: null,
+              clerk_created_at: null,
+              id: row.id,
+              org_id: row.org_id,
+              access_status: row.access_status,
+              access_expires_at: row.access_expires_at,
+              is_admin: row.is_admin,
+              grant_source: row.grant_source,
+              notes: row.notes,
+              granted_by_user_id: row.granted_by_user_id,
+              created_at: row.created_at,
+              updated_at: row.updated_at,
+            });
+          }
+        }
+      } else {
+        // Degraded: return platform_access rows only, no Clerk identity.
+        records = accessRows.map((row) => ({
+          clerk_user_id: row.clerk_user_id,
+          email: null,
+          full_name: null,
+          clerk_created_at: null,
+          id: row.id,
+          org_id: row.org_id,
+          access_status: row.access_status,
+          access_expires_at: row.access_expires_at,
+          is_admin: row.is_admin,
+          grant_source: row.grant_source,
+          notes: row.notes,
+          granted_by_user_id: row.granted_by_user_id,
+          created_at: row.created_at,
+          updated_at: row.updated_at,
+        }));
+      }
+
+      return reply.send({ clerkAvailable, records, total: records.length });
+    }
+  );
+
   // ─── Admin status management ─────────────────────────────────────────────────
 
   /**

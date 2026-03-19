@@ -17,7 +17,8 @@ import {
   HelpCircle,
   Plus,
   GitCompare,
-  FileCode
+  FileCode,
+  ShieldCheck
 } from 'lucide-react';
 import { Logo } from './Logo';
 import { useAppSettings } from '../contexts/AppSettingsContext';
@@ -42,7 +43,8 @@ export type PageView =
   | 'settings'
   | 'logoShowcase'
   | 'componentShowcase'
-  | 'reportsGenerated';
+  | 'reportsGenerated'
+  | 'systemAdmin';
 
 interface SidebarProps {
   darkMode: boolean;
@@ -60,12 +62,14 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
   const { isInvestor, isAnalyst } = useUserRole();
   const { user, isLoaded: userLoaded } = useUser();
 
+  // COSMETIC ONLY — gates Dev Tools section in sidebar. Not a security guard.
+  // Real admin access to /app/admin is DB-backed (platform_access.is_admin).
   const isRyanAdmin = (() => {
     if (!userLoaded) return false;
     const email = user?.primaryEmailAddress?.emailAddress;
     return typeof email === 'string' && email.toLowerCase() === 'ryan@vintaragroup.com';
   })();
-  
+
   const getNavItemClass = (page: PageView) => {
     const isActive = currentPage === page;
     
@@ -290,6 +294,13 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                   >
                     <Target className="w-4 h-4" />
                     <span className="text-sm">Logo Variants</span>
+                  </button>
+                  <button
+                    onClick={() => onNavigate('systemAdmin')}
+                    className={getNavItemClass('systemAdmin')}
+                  >
+                    <ShieldCheck className="w-4 h-4" />
+                    <span className="text-sm">System Admin</span>
                   </button>
                 </div>
               </div>

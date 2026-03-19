@@ -1,26 +1,28 @@
 import React from 'react';
 
-type StatusType = 'active' | 'pending' | 'expired' | 'revoked' | 'redeemed';
+type StatusType = 'active' | 'pending' | 'expired' | 'revoked' | 'redeemed' | 'not_provisioned';
 
 interface StatusPillProps {
   status: StatusType;
 }
 
 export function StatusPill({ status }: StatusPillProps) {
-  const styles = {
+  const styles: Record<StatusType, string> = {
     active: 'bg-emerald-500/20 text-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.3)]',
     pending: 'bg-amber-500/20 text-amber-400 shadow-[0_0_12px_rgba(251,191,36,0.3)]',
     expired: 'bg-zinc-500/20 text-zinc-400 shadow-[0_0_12px_rgba(161,161,170,0.2)]',
     revoked: 'bg-red-500/20 text-red-400 shadow-[0_0_12px_rgba(248,113,113,0.3)]',
     redeemed: 'bg-blue-500/20 text-blue-400 shadow-[0_0_12px_rgba(96,165,250,0.3)]',
+    not_provisioned: 'bg-zinc-800/60 text-zinc-500 border border-zinc-700',
   };
 
-  const labels = {
+  const labels: Record<StatusType, string> = {
     active: 'Active',
     pending: 'Pending',
     expired: 'Expired',
     revoked: 'Revoked',
     redeemed: 'Redeemed',
+    not_provisioned: 'Not Provisioned',
   };
 
   return (

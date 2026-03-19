@@ -20,6 +20,7 @@ import { Profile } from './components/pages/Profile';
 import { ROICalculator } from './components/pages/ROICalculator';
 import { Settings } from './components/pages/Settings';
 import { ReportsGenerated } from './components/pages/ReportsGenerated';
+import AdminControlPanel from './components/pages/SystemAdminPage';
 import { LogoShowcase } from './components/LogoShowcase';
 import { ComponentShowcase } from './components/ComponentShowcase';
 import { AppSettingsProvider } from './contexts/AppSettingsContext';
@@ -81,6 +82,7 @@ function pageFromPath(pathname: string): PageView | null {
   if (pathname.startsWith('/app/profile')) return 'profile';
   if (pathname.startsWith('/app/team')) return 'team';
   if (pathname.startsWith('/app/settings')) return 'settings';
+  if (pathname.startsWith('/app/admin')) return 'systemAdmin';
   return null;
 }
 
@@ -88,6 +90,7 @@ function pathFromPage(page: PageView): string {
   if (page === 'profile') return '/app/profile';
   if (page === 'team') return '/app/team';
   if (page === 'settings') return '/app/settings';
+  if (page === 'systemAdmin') return '/app/admin';
   return '/app';
 }
 
@@ -357,6 +360,9 @@ export default function AppShell() {
                   )}
                   {currentPage === 'reportsGenerated' && (
                     <ReportsGenerated darkMode={darkMode} />
+                  )}
+                  {currentPage === 'systemAdmin' && (
+                    <AdminControlPanel />
                   )}
                 </main>
 

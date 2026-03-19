@@ -2742,6 +2742,38 @@ export async function apiAdminExtendAccess(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Admin — Merged user view (Clerk identity + platform_access)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type MergedUserRecord = {
+  // Identity from Clerk (null when Clerk is unavailable)
+  clerk_user_id: string;
+  email: string | null;
+  full_name: string | null;
+  clerk_created_at: string | null;
+  // Authorization from platform_access (null when not provisioned)
+  id: string | null;
+  org_id: string | null;
+  access_status: 'active' | 'pending' | 'expired' | 'revoked' | 'not_provisioned';
+  access_expires_at: string | null;
+  is_admin: boolean;
+  grant_source: string | null;
+  notes: string | null;
+  granted_by_user_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export async function apiAdminListUsers(opts?: {
+  limit?: number;
+}): Promise<{ clerkAvailable: boolean; records: MergedUserRecord[]; total: number }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request(`/api/v1/admin/users${qs ? `?${qs}` : ''}`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Admin — Invite management (additions to existing)
 // ─────────────────────────────────────────────────────────────────────────────
 

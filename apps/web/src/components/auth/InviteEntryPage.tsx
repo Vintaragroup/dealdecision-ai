@@ -89,7 +89,17 @@ export function InviteEntryPage() {
   const { isSignedIn, isLoaded } = useAuth();
 
   const [codeInput, setCodeInput] = useState('');
-  const [code, setCode] = useState<string | null>(params.get('code'));
+  // Resolve initial code: URL param takes priority, then sessionStorage (survives OAuth redirects).
+  const [code, setCode] = useState<string | null>(() => {
+    const urlCode = params.get('code');
+    try {
+      const stored = sessionStorage.getItem('pending_invite_code');
+      if (stored) sessionStorage.removeItem('pending_invite_code'); // always clear
+      return urlCode ?? stored;
+    } catch {
+      return urlCode;
+    }
+  });
   const [state, setState] = useState<PageState>({ phase: 'loading' });
   const validatedRef = useRef<string | null>(null);
 
@@ -157,11 +167,14 @@ export function InviteEntryPage() {
   };
 
   const handleGoToSignIn = () => {
+    // Store code before leaving — OAuth redirects can lose the redirect_url query param.
+    if (code) { try { sessionStorage.setItem('pending_invite_code', code); } catch { /* ignore */ } }
     const returnUrl = code ? `/invite?code=${encodeURIComponent(code)}` : '/invite';
     window.location.href = `/sign-in?redirect_url=${encodeURIComponent(returnUrl)}`;
   };
 
   const handleGoToSignUp = () => {
+    if (code) { try { sessionStorage.setItem('pending_invite_code', code); } catch { /* ignore */ } }
     const returnUrl = code ? `/invite?code=${encodeURIComponent(code)}` : '/invite';
     window.location.href = `/sign-up?redirect_url=${encodeURIComponent(returnUrl)}`;
   };

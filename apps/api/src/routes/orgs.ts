@@ -393,12 +393,31 @@ export async function registerOrgRoutes(app: FastifyInstance) {
     const seatLimit = settingsRows[0]?.seat_limit ?? null;
     const organizationName = settingsRows[0]?.organization_name ?? null;
 
+    // Determine if the current user can manage the team (owner/manager/platform-admin).
+    // Check the members list first (fast path), then fall back to a platform_access lookup
+    // for super_admins who aren't in organization_memberships.
+    const currentMember = (members as { clerk_user_id: string; org_role: string; is_admin: boolean | null }[])
+      .find((m) => m.clerk_user_id === userId);
+    let canManage =
+      currentMember?.is_admin === true ||
+      currentMember?.org_role === 'org_owner' ||
+      currentMember?.org_role === 'org_manager';
+
+    if (!canManage) {
+      const { rows: paRows } = await pool.query(
+        `SELECT is_admin FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
+        [userId]
+      );
+      canManage = paRows[0]?.is_admin === true;
+    }
+
     return reply.send({
       org_id: orgId,
       organization_name: organizationName,
       members,
       active_seats: activeSeats,
       seat_limit: seatLimit,
+      can_manage: canManage,
     });
   });
 

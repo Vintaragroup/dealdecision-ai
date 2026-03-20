@@ -2877,6 +2877,8 @@ export type TeamMembersResponse = {
   members: OrgMember[];
   active_seats: number;
   seat_limit: number | null;
+  /** Server-authoritative flag: true if the authenticated user can invite/manage members. */
+  can_manage?: boolean;
 };
 
 export async function apiAdminListOrgs(): Promise<{ orgs: OrgSettings[] }> {

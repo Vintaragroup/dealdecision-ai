@@ -131,10 +131,16 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
 
   const members = teamData?.members ?? [];
   const currentUserMember = members.find((m) => m.clerk_user_id === authUserId);
-  const canManageTeam =
-    currentUserMember?.is_admin === true ||
-    currentUserMember?.org_role === 'org_owner' ||
-    currentUserMember?.org_role === 'org_manager';
+  // Prefer the server-authoritative flag; fall back to membership-derived check for older API
+  // responses that don't include can_manage yet.
+  const canManageTeam = Boolean(
+    teamData?.can_manage ??
+    (
+      currentUserMember?.is_admin === true ||
+      currentUserMember?.org_role === 'org_owner' ||
+      currentUserMember?.org_role === 'org_manager'
+    )
+  );
 
   const seatLimit = teamData?.seat_limit ?? null;
   const activeSeats = teamData?.active_seats ?? 0;
@@ -200,12 +206,14 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
       <div className={`border-b px-6 py-4 ${darkMode ? 'bg-[#18181b] border-white/10' : 'bg-white border-gray-200'}`}>
         <div className="flex items-center justify-between mb-1">
           <div>
-            <h2 className={`text-xl ${darkMode ? 'text-white' : 'text-gray-900'}`}>Team Members</h2>
+            <h2 className={`text-xl ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              {teamData?.organization_name ?? 'Team Members'}
+            </h2>
             <p className={`text-sm mt-0.5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
               {loading
                 ? 'Loading…'
                 : teamData?.org_id
-                  ? `${members.length} member${members.length !== 1 ? 's' : ''}${seatLimit !== null ? ` · ${activeSeats} / ${seatLimit} seats` : ''}`
+                  ? `${members.length} member${members.length !== 1 ? 's' : ''}${seatLimit !== null ? ` · ${activeSeats} / ${seatLimit} seats` : ''}`
                   : 'No organization configured'}
             </p>
           </div>
@@ -461,12 +469,15 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
                 <p className="text-sm font-medium mb-1">No team members yet</p>
                 <p className="text-xs opacity-70 mb-4">Invite your first team member to get started.</p>
                 {canManageTeam && !seatsFull && (
-                  <button
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    darkMode={darkMode}
                     onClick={() => setShowInviteModal(true)}
-                    className="text-xs text-[#6366f1] hover:underline"
+                    icon={<UserPlus className="w-4 h-4" />}
                   >
-                    Invite your first member &rarr;
-                  </button>
+                    Invite your first member
+                  </Button>
                 )}
               </div>
             )}

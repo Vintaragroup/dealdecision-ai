@@ -56,7 +56,23 @@ async function requireOrgManagerOrAdmin(
     [userId]
   );
   if (adminRows[0]?.is_admin === true) {
-    return { ok: true, orgId: request.auth?.orgId ?? null, userId };
+    // Platform admin: resolve orgId from JWT first, then platform_access.org_id,
+    // then fall back to discovering the primary org from organization_settings.
+    let resolvedOrgId: string | null = request.auth?.orgId ?? null;
+    if (!resolvedOrgId) {
+      const { rows: paOrgRows } = await pool.query(
+        `SELECT org_id FROM platform_access WHERE clerk_user_id = $1 AND org_id IS NOT NULL LIMIT 1`,
+        [userId]
+      );
+      resolvedOrgId = paOrgRows[0]?.org_id ?? null;
+    }
+    if (!resolvedOrgId) {
+      const { rows: settingsRows } = await pool.query(
+        `SELECT clerk_org_id FROM organization_settings ORDER BY created_at ASC LIMIT 1`
+      );
+      resolvedOrgId = settingsRows[0]?.clerk_org_id ?? null;
+    }
+    return { ok: true, orgId: resolvedOrgId, userId };
   }
 
   // Otherwise require an active org_owner or org_manager membership.
@@ -355,22 +371,33 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
-    // Resolve org_id: from JWT orgId, or fall back to platform_access.org_id
+    // Resolve org_id: from JWT orgId, platform_access.org_id, then org discovery for platform admins.
     const clerkOrgId = request.auth?.orgId;
     const pool = getPool();
 
     let orgId: string | null = clerkOrgId ?? null;
+    let isAdmin = false;
+
     if (!orgId) {
       const { rows: paRows } = await pool.query(
-        `SELECT org_id FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
+        `SELECT is_admin, org_id FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
         [userId]
       );
+      isAdmin = paRows[0]?.is_admin === true;
       orgId = paRows[0]?.org_id ?? null;
     }
 
+    // For platform admins with no org context in JWT or platform_access, discover the primary org.
+    if (!orgId && isAdmin) {
+      const { rows: settingsRows } = await pool.query(
+        `SELECT clerk_org_id FROM organization_settings ORDER BY created_at ASC LIMIT 1`
+      );
+      orgId = settingsRows[0]?.clerk_org_id ?? null;
+    }
+
     if (!orgId) {
-      // User is not in an org — return empty
-      return reply.send({ members: [], active_seats: 0, seat_limit: null, org_id: null });
+      // User is not in an org — return empty, still surface can_manage for admins
+      return reply.send({ members: [], active_seats: 0, seat_limit: null, org_id: null, can_manage: isAdmin });
     }
 
     const { rows: members } = await pool.query(

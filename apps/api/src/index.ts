@@ -26,6 +26,7 @@ import { registerPagesRoutes } from "./routes/pages";
 import { registerDealFactsRoutes } from "./routes/deal-facts";
 import { registerInviteRoutes } from "./routes/invites";
 import { registerMeRoutes } from "./routes/me";
+import { registerOrgRoutes } from "./routes/orgs";
 import { initializeLLM } from "./lib/llm";
 import { getPool } from "./lib/db";
 import { applyPendingMigrations, getMigrationStatus } from "./lib/migrations";
@@ -218,6 +219,7 @@ async function bootstrap() {
   await registerDealFactsRoutes(app);
   await registerInviteRoutes(app);
   await registerMeRoutes(app);
+  await registerOrgRoutes(app);
 }
 
 async function start() {

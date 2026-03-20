@@ -59,12 +59,13 @@ export async function registerMeRoutes(app: FastifyInstance) {
         access_status: 'active',
         access_expires_at: null,
         is_admin: true, // dev bypass → treat as admin so SystemAdminPage is usable locally
+        account_role: 'super_admin',
       });
     }
 
     const pool = getPool();
     const { rows } = await pool.query(
-      `SELECT clerk_user_id, access_status, access_expires_at, is_admin
+      `SELECT clerk_user_id, access_status, access_expires_at, is_admin, account_role
          FROM platform_access
         WHERE clerk_user_id = $1
         LIMIT 1`,
@@ -81,6 +82,7 @@ export async function registerMeRoutes(app: FastifyInstance) {
       access_status: row.access_status,
       access_expires_at: row.access_expires_at,
       is_admin: row.is_admin === true,
+      account_role: row.account_role ?? 'client',
     });
   });
 }

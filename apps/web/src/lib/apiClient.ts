@@ -2675,6 +2675,7 @@ export type MeAccessResponse = {
   access_status: 'active' | 'pending' | 'expired' | 'revoked';
   access_expires_at: string | null;
   is_admin: boolean;
+  account_role: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client';
 };
 
 export async function apiGetMyAccess(): Promise<MeAccessResponse> {
@@ -2695,6 +2696,7 @@ export type PlatformAccessRecord = {
   grant_source: string | null;
   notes: string | null;
   is_admin: boolean;
+  account_role: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client';
   created_at: string;
   updated_at: string;
 };
@@ -2741,6 +2743,26 @@ export async function apiAdminExtendAccess(
   });
 }
 
+export async function apiAdminSetAccountRole(
+  clerkUserId: string,
+  accountRole: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client'
+): Promise<{ ok: boolean; record: { clerk_user_id: string; account_role: string; is_admin: boolean; updated_at: string } }> {
+  return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/account-role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ account_role: accountRole }),
+  });
+}
+
+export async function apiAdminProvisionUser(
+  clerkUserId: string,
+  opts?: { account_role?: string; access_duration_days?: number; notes?: string }
+): Promise<{ ok: boolean; record: PlatformAccessRecord }> {
+  return request('/api/v1/admin/provision-user', {
+    method: 'POST',
+    body: JSON.stringify({ clerk_user_id: clerkUserId, ...opts }),
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Admin — Merged user view (Clerk identity + platform_access)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2757,6 +2779,7 @@ export type MergedUserRecord = {
   access_status: 'active' | 'pending' | 'expired' | 'revoked' | 'not_provisioned';
   access_expires_at: string | null;
   is_admin: boolean;
+  account_role: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client' | null;
   grant_source: string | null;
   notes: string | null;
   granted_by_user_id: string | null;
@@ -2813,6 +2836,104 @@ export async function apiAdminRevokeInvite(code: string): Promise<{ ok: boolean 
     method: 'POST',
     body: JSON.stringify({}),
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Org & Team management
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type OrgSettings = {
+  id: string;
+  clerk_org_id: string;
+  organization_name: string | null;
+  included_seats: number;
+  seat_limit: number;
+  billing_status: 'trial' | 'active' | 'past_due' | 'cancelled';
+  notes: string | null;
+  active_seats?: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OrgMember = {
+  id: string;
+  clerk_org_id: string;
+  clerk_user_id: string;
+  org_role: 'org_owner' | 'org_manager' | 'org_member';
+  membership_status: 'active' | 'pending' | 'revoked';
+  seat_consuming: boolean;
+  invited_by_clerk_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined from platform_access
+  access_status: string | null;
+  is_admin: boolean | null;
+  account_role: string | null;
+};
+
+export type TeamMembersResponse = {
+  org_id: string | null;
+  organization_name: string | null;
+  members: OrgMember[];
+  active_seats: number;
+  seat_limit: number | null;
+};
+
+export async function apiAdminListOrgs(): Promise<{ orgs: OrgSettings[] }> {
+  return request('/api/v1/admin/orgs');
+}
+
+export async function apiAdminGetOrg(orgId: string): Promise<{ org: OrgSettings }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}`);
+}
+
+export async function apiAdminUpsertOrg(
+  orgId: string,
+  data: Partial<Pick<OrgSettings, 'organization_name' | 'included_seats' | 'seat_limit' | 'billing_status' | 'notes'>>
+): Promise<{ ok: boolean; org: OrgSettings }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function apiAdminListOrgMembers(
+  orgId: string
+): Promise<{ members: OrgMember[]; active_seats: number }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}/members`);
+}
+
+export async function apiAdminSetOrgMemberRole(
+  orgId: string,
+  userId: string,
+  orgRole: 'org_owner' | 'org_manager' | 'org_member'
+): Promise<{ ok: boolean; member: OrgMember }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}/role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ org_role: orgRole }),
+  });
+}
+
+export async function apiAdminRevokeOrgMembership(
+  orgId: string,
+  userId: string
+): Promise<{ ok: boolean }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function apiGetTeamMembers(): Promise<TeamMembersResponse> {
+  return request('/api/v1/team/members');
+}
+
+export async function apiGetTeamSeats(): Promise<{
+  org_id: string | null;
+  active_seats: number;
+  seat_limit: number | null;
+  seats_available: number | null;
+}> {
+  return request('/api/v1/team/seats');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Button } from '../ui/button';
 import {
   Users,
@@ -14,8 +14,10 @@ import {
   CheckCircle,
   Search,
   Filter,
-  Circle
+  Circle,
+  Loader2
 } from 'lucide-react';
+import { apiGetTeamMembers, type TeamMembersResponse } from '../../lib/apiClient';
 
 interface TeamMember {
   id: string;
@@ -38,55 +40,39 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
   const [showInviteModal, setShowInviteModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [filterRole, setFilterRole] = useState<string>('all');
+  const [teamData, setTeamData] = useState<TeamMembersResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
 
-  // Mock team members data
-  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([
-    {
-      id: '1',
-      name: 'Sarah Chen',
-      email: 'sarah@dealdecision.ai',
-      role: 'owner',
-      status: 'active',
-      joinedAt: '2024-01-15',
-      lastActive: '2 minutes ago'
-    },
-    {
-      id: '2',
-      name: 'Michael Rodriguez',
-      email: 'michael@dealdecision.ai',
-      role: 'admin',
-      status: 'active',
-      joinedAt: '2024-02-01',
-      lastActive: '5 minutes ago'
-    },
-    {
-      id: '3',
-      name: 'Emily Watson',
-      email: 'emily@venture.capital',
-      role: 'editor',
-      status: 'active',
-      joinedAt: '2024-03-10',
-      lastActive: '1 hour ago'
-    },
-    {
-      id: '4',
-      name: 'David Kim',
-      email: 'david@startup.io',
-      role: 'viewer',
-      status: 'active',
-      joinedAt: '2024-03-20',
-      lastActive: '3 hours ago'
-    },
-    {
-      id: '5',
-      name: 'Lisa Anderson',
-      email: 'lisa@investor.com',
-      role: 'viewer',
-      status: 'pending',
-      joinedAt: '2024-12-05',
-      lastActive: 'Never'
-    }
-  ]);
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setFetchError(null);
+    apiGetTeamMembers()
+      .then((data) => { if (!cancelled) { setTeamData(data); setLoading(false); } })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setFetchError(e instanceof Error ? e.message : 'Failed to load team');
+          setLoading(false);
+        }
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Map API org members to the display shape the UI expects
+  const teamMembers: TeamMember[] = (teamData?.members ?? []).map((m) => ({
+    id: m.id,
+    name: m.clerk_user_id, // will be enriched with Clerk names in future phase
+    email: m.clerk_user_id,
+    role: m.org_role === 'org_owner' ? 'owner'
+        : m.org_role === 'org_manager' ? 'admin'
+        : 'viewer',
+    status: m.membership_status === 'active' ? 'active'
+          : m.membership_status === 'pending' ? 'pending'
+          : 'inactive',
+    joinedAt: new Date(m.created_at).toLocaleDateString(),
+    lastActive: '—',
+  }));
 
   const getRoleConfig = (role: string) => {
     switch (role) {
@@ -131,7 +117,10 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
               Team Members
             </h2>
             <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              {teamMembers.length} members • {teamMembers.filter(m => m.status === 'active').length} active
+              {loading ? 'Loading…' : teamData?.org_id
+                ? `${teamMembers.length} member${teamMembers.length !== 1 ? 's' : ''} · ${teamData.active_seats} active${teamData.seat_limit !== null ? ` · ${teamData.seat_limit} seats` : ''}`
+                : 'No organization configured'
+              }
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -195,6 +184,23 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
 
       {/* Members List */}
       <div className="flex-1 overflow-y-auto p-6">
+        {loading ? (
+          <div className={`flex flex-col items-center justify-center py-16 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+            <Loader2 className="w-8 h-8 animate-spin mb-3 opacity-50" />
+            <p className="text-sm">Loading team members…</p>
+          </div>
+        ) : fetchError ? (
+          <div className={`text-center py-12 ${darkMode ? 'text-red-400' : 'text-red-500'}`}>
+            <p className="text-sm">{fetchError}</p>
+          </div>
+        ) : !teamData?.org_id ? (
+          <div className={`text-center py-16 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+            <Users className="w-12 h-12 mx-auto mb-3 opacity-40" />
+            <p className="text-sm font-medium mb-1">No organization configured</p>
+            <p className="text-xs opacity-70">Team membership is scoped to an organization. Contact your account executive to configure your org.</p>
+          </div>
+        ) : (
+        <>
         <div className="space-y-3">
           {filteredMembers.map(member => {
             const roleConfig = getRoleConfig(member.role);
@@ -287,11 +293,13 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
           })}
         </div>
 
-        {filteredMembers.length === 0 && (
+        {filteredMembers.length === 0 && !loading && teamData?.org_id && (
           <div className={`text-center py-12 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
             <Users className="w-12 h-12 mx-auto mb-3 opacity-50" />
             <p>No members found</p>
           </div>
+        )}
+        </>
         )}
       </div>
 
@@ -300,18 +308,9 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
         <InviteMemberModal
           darkMode={darkMode}
           onClose={() => setShowInviteModal(false)}
-          onInvite={(email, role) => {
-            // Add new pending member
-            const newMember: TeamMember = {
-              id: Math.random().toString(36).substr(2, 9),
-              name: email.split('@')[0],
-              email,
-              role: role as any,
-              status: 'pending',
-              joinedAt: new Date().toISOString().split('T')[0],
-              lastActive: 'Never'
-            };
-            setTeamMembers([...teamMembers, newMember]);
+          onInvite={(_email, _role) => {
+            // Real invite flow goes through /invite page + invite codes.
+            // This modal is a UI stub — dismiss on submit.
             setShowInviteModal(false);
           }}
         />

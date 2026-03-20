@@ -343,7 +343,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const pool = getPool();
       const { rows } = await pool.query(
         `SELECT id, clerk_user_id, org_id, access_status, access_expires_at,
-                granted_by_user_id, grant_source, notes, created_at, updated_at
+                granted_by_user_id, grant_source, notes, is_admin, account_role, created_at, updated_at
            FROM platform_access
           WHERE clerk_user_id = $1
           LIMIT 1`,
@@ -370,7 +370,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const pool = getPool();
       const { rows } = await pool.query(
         `SELECT id, clerk_user_id, org_id, access_status, access_expires_at,
-                granted_by_user_id, grant_source, notes, is_admin, created_at, updated_at
+                granted_by_user_id, grant_source, notes, is_admin, account_role, created_at, updated_at
            FROM platform_access
           ${status ? `WHERE access_status = $3` : ""}
           ORDER BY created_at DESC
@@ -409,11 +409,12 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         grant_source: string | null;
         notes: string | null;
         is_admin: boolean;
+        account_role: string;
         created_at: string;
         updated_at: string;
       }>(
         `SELECT id, clerk_user_id, org_id, access_status, access_expires_at,
-                granted_by_user_id, grant_source, notes, is_admin, created_at, updated_at
+                granted_by_user_id, grant_source, notes, is_admin, account_role, created_at, updated_at
            FROM platform_access
           ORDER BY created_at DESC`
       );
@@ -497,6 +498,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
             access_status: access?.access_status ?? "not_provisioned",
             access_expires_at: access?.access_expires_at ?? null,
             is_admin: access?.is_admin ?? false,
+            account_role: access?.account_role ?? null,
             grant_source: access?.grant_source ?? null,
             notes: access?.notes ?? null,
             granted_by_user_id: access?.granted_by_user_id ?? null,
@@ -517,6 +519,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
               access_status: row.access_status,
               access_expires_at: row.access_expires_at,
               is_admin: row.is_admin,
+              account_role: row.account_role,
               grant_source: row.grant_source,
               notes: row.notes,
               granted_by_user_id: row.granted_by_user_id,
@@ -537,6 +540,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           access_status: row.access_status,
           access_expires_at: row.access_expires_at,
           is_admin: row.is_admin,
+          account_role: row.account_role,
           grant_source: row.grant_source,
           notes: row.notes,
           granted_by_user_id: row.granted_by_user_id,
@@ -687,6 +691,101 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     }
   );
 
+  /**
+   * PATCH /api/v1/admin/platform-access/:clerkUserId/account-role
+   * Set the account_role for a platform_access row.
+   *
+   * Body: { account_role: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client' }
+   */
+  app.patch<{
+    Params: { clerkUserId: string };
+    Body: { account_role: string };
+  }>(
+    "/api/v1/admin/platform-access/:clerkUserId/account-role",
+    async (request, reply) => {
+      const { clerkUserId } = request.params;
+      const { account_role } = request.body ?? {};
+
+      const valid = ['super_admin', 'admin', 'account_executive', 'analyst', 'client'];
+      if (!valid.includes(account_role)) {
+        return reply.status(400).send({
+          error: `account_role must be one of: ${valid.join(', ')}`,
+        });
+      }
+
+      const pool = getPool();
+      const { rows } = await pool.query(
+        `UPDATE platform_access
+            SET account_role = $1, updated_at = now()
+          WHERE clerk_user_id = $2
+          RETURNING clerk_user_id, access_status, is_admin, account_role, updated_at`,
+        [account_role, clerkUserId]
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: "No platform_access record found for this user" });
+      }
+
+      return reply.send({ ok: true, record: rows[0] });
+    }
+  );
+
+  // ─── Provision user ──────────────────────────────────────────────────────────
+
+  /**
+   * POST /api/v1/admin/provision-user
+   * Create a platform_access row for an existing Clerk user who has no access yet.
+   * Protected by the preHandler admin check that covers all /api/v1/admin/* routes.
+   *
+   * Body: { clerk_user_id, account_role?, access_duration_days?, notes? }
+   */
+  app.post<{
+    Body: {
+      clerk_user_id: string;
+      account_role?: string;
+      access_duration_days?: number;
+      notes?: string;
+    };
+  }>("/api/v1/admin/provision-user", async (request, reply) => {
+    const { clerk_user_id, account_role = "client", access_duration_days, notes } = request.body ?? {};
+
+    if (!clerk_user_id || typeof clerk_user_id !== "string") {
+      return reply.status(400).send({ error: "clerk_user_id is required", code: "MISSING_CLERK_USER_ID" });
+    }
+
+    const validRoles = ["super_admin", "admin", "account_executive", "analyst", "client"];
+    if (!validRoles.includes(account_role)) {
+      return reply.status(400).send({ error: `account_role must be one of: ${validRoles.join(", ")}`, code: "INVALID_ROLE" });
+    }
+
+    const pool = getPool();
+    const orgId = process.env.DEFAULT_ORG_ID ?? "dev_org";
+
+    // Check for existing row
+    const { rows: existing } = await pool.query(
+      `SELECT id FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
+      [clerk_user_id]
+    );
+    if (existing.length > 0) {
+      return reply.status(409).send({ error: "User already has a platform_access record", code: "ALREADY_PROVISIONED" });
+    }
+
+    const expiresAt =
+      access_duration_days != null
+        ? new Date(Date.now() + access_duration_days * 86_400_000).toISOString()
+        : null;
+
+    const { rows } = await pool.query(
+      `INSERT INTO platform_access
+         (clerk_user_id, org_id, access_status, account_role, is_admin, grant_source, notes, access_expires_at)
+       VALUES ($1, $2, 'active', $3, false, 'admin', $4, $5)
+       RETURNING *`,
+      [clerk_user_id, orgId, account_role, notes ?? null, expiresAt]
+    );
+
+    return reply.status(201).send({ ok: true, record: rows[0] });
+  });
+
   // ─── Bootstrap endpoint ──────────────────────────────────────────────────────
 
   /**
@@ -742,14 +841,14 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
       const pool = getPool();
 
-      // Upsert: if the row doesn't exist yet, create it as active+admin.
-      // If it already exists, just set is_admin = true.
+      // Upsert: if the row doesn't exist yet, create it as active+super_admin.
+      // If it already exists, update is_admin and account_role.
       const { rows } = await pool.query(
-        `INSERT INTO platform_access (clerk_user_id, access_status, is_admin, grant_source, notes, created_at, updated_at)
-              VALUES ($1, 'active', TRUE, 'admin', 'Bootstrapped as first admin', now(), now())
+        `INSERT INTO platform_access (clerk_user_id, access_status, is_admin, account_role, grant_source, notes, created_at, updated_at)
+              VALUES ($1, 'active', TRUE, 'super_admin', 'admin', 'Bootstrapped as first admin', now(), now())
          ON CONFLICT (clerk_user_id) DO UPDATE
-              SET is_admin = TRUE, updated_at = now()
-          RETURNING clerk_user_id, access_status, is_admin, updated_at`,
+              SET is_admin = TRUE, account_role = 'super_admin', updated_at = now()
+          RETURNING clerk_user_id, access_status, is_admin, account_role, updated_at`,
         [clerk_user_id.trim()]
       );
 

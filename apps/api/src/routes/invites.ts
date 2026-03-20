@@ -440,6 +440,36 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         const accessExpiresAt = new Date(Date.now() + invite.access_duration_days * 24 * 60 * 60 * 1000);
         const orgId = invite.org_id ?? clerkOrgId ?? null;
 
+        // ── Seat enforcement ──────────────────────────────────────────────────
+        // If an org_id is known and organization_settings exists for it, check
+        // that the org has not exceeded its seat_limit before provisioning.
+        if (orgId) {
+          const { rows: orgSettingsRows } = await client.query(
+            `SELECT seat_limit FROM organization_settings WHERE clerk_org_id = $1 LIMIT 1`,
+            [orgId]
+          );
+          if (orgSettingsRows.length > 0) {
+            const seatLimit = orgSettingsRows[0].seat_limit as number;
+            const { rows: seatCountRows } = await client.query(
+              `SELECT COUNT(*) AS cnt FROM organization_memberships
+                WHERE clerk_org_id = $1 AND membership_status = 'active' AND seat_consuming = true`,
+              [orgId]
+            );
+            const activeSeats = Number(seatCountRows[0]?.cnt ?? 0);
+            if (activeSeats >= seatLimit) {
+              await client.query("ROLLBACK");
+              return reply.status(402).send({
+                valid: false,
+                code: "SEAT_LIMIT_REACHED",
+                error: "Your organization has reached its seat limit. Contact your account executive to add more seats.",
+                seat_limit: seatLimit,
+                active_seats: activeSeats,
+              });
+            }
+          }
+        }
+        // ─────────────────────────────────────────────────────────────────────
+
         // Check for existing platform_access
         const { rows: existingAccess } = await client.query(
           `SELECT access_status FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
@@ -506,6 +536,21 @@ export async function registerInviteRoutes(app: FastifyInstance) {
            WHERE id = $3`,
           [clerkUserId, clerkEmail, invite.id]
         );
+
+        // ── Organization membership provisioning ──────────────────────────────
+        // If an org_id is known, ensure an organization_memberships row exists.
+        if (orgId) {
+          await client.query(
+            `INSERT INTO organization_memberships
+               (clerk_org_id, clerk_user_id, org_role, membership_status, seat_consuming,
+                invited_by_clerk_user_id, created_at, updated_at)
+             VALUES ($1, $2, 'org_member', 'active', true, $3, now(), now())
+             ON CONFLICT (clerk_org_id, clerk_user_id) DO UPDATE
+               SET membership_status = 'active', updated_at = now()`,
+            [orgId, clerkUserId, invite.created_by_user_id ?? null]
+          );
+        }
+        // ─────────────────────────────────────────────────────────────────────
 
         await client.query("COMMIT");
 

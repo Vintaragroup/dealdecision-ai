@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
-import { apiGetMyAccess } from '../../lib/apiClient';
+import { LucideIcon } from 'lucide-react';
+import { apiGetMyAccess, apiAdminListUsers, apiAdminListInvites } from '../../lib/apiClient';
 import { 
   Users, 
   Mail, 
@@ -111,12 +112,36 @@ export default function AdminControlPanel() {
 }
 
 function OverviewSection() {
-  const metrics = [
-    { label: 'Active Users', value: 247, icon: CheckCircle2, trend: '+12 this week' },
-    { label: 'Expired Users', value: 18, icon: XCircle, trend: '3 expiring soon' },
-    { label: 'Pending Users', value: 12, icon: AlertCircle, trend: '8 invited today' },
-    { label: 'Active Invites', value: 34, icon: Mail, trend: '15 unredeemed' },
-  ];
+  const [metrics, setMetrics] = useState<{ label: string; value: number; icon: LucideIcon; trend?: string }[]>([
+    { label: 'Active Users', value: 0, icon: CheckCircle2 },
+    { label: 'Expired / Revoked', value: 0, icon: XCircle },
+    { label: 'Pending Users', value: 0, icon: AlertCircle },
+    { label: 'Active Invites', value: 0, icon: Mail },
+  ]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    Promise.all([
+      apiAdminListUsers({ limit: 500 }),
+      apiAdminListInvites({ limit: 500 }),
+    ])
+      .then(([usersResp, invitesResp]) => {
+        const provisioned = usersResp.records.filter((u) => u.access_status !== 'not_provisioned');
+        const active = provisioned.filter((u) => u.access_status === 'active').length;
+        const expired = provisioned.filter((u) => u.access_status === 'expired' || u.access_status === 'revoked').length;
+        const pending = provisioned.filter((u) => u.access_status === 'pending').length;
+        const activeInvites = invitesResp.records.filter((inv) => inv.status === 'active').length;
+
+        setMetrics([
+          { label: 'Active Users', value: active, icon: CheckCircle2 },
+          { label: 'Expired / Revoked', value: expired, icon: XCircle },
+          { label: 'Pending Users', value: pending, icon: AlertCircle },
+          { label: 'Active Invites', value: activeInvites, icon: Mail },
+        ]);
+      })
+      .catch(() => { /* leave zeroed state on error */ })
+      .finally(() => setLoading(false));
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -127,32 +152,11 @@ function OverviewSection() {
         ))}
       </div>
 
-      {/* Recent Activity */}
+      {/* Activity placeholder — no live event log yet */}
       <div className="rounded-[14px] bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] p-6">
         <h3 className="text-lg font-semibold text-white mb-4">Recent Activity</h3>
-        <div className="space-y-3">
-          {[
-            { action: 'User access granted', user: 'sarah.chen@dealco.com', time: '2 minutes ago', type: 'success' },
-            { action: 'Admin permissions added', user: 'mike.ross@acmecorp.com', time: '15 minutes ago', type: 'success' },
-            { action: 'Invite code redeemed', user: 'alex.kim@startupxyz.com', time: '1 hour ago', type: 'info' },
-            { action: 'Access revoked', user: 'john.doe@oldclient.com', time: '2 hours ago', type: 'warning' },
-            { action: 'New invite created', user: 'jenny.lee@newclient.com', time: '3 hours ago', type: 'info' },
-          ].map((activity, index) => (
-            <div key={index} className="flex items-center justify-between py-3 border-b border-zinc-800 last:border-0">
-              <div className="flex items-center gap-3">
-                <div className={`w-2 h-2 rounded-full ${
-                  activity.type === 'success' ? 'bg-emerald-400' :
-                  activity.type === 'warning' ? 'bg-amber-400' :
-                  'bg-blue-400'
-                }`} />
-                <div>
-                  <p className="text-sm text-white">{activity.action}</p>
-                  <p className="text-xs text-zinc-400">{activity.user}</p>
-                </div>
-              </div>
-              <span className="text-xs text-zinc-500">{activity.time}</span>
-            </div>
-          ))}
+        <div className="flex items-center justify-center py-8 text-zinc-500 text-sm">
+          {loading ? 'Loading...' : 'Live event log coming soon — no audit events stored yet.'}
         </div>
       </div>
     </div>

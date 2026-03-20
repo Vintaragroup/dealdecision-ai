@@ -1,13 +1,42 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { MoreHorizontal, Shield, ShieldOff, CalendarClock, UserX, AlertCircle } from 'lucide-react';
+import { MoreHorizontal, Shield, ShieldOff, CalendarClock, UserX, AlertCircle, Tag, UserPlus } from 'lucide-react';
 import { StatusPill } from './StatusPill';
 import {
   apiAdminListUsers,
   apiAdminSetAdminStatus,
   apiAdminRevokeAccess,
   apiAdminExtendAccess,
+  apiAdminSetAccountRole,
+  apiAdminProvisionUser,
   MergedUserRecord,
 } from '../../lib/apiClient';
+
+type AccountRole = 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client';
+
+const ROLE_LABELS: Record<AccountRole, string> = {
+  super_admin: 'Super Admin',
+  admin: 'Admin',
+  account_executive: 'Account Exec',
+  analyst: 'Analyst',
+  client: 'Client',
+};
+
+const ROLE_COLORS: Record<AccountRole, string> = {
+  super_admin: 'bg-purple-500/20 text-purple-300 border-purple-500/30',
+  admin: 'bg-blue-500/20 text-blue-300 border-blue-500/30',
+  account_executive: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+  analyst: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+  client: 'bg-zinc-600/40 text-zinc-400 border-zinc-600/40',
+};
+
+function RoleBadge({ role }: { role: AccountRole | null }) {
+  if (!role) return <span className="text-zinc-600 text-sm">—</span>;
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${ROLE_COLORS[role] ?? 'bg-zinc-700 text-zinc-400'}`}>
+      {ROLE_LABELS[role] ?? role}
+    </span>
+  );
+}
 
 interface UsersTableProps {
   searchQuery: string;
@@ -86,6 +115,41 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
     }
   };
 
+  const provisionUser = async (user: MergedUserRecord) => {
+    if (!window.confirm(`Provision platform access for ${user.email ?? user.clerk_user_id}?\n\nThey will be given 'client' role and active status.`)) return;
+    setActiveDropdown(null);
+    setBusy(user.clerk_user_id);
+    try {
+      await apiAdminProvisionUser(user.clerk_user_id, { account_role: 'client' });
+      await reload();
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : 'Failed to provision user');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const setRole = async (user: MergedUserRecord) => {
+    if (!user.id) { alert('No platform_access record — provision access first.'); return; }
+    const roles: AccountRole[] = ['super_admin', 'admin', 'account_executive', 'analyst', 'client'];
+    const options = roles.map((r, i) => `${i + 1}. ${ROLE_LABELS[r]}`).join('\n');
+    const input = prompt(`Set account role for ${user.email ?? user.clerk_user_id}:\n${options}\n\nEnter a number (1–5):`);
+    if (input === null) return;
+    const idx = parseInt(input, 10) - 1;
+    if (idx < 0 || idx >= roles.length) { alert('Invalid selection'); return; }
+    const role = roles[idx];
+    setActiveDropdown(null);
+    setBusy(user.clerk_user_id);
+    try {
+      await apiAdminSetAccountRole(user.clerk_user_id, role);
+      await reload();
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : 'Failed to set role');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const filteredUsers = users.filter(user => {
     const q = searchQuery.toLowerCase();
     return (
@@ -129,6 +193,7 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
               <tr>
                 <th className="text-left px-6 py-4 text-xs font-semibold text-zinc-400 uppercase tracking-wider">User</th>
                 <th className="text-left px-6 py-4 text-xs font-semibold text-zinc-400 uppercase tracking-wider">Status</th>
+                <th className="text-left px-6 py-4 text-xs font-semibold text-zinc-400 uppercase tracking-wider">Role</th>
                 <th className="text-left px-6 py-4 text-xs font-semibold text-zinc-400 uppercase tracking-wider">Expiration</th>
                 <th className="text-left px-6 py-4 text-xs font-semibold text-zinc-400 uppercase tracking-wider">Admin</th>
                 <th className="text-left px-6 py-4 text-xs font-semibold text-zinc-400 uppercase tracking-wider">Grant Source</th>
@@ -138,7 +203,7 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
             <tbody className="divide-y divide-zinc-800">
               {filteredUsers.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-6 py-12 text-center text-zinc-500">
+                  <td colSpan={7} className="px-6 py-12 text-center text-zinc-500">
                     No users found
                   </td>
                 </tr>
@@ -166,6 +231,9 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
                     </td>
                     <td className="px-6 py-4">
                       <StatusPill status={user.access_status} />
+                    </td>
+                    <td className="px-6 py-4">
+                      <RoleBadge role={user.account_role as AccountRole | null} />
                     </td>
                     <td className="px-6 py-4">
                       <span className="text-sm text-zinc-300">
@@ -215,9 +283,14 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
                         {activeDropdown === user.clerk_user_id && (
                           <div className="absolute right-0 mt-2 w-52 rounded-lg bg-zinc-800 border border-zinc-700 shadow-xl z-10">
                             {user.access_status === 'not_provisioned' ? (
-                              <div className="px-4 py-2.5 text-xs text-zinc-500">
-                                No platform access — provision via invite or bootstrap
-                              </div>
+                              <button
+                                onClick={() => void provisionUser(user)}
+                                disabled={!!busy}
+                                className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-emerald-400 hover:bg-zinc-700 transition-colors text-left"
+                              >
+                                <UserPlus className="w-4 h-4" strokeWidth={1.5} />
+                                Provision Access
+                              </button>
                             ) : (
                               <>
                                 <button
@@ -226,6 +299,13 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
                                 >
                                   <CalendarClock className="w-4 h-4" strokeWidth={1.5} />
                                   Extend Access
+                                </button>
+                                <button
+                                  onClick={() => void setRole(user)}
+                                  className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-700 transition-colors text-left"
+                                >
+                                  <Tag className="w-4 h-4" strokeWidth={1.5} />
+                                  Set Role
                                 </button>
                                 <button
                                   onClick={() => void toggleAdmin(user)}

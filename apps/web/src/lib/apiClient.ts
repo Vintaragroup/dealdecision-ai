@@ -2965,6 +2965,30 @@ export async function apiRemoveTeamMember(
   });
 }
 
+export type PendingInvite = {
+  id: string;
+  code: string;
+  email: string | null;
+  org_id: string | null;
+  status: 'active' | 'redeemed' | 'expired' | 'revoked';
+  access_duration_days: number;
+  expires_at: string | null;
+  created_at: string;
+  created_by_user_id: string | null;
+  notes: string | null;
+  invite_url: string;
+};
+
+export async function apiGetTeamInvites(): Promise<{ ok: boolean; invites: PendingInvite[] }> {
+  return request('/api/v1/team/invites');
+}
+
+export async function apiRevokeTeamInvite(code: string): Promise<{ ok: boolean }> {
+  return request(`/api/v1/team/invites/${encodeURIComponent(code)}`, {
+    method: 'DELETE',
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const apiClient = {

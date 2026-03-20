@@ -16,14 +16,19 @@ import {
   Copy,
   Link as LinkIcon,
   AlertCircle,
+  Clock,
+  Trash2,
 } from 'lucide-react';
 import {
   apiGetTeamMembers,
   apiCreateTeamInvite,
   apiSetTeamMemberRole,
   apiRemoveTeamMember,
+  apiGetTeamInvites,
+  apiRevokeTeamInvite,
   type TeamMembersResponse,
   type OrgMember,
+  type PendingInvite,
 } from '../../lib/apiClient';
 
 interface TeamMembersPanelProps {
@@ -45,10 +50,19 @@ function getRoleConfig(orgRole: string) {
   }
 }
 
-/** Simple 2-char initials from a clerk_user_id — shows last 2 hex chars of the id */
 function memberInitials(clerkUserId: string): string {
   const suffix = clerkUserId.replace(/^user_/, '');
   return suffix.slice(-2).toUpperCase();
+}
+
+function formatRelativeTime(isoStr: string): string {
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 2) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 }
 
 export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
@@ -60,6 +74,12 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
+  // Pending invites
+  const [invites, setInvites] = useState<PendingInvite[]>([]);
+  const [revokeTarget, setRevokeTarget] = useState<string | null>(null);
+  const [revokeLoading, setRevokeLoading] = useState(false);
+  const [copiedCode, setCopiedCode] = useState<string | null>(null);
+
   // Action menu state (per member)
   const [openActionMenu, setOpenActionMenu] = useState<string | null>(null);
   const [roleChangeTarget, setRoleChangeTarget] = useState<string | null>(null);
@@ -69,12 +89,21 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
 
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
 
-  const fetchTeam = useCallback(() => {
+  const fetchAll = useCallback(() => {
     let cancelled = false;
     setLoading(true);
     setFetchError(null);
-    apiGetTeamMembers()
-      .then((data) => { if (!cancelled) { setTeamData(data); setLoading(false); } })
+    Promise.all([
+      apiGetTeamMembers(),
+      apiGetTeamInvites().catch(() => ({ ok: true, invites: [] as PendingInvite[] })),
+    ])
+      .then(([membersData, invitesData]) => {
+        if (!cancelled) {
+          setTeamData(membersData);
+          setInvites(invitesData.invites ?? []);
+          setLoading(false);
+        }
+      })
       .catch((e: unknown) => {
         if (!cancelled) {
           setFetchError(e instanceof Error ? e.message : 'Failed to load team');
@@ -85,8 +114,8 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
   }, []);
 
   useEffect(() => {
-    return fetchTeam();
-  }, [fetchTeam]);
+    return fetchAll();
+  }, [fetchAll]);
 
   // Close action menu on outside click
   useEffect(() => {
@@ -122,7 +151,7 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
       await apiSetTeamMemberRole(targetUserId, newRole);
       setRoleChangeTarget(null);
       setOpenActionMenu(null);
-      fetchTeam();
+      fetchAll();
     } catch (e: unknown) {
       setActionError(e instanceof Error ? e.message : 'Failed to change role');
     } finally {
@@ -137,7 +166,7 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
       await apiRemoveTeamMember(targetUserId);
       setConfirmRemoveTarget(null);
       setOpenActionMenu(null);
-      fetchTeam();
+      fetchAll();
     } catch (e: unknown) {
       setActionError(e instanceof Error ? e.message : 'Failed to remove member');
     } finally {
@@ -145,40 +174,54 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
     }
   }
 
+  async function handleRevokeInvite(code: string) {
+    setRevokeLoading(true);
+    try {
+      await apiRevokeTeamInvite(code);
+      setRevokeTarget(null);
+      fetchAll();
+    } catch (e: unknown) {
+      setActionError(e instanceof Error ? e.message : 'Failed to revoke invite');
+    } finally {
+      setRevokeLoading(false);
+    }
+  }
+
+  function handleCopyInviteLink(code: string, inviteUrl: string) {
+    navigator.clipboard.writeText(inviteUrl).then(() => {
+      setCopiedCode(code);
+      setTimeout(() => setCopiedCode(null), 2000);
+    });
+  }
+
   return (
     <div className={`h-full flex flex-col ${darkMode ? 'bg-[#0a0a0b]' : 'bg-gray-50'}`}>
       {/* Header */}
       <div className={`border-b px-6 py-4 ${darkMode ? 'bg-[#18181b] border-white/10' : 'bg-white border-gray-200'}`}>
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-1">
           <div>
             <h2 className={`text-xl ${darkMode ? 'text-white' : 'text-gray-900'}`}>Team Members</h2>
-            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+            <p className={`text-sm mt-0.5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
               {loading
                 ? 'Loading…'
                 : teamData?.org_id
-                  ? `${members.length} member${members.length !== 1 ? 's' : ''} · ${activeSeats} active${seatLimit !== null ? ` · ${seatLimit} seat${seatLimit !== 1 ? 's' : ''}` : ''}`
+                  ? `${members.length} member${members.length !== 1 ? 's' : ''}${seatLimit !== null ? ` · ${activeSeats} / ${seatLimit} seats` : ''}`
                   : 'No organization configured'}
             </p>
           </div>
           <div className="flex items-center gap-2">
             {canManageTeam && (
-              <div className="relative group">
-                <Button
-                  variant="primary"
-                  size="sm"
-                  darkMode={darkMode}
-                  onClick={() => !seatsFull && setShowInviteModal(true)}
-                  icon={<UserPlus className="w-4 h-4" />}
-                  disabled={seatsFull}
-                >
-                  Invite Member
-                </Button>
-                {seatsFull && (
-                  <div className={`absolute right-0 top-full mt-1 w-52 text-xs rounded-lg px-3 py-2 shadow-lg z-10 ${darkMode ? 'bg-[#27272a] text-yellow-400' : 'bg-white border border-gray-200 text-yellow-600'}`}>
-                    Seat limit reached. Remove a member to invite someone new.
-                  </div>
-                )}
-              </div>
+              <Button
+                variant="primary"
+                size="sm"
+                darkMode={darkMode}
+                onClick={() => !seatsFull && setShowInviteModal(true)}
+                icon={<UserPlus className="w-4 h-4" />}
+                disabled={seatsFull}
+                title={seatsFull ? 'Seat limit reached — remove a member first' : 'Invite a new team member'}
+              >
+                Invite Member
+              </Button>
             )}
             {onClose && (
               <button
@@ -191,8 +234,20 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
           </div>
         </div>
 
+        {/* Seat-limit warning banner */}
+        {seatsFull && !loading && (
+          <div className={`mt-3 flex items-center gap-2 px-3 py-2 rounded-lg text-xs border ${
+            darkMode
+              ? 'bg-yellow-500/10 border-yellow-500/20 text-yellow-400'
+              : 'bg-yellow-50 border-yellow-200 text-yellow-700'
+          }`}>
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>Seat limit reached ({activeSeats}/{seatLimit}). Remove a member to free a seat before inviting.</span>
+          </div>
+        )}
+
         {/* Search */}
-        <div className="relative">
+        <div className="relative mt-3">
           <Search className={`absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`} />
           <input
             type="text"
@@ -226,8 +281,18 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
             <p className="text-sm">Loading team members…</p>
           </div>
         ) : fetchError ? (
-          <div className={`text-center py-12 ${darkMode ? 'text-red-400' : 'text-red-500'}`}>
-            <p className="text-sm">{fetchError}</p>
+          <div className={`text-center py-16 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+            <AlertCircle className="w-10 h-10 mx-auto mb-3 opacity-50" />
+            <p className={`text-sm font-medium mb-1 ${darkMode ? 'text-red-400' : 'text-red-500'}`}>Failed to load team</p>
+            <p className="text-xs opacity-70 mb-4">{fetchError}</p>
+            <button
+              onClick={fetchAll}
+              className={`text-xs px-4 py-2 rounded-lg border transition-colors ${
+                darkMode ? 'border-white/10 text-gray-400 hover:bg-white/5' : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              Try again
+            </button>
           </div>
         ) : !teamData?.org_id ? (
           <div className={`text-center py-16 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
@@ -236,6 +301,7 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
             <p className="text-xs opacity-70">Team membership is scoped to an organization. Contact your administrator to set up your org.</p>
           </div>
         ) : (
+          <>
           <div className="space-y-3">
             {filteredMembers.map((member) => {
               const cfg = getRoleConfig(member.org_role);
@@ -273,7 +339,7 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
                             <span className={`text-xs px-1.5 py-0.5 rounded ${darkMode ? 'bg-white/10 text-gray-400' : 'bg-gray-100 text-gray-500'}`}>you</span>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <div
                             className="flex items-center gap-1 px-2 py-0.5 rounded-full text-xs"
                             style={{ backgroundColor: cfg.color + '20', color: cfg.color }}
@@ -281,9 +347,9 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
                             <Icon className="w-3 h-3" />
                             {cfg.label}
                           </div>
-                          {member.seat_consuming && (
-                            <span className={`text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>· seat</span>
-                          )}
+                          <span className={`text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+                            Joined {formatRelativeTime(member.created_at)}
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -389,13 +455,117 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
               );
             })}
 
-            {filteredMembers.length === 0 && (
+            {members.length === 0 && (
+              <div className={`text-center py-16 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                <Users className="w-12 h-12 mx-auto mb-3 opacity-40" />
+                <p className="text-sm font-medium mb-1">No team members yet</p>
+                <p className="text-xs opacity-70 mb-4">Invite your first team member to get started.</p>
+                {canManageTeam && !seatsFull && (
+                  <button
+                    onClick={() => setShowInviteModal(true)}
+                    className="text-xs text-[#6366f1] hover:underline"
+                  >
+                    Invite your first member &rarr;
+                  </button>
+                )}
+              </div>
+            )}
+            {members.length > 0 && filteredMembers.length === 0 && (
               <div className={`text-center py-12 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                <Users className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                <p className="text-sm">No members found</p>
+                <Search className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                <p className="text-sm">No members match &quot;{searchQuery}&quot;</p>
               </div>
             )}
           </div>
+
+          {/* Pending Invites */}
+          {canManageTeam && invites.length > 0 && !searchQuery && (
+            <div className="mt-8">
+              <h3 className={`text-xs uppercase tracking-wide font-medium mb-3 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                Pending Invites ({invites.length})
+              </h3>
+              <div className="space-y-2">
+                {invites.map((invite: PendingInvite) => {
+                  const isRevokeTarget = revokeTarget === invite.code;
+                  const wasCopied = copiedCode === invite.code;
+                  return (
+                    <div
+                      key={invite.code}
+                      className={`px-4 py-3 rounded-xl border ${
+                        darkMode ? 'bg-[#18181b] border-white/10' : 'bg-white border-gray-200'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <Mail className={`w-3.5 h-3.5 flex-shrink-0 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`} />
+                            <span className={`text-sm truncate ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {invite.email ?? (
+                                <span className={`italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>No email</span>
+                              )}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 pl-5">
+                            <Clock className={`w-3 h-3 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`} />
+                            <span className={`text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+                              Created {formatRelativeTime(invite.created_at)} · {invite.access_duration_days}d access
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <button
+                            onClick={() => handleCopyInviteLink(invite.code, invite.invite_url)}
+                            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs transition-colors ${
+                              wasCopied
+                                ? 'bg-emerald-500/20 text-emerald-400'
+                                : darkMode
+                                  ? 'bg-white/5 text-gray-400 hover:bg-white/10 hover:text-gray-300'
+                                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                            }`}
+                            title="Copy invite link"
+                          >
+                            <Copy className="w-3 h-3" />
+                            {wasCopied ? 'Copied' : 'Copy link'}
+                          </button>
+                          {!isRevokeTarget ? (
+                            <button
+                              onClick={() => setRevokeTarget(invite.code)}
+                              className={`p-1.5 rounded-lg transition-colors ${
+                                darkMode
+                                  ? 'text-red-500/50 hover:text-red-400 hover:bg-red-500/10'
+                                  : 'text-red-400 hover:text-red-600 hover:bg-red-50'
+                              }`}
+                              title="Revoke invite"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-1">
+                              <button
+                                disabled={revokeLoading}
+                                onClick={() => handleRevokeInvite(invite.code)}
+                                className="flex items-center gap-1 px-2 py-1 rounded text-xs bg-red-500 text-white hover:bg-red-600 transition-colors disabled:opacity-60"
+                              >
+                                {revokeLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                                Revoke
+                              </button>
+                              <button
+                                onClick={() => setRevokeTarget(null)}
+                                className={`px-2 py-1 rounded text-xs transition-colors ${darkMode ? 'text-gray-500 hover:text-gray-400' : 'text-gray-400 hover:text-gray-600'}`}
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          </>
         )}
       </div>
 
@@ -406,7 +576,7 @@ export function TeamMembersPanel({ darkMode, onClose }: TeamMembersPanelProps) {
           onClose={() => setShowInviteModal(false)}
           onInviteSuccess={() => {
             setShowInviteModal(false);
-            fetchTeam();
+            fetchAll();
           }}
         />
       )}
@@ -529,6 +699,7 @@ function InviteMemberModal({ darkMode, onClose, onInviteSuccess }: InviteMemberM
                     type="email"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && state !== 'loading' && handleCreate()}
                     placeholder="colleague@company.com"
                     className={`w-full h-10 pl-10 pr-4 rounded-lg border text-sm ${
                       darkMode

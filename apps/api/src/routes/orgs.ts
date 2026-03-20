@@ -551,6 +551,83 @@ export async function registerOrgRoutes(app: FastifyInstance) {
     }
   );
 
+  // ─── Team: list pending invites ──────────────────────────────────────────────
+
+  /**
+   * GET /api/v1/team/invites
+   * Lists active (pending) invite_codes for the caller's org.
+   * Requires: org_owner / org_manager / platform admin.
+   */
+  app.get("/api/v1/team/invites", async (request, reply) => {
+    const auth = await requireOrgManagerOrAdmin(request, reply);
+    if (!auth.ok) return;
+
+    const { orgId } = auth;
+    if (!orgId) {
+      return reply.status(403).send({ error: 'No organization found in token' });
+    }
+
+    const pool = getPool();
+    const { rows } = await pool.query(
+      `SELECT id, code, email, org_id, status, access_duration_days,
+              expires_at, created_at, created_by_user_id, notes
+         FROM invite_codes
+        WHERE org_id = $1 AND status = 'active'
+        ORDER BY created_at DESC
+        LIMIT 100`,
+      [orgId]
+    );
+
+    const baseUrl =
+      process.env.APP_BASE_URL?.trim() ||
+      process.env.FRONTEND_URL?.trim() ||
+      `${request.protocol}://${request.hostname}`;
+
+    const invites = rows.map((row) => ({
+      ...row,
+      invite_url: `${baseUrl}/invite?code=${encodeURIComponent(row.code)}`,
+    }));
+
+    return reply.send({ ok: true, invites });
+  });
+
+  // ─── Team: revoke invite ──────────────────────────────────────────────────────
+
+  /**
+   * DELETE /api/v1/team/invites/:code
+   * Revokes a pending invite belonging to the caller's org.
+   * Requires: org_owner / org_manager / platform admin.
+   */
+  app.delete<{ Params: { code: string } }>(
+    "/api/v1/team/invites/:code",
+    async (request, reply) => {
+      const auth = await requireOrgManagerOrAdmin(request, reply);
+      if (!auth.ok) return;
+
+      const { orgId } = auth;
+      if (!orgId) {
+        return reply.status(403).send({ error: 'No organization found in token' });
+      }
+
+      const { code } = request.params;
+      const pool = getPool();
+
+      const { rows } = await pool.query(
+        `UPDATE invite_codes
+            SET status = 'revoked', updated_at = now()
+          WHERE code = $1 AND org_id = $2 AND status = 'active'
+          RETURNING id, code, status`,
+        [code, orgId]
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'Invite not found or already used/revoked' });
+      }
+
+      return reply.send({ ok: true, invite: rows[0] });
+    }
+  );
+
   /**
    * GET /api/v1/team/seats
    * Returns seat usage summary for the caller's org.

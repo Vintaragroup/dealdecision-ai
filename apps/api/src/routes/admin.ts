@@ -31,6 +31,19 @@ async function isDbAdmin(userId: string): Promise<boolean> {
 }
 
 /**
+ * Returns true if the given Clerk user ID has account_role = 'super_admin'.
+ * Only super_admins may assign the super_admin role to themselves or others.
+ */
+async function isDbSuperAdmin(userId: string): Promise<boolean> {
+  const pool = getPool();
+  const { rows } = await pool.query(
+    `SELECT account_role FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
+    [userId]
+  );
+  return rows.length > 0 && rows[0].account_role === 'super_admin';
+}
+
+/**
  * Admin auth middleware — DB-backed.
  *
  * Allows if:
@@ -713,6 +726,20 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         });
       }
 
+      // Only a super_admin may assign super_admin to anyone (including themselves).
+      if (account_role === 'super_admin') {
+        const callerId = request.auth?.userId;
+        const bypassedAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+        if (!bypassedAuth) {
+          if (!callerId || !(await isDbSuperAdmin(callerId))) {
+            return reply.status(403).send({
+              error: 'Forbidden: only a super_admin may assign the super_admin role',
+              code: 'SUPER_ADMIN_REQUIRED',
+            });
+          }
+        }
+      }
+
       const pool = getPool();
       const { rows } = await pool.query(
         `UPDATE platform_access
@@ -756,6 +783,20 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const validRoles = ["super_admin", "admin", "account_executive", "analyst", "client"];
     if (!validRoles.includes(account_role)) {
       return reply.status(400).send({ error: `account_role must be one of: ${validRoles.join(", ")}`, code: "INVALID_ROLE" });
+    }
+
+    // Only a super_admin may provision another user as super_admin.
+    if (account_role === 'super_admin') {
+      const callerId = request.auth?.userId;
+      const bypassedAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+      if (!bypassedAuth) {
+        if (!callerId || !(await isDbSuperAdmin(callerId))) {
+          return reply.status(403).send({
+            error: 'Forbidden: only a super_admin may assign the super_admin role',
+            code: 'SUPER_ADMIN_REQUIRED',
+          });
+        }
+      }
     }
 
     const pool = getPool();

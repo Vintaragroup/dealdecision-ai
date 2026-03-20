@@ -1,0 +1,475 @@
+Script started on Thu Mar 19 23:14:40 2026
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  echo "CLEAN_SLATE" && pwd[?2004l
+CLEAN_SLATE
+/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  DATABASE_URL="postgresql://dealdecision:PvrZqayHs6bQlXnm2wsLhmuc4CAAZV0z@dpg-d5p72uhr0fns73eqps70-a.virginia-postgres.ren [Kdder.com/dealdecision" pnpm --filter api db:migrate 2>&1; echo "MIGRATE_EXIT:$?"[?2004l
+
+> api@0.0.0 db:migrate /Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/apps/api
+> tsx scripts/migrate.ts
+
+error: SSL/TLS required
+    at /Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/node_modules/[4m.pnpm[24m/pg-pool@3.10.1_pg@8.16.3/node_modules/[4mpg-pool[24m/index.js:45:11
+[90m    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)[39m
+    at async ensureMigrationsTable [90m(/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/apps/api/[39msrc/lib/migrations.ts:42:3[90m)[39m
+    at async getMigrationStatus [90m(/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/apps/api/[39msrc/lib/migrations.ts:83:3[90m)[39m
+    at async main [90m(/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/apps/api/[39mscripts/migrate.ts:14:18[90m)[39m {
+  length: [33m37[39m,
+  severity: [32m'FATAL'[39m,
+  code: [32m'28000'[39m,
+  detail: [90mundefined[39m,
+  hint: [90mundefined[39m,
+  position: [90mundefined[39m,
+  internalPosition: [90mundefined[39m,
+  internalQuery: [90mundefined[39m,
+  where: [90mundefined[39m,
+  schema: [90mundefined[39m,
+  table: [90mundefined[39m,
+  column: [90mundefined[39m,
+  dataType: [90mundefined[39m,
+  constraint: [90mundefined[39m,
+  file: [90mundefined[39m,
+  line: [90mundefined[39m,
+  routine: [90mundefined[39m
+}
+/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/apps/api:
+[41m[30m ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL [39m[49m [31mapi@0.0.0 db:migrate: `tsx scripts/migrate.ts`[39m
+[31mExit status 1[39m
+MIGRATE_EXIT:1
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  DATABASE_URL="postgresql://dealdecision:PvrZqayHs6bQlXnm2wsLhmuc4CAAZV0z@dpg-d5p72uhr0fns73eqps70-a.virginia-postgres.ren [Kdder.com/dealdecision?sslmode=require" pnpm --filter api db:migrate 2>&1; echo "MIGRATE_EXIT:$?"[?2004l
+
+> api@0.0.0 db:migrate /Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/apps/api
+> tsx scripts/migrate.ts
+
+Applying migration: 2026-03-19-001-add-platform-access.sql
+Applying migration: 2026-03-19-002-add-invite-codes.sql
+Applying migration: 2026-03-19-003-add-is-admin-to-platform-access.sql
+Applying migration: 2026-03-19-004-add-account-role-to-platform-access.sql
+Applying migration: 2026-03-19-005-create-organization-settings.sql
+Applying migration: 2026-03-19-006-create-organization-memberships.sql
+Migrations complete. applied=65 pending=0
+Verification passed: investor_insight_reports table exists.
+MIGRATE_EXIT:0
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  PGPASSWORD=PvrZqayHs6bQlXnm2wsLhmuc4CAAZV0z /opt/homebrew/opt/postgresql@16/bin/psql \[?2004l
+[0m[27m[24m[J> [K[?2004h   "postgresql://dealdecision@dpg-d5p72uhr0fns73eqps70-a.virginia-postgres.render.com/dealdecision" \[?2004l
+[0m[27m[24m[J> [K[?2004h   -c "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('platform_access','invite_codes','organization_settings' [K,,'organization_memberships') ORDER BY 1;" 2>&1; echo "EXIT:$?"[?2004l
+        table_name        
+--------------------------
+ invite_codes
+ organization_memberships
+ organization_settings
+ platform_access
+(4 rows)
+
+EXIT:0
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  PGPASSWORD=PvrZqayHs6bQlXnm2wsLhmuc4CAAZV0z /opt/homebrew/opt/postgresql@16/bin/psql \[?2004l
+[0m[27m[24m[J> [K[?2004h   "postgresql://dealdecision@dpg-d5p72uhr0fns73eqps70-a.virginia-postgres.render.com/dealdecision" \[?2004l
+[0m[27m[24m[J> [K[?2004h   -c "SELECT column_name, data_type, column_default FROM information_schema.columns WHERE table_name='platform_access' ORDER BY ordinal_position;" 2>&1; echo  [K""EXIT:$?"[?2004l
+    column_name     |        data_type         |  column_default   
+--------------------+--------------------------+-------------------
+ id                 | uuid                     | gen_random_uuid()
+ clerk_user_id      | text                     | 
+ org_id             | text                     | 
+ access_status      | text                     | 'pending'::text
+ access_expires_at  | timestamp with time zone | 
+ granted_by_user_id | text                     | 
+ grant_source       | text                     | 
+ notes              | text                     | 
+ created_at         | timestamp with time zone | now()
+ updated_at         | timestamp with time zone | now()
+ is_admin           | boolean                  | false
+ account_role       | text                     | 'client'::text
+(12 rows)
+
+EXIT:0
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  PGPASSWORD=PvrZqayHs6bQlXnm2wsLhmuc4CAAZV0z /opt/homebrew/opt/postgresql@16/bin/psql \[?2004l
+[0m[27m[24m[J> [K[?2004h   "postgresql://dealdecision@dpg-d5p72uhr0fns73eqps70-a.virginia-postgres.render.com/dealdecision" \[?2004l
+[0m[27m[24m[J> [K[?2004h   -c "SELECT name, applied_at FROM migrations WHERE name LIKE '2026-03-19%' ORDER BY name;" 2>&1; echo "EXIT:$?"[?2004l
+                          name                          |          applied_at           
+--------------------------------------------------------+-------------------------------
+ 2026-03-19-001-add-platform-access.sql                 | 2026-03-20 03:15:06.813075+00
+ 2026-03-19-002-add-invite-codes.sql                    | 2026-03-20 03:15:06.927208+00
+ 2026-03-19-003-add-is-admin-to-platform-access.sql     | 2026-03-20 03:15:07.050242+00
+ 2026-03-19-004-add-account-role-to-platform-access.sql | 2026-03-20 03:15:07.082434+00
+ 2026-03-19-005-create-organization-settings.sql        | 2026-03-20 03:15:07.213585+00
+ 2026-03-19-006-create-organization-memberships.sql     | 2026-03-20 03:15:07.268818+00
+(6 rows)
+
+EXIT:0
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  PGPASSWORD=PvrZqayHs6bQlXnm2wsLhmuc4CAAZV0z /opt/homebrew/opt/postgresql@16/bin/psql \[?2004l
+[0m[27m[24m[J> [K[?2004h   "postgresql://dealdecision@dpg-d5p72uhr0fns73eqps70-a.virginia-postgres.render.com/dealdecision" \[?2004l
+[0m[27m[24m[J> [K[?2004h   -c "SELECT indexname, tablename FROM pg_indexes WHERE tablename IN ('platform_access','invite_codes','organization_settings','organization_memberships') ORD [KEER BY tablename, indexname;" 2>&1; echo "EXIT:$?"[?2004l
+                        indexname                        |        tablename         
+---------------------------------------------------------+--------------------------
+ idx_invite_codes_code                                   | invite_codes
+ idx_invite_codes_email                                  | invite_codes
+ idx_invite_codes_org_id                                 | invite_codes
+ idx_invite_codes_status                                 | invite_codes
+ invite_codes_pkey                                       | invite_codes
+ idx_org_memberships_org                                 | organization_memberships
+ idx_org_memberships_user                                | organization_memberships
+ organization_memberships_clerk_org_id_clerk_user_id_key | organization_memberships
+ organization_memberships_pkey                           | organization_memberships
+ idx_org_settings_clerk_org_id                           | organization_settings
+ organization_settings_clerk_org_id_key                  | organization_settings
+ organization_settings_pkey                              | organization_settings
+ idx_platform_access_clerk_user_id                       | platform_access
+ idx_platform_access_expires_at                          | platform_access
+ idx_platform_access_is_admin                            | platform_access
+ idx_platform_access_org_id                              | platform_access
+ platform_access_pkey                                    | platform_access
+(17 rows)
+
+EXIT:0
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git fetch --all && echo "FETCH_EXIT:$?"[?2004l
+FETCH_EXIT:0
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git status --porcelain && echo "---" && git branch --show-current && echo "---" && git rev-list --left-right --count orig [Kiin/main...HEAD && echo "---" && git log --oneline -1 origin/main origin/production feature/invite-auth-system[?2004l
+?? typescript
+---
+feature/invite-auth-system
+---
+0	6
+---
+[33m2ec96c5[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mfeature/invite-auth-system[m[33m, [m[1;31morigin/feature/invite-auth-system[m[33m)[m feat: add account role management and organization settings
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git rev-parse --short origin/main && git rev-parse --short origin/production && git rev-parse --short feature/invite-auth [K--system[?2004l
+20d750b
+20d750b
+2ec96c5
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git checkout main && git merge --ff-only feature/invite-auth-system && echo "MERGE_MAIN_EXIT:$?"[?2004l
+Switched to branch 'main'
+Your branch is up to date with 'origin/main'.
+Updating 20d750b..2ec96c5
+Fast-forward
+ .github/instructions/core-platform.instructions.md                                | 105 [32m++++++++[m
+ .github/instructions/docs-governance.instructions.md                              |  53 [32m++++[m
+ .github/instructions/financial-pipeline.instructions.md                           | 123 [32m+++++++++[m
+ .github/instructions/frontend-workspace.instructions.md                           |  94 [32m+++++++[m
+ .github/instructions/investor-insights.instructions.md                            |  92 [32m+++++++[m
+ .github/instructions/report-payload.instructions.md                               | 105 [32m++++++++[m
+ apps/api/src/index.ts                                                             |   6 [32m+[m
+ apps/api/src/plugins/clerk-auth.ts                                                |  87 [32m+++++++[m
+ apps/api/src/routes/admin.ts                                                      | 745 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++[m[31m---[m
+ apps/api/src/routes/invites.ts                                                    | 583 [32m++++++++++++++++++++++++++++++++++++++++++[m
+ apps/api/src/routes/me.ts                                                         |  88 [32m+++++++[m
+ apps/api/src/routes/orgs.ts                                                       | 387 [32m++++++++++++++++++++++++++++[m
+ apps/web/.env.example                                                             |   8 [32m+[m
+ apps/web/src/App.tsx                                                              |  50 [32m++[m[31m--[m
+ apps/web/src/AppShell.tsx                                                         |   8 [32m+[m
+ apps/web/src/components/Sidebar.tsx                                               |  17 [32m+[m[31m-[m
+ apps/web/src/components/admin/InviteCreationPanel.tsx                             | 145 [32m+++++++++++[m
+ apps/web/src/components/admin/InvitesTable.tsx                                    | 184 [32m++++++++++++++[m
+ apps/web/src/components/admin/MetricCard.tsx                                      |  28 [32m+++[m
+ apps/web/src/components/admin/StatusPill.tsx                                      |  33 [32m+++[m
+ apps/web/src/components/admin/UsersTable.tsx                                      | 348 [32m+++++++++++++++++++++++++[m
+ apps/web/src/components/auth/AccessDeniedPage.tsx                                 |  96 [32m+++++++[m
+ apps/web/src/components/auth/InviteEntryPage.tsx                                  | 357 [32m++++++++++++++++++++++++++[m
+ apps/web/src/components/auth/InviteOnlyPage.tsx                                   |  45 [32m++++[m
+ apps/web/src/components/collaboration/TeamMembersPanel.tsx                        | 127 [32m+++++[m[31m-----[m
+ apps/web/src/components/pages/SystemAdminPage.tsx                                 | 222 [32m++++++++++++++++[m
+ apps/web/src/lib/apiClient.ts                                                     | 356 [32m++++++++++++++++++++++++++[m
+ docker-compose.dev.yml                                                            |   3 [32m+[m
+ docker-compose.local.yml                                                          |   6 [32m+[m
+ docs/Active/2026-01-10-discovery-visuals-phaseb-audit.md                          | 358 [31m--------------------------[m
+ docs/Active/2026-01-10-phaseb-integration-design.md                               | 275 [31m--------------------[m
+ docs/Active/Authoritative/analysis-foundation/00_fundability_foundation.md        | 134 [31m----------[m
+ docs/Active/Authoritative/analysis-foundation/01_phase_ruleset.md                 |  93 [31m-------[m
+ docs/Active/Authoritative/analysis-foundation/02_system_architecture.md           |  61 [31m-----[m
+ docs/Active/Authoritative/analysis-foundation/03_safe_conversion_plan.md          |  59 [31m-----[m
+ docs/Active/Authoritative/analysis-foundation/07_analysis_foundation_CHANGELOG.md |   5 [31m-[m
+ docs/Active/Authoritative/analysis-foundation/CHANGELOG.md                        |  55 [31m----[m
+ docs/Active/Authoritative/analysis-foundation/IMPLEMENTATION_PROGRESS.md          |  61 [31m-----[m
+ docs/Active/DISCOVERY_CHART_AWARE_FINANCIAL_EXTRACTION.md                         | 415 [31m------------------------------[m
+ docs/Active/DOCS_GOVERNANCE.md                                                    |  72 [31m------[m
+ docs/Active/OVERVIEW_SIGNAL_AND_FACT_SEMANTICS.md                                 | 162 [31m------------[m
+ docs/Active/analysis-pipeline-reality.md                                          | 205 [31m---------------[m
+ docs/Active/governed-summary-fix-plan.md                                          | 417 [31m------------------------------[m
+ docs/Active/phase10-1-verification-report.md                                      | 134 [31m----------[m
+ docs/Active/phase10-2-ocr-audit-report.md                                         | 486 [31m-----------------------------------[m
+ docs/Active/remediation-plan.md                                                   | 242 [31m------------------[m
+ docs/Active/render-deployment-audit-2026-03-02.md                                 | 528 [31m--------------------------------------[m
+ docs/Active/render-production-mirror.md                                           |  46 [31m----[m
+ docs/Active/web/ADMIN_GAMIFICATION_TOGGLE.md                                      | 159 [31m------------[m
+ docs/Active/web/FEATURES_OVERVIEW.md                                              | 537 [31m---------------------------------------[m
+ docs/Active/web/PLATFORM_REVIEW.md                                                | 506 [31m-------------------------------------[m
+ docs/Active/web/PRODUCT_OVERVIEW.md                                               | 966 [31m----------------------------------------------------------------------[m
+ docs/Active/web/QUICK_REFERENCE.md                                                | 570 [31m-----------------------------------------[m
+ docs/Active/web/USER_ROLE_SYSTEM.md                                               |  86 [31m-------[m
+ docs/Active/web/guidelines/Guidelines.md                                          |  61 [31m-----[m
+ docs/DOCS_CLEANUP_MANIFEST.md                                                     | 286 [31m---------------------[m
+ docs/DOCS_WEB_SRC_MD_MANIFEST.md                                                  |  23 [31m--[m
+ infra/migrations/2026-03-19-001-add-platform-access.sql                           |  53 [32m++++[m
+ infra/migrations/2026-03-19-002-add-invite-codes.sql                              |  63 [32m+++++[m
+ infra/migrations/2026-03-19-003-add-is-admin-to-platform-access.sql               |  25 [32m++[m
+ infra/migrations/2026-03-19-004-add-account-role-to-platform-access.sql           |  16 [32m++[m
+ infra/migrations/2026-03-19-005-create-organization-settings.sql                  |  20 [32m++[m
+ infra/migrations/2026-03-19-006-create-organization-memberships.sql               |  23 [32m++[m
+ render.yaml                                                                       |   8 [32m+[m
+ scripts/promote-admin.sh                                                          | 111 [32m++++++++[m
+ 65 files changed, 4692 insertions(+), 7130 deletions(-)
+ create mode 100644 .github/instructions/core-platform.instructions.md
+ create mode 100644 .github/instructions/docs-governance.instructions.md
+ create mode 100644 .github/instructions/financial-pipeline.instructions.md
+ create mode 100644 .github/instructions/frontend-workspace.instructions.md
+ create mode 100644 .github/instructions/investor-insights.instructions.md
+ create mode 100644 .github/instructions/report-payload.instructions.md
+ create mode 100644 apps/api/src/routes/invites.ts
+ create mode 100644 apps/api/src/routes/me.ts
+ create mode 100644 apps/api/src/routes/orgs.ts
+ create mode 100644 apps/web/src/components/admin/InviteCreationPanel.tsx
+ create mode 100644 apps/web/src/components/admin/InvitesTable.tsx
+ create mode 100644 apps/web/src/components/admin/MetricCard.tsx
+ create mode 100644 apps/web/src/components/admin/StatusPill.tsx
+ create mode 100644 apps/web/src/components/admin/UsersTable.tsx
+ create mode 100644 apps/web/src/components/auth/AccessDeniedPage.tsx
+ create mode 100644 apps/web/src/components/auth/InviteEntryPage.tsx
+ create mode 100644 apps/web/src/components/auth/InviteOnlyPage.tsx
+ create mode 100644 apps/web/src/components/pages/SystemAdminPage.tsx
+ delete mode 100644 docs/Active/2026-01-10-discovery-visuals-phaseb-audit.md
+ delete mode 100644 docs/Active/2026-01-10-phaseb-integration-design.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/00_fundability_foundation.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/01_phase_ruleset.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/02_system_architecture.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/03_safe_conversion_plan.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/07_analysis_foundation_CHANGELOG.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/CHANGELOG.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/IMPLEMENTATION_PROGRESS.md
+ delete mode 100644 docs/Active/DISCOVERY_CHART_AWARE_FINANCIAL_EXTRACTION.md
+ delete mode 100644 docs/Active/DOCS_GOVERNANCE.md
+ delete mode 100644 docs/Active/OVERVIEW_SIGNAL_AND_FACT_SEMANTICS.md
+ delete mode 100644 docs/Active/analysis-pipeline-reality.md
+ delete mode 100644 docs/Active/governed-summary-fix-plan.md
+ delete mode 100644 docs/Active/phase10-1-verification-report.md
+ delete mode 100644 docs/Active/phase10-2-ocr-audit-report.md
+ delete mode 100644 docs/Active/remediation-plan.md
+ delete mode 100644 docs/Active/render-deployment-audit-2026-03-02.md
+ delete mode 100644 docs/Active/render-production-mirror.md
+ delete mode 100644 docs/Active/web/ADMIN_GAMIFICATION_TOGGLE.md
+ delete mode 100644 docs/Active/web/FEATURES_OVERVIEW.md
+ delete mode 100644 docs/Active/web/PLATFORM_REVIEW.md
+ delete mode 100644 docs/Active/web/PRODUCT_OVERVIEW.md
+ delete mode 100644 docs/Active/web/QUICK_REFERENCE.md
+ delete mode 100644 docs/Active/web/USER_ROLE_SYSTEM.md
+ delete mode 100644 docs/Active/web/guidelines/Guidelines.md
+ delete mode 100644 docs/DOCS_CLEANUP_MANIFEST.md
+ delete mode 100644 docs/DOCS_WEB_SRC_MD_MANIFEST.md
+ create mode 100644 infra/migrations/2026-03-19-001-add-platform-access.sql
+ create mode 100644 infra/migrations/2026-03-19-002-add-invite-codes.sql
+ create mode 100644 infra/migrations/2026-03-19-003-add-is-admin-to-platform-access.sql
+ create mode 100644 infra/migrations/2026-03-19-004-add-account-role-to-platform-access.sql
+ create mode 100644 infra/migrations/2026-03-19-005-create-organization-settings.sql
+ create mode 100644 infra/migrations/2026-03-19-006-create-organization-memberships.sql
+ create mode 100755 scripts/promote-admin.sh
+MERGE_MAIN_EXIT:0
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  echo "LAST_EXIT:$?"[?2004l
+LAST_EXIT:130
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git log --oneline -3 main && echo "---" && git rev-parse --short main[?2004l
+[33m2ec96c5[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/feature/invite-auth-system[m[33m, [m[1;32mfeature/invite-auth-system[m[33m)[m feat: add account role management and organization settings
+[33m73de6bb[m feat: implement user management and identity integration in admin routes
+[33m9b2e941[m feat: add admin control panel with user management and invite system
+---
+2ec96c5
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git checkout production && git merge --ff-only main && echo "MERGE_PROD_EXIT:$?"[?2004l
+Switched to branch 'production'
+Your branch is up to date with 'origin/production'.
+Updating 20d750b..2ec96c5
+Fast-forward
+ .github/instructions/core-platform.instructions.md                                | 105 [32m++++++++[m
+ .github/instructions/docs-governance.instructions.md                              |  53 [32m++++[m
+ .github/instructions/financial-pipeline.instructions.md                           | 123 [32m+++++++++[m
+ .github/instructions/frontend-workspace.instructions.md                           |  94 [32m+++++++[m
+ .github/instructions/investor-insights.instructions.md                            |  92 [32m+++++++[m
+ .github/instructions/report-payload.instructions.md                               | 105 [32m++++++++[m
+ apps/api/src/index.ts                                                             |   6 [32m+[m
+ apps/api/src/plugins/clerk-auth.ts                                                |  87 [32m+++++++[m
+ apps/api/src/routes/admin.ts                                                      | 745 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++[m[31m---[m
+ apps/api/src/routes/invites.ts                                                    | 583 [32m++++++++++++++++++++++++++++++++++++++++++[m
+ apps/api/src/routes/me.ts                                                         |  88 [32m+++++++[m
+ apps/api/src/routes/orgs.ts                                                       | 387 [32m++++++++++++++++++++++++++++[m
+ apps/web/.env.example                                                             |   8 [32m+[m
+ apps/web/src/App.tsx                                                              |  50 [32m++[m[31m--[m
+ apps/web/src/AppShell.tsx                                                         |   8 [32m+[m
+ apps/web/src/components/Sidebar.tsx                                               |  17 [32m+[m[31m-[m
+ apps/web/src/components/admin/InviteCreationPanel.tsx                             | 145 [32m+++++++++++[m
+ apps/web/src/components/admin/InvitesTable.tsx                                    | 184 [32m++++++++++++++[m
+ apps/web/src/components/admin/MetricCard.tsx                                      |  28 [32m+++[m
+ apps/web/src/components/admin/StatusPill.tsx                                      |  33 [32m+++[m
+ apps/web/src/components/admin/UsersTable.tsx                                      | 348 [32m+++++++++++++++++++++++++[m
+ apps/web/src/components/auth/AccessDeniedPage.tsx                                 |  96 [32m+++++++[m
+ apps/web/src/components/auth/InviteEntryPage.tsx                                  | 357 [32m++++++++++++++++++++++++++[m
+ apps/web/src/components/auth/InviteOnlyPage.tsx                                   |  45 [32m++++[m
+ apps/web/src/components/collaboration/TeamMembersPanel.tsx                        | 127 [32m+++++[m[31m-----[m
+ apps/web/src/components/pages/SystemAdminPage.tsx                                 | 222 [32m++++++++++++++++[m
+ apps/web/src/lib/apiClient.ts                                                     | 356 [32m++++++++++++++++++++++++++[m
+ docker-compose.dev.yml                                                            |   3 [32m+[m
+ docker-compose.local.yml                                                          |   6 [32m+[m
+ docs/Active/2026-01-10-discovery-visuals-phaseb-audit.md                          | 358 [31m--------------------------[m
+ docs/Active/2026-01-10-phaseb-integration-design.md                               | 275 [31m--------------------[m
+ docs/Active/Authoritative/analysis-foundation/00_fundability_foundation.md        | 134 [31m----------[m
+ docs/Active/Authoritative/analysis-foundation/01_phase_ruleset.md                 |  93 [31m-------[m
+ docs/Active/Authoritative/analysis-foundation/02_system_architecture.md           |  61 [31m-----[m
+ docs/Active/Authoritative/analysis-foundation/03_safe_conversion_plan.md          |  59 [31m-----[m
+ docs/Active/Authoritative/analysis-foundation/07_analysis_foundation_CHANGELOG.md |   5 [31m-[m
+ docs/Active/Authoritative/analysis-foundation/CHANGELOG.md                        |  55 [31m----[m
+ docs/Active/Authoritative/analysis-foundation/IMPLEMENTATION_PROGRESS.md          |  61 [31m-----[m
+ docs/Active/DISCOVERY_CHART_AWARE_FINANCIAL_EXTRACTION.md                         | 415 [31m------------------------------[m
+ docs/Active/DOCS_GOVERNANCE.md                                                    |  72 [31m------[m
+ docs/Active/OVERVIEW_SIGNAL_AND_FACT_SEMANTICS.md                                 | 162 [31m------------[m
+ docs/Active/analysis-pipeline-reality.md                                          | 205 [31m---------------[m
+ docs/Active/governed-summary-fix-plan.md                                          | 417 [31m------------------------------[m
+ docs/Active/phase10-1-verification-report.md                                      | 134 [31m----------[m
+ docs/Active/phase10-2-ocr-audit-report.md                                         | 486 [31m-----------------------------------[m
+ docs/Active/remediation-plan.md                                                   | 242 [31m------------------[m
+ docs/Active/render-deployment-audit-2026-03-02.md                                 | 528 [31m--------------------------------------[m
+ docs/Active/render-production-mirror.md                                           |  46 [31m----[m
+ docs/Active/web/ADMIN_GAMIFICATION_TOGGLE.md                                      | 159 [31m------------[m
+ docs/Active/web/FEATURES_OVERVIEW.md                                              | 537 [31m---------------------------------------[m
+ docs/Active/web/PLATFORM_REVIEW.md                                                | 506 [31m-------------------------------------[m
+ docs/Active/web/PRODUCT_OVERVIEW.md                                               | 966 [31m----------------------------------------------------------------------[m
+ docs/Active/web/QUICK_REFERENCE.md                                                | 570 [31m-----------------------------------------[m
+ docs/Active/web/USER_ROLE_SYSTEM.md                                               |  86 [31m-------[m
+ docs/Active/web/guidelines/Guidelines.md                                          |  61 [31m-----[m
+ docs/DOCS_CLEANUP_MANIFEST.md                                                     | 286 [31m---------------------[m
+ docs/DOCS_WEB_SRC_MD_MANIFEST.md                                                  |  23 [31m--[m
+ infra/migrations/2026-03-19-001-add-platform-access.sql                           |  53 [32m++++[m
+ infra/migrations/2026-03-19-002-add-invite-codes.sql                              |  63 [32m+++++[m
+ infra/migrations/2026-03-19-003-add-is-admin-to-platform-access.sql               |  25 [32m++[m
+ infra/migrations/2026-03-19-004-add-account-role-to-platform-access.sql           |  16 [32m++[m
+ infra/migrations/2026-03-19-005-create-organization-settings.sql                  |  20 [32m++[m
+ infra/migrations/2026-03-19-006-create-organization-memberships.sql               |  23 [32m++[m
+ render.yaml                                                                       |   8 [32m+[m
+ scripts/promote-admin.sh                                                          | 111 [32m++++++++[m
+ 65 files changed, 4692 insertions(+), 7130 deletions(-)
+ create mode 100644 .github/instructions/core-platform.instructions.md
+ create mode 100644 .github/instructions/docs-governance.instructions.md
+ create mode 100644 .github/instructions/financial-pipeline.instructions.md
+ create mode 100644 .github/instructions/frontend-workspace.instructions.md
+ create mode 100644 .github/instructions/investor-insights.instructions.md
+ create mode 100644 .github/instructions/report-payload.instructions.md
+ create mode 100644 apps/api/src/routes/invites.ts
+ create mode 100644 apps/api/src/routes/me.ts
+ create mode 100644 apps/api/src/routes/orgs.ts
+ create mode 100644 apps/web/src/components/admin/InviteCreationPanel.tsx
+ create mode 100644 apps/web/src/components/admin/InvitesTable.tsx
+ create mode 100644 apps/web/src/components/admin/MetricCard.tsx
+ create mode 100644 apps/web/src/components/admin/StatusPill.tsx
+ create mode 100644 apps/web/src/components/admin/UsersTable.tsx
+ create mode 100644 apps/web/src/components/auth/AccessDeniedPage.tsx
+ create mode 100644 apps/web/src/components/auth/InviteEntryPage.tsx
+ create mode 100644 apps/web/src/components/auth/InviteOnlyPage.tsx
+ create mode 100644 apps/web/src/components/pages/SystemAdminPage.tsx
+ delete mode 100644 docs/Active/2026-01-10-discovery-visuals-phaseb-audit.md
+ delete mode 100644 docs/Active/2026-01-10-phaseb-integration-design.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/00_fundability_foundation.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/01_phase_ruleset.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/02_system_architecture.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/03_safe_conversion_plan.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/07_analysis_foundation_CHANGELOG.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/CHANGELOG.md
+ delete mode 100644 docs/Active/Authoritative/analysis-foundation/IMPLEMENTATION_PROGRESS.md
+ delete mode 100644 docs/Active/DISCOVERY_CHART_AWARE_FINANCIAL_EXTRACTION.md
+ delete mode 100644 docs/Active/DOCS_GOVERNANCE.md
+ delete mode 100644 docs/Active/OVERVIEW_SIGNAL_AND_FACT_SEMANTICS.md
+ delete mode 100644 docs/Active/analysis-pipeline-reality.md
+ delete mode 100644 docs/Active/governed-summary-fix-plan.md
+ delete mode 100644 docs/Active/phase10-1-verification-report.md
+ delete mode 100644 docs/Active/phase10-2-ocr-audit-report.md
+ delete mode 100644 docs/Active/remediation-plan.md
+ delete mode 100644 docs/Active/render-deployment-audit-2026-03-02.md
+ delete mode 100644 docs/Active/render-production-mirror.md
+ delete mode 100644 docs/Active/web/ADMIN_GAMIFICATION_TOGGLE.md
+ delete mode 100644 docs/Active/web/FEATURES_OVERVIEW.md
+ delete mode 100644 docs/Active/web/PLATFORM_REVIEW.md
+ delete mode 100644 docs/Active/web/PRODUCT_OVERVIEW.md
+ delete mode 100644 docs/Active/web/QUICK_REFERENCE.md
+ delete mode 100644 docs/Active/web/USER_ROLE_SYSTEM.md
+ delete mode 100644 docs/Active/web/guidelines/Guidelines.md
+ delete mode 100644 docs/DOCS_CLEANUP_MANIFEST.md
+ delete mode 100644 docs/DOCS_WEB_SRC_MD_MANIFEST.md
+ create mode 100644 infra/migrations/2026-03-19-001-add-platform-access.sql
+ create mode 100644 infra/migrations/2026-03-19-002-add-invite-codes.sql
+ create mode 100644 infra/migrations/2026-03-19-003-add-is-admin-to-platform-access.sql
+ create mode 100644 infra/migrations/2026-03-19-004-add-account-role-to-platform-access.sql
+ create mode 100644 infra/migrations/2026-03-19-005-create-organization-settings.sql
+ create mode 100644 infra/migrations/2026-03-19-006-create-organization-memberships.sql
+ create mode 100755 scripts/promote-admin.sh
+MERGE_PROD_EXIT:0
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git log --oneline -1 main production feature/invite-auth-system 2>&1 | head -20 && git branch --show-current[?2004l
+2ec96c5 feat: add account role management and organization settings
+production
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git rev-parse --short main production feature/invite-auth-system[?2004l
+fatal: Needed a single revision
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git rev-parse --short main && git rev-parse --short production && git rev-parse --short feature/invite-auth-system[?2004l
+2ec96c5
+2ec96c5
+2ec96c5
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git checkout feature/invite-auth-system && git branch --show-current[?2004l
+Switched to branch 'feature/invite-auth-system'
+Your branch is up to date with 'origin/feature/invite-auth-system'.
+feature/invite-auth-system
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  git push origin main production && echo "PUSH_EXIT:$?"[?2004l
+Total 0 (delta 0), reused 0 (delta 0), pack-reused 0 (from 0)
+To https://github.com/Vintaragroup/dealdecision-ai.git
+   20d750b..2ec96c5  main -> main
+   20d750b..2ec96c5  production -> production
+PUSH_EXIT:0
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  curl -s "https://api.clerk.com/v1/users?email_address=ryan@vintaragroup.com" \[?2004l
+[0m[27m[24m[J> [K[?2004h   -H "Authorization: Bearer sk_live_TR1o9Nk1MeZP4RX5uQET8CwAPJK9QaxQBBBDbnHMcj" \[?2004l
+[0m[27m[24m[J> [K[?2004h   | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else 'NOT_FOUND')" 2>&1[?2004l
+user_38gHFKsCC310J3uB0nUa2vLS0ta
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  PGPASSWORD="PvrZqayHs6bQlXnm2wsLhmuc4CAAZV0z" /opt/homebrew/opt/postgresql@16/bin/psql \[?2004l
+[0m[27m[24m[J> [K[?2004h   "postgresql://dealdecision@dpg-d5p72uhr0fns73eqps70-a.virginia-postgres.render.com/dealdecision" \[?2004l
+[0m[27m[24m[J> [K[?2004h   -c "INSERT INTO platform_access (clerk_user_id, access_status, is_admin, account_role, grant_source, notes)[?2004l
+[0m[27m[24m[Jdquote> [K[?2004h       VALUES ('user_38gHFKsCC310J3uB0nUa2vLS0ta', 'active', true, 'admin', 'manual_seed', 'Super admin - ryan@vintaragroup.com')[?2004l
+[0m[27m[24m[Jdquote> [K[?2004h       ON CONFLICT (clerk_user_id) DO UPDATE[?2004l
+[0m[27m[24m[Jdquote> [K[?2004h         SET access_status = 'active', is_admin = true, account_role = 'admin', updated_at = now()[?2004l
+[0m[27m[24m[Jdquote> [K[?2004h       RETURNING id, clerk_user_id, access_status, is_admin, account_role;" 2>&1[?2004l
+ERROR:  new row for relation "platform_access" violates check constraint "platform_access_grant_source_check"
+DETAIL:  Failing row contains (d996c490-bf56-454e-8918-f0f9d52357ad, user_38gHFKsCC310J3uB0nUa2vLS0ta, null, active, null, null, manual_seed, Super admin - ryan@vintaragroup.com, 2026-03-20 03:28:21.921527+00, 2026-03-20 03:28:21.921527+00, t, admin).
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  grep -r "grant_source" /Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/infra/migrations/ | grep -i "check\|constr [Kaaint\|IN ("[?2004l
+/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/infra/migrations/2026-03-19-001-add-platform-access.sql:                                  CHECK (grant_source IS NULL OR grant_source IN ('manual', 'invite', 'admin', 'system')),
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  PGPASSWORD="PvrZqayHs6bQlXnm2wsLhmuc4CAAZV0z" /opt/homebrew/opt/postgresql@16/bin/psql \[?2004l
+[0m[27m[24m[J> [K[?2004h   "postgresql://dealdecision@dpg-d5p72uhr0fns73eqps70-a.virginia-postgres.render.com/dealdecision" \[?2004l
+[0m[27m[24m[J> [K[?2004h   -c "INSERT INTO platform_access (clerk_user_id, access_status, is_admin, account_role, grant_source, notes)[?2004l
+[0m[27m[24m[Jdquote> [K[?2004h       VALUES ('user_38gHFKsCC310J3uB0nUa2vLS0ta', 'active', true, 'admin', 'admin', 'Super admin - ryan@vintaragroup.com')[?2004l
+[0m[27m[24m[Jdquote> [K[?2004h       ON CONFLICT (clerk_user_id) DO UPDATE[?2004l
+[0m[27m[24m[Jdquote> [K[?2004h         SET access_status = 'active', is_admin = true, account_role = 'admin', updated_at = now()[?2004l
+[0m[27m[24m[Jdquote> [K[?2004h       RETURNING id, clerk_user_id, access_status, is_admin, account_role;" 2>&1[?2004l
+                  id                  |          clerk_user_id           | access_status | is_admin | account_role 
+--------------------------------------+----------------------------------+---------------+----------+--------------
+ 62e46d86-3cb4-4b0c-b226-fdcdeb696e55 | user_38gHFKsCC310J3uB0nUa2vLS0ta | active        | t        | admin
+(1 row)
+
+INSERT 0 1
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  PGPASSWORD="PvrZqayHs6bQlXnm2wsLhmuc4CAAZV0z" /opt/homebrew/opt/postgresql@16/bin/psql \[?2004l
+[0m[27m[24m[J> [K[?2004h   "postgresql://dealdecision@dpg-d5p72uhr0fns73eqps70-a.virginia-postgres.render.com/dealdecision" \[?2004l
+[0m[27m[24m[J> [K[?2004h   -c "UPDATE platform_access SET account_role = 'super_admin', updated_at = now() WHERE clerk_user_id = 'user_38gHFKsCC310J3uB0nUa2vLS0ta' RETURNING clerk_use [Krr_id, access_status, is_admin, account_role;" 2>&1[?2004l
+          clerk_user_id           | access_status | is_admin | account_role 
+----------------------------------+---------------+----------+--------------
+ user_38gHFKsCC310J3uB0nUa2vLS0ta | active        | t        | super_admin
+(1 row)
+
+UPDATE 1
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h

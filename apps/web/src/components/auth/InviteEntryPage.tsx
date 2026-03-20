@@ -161,6 +161,11 @@ export function InviteEntryPage() {
     window.location.href = `/sign-in?redirect_url=${encodeURIComponent(returnUrl)}`;
   };
 
+  const handleGoToSignUp = () => {
+    const returnUrl = code ? `/invite?code=${encodeURIComponent(code)}` : '/invite';
+    window.location.href = `/sign-up?redirect_url=${encodeURIComponent(returnUrl)}`;
+  };
+
   const handleGoToApp = () => navigate('/app', { replace: true });
 
   const handleRetry = () => {
@@ -225,16 +230,23 @@ export function InviteEntryPage() {
               <h1 className="text-2xl font-semibold">Invite code valid</h1>
               <p className="text-white/60 text-sm leading-relaxed">
                 This invite grants <span className="text-white font-medium">{state.durationDays} days</span> of platform access.
-                Sign in to activate it.
+                Sign in or create an account to activate it.
               </p>
             </div>
             <div className="flex flex-col gap-3 items-center">
               <button
                 type="button"
                 onClick={handleGoToSignIn}
-                className="px-5 py-2.5 rounded bg-[#6366f1] text-white text-sm font-medium hover:bg-[#4f52cc] transition-colors"
+                className="w-full max-w-xs px-5 py-2.5 rounded bg-[#6366f1] text-white text-sm font-medium hover:bg-[#4f52cc] transition-colors"
               >
                 Sign in to activate
+              </button>
+              <button
+                type="button"
+                onClick={handleGoToSignUp}
+                className="w-full max-w-xs px-5 py-2.5 rounded bg-white/10 border border-white/15 text-white text-sm font-medium hover:bg-white/15 transition-colors"
+              >
+                Create account
               </button>
               <button
                 type="button"

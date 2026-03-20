@@ -1,8 +1,9 @@
-import { Navigate, Route, Routes } from 'react-router-dom';
+import { Navigate, Route, Routes, useSearchParams } from 'react-router-dom';
 import {
   SignedIn,
   SignedOut,
   SignIn,
+  SignUp,
 } from '@clerk/clerk-react';
 
 import AppShell from './AppShell';
@@ -10,7 +11,6 @@ import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { OrgGate } from './components/auth/OrgGate';
 import { SelectOrg } from './components/pages/SelectOrg';
 import { AccessDeniedPage } from './components/auth/AccessDeniedPage';
-import { InviteOnlyPage } from './components/auth/InviteOnlyPage';
 import { InviteEntryPage } from './components/auth/InviteEntryPage';
 function PublicHome() {
   return (
@@ -38,6 +38,61 @@ function ProtectedApp() {
   );
 }
 
+/**
+ * Reads `redirect_url` from the query string and passes it to Clerk's
+ * afterSignInUrl / afterSignUpUrl so the user returns to the invite page
+ * (or wherever they came from) after authentication.
+ *
+ * Security: only relative URLs starting with '/' are accepted; anything
+ * else falls back to '/app'.
+ */
+function safeRedirectUrl(raw: string | null): string {
+  if (typeof raw === 'string' && raw.startsWith('/')) return raw;
+  return '/app';
+}
+
+function SignInPage() {
+  const [params] = useSearchParams();
+  const afterUrl = safeRedirectUrl(params.get('redirect_url'));
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] px-6 py-10">
+      <div className="w-full max-w-md flex justify-center">
+        <SignIn
+          routing="path"
+          path="/sign-in"
+          afterSignInUrl={afterUrl}
+          signUpUrl="/sign-up"
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Sign-up page: renders Clerk's SignUp component with the same redirect_url
+ * preservation so new users land back on the invite page after account creation.
+ *
+ * Note: Clerk must be configured with "Public" sign-ups (not Restricted) in
+ * the Clerk dashboard for new users to be able to complete registration.
+ * Platform access is gated by platform_access, not by Clerk's invite system.
+ */
+function SignUpPage() {
+  const [params] = useSearchParams();
+  const afterUrl = safeRedirectUrl(params.get('redirect_url'));
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] px-6 py-10">
+      <div className="w-full max-w-md flex justify-center">
+        <SignUp
+          routing="path"
+          path="/sign-up"
+          afterSignUpUrl={afterUrl}
+          signInUrl="/sign-in"
+        />
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <Routes>
@@ -55,29 +110,13 @@ export default function App() {
           </>
         }
       />
-      <Route
-        path="/sign-in/*"
-        element={
-          <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] px-6 py-10">
-            <div className="w-full max-w-md flex justify-center">
-              {/* signUpUrl omitted intentionally — signup is invite-only.
-                  The Clerk "Sign up" link inside the component is suppressed
-                  by the absence of signUpUrl, which shows "Contact us" text.
-                  The Clerk dashboard must also be set to "Restricted sign-ups" /
-                  "Invite only" mode so that self-serve account creation is
-                  blocked at the Clerk level, not just at the UI level. */}
-              <SignIn
-                routing="path"
-                path="/sign-in"
-                afterSignInUrl="/app"
-              />
-            </div>
-          </div>
-        }
-      />
+      <Route path="/sign-in/*" element={<SignInPage />} />
 
-      {/* /sign-up is blocked — redirect to invite-only info page */}
-      <Route path="/sign-up/*" element={<InviteOnlyPage />} />
+      {/* Sign-up: Clerk account creation for invited users.
+          Requires Clerk dashboard to be set to "Public" sign-ups.
+          Platform-level access is still gated by platform_access — a new
+          account without a redeemed invite lands on ACCESS_NOT_PROVISIONED. */}
+      <Route path="/sign-up/*" element={<SignUpPage />} />
 
       {/* Access denied states (returned by backend after successful Clerk auth) */}
       <Route path="/access-denied" element={<AccessDeniedPage />} />

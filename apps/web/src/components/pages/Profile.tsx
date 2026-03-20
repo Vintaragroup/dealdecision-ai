@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Textarea } from '../ui/textarea';
@@ -11,21 +11,17 @@ import {
   Phone,
   Calendar,
   Award,
-  TrendingUp,
   Target,
-  Sparkles,
   Bell,
-  Shield,
   Palette,
   Moon,
   Sun,
-  Globe,
   CreditCard,
   LogOut,
   Camera,
-  CheckCircle,
   Save
 } from 'lucide-react';
+import { apiGetProfileStats } from '../../lib/apiClient';
 
 interface ProfileProps {
   darkMode: boolean;
@@ -39,6 +35,10 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
 
   const [activeTab, setActiveTab] = useState<'profile' | 'preferences' | 'notifications' | 'billing'>('profile');
   const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [stats, setStats] = useState<{ dealCount: number; documentCount: number } | null>(null);
 
   const fullName = user?.fullName || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Account';
   const primaryEmail =
@@ -58,6 +58,15 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
   const orgName = orgLoaded ? organization?.name || null : null;
   const orgRole = orgLoaded ? (membership as any)?.role || null : null;
 
+  // Load real stats from API
+  useEffect(() => {
+    let cancelled = false;
+    apiGetProfileStats()
+      .then((data) => { if (!cancelled) setStats(data); })
+      .catch(() => { /* silently degrade — stats stay null */ });
+    return () => { cancelled = true; };
+  }, []);
+
   if (!userLoaded) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#0a0a0a] text-white px-6">
@@ -74,42 +83,90 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
     );
   }
 
-  // Notification settings
+  // Notification settings — initialized from Clerk unsafeMetadata, persisted on toggle.
+  const meta = (user?.unsafeMetadata ?? {}) as Record<string, unknown>;
+  const getMetaBool = (key: string, def: boolean) =>
+    typeof meta[key] === 'boolean' ? (meta[key] as boolean) : def;
+
   const [notifications, setNotifications] = useState({
-    emailDeals: true,
-    emailActivity: true,
-    emailDigest: false,
-    pushDeals: true,
-    pushComments: true,
-    pushMentions: true,
-    weeklyReport: true,
-    monthlyReport: false
+    emailDeals:     getMetaBool('notif_emailDeals', true),
+    emailActivity:  getMetaBool('notif_emailActivity', true),
+    emailDigest:    getMetaBool('notif_emailDigest', false),
+    pushDeals:      getMetaBool('notif_pushDeals', true),
+    pushComments:   getMetaBool('notif_pushComments', true),
+    pushMentions:   getMetaBool('notif_pushMentions', true),
   });
 
-  // Optional user-entered profile details (not used for auth; Clerk remains source of truth).
+  // Profile extras — initialized from Clerk unsafeMetadata.
   const [profileExtras, setProfileExtras] = useState({
-    title: '',
-    company: '',
-    location: '',
-    phone: '',
-    bio: '',
-    linkedIn: '',
-    twitter: '',
+    title:    typeof meta.title    === 'string' ? meta.title    : '',
+    company:  typeof meta.company  === 'string' ? meta.company  : '',
+    location: typeof meta.location === 'string' ? meta.location : '',
+    phone:    typeof meta.phone    === 'string' ? meta.phone    : '',
+    bio:      typeof meta.bio      === 'string' ? meta.bio      : '',
+    linkedIn: typeof meta.linkedIn === 'string' ? meta.linkedIn : '',
+    twitter:  typeof meta.twitter  === 'string' ? meta.twitter  : '',
   });
 
-  const stats = [
-    { label: 'Total Deals', value: '12', icon: <Target className="w-5 h-5" />, color: 'text-blue-400' },
-    { label: 'Documents Created', value: '47', icon: <Award className="w-5 h-5" />, color: 'text-purple-400' },
-    { label: 'Total XP Earned', value: '8,450', icon: <Sparkles className="w-5 h-5" />, color: 'text-yellow-400' },
-    { label: 'Current Level', value: '12', icon: <TrendingUp className="w-5 h-5" />, color: 'text-emerald-400' }
-  ];
-
-  const handleSave = () => {
+  const handleSave = async () => {
     setIsSaving(true);
-    setTimeout(() => {
+    setSaveError(null);
+    try {
+      await user.update({
+        unsafeMetadata: {
+          ...user.unsafeMetadata,
+          ...profileExtras,
+        },
+      });
+    } catch (err) {
+      setSaveError('Save failed — please try again.');
+    } finally {
       setIsSaving(false);
-    }, 1500);
+    }
   };
+
+  const toggleNotif = async (key: keyof typeof notifications, value: boolean) => {
+    setNotifications((prev) => ({ ...prev, [key]: value }));
+    try {
+      await user.update({
+        unsafeMetadata: {
+          ...user.unsafeMetadata,
+          [`notif_${key}`]: value,
+        },
+      });
+    } catch {
+      // Revert optimistic update on failure
+      setNotifications((prev) => ({ ...prev, [key]: !value }));
+    }
+  };
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAvatarUploading(true);
+    try {
+      await user.setProfileImage({ file });
+    } finally {
+      setAvatarUploading(false);
+      // Reset so re-selecting the same file triggers onChange again
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const statCards = [
+    {
+      label: 'Total Deals',
+      value: stats ? String(stats.dealCount) : '—',
+      icon: <Target className="w-5 h-5" />,
+      color: 'text-blue-400',
+    },
+    {
+      label: 'Documents Uploaded',
+      value: stats ? String(stats.documentCount) : '—',
+      icon: <Award className="w-5 h-5" />,
+      color: 'text-purple-400',
+    },
+  ];
 
   return (
     <div className="flex-1 overflow-auto">
@@ -130,9 +187,19 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                   <span aria-hidden>👤</span>
                 )}
               </div>
-              <button className={`absolute -bottom-2 -right-2 w-8 h-8 rounded-full flex items-center justify-center shadow-lg ${
-                darkMode ? 'bg-[#6366f1] hover:bg-[#5558e3]' : 'bg-[#6366f1] hover:bg-[#5558e3]'
-              } text-white transition-colors`}>
+              {/* Hidden file input for avatar upload */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleAvatarChange}
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                disabled={avatarUploading}
+                className={`absolute -bottom-2 -right-2 w-8 h-8 rounded-full flex items-center justify-center shadow-lg bg-[#6366f1] hover:bg-[#5558e3] text-white transition-colors disabled:opacity-50`}
+              >
                 <Camera className="w-4 h-4" />
               </button>
             </div>
@@ -174,9 +241,9 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
             </Button>
           </div>
 
-          {/* Stats Grid */}
-          <div className="grid grid-cols-4 gap-4">
-            {stats.map((stat, i) => (
+          {/* Stats Grid — 2 real cards */}
+          <div className="grid grid-cols-2 gap-4">
+            {statCards.map((stat, i) => (
               <div
                 key={i}
                 className={`p-4 rounded-xl border ${
@@ -242,11 +309,7 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                       Full Name
                     </label>
-                    <Input
-                      darkMode={darkMode}
-                      value={fullName}
-                      disabled
-                    />
+                    <Input darkMode={darkMode} value={fullName} disabled />
                     <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       Managed by Clerk
                     </div>
@@ -255,12 +318,7 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                       Email
                     </label>
-                    <Input
-                      darkMode={darkMode}
-                      type="email"
-                      value={primaryEmail}
-                      disabled
-                    />
+                    <Input darkMode={darkMode} type="email" value={primaryEmail} disabled />
                     <div className={`text-xs mt-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                       Managed by Clerk
                     </div>
@@ -338,7 +396,7 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                   </div>
                   <div>
                     <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      Twitter
+                      Twitter / X
                     </label>
                     <Input
                       darkMode={darkMode}
@@ -348,6 +406,10 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                   </div>
                 </div>
 
+                {saveError && (
+                  <div className="text-sm text-red-400">{saveError}</div>
+                )}
+
                 <div className="flex justify-end pt-4">
                   <Button
                     variant="primary"
@@ -356,13 +418,13 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     loading={isSaving}
                     icon={<Save className="w-4 h-4" />}
                   >
-                    {isSaving ? 'Saving...' : 'Save Changes'}
+                    {isSaving ? 'Saving…' : 'Save Changes'}
                   </Button>
                 </div>
               </div>
             )}
 
-            {/* Preferences Tab */}
+            {/* Preferences Tab — dark mode toggle only; language/tz removed until wired */}
             {activeTab === 'preferences' && (
               <div className="space-y-6">
                 <div>
@@ -397,47 +459,10 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     </div>
                   </div>
                 </div>
-
-                <div>
-                  <h3 className={`text-sm mb-4 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    Language & Region
-                  </h3>
-                  <div className="space-y-3">
-                    <div>
-                      <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Language
-                      </label>
-                      <select className={`w-full px-4 py-2 rounded-lg border ${
-                        darkMode
-                          ? 'bg-white/5 border-white/10 text-white'
-                          : 'bg-white border-gray-200 text-gray-900'
-                      }`}>
-                        <option>English (US)</option>
-                        <option>English (UK)</option>
-                        <option>Spanish</option>
-                        <option>French</option>
-                      </select>
-                    </div>
-                    <div>
-                      <label className={`block text-sm mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Timezone
-                      </label>
-                      <select className={`w-full px-4 py-2 rounded-lg border ${
-                        darkMode
-                          ? 'bg-white/5 border-white/10 text-white'
-                          : 'bg-white border-gray-200 text-gray-900'
-                      }`}>
-                        <option>Pacific Time (PT)</option>
-                        <option>Eastern Time (ET)</option>
-                        <option>Central European Time (CET)</option>
-                      </select>
-                    </div>
-                  </div>
-                </div>
               </div>
             )}
 
-            {/* Notifications Tab */}
+            {/* Notifications Tab — persisted via Clerk unsafeMetadata */}
             {activeTab === 'notifications' && (
               <div className="space-y-6">
                 <div>
@@ -445,11 +470,11 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     Email Notifications
                   </h3>
                   <div className="space-y-3">
-                    {[
-                      { key: 'emailDeals', label: 'New deals created', description: 'Get notified when team members create new deals' },
-                      { key: 'emailActivity', label: 'Activity updates', description: 'Updates on deals you\'re following' },
-                      { key: 'emailDigest', label: 'Daily digest', description: 'Summary of activity sent every morning' }
-                    ].map((item) => (
+                    {([
+                      { key: 'emailDeals',    label: 'New deals created',   description: 'Get notified when team members create new deals' },
+                      { key: 'emailActivity', label: 'Activity updates',    description: "Updates on deals you're following" },
+                      { key: 'emailDigest',   label: 'Daily digest',        description: 'Summary of activity sent every morning' },
+                    ] as const).map((item) => (
                       <div key={item.key} className={`p-4 rounded-xl border ${
                         darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
                       }`}>
@@ -463,13 +488,13 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                             </div>
                           </div>
                           <button
-                            onClick={() => setNotifications({ ...notifications, [item.key]: !notifications[item.key as keyof typeof notifications] })}
+                            onClick={() => toggleNotif(item.key, !notifications[item.key])}
                             className={`relative w-14 h-7 rounded-full transition-colors ${
-                              notifications[item.key as keyof typeof notifications] ? 'bg-[#6366f1]' : 'bg-gray-300'
+                              notifications[item.key] ? 'bg-[#6366f1]' : 'bg-gray-300'
                             }`}
                           >
                             <div className={`absolute top-1 w-5 h-5 bg-white rounded-full transition-transform ${
-                              notifications[item.key as keyof typeof notifications] ? 'translate-x-8' : 'translate-x-1'
+                              notifications[item.key] ? 'translate-x-8' : 'translate-x-1'
                             }`} />
                           </button>
                         </div>
@@ -483,11 +508,11 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                     Push Notifications
                   </h3>
                   <div className="space-y-3">
-                    {[
-                      { key: 'pushDeals', label: 'Deal updates', description: 'Real-time notifications for deal changes' },
-                      { key: 'pushComments', label: 'Comments', description: 'When someone comments on your deals' },
-                      { key: 'pushMentions', label: 'Mentions', description: 'When someone @mentions you' }
-                    ].map((item) => (
+                    {([
+                      { key: 'pushDeals',    label: 'Deal updates', description: 'Real-time notifications for deal changes' },
+                      { key: 'pushComments', label: 'Comments',     description: 'When someone comments on your deals' },
+                      { key: 'pushMentions', label: 'Mentions',     description: 'When someone @mentions you' },
+                    ] as const).map((item) => (
                       <div key={item.key} className={`p-4 rounded-xl border ${
                         darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
                       }`}>
@@ -501,13 +526,13 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
                             </div>
                           </div>
                           <button
-                            onClick={() => setNotifications({ ...notifications, [item.key]: !notifications[item.key as keyof typeof notifications] })}
+                            onClick={() => toggleNotif(item.key, !notifications[item.key])}
                             className={`relative w-14 h-7 rounded-full transition-colors ${
-                              notifications[item.key as keyof typeof notifications] ? 'bg-[#6366f1]' : 'bg-gray-300'
+                              notifications[item.key] ? 'bg-[#6366f1]' : 'bg-gray-300'
                             }`}
                           >
                             <div className={`absolute top-1 w-5 h-5 bg-white rounded-full transition-transform ${
-                              notifications[item.key as keyof typeof notifications] ? 'translate-x-8' : 'translate-x-1'
+                              notifications[item.key] ? 'translate-x-8' : 'translate-x-1'
                             }`} />
                           </button>
                         </div>
@@ -518,97 +543,19 @@ export function Profile({ darkMode, setDarkMode }: ProfileProps) {
               </div>
             )}
 
-            {/* Billing Tab */}
+            {/* Billing Tab — honest placeholder until Stripe is integrated */}
             {activeTab === 'billing' && (
-              <div className="space-y-6">
-                <div className={`p-6 rounded-xl border ${
-                  darkMode
-                    ? 'bg-gradient-to-br from-[#6366f1]/20 to-[#8b5cf6]/10 border-[#6366f1]/30'
-                    : 'bg-gradient-to-br from-[#6366f1]/10 to-[#8b5cf6]/5 border-[#6366f1]/20'
-                }`}>
-                  <div className="flex items-start justify-between mb-4">
-                    <div>
-                      <h3 className={`text-lg mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                        Pro Plan
-                      </h3>
-                      <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Unlimited deals, AI analysis, and team collaboration
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <div className={`text-2xl ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                        $49
-                      </div>
-                      <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        per month
-                      </div>
-                    </div>
-                  </div>
-                  <Button variant="secondary" darkMode={darkMode}>
-                    Manage Subscription
-                  </Button>
-                </div>
-
-                <div>
-                  <h3 className={`text-sm mb-4 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    Payment Method
-                  </h3>
-                  <div className={`p-4 rounded-xl border ${
-                    darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
-                  }`}>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
-                        <CreditCard className="w-5 h-5" />
-                        <div>
-                          <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                            •••• •••• •••• 4242
-                          </div>
-                          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                            Expires 12/25
-                          </div>
-                        </div>
-                      </div>
-                      <Button variant="secondary" darkMode={darkMode} size="sm">
-                        Update
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
-                <div>
-                  <h3 className={`text-sm mb-4 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    Billing History
-                  </h3>
-                  <div className="space-y-2">
-                    {[
-                      { date: 'Dec 1, 2024', amount: '$49.00', status: 'Paid' },
-                      { date: 'Nov 1, 2024', amount: '$49.00', status: 'Paid' },
-                      { date: 'Oct 1, 2024', amount: '$49.00', status: 'Paid' }
-                    ].map((invoice, i) => (
-                      <div key={i} className={`p-4 rounded-xl border ${
-                        darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
-                      }`}>
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-4">
-                            <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                              {invoice.date}
-                            </div>
-                            <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                              {invoice.amount}
-                            </div>
-                            <div className="flex items-center gap-1 text-emerald-400 text-xs">
-                              <CheckCircle className="w-3 h-3" />
-                              {invoice.status}
-                            </div>
-                          </div>
-                          <Button variant="secondary" darkMode={darkMode} size="sm">
-                            Download
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+              <div className="py-12 text-center">
+                <CreditCard className={`w-8 h-8 mx-auto mb-3 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`} />
+                <p className={`text-sm mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  Billing is managed externally.
+                </p>
+                <a
+                  href="mailto:support@dealdecisionai.com"
+                  className="text-[#6366f1] text-sm hover:underline"
+                >
+                  Contact support for billing questions
+                </a>
               </div>
             )}
           </div>

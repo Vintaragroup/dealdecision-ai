@@ -2600,4 +2600,11 @@ export const apiClient = {
     })
 };
 
+export async function apiGetProfileStats(): Promise<{ dealCount: number; documentCount: number }> {
+  const headers = await getAuthHeader();
+  const res = await fetch(`${API_BASE_URL}/api/v1/profile/stats`, { headers });
+  if (!res.ok) throw new Error(`profile/stats ${res.status}`);
+  return res.json();
+}
+
 export type { Deal };

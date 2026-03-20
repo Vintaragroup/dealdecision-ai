@@ -94,6 +94,12 @@
     build: {
       target: 'esnext',
       outDir: 'build',
+      // Disable esbuild CSS minification: esbuild strips `&` from inside :where()
+      // when processing Tailwind v4 CSS nesting (e.g. :where(& > :not(:last-child)) →
+      // :where(>:not(:last-child))), making space-y-* / divide-* utilities produce 0px
+      // margins in production while local dev (no minification pass) works correctly.
+      // The Tailwind CLI output is already compact enough that whitespace savings are minor.
+      cssMinify: false,
     },
     server: {
       port: 5173,

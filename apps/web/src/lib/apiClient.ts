@@ -2936,6 +2936,35 @@ export async function apiGetTeamSeats(): Promise<{
   return request('/api/v1/team/seats');
 }
 
+export async function apiCreateTeamInvite(body: {
+  email?: string;
+  access_duration_days?: 3 | 5 | 7 | 14;
+  notes?: string;
+}): Promise<{ ok: boolean; invite_url: string; code: string }> {
+  return request('/api/v1/team/invite', {
+    method: 'POST',
+    body: JSON.stringify({ access_duration_days: 7, ...body }),
+  });
+}
+
+export async function apiSetTeamMemberRole(
+  userId: string,
+  orgRole: 'org_owner' | 'org_manager' | 'org_member'
+): Promise<{ ok: boolean; member: OrgMember }> {
+  return request(`/api/v1/team/members/${encodeURIComponent(userId)}/role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ org_role: orgRole }),
+  });
+}
+
+export async function apiRemoveTeamMember(
+  userId: string
+): Promise<{ ok: boolean }> {
+  return request(`/api/v1/team/members/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const apiClient = {

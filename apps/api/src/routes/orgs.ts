@@ -16,6 +16,71 @@
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { getPool } from "../lib/db";
+import { randomBytes } from "node:crypto";
+
+function generateInviteCode(): string {
+  return randomBytes(16).toString("hex");
+}
+
+function buildInviteUrl(request: FastifyRequest, code: string): string {
+  const baseUrl =
+    process.env.APP_BASE_URL?.trim() ||
+    process.env.FRONTEND_URL?.trim() ||
+    `${request.protocol}://${request.hostname}`;
+  return `${baseUrl}/invite?code=${encodeURIComponent(code)}`;
+}
+
+/**
+ * Check caller is a platform admin OR an active org_owner/org_manager in their org.
+ * Returns { ok, orgId } on success; sends a 401/403 reply and returns { ok: false } on failure.
+ */
+async function requireOrgManagerOrAdmin(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<{ ok: boolean; orgId: string | null; userId: string | null }> {
+  if (Boolean(request.auth?.claims?.['bypass_auth'])) {
+    return { ok: true, orgId: request.auth?.orgId ?? 'dev_org', userId: request.auth?.userId ?? 'dev_user' };
+  }
+
+  const userId = request.auth?.userId;
+  if (!userId) {
+    reply.status(401).send({ error: 'Unauthorized' });
+    return { ok: false, orgId: null, userId: null };
+  }
+
+  const pool = getPool();
+
+  // Platform admins always pass.
+  const { rows: adminRows } = await pool.query(
+    `SELECT is_admin FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
+    [userId]
+  );
+  if (adminRows[0]?.is_admin === true) {
+    return { ok: true, orgId: request.auth?.orgId ?? null, userId };
+  }
+
+  // Otherwise require an active org_owner or org_manager membership.
+  const orgId = request.auth?.orgId ?? null;
+  if (!orgId) {
+    reply.status(403).send({ error: 'Forbidden: no organization found in token' });
+    return { ok: false, orgId: null, userId };
+  }
+
+  const { rows: memberRows } = await pool.query(
+    `SELECT org_role FROM organization_memberships
+      WHERE clerk_org_id = $1 AND clerk_user_id = $2 AND membership_status = 'active'
+      LIMIT 1`,
+    [orgId, userId]
+  );
+
+  const orgRole = memberRows[0]?.org_role;
+  if (orgRole !== 'org_owner' && orgRole !== 'org_manager') {
+    reply.status(403).send({ error: 'Forbidden: org owner or manager access required' });
+    return { ok: false, orgId: null, userId };
+  }
+
+  return { ok: true, orgId, userId };
+}
 
 // ---------------------------------------------------------------------------
 // Admin auth guard (matches admin.ts)
@@ -309,9 +374,9 @@ export async function registerOrgRoutes(app: FastifyInstance) {
     }
 
     const { rows: members } = await pool.query(
-      `SELECT om.clerk_user_id, om.org_role, om.membership_status, om.seat_consuming,
-              om.created_at,
-              pa.access_status, pa.account_role
+      `SELECT om.id, om.clerk_user_id, om.org_role, om.membership_status, om.seat_consuming,
+              om.created_at, om.updated_at,
+              pa.access_status, pa.is_admin, pa.account_role
          FROM organization_memberships om
          LEFT JOIN platform_access pa ON pa.clerk_user_id = om.clerk_user_id
         WHERE om.clerk_org_id = $1 AND om.membership_status = 'active'
@@ -336,6 +401,155 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       seat_limit: seatLimit,
     });
   });
+
+  // ─── Team: invite creation ────────────────────────────────────────────────
+
+  /**
+   * POST /api/v1/team/invite
+   * Create an org-scoped invite link.
+   * Requires: caller is a platform admin OR an active org_owner/org_manager.
+   *
+   * Body: { email?, access_duration_days?: 3|5|7|14, notes? }
+   */
+  app.post<{
+    Body: { email?: string | null; access_duration_days?: number; notes?: string | null };
+  }>("/api/v1/team/invite", async (request, reply) => {
+    const auth = await requireOrgManagerOrAdmin(request, reply);
+    if (!auth.ok) return;
+
+    const { orgId, userId } = auth;
+    if (!orgId) {
+      return reply.status(403).send({ error: 'No organization found — cannot create org-scoped invite' });
+    }
+
+    const { email = null, access_duration_days = 7, notes = null } = request.body ?? {};
+
+    const validDurations = [3, 5, 7, 14];
+    if (!validDurations.includes(Number(access_duration_days))) {
+      return reply.status(400).send({ error: 'access_duration_days must be 3, 5, 7, or 14' });
+    }
+
+    const pool = getPool();
+
+    // Check seat limit before creating the invite.
+    const { rows: settingsRows } = await pool.query(
+      `SELECT seat_limit FROM organization_settings WHERE clerk_org_id = $1 LIMIT 1`,
+      [orgId]
+    );
+    const seatLimit = settingsRows[0]?.seat_limit ?? null;
+
+    if (seatLimit !== null) {
+      const { rows: seatCountRows } = await pool.query(
+        `SELECT COUNT(*)::int AS cnt FROM organization_memberships
+          WHERE clerk_org_id = $1 AND membership_status = 'active' AND seat_consuming = true`,
+        [orgId]
+      );
+      const activeSeats = seatCountRows[0]?.cnt ?? 0;
+      if (activeSeats >= seatLimit) {
+        return reply.status(403).send({
+          error: 'SEAT_LIMIT_REACHED',
+          message: 'Organization seat limit reached. Remove a member or upgrade to add more.',
+        });
+      }
+    }
+
+    const code = generateInviteCode();
+    const inviteUrl = buildInviteUrl(request, code);
+
+    await pool.query(
+      `INSERT INTO invite_codes
+         (code, email, org_id, created_by_user_id, status, access_duration_days, grant_source, notes, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, 'active', $5, 'invite', $6, now(), now())`,
+      [code, email ?? null, orgId, userId, access_duration_days, notes ?? null]
+    );
+
+    return reply.send({ ok: true, invite_url: inviteUrl, code });
+  });
+
+  // ─── Team: member role update ─────────────────────────────────────────────
+
+  /**
+   * PATCH /api/v1/team/members/:userId/role
+   * Change a team member's org_role.
+   * Requires: caller is platform admin OR active org_owner in their org.
+   *
+   * Body: { org_role: 'org_owner' | 'org_manager' | 'org_member' }
+   */
+  app.patch<{
+    Params: { userId: string };
+    Body: { org_role: string };
+  }>("/api/v1/team/members/:userId/role", async (request, reply) => {
+    const auth = await requireOrgManagerOrAdmin(request, reply);
+    if (!auth.ok) return;
+
+    const { orgId } = auth;
+    if (!orgId) {
+      return reply.status(403).send({ error: 'No organization found in token' });
+    }
+
+    const { userId: targetUserId } = request.params;
+    const { org_role } = request.body ?? {};
+
+    const validRoles = ['org_owner', 'org_manager', 'org_member'];
+    if (!validRoles.includes(org_role)) {
+      return reply.status(400).send({ error: `org_role must be one of: ${validRoles.join(', ')}` });
+    }
+
+    const pool = getPool();
+    const { rows } = await pool.query(
+      `UPDATE organization_memberships
+          SET org_role = $1, updated_at = now()
+        WHERE clerk_org_id = $2 AND clerk_user_id = $3
+        RETURNING *`,
+      [org_role, orgId, targetUserId]
+    );
+
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: 'Membership not found in your organization' });
+    }
+
+    return reply.send({ ok: true, member: rows[0] });
+  });
+
+  // ─── Team: remove member ──────────────────────────────────────────────────
+
+  /**
+   * DELETE /api/v1/team/members/:userId
+   * Revoke a team member's org membership.
+   * Requires: caller is platform admin OR active org_owner in their org.
+   */
+  app.delete<{ Params: { userId: string } }>(
+    "/api/v1/team/members/:userId",
+    async (request, reply) => {
+      const auth = await requireOrgManagerOrAdmin(request, reply);
+      if (!auth.ok) return;
+
+      const { orgId, userId: callerId } = auth;
+      if (!orgId) {
+        return reply.status(403).send({ error: 'No organization found in token' });
+      }
+
+      const { userId: targetUserId } = request.params;
+      if (targetUserId === callerId) {
+        return reply.status(400).send({ error: 'You cannot remove yourself from the organization' });
+      }
+
+      const pool = getPool();
+      const { rows } = await pool.query(
+        `UPDATE organization_memberships
+            SET membership_status = 'revoked', updated_at = now()
+          WHERE clerk_org_id = $1 AND clerk_user_id = $2
+          RETURNING clerk_org_id, clerk_user_id, membership_status, updated_at`,
+        [orgId, targetUserId]
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'Membership not found in your organization' });
+      }
+
+      return reply.send({ ok: true, member: rows[0] });
+    }
+  );
 
   /**
    * GET /api/v1/team/seats

@@ -371,12 +371,15 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
+    // Bypass auth (local dev): treat caller as platform admin.
+    const isBypassAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+
     // Resolve org_id: from JWT orgId, platform_access.org_id, then org discovery for platform admins.
     const clerkOrgId = request.auth?.orgId;
     const pool = getPool();
 
     let orgId: string | null = clerkOrgId ?? null;
-    let isAdmin = false;
+    let isAdmin = isBypassAuth;
 
     if (!orgId) {
       const { rows: paRows } = await pool.query(
@@ -426,6 +429,7 @@ export async function registerOrgRoutes(app: FastifyInstance) {
     const currentMember = (members as { clerk_user_id: string; org_role: string; is_admin: boolean | null }[])
       .find((m) => m.clerk_user_id === userId);
     let canManage =
+      isAdmin || // already resolved above (bypass_auth or platform_access lookup)
       currentMember?.is_admin === true ||
       currentMember?.org_role === 'org_owner' ||
       currentMember?.org_role === 'org_manager';

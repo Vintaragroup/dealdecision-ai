@@ -3,6 +3,7 @@ type KeyLike = unknown;
 type KeyOrKeyFunction = unknown;
 
 import type { ClerkAuthContext } from '../types/auth';
+import { getPool } from '../lib/db';
 
 let cachedJosePromise: Promise<any> | null = null;
 async function getJose() {
@@ -290,6 +291,68 @@ function isProtectedPath(url: string): boolean {
   return url.startsWith('/api/v1/');
 }
 
+// Routes that skip entitlement checks (admin-internal operations that must work
+// before an access row exists — e.g. provisioning the first admin user).
+function isEntitlementExemptPath(url: string): boolean {
+  // Admin platform-access provisioning: exempt so an admin can bootstrap users.
+  if (url.startsWith('/api/v1/admin/platform-access')) return true;
+  // Admin invite code management: exempt (admin may not have their own access row yet).
+  if (url.startsWith('/api/v1/admin/invite-codes')) return true;
+  // Invite validation: unauthenticated-ish path, does not need entitlement check.
+  if (url.startsWith('/api/v1/invites/validate')) return true;
+  // Invite redemption: signed-in user may have no platform_access row yet.
+  if (url.startsWith('/api/v1/invites/redeem')) return true;
+  return false;
+}
+
+export type EntitlementError =
+  | 'ACCESS_NOT_PROVISIONED'
+  | 'ACCESS_PENDING'
+  | 'ACCESS_EXPIRED'
+  | 'ACCESS_REVOKED';
+
+type EntitlementRow = {
+  access_status: string;
+  access_expires_at: string | null;
+};
+
+function isPlatformEntitlementEnabled(): boolean {
+  // Entitlement enforcement is ON by default in production.
+  // Set PLATFORM_ENTITLEMENT_ENABLED=0 to disable (dev/migration window only).
+  // When DISABLE_CLERK_AUTH=1 the bypass logic prevents us reaching this function,
+  // so no separate guard is needed here.
+  return parseBoolEnv(process.env.PLATFORM_ENTITLEMENT_ENABLED, true);
+}
+
+async function checkEntitlement(userId: string): Promise<EntitlementError | null> {
+  if (!isPlatformEntitlementEnabled()) return null;
+
+  const pool = getPool();
+  const { rows } = await pool.query<EntitlementRow>(
+    `SELECT access_status, access_expires_at
+       FROM platform_access
+      WHERE clerk_user_id = $1
+      LIMIT 1`,
+    [userId]
+  );
+
+  if (rows.length === 0) return 'ACCESS_NOT_PROVISIONED';
+
+  const { access_status, access_expires_at } = rows[0];
+
+  if (access_status === 'revoked') return 'ACCESS_REVOKED';
+  if (access_status === 'pending') return 'ACCESS_PENDING';
+  if (access_status === 'expired') return 'ACCESS_EXPIRED';
+
+  // 'active' but window has closed
+  if (access_expires_at !== null) {
+    const expiresMs = new Date(access_expires_at).getTime();
+    if (Number.isFinite(expiresMs) && Date.now() > expiresMs) return 'ACCESS_EXPIRED';
+  }
+
+  return null;
+}
+
 export async function registerClerkAuth(app: FastifyInstance) {
   app.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
     if (request.method === 'OPTIONS') return;
@@ -318,6 +381,30 @@ export async function registerClerkAuth(app: FastifyInstance) {
 
       reply.status(status).send({ error: err instanceof Error ? err.message : 'Unauthorized' });
       return;
+    }
+
+    // Entitlement check — skip if:
+    //   • auth was bypassed (dev mode — request.auth.claims.bypass_auth is set)
+    //   • path is exempt (admin provisioning)
+    //   • entitlement enforcement is disabled via env flag
+    const bypassedAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+    if (!bypassedAuth && !isEntitlementExemptPath(request.url)) {
+      try {
+        const userId = request.auth!.userId;
+        const denial = await checkEntitlement(userId);
+        if (denial !== null) {
+          reply.status(403).send({ error: denial, code: denial });
+          return;
+        }
+      } catch (err: any) {
+        // DB unavailable during entitlement check — fail closed in production.
+        request.log.error(
+          { event: 'entitlement_check_error', err },
+          'Entitlement DB lookup failed; denying request'
+        );
+        reply.status(503).send({ error: 'Service temporarily unavailable', code: 'ENTITLEMENT_CHECK_FAILED' });
+        return;
+      }
     }
   });
 }

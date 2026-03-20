@@ -8,6 +8,13 @@ const META_ENV = (import.meta as any)?.env as any;
 // Local dev default: docker-compose.dev.yml exposes the API on 9001.
 // (VITE_API_BASE_URL remains the authoritative override.)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:9001';
+
+const ACCESS_DENIAL_CODES = new Set([
+  'ACCESS_NOT_PROVISIONED',
+  'ACCESS_PENDING',
+  'ACCESS_EXPIRED',
+  'ACCESS_REVOKED',
+]);
 // Default to live for any non-dev build (Render preview/staging builds may not set import.meta.env.PROD).
 // Default to mock only for true local dev.
 const DEFAULT_BACKEND_MODE = META_ENV?.DEV ? 'mock' : 'live';
@@ -414,6 +421,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
           res = refreshed;
           responseJson = await res.json();
           return responseJson as T;
+        }
+      }
+
+      // Redirect to access-denied page for platform entitlement denials.
+      if (res.status === 403) {
+        try {
+          const parsed = JSON.parse(bodyText);
+          if (typeof parsed?.code === 'string' && ACCESS_DENIAL_CODES.has(parsed.code)) {
+            window.location.href = `/access-denied?code=${encodeURIComponent(parsed.code)}`;
+            throw new Error(`Access denied: ${parsed.code}`);
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message.startsWith('Access denied:')) throw e;
+          // not an entitlement denial — fall through to generic error
         }
       }
 
@@ -2578,6 +2599,396 @@ export async function apiGetExportPdfStatus(
   return request<ExportPdfStatusResponse>(
     `/api/v1/deals/${dealId}/report/export-pdf/${exportId}`
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invite Code API
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type InviteValidateResponse = {
+  valid: boolean;
+  code?: string;
+  reason?: string;
+  access_duration_days?: number;
+  email_restricted?: boolean;
+  org_id?: string | null;
+};
+
+export type InviteRedeemResponse = {
+  ok: boolean;
+  access_expires_at: string;
+  access_duration_days: number;
+};
+
+export type AdminCreateInviteBody = {
+  access_duration_days: 3 | 5 | 7 | 14;
+  email?: string;
+  org_id?: string;
+  expires_at?: string;
+  notes?: string;
+};
+
+export type AdminCreateInviteResponse = {
+  ok: boolean;
+  record: {
+    id: string;
+    code: string;
+    email: string | null;
+    org_id: string | null;
+    status: string;
+    access_duration_days: number;
+    expires_at: string | null;
+    created_at: string;
+  };
+  invite_url: string;
+};
+
+export async function apiValidateInvite(code: string, email?: string): Promise<InviteValidateResponse> {
+  return request<InviteValidateResponse>('/api/v1/invites/validate', {
+    method: 'POST',
+    body: JSON.stringify({ code, ...(email ? { email } : {}) }),
+  });
+}
+
+export async function apiRedeemInvite(code: string): Promise<InviteRedeemResponse> {
+  return request<InviteRedeemResponse>('/api/v1/invites/redeem', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function apiAdminCreateInvite(body: AdminCreateInviteBody): Promise<AdminCreateInviteResponse> {
+  const adminToken = getDevAdminToken();
+  return request<AdminCreateInviteResponse>('/api/v1/admin/invite-codes', {
+    method: 'POST',
+    body: JSON.stringify(body),
+    headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Me / current-user API
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type MeAccessResponse = {
+  clerk_user_id: string;
+  access_status: 'active' | 'pending' | 'expired' | 'revoked';
+  access_expires_at: string | null;
+  is_admin: boolean;
+  account_role: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client';
+};
+
+export async function apiGetMyAccess(): Promise<MeAccessResponse> {
+  return request<MeAccessResponse>('/api/v1/me/access');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin — Platform Access Management
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type PlatformAccessRecord = {
+  id: string;
+  clerk_user_id: string;
+  org_id: string | null;
+  access_status: 'active' | 'pending' | 'expired' | 'revoked';
+  access_expires_at: string | null;
+  granted_by_user_id: string | null;
+  grant_source: string | null;
+  notes: string | null;
+  is_admin: boolean;
+  account_role: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client';
+  created_at: string;
+  updated_at: string;
+};
+
+export async function apiAdminListPlatformAccess(opts?: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+}): Promise<{ records: PlatformAccessRecord[]; limit: number; offset: number }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.offset != null) params.set('offset', String(opts.offset));
+  if (opts?.status) params.set('status', opts.status);
+  const qs = params.toString();
+  return request(`/api/v1/admin/platform-access${qs ? `?${qs}` : ''}`);
+}
+
+export async function apiAdminSetAdminStatus(
+  clerkUserId: string,
+  isAdmin: boolean
+): Promise<{ ok: boolean; record: { clerk_user_id: string; access_status: string; is_admin: boolean; updated_at: string } }> {
+  return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/admin-status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ is_admin: isAdmin }),
+  });
+}
+
+export async function apiAdminRevokeAccess(
+  clerkUserId: string
+): Promise<{ ok: boolean; record: { clerk_user_id: string; access_status: string; updated_at: string } }> {
+  return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/revoke`, {
+    method: 'PATCH',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function apiAdminExtendAccess(
+  clerkUserId: string,
+  accessDurationDays: number
+): Promise<{ ok: boolean; record: { clerk_user_id: string; access_status: string; access_expires_at: string; updated_at: string } }> {
+  return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/extend`, {
+    method: 'PATCH',
+    body: JSON.stringify({ access_duration_days: accessDurationDays }),
+  });
+}
+
+export async function apiAdminSetAccountRole(
+  clerkUserId: string,
+  accountRole: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client'
+): Promise<{ ok: boolean; record: { clerk_user_id: string; account_role: string; is_admin: boolean; updated_at: string } }> {
+  return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/account-role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ account_role: accountRole }),
+  });
+}
+
+export async function apiAdminProvisionUser(
+  clerkUserId: string,
+  opts?: { account_role?: string; access_duration_days?: number; notes?: string }
+): Promise<{ ok: boolean; record: PlatformAccessRecord }> {
+  return request('/api/v1/admin/provision-user', {
+    method: 'POST',
+    body: JSON.stringify({ clerk_user_id: clerkUserId, ...opts }),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin — Merged user view (Clerk identity + platform_access)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type MergedUserRecord = {
+  // Identity from Clerk (null when Clerk is unavailable)
+  clerk_user_id: string;
+  email: string | null;
+  full_name: string | null;
+  clerk_created_at: string | null;
+  // Authorization from platform_access (null when not provisioned)
+  id: string | null;
+  org_id: string | null;
+  access_status: 'active' | 'pending' | 'expired' | 'revoked' | 'not_provisioned';
+  access_expires_at: string | null;
+  is_admin: boolean;
+  account_role: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client' | null;
+  grant_source: string | null;
+  notes: string | null;
+  granted_by_user_id: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+export async function apiAdminListUsers(opts?: {
+  limit?: number;
+}): Promise<{ clerkAvailable: boolean; records: MergedUserRecord[]; total: number }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request(`/api/v1/admin/users${qs ? `?${qs}` : ''}`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin — Invite management (additions to existing)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type AdminInviteRecord = {
+  id: string;
+  code: string;
+  email: string | null;
+  org_id: string | null;
+  created_by_user_id: string | null;
+  status: 'active' | 'redeemed' | 'expired' | 'revoked';
+  access_duration_days: number;
+  expires_at: string | null;
+  redeemed_at: string | null;
+  redeemed_by_clerk_user_id: string | null;
+  redeemed_email: string | null;
+  grant_source: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function apiAdminListInvites(opts?: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+}): Promise<{ records: AdminInviteRecord[]; limit: number; offset: number }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.offset != null) params.set('offset', String(opts.offset));
+  if (opts?.status) params.set('status', opts.status);
+  const qs = params.toString();
+  return request(`/api/v1/admin/invite-codes${qs ? `?${qs}` : ''}`);
+}
+
+export async function apiAdminRevokeInvite(code: string): Promise<{ ok: boolean }> {
+  return request(`/api/v1/admin/invite-codes/${encodeURIComponent(code)}/revoke`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Org & Team management
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type OrgSettings = {
+  id: string;
+  clerk_org_id: string;
+  organization_name: string | null;
+  included_seats: number;
+  seat_limit: number;
+  billing_status: 'trial' | 'active' | 'past_due' | 'cancelled';
+  notes: string | null;
+  active_seats?: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OrgMember = {
+  id: string;
+  clerk_org_id: string;
+  clerk_user_id: string;
+  org_role: 'org_owner' | 'org_manager' | 'org_member';
+  membership_status: 'active' | 'pending' | 'revoked';
+  seat_consuming: boolean;
+  invited_by_clerk_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined from platform_access
+  access_status: string | null;
+  is_admin: boolean | null;
+  account_role: string | null;
+};
+
+export type TeamMembersResponse = {
+  org_id: string | null;
+  organization_name: string | null;
+  members: OrgMember[];
+  active_seats: number;
+  seat_limit: number | null;
+  /** Server-authoritative flag: true if the authenticated user can invite/manage members. */
+  can_manage?: boolean;
+};
+
+export async function apiAdminListOrgs(): Promise<{ orgs: OrgSettings[] }> {
+  return request('/api/v1/admin/orgs');
+}
+
+export async function apiAdminGetOrg(orgId: string): Promise<{ org: OrgSettings }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}`);
+}
+
+export async function apiAdminUpsertOrg(
+  orgId: string,
+  data: Partial<Pick<OrgSettings, 'organization_name' | 'included_seats' | 'seat_limit' | 'billing_status' | 'notes'>>
+): Promise<{ ok: boolean; org: OrgSettings }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+export async function apiAdminListOrgMembers(
+  orgId: string
+): Promise<{ members: OrgMember[]; active_seats: number }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}/members`);
+}
+
+export async function apiAdminSetOrgMemberRole(
+  orgId: string,
+  userId: string,
+  orgRole: 'org_owner' | 'org_manager' | 'org_member'
+): Promise<{ ok: boolean; member: OrgMember }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}/role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ org_role: orgRole }),
+  });
+}
+
+export async function apiAdminRevokeOrgMembership(
+  orgId: string,
+  userId: string
+): Promise<{ ok: boolean }> {
+  return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function apiGetTeamMembers(): Promise<TeamMembersResponse> {
+  return request('/api/v1/team/members');
+}
+
+export async function apiGetTeamSeats(): Promise<{
+  org_id: string | null;
+  active_seats: number;
+  seat_limit: number | null;
+  seats_available: number | null;
+}> {
+  return request('/api/v1/team/seats');
+}
+
+export async function apiCreateTeamInvite(body: {
+  email?: string;
+  access_duration_days?: 3 | 5 | 7 | 14;
+  notes?: string;
+}): Promise<{ ok: boolean; invite_url: string; code: string }> {
+  return request('/api/v1/team/invite', {
+    method: 'POST',
+    body: JSON.stringify({ access_duration_days: 7, ...body }),
+  });
+}
+
+export async function apiSetTeamMemberRole(
+  userId: string,
+  orgRole: 'org_owner' | 'org_manager' | 'org_member'
+): Promise<{ ok: boolean; member: OrgMember }> {
+  return request(`/api/v1/team/members/${encodeURIComponent(userId)}/role`, {
+    method: 'PATCH',
+    body: JSON.stringify({ org_role: orgRole }),
+  });
+}
+
+export async function apiRemoveTeamMember(
+  userId: string
+): Promise<{ ok: boolean }> {
+  return request(`/api/v1/team/members/${encodeURIComponent(userId)}`, {
+    method: 'DELETE',
+  });
+}
+
+export type PendingInvite = {
+  id: string;
+  code: string;
+  email: string | null;
+  org_id: string | null;
+  status: 'active' | 'redeemed' | 'expired' | 'revoked';
+  access_duration_days: number;
+  expires_at: string | null;
+  created_at: string;
+  created_by_user_id: string | null;
+  notes: string | null;
+  invite_url: string;
+};
+
+export async function apiGetTeamInvites(): Promise<{ ok: boolean; invites: PendingInvite[] }> {
+  return request('/api/v1/team/invites');
+}
+
+export async function apiRevokeTeamInvite(code: string): Promise<{ ok: boolean }> {
+  return request(`/api/v1/team/invites/${encodeURIComponent(code)}`, {
+    method: 'DELETE',
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

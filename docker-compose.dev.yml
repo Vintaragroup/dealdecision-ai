@@ -70,7 +70,10 @@ services:
     environment:
       API_PORT: "9000"
       UPLOAD_DIR: /app/uploads
+      # SECURITY: defaults to 1 (off) for local dev only — MUST be 0 in production
       DISABLE_CLERK_AUTH: ${DISABLE_CLERK_AUTH:-1}
+      # Entitlement enforcement — set to 0 during migration window, 1 for full enforcement
+      PLATFORM_ENTITLEMENT_ENABLED: ${PLATFORM_ENTITLEMENT_ENABLED:-0}
       DETERMINISTIC_SCORE_V1_ENABLED: ${DETERMINISTIC_SCORE_V1_ENABLED:-1}
       # NOTE: Root .env is used for compose substitution only; runtime injection is explicit.
       OPENAI_API_KEY: ${OPENAI_API_KEY}

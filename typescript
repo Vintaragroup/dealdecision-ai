@@ -472,4 +472,27 @@ INSERT 0 1
 (1 row)
 
 UPDATE 1
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  grep "@clerk" apps/web/package.json[?2004l
+        "@clerk/clerk-react": "^5.59.5",
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  pnpm --filter web exec tsc --noEmit 2>&1 | head -40[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h[?2004l
+[1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h  cd /Users/ryanmorrow/Documents/Projects2025/DealDecisionAI && git add apps/web/src/App.tsx apps/web/src/components/auth/I [KnnviteEntryPage.tsx && git commit -m "fix: repair invite onboarding flow for new and existing users[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h-- App.tsx: replace static afterSignInUrl with dynamic redirect_url reading[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h   so Clerk returns users to /invite?code=xxx after auth instead of /app[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h-- App.tsx: add /sign-up route with <SignUp> + dynamic afterSignUpUrl so[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h   brand-new users can create accounts during the invite flow[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h-- App.tsx: add signUpUrl prop to <SignIn> so the Clerk widget links to /sign-up[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h-- InviteEntryPage: add 'Create account' button alongside 'Sign in' in the[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h   preview_signedout phase[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h-- Security: safeRedirectUrl() validates redirect_url must start with '/'[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004h[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004hNNote: Clerk dashboard must be set to 'Public' sign-ups for new account[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004hccreation to complete. Platform access is still gated by platform_access \u2014[?2004l
+[0m[27m[24m[Jcmdand cmdand dquote> [K[?2004haa new account without a redeemed invite gets ACCESS_NOT_PROVISIONED." && echo "COMMIT_EXIT:$?"[?2004l
+[feature/invite-auth-system 0af0a0a] fix: repair invite onboarding flow for new and existing users
+ 2 files changed, 77 insertions(+), 26 deletions(-)
+COMMIT_EXIT:0
 [1m[7m%[27m[1m[0m                                                                                                                                                                [0m[27m[24m[Jryanmorrow@Ryans-MBP DealDecisionAI % [K[?2004h

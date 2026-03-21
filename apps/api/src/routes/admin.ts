@@ -97,6 +97,58 @@ async function requireAdminAuth(
   return true;
 }
 
+/**
+ * Super admin auth check — requires account_role = 'super_admin'.
+ *
+ * Use for routes that only super_admin should access:
+ *   - promoting / demoting admin status
+ *   - assigning super_admin role
+ *
+ * Note: callers must already have passed requireAdminAuth (is_admin = true).
+ * This adds the additional super_admin constraint on top of that.
+ */
+async function requireSuperAdminAuth(
+  request: FastifyRequest,
+  reply: FastifyReply
+): Promise<boolean> {
+  // Dev auth bypass — treated as super_admin locally.
+  if (Boolean(request.auth?.claims?.['bypass_auth'])) return true;
+
+  // ADMIN_TOKEN escape hatch (bootstrap / CLI scripts).
+  const adminToken = process.env.ADMIN_TOKEN?.trim();
+  if (adminToken) {
+    const provided =
+      (request.headers['x-admin-token'] as string | undefined) ??
+      request.headers.authorization?.replace(/^Bearer\s+/i, '');
+    if (typeof provided === 'string' && provided.trim() === adminToken) return true;
+  }
+
+  const userId = request.auth?.userId;
+  if (!userId) {
+    reply.status(401).send({ error: 'Unauthorized' });
+    return false;
+  }
+
+  let isSuperAdmin: boolean;
+  try {
+    isSuperAdmin = await isDbSuperAdmin(userId);
+  } catch (err) {
+    request.log.error({ event: 'super_admin_check_db_error', err }, 'DB super_admin check failed');
+    reply.status(503).send({ error: 'Service temporarily unavailable' });
+    return false;
+  }
+
+  if (!isSuperAdmin) {
+    reply.status(403).send({
+      error: 'Forbidden: super_admin role required',
+      code: 'SUPER_ADMIN_REQUIRED',
+    });
+    return false;
+  }
+
+  return true;
+}
+
 export async function registerAdminRoutes(app: FastifyInstance) {
   // DB-backed admin check on all /api/v1/admin/* routes.
   // Exempt: /api/v1/admin/bootstrap-first-admin (see below — has its own guard).
@@ -585,6 +637,12 @@ export async function registerAdminRoutes(app: FastifyInstance) {
   }>(
     "/api/v1/admin/platform-access/:clerkUserId/admin-status",
     async (request, reply) => {
+      // Only super_admin may promote or demote admin access.
+      // requireAdminAuth (is_admin = true) is already enforced by the preHandler above;
+      // this adds the additional super_admin constraint specifically for this route.
+      const superAllowed = await requireSuperAdminAuth(request, reply);
+      if (!superAllowed) return;
+
       const { clerkUserId } = request.params;
       const { is_admin } = request.body ?? {};
 
@@ -637,6 +695,25 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const actorId = request.auth?.userId;
 
       const pool = getPool();
+
+      // Prevent non-super_admin from revoking a super_admin's access.
+      const bypassedAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+      if (!bypassedAuth) {
+        const { rows: targetRows } = await pool.query(
+          `SELECT account_role FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
+          [clerkUserId]
+        );
+        if (targetRows.length > 0 && targetRows[0].account_role === 'super_admin') {
+          const callerIsSuperAdmin = actorId ? await isDbSuperAdmin(actorId) : false;
+          if (!callerIsSuperAdmin) {
+            return reply.status(403).send({
+              error: 'Forbidden: only a super_admin may revoke another super_admin',
+              code: 'SUPER_ADMIN_REQUIRED',
+            });
+          }
+        }
+      }
+
       const { rows } = await pool.query(
         `UPDATE platform_access
             SET access_status = 'revoked', updated_at = now(),

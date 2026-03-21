@@ -32,10 +32,16 @@ type AdminStatus = 'loading' | 'allowed' | 'denied';
 export default function AdminControlPanel() {
   const [activeTab, setActiveTab] = useState<TabType>('overview');
   const [adminStatus, setAdminStatus] = useState<AdminStatus>('loading');
+  const [adminRole, setAdminRole] = useState<'super_admin' | 'admin' | null>(null);
 
   useEffect(() => {
     apiGetMyAccess()
-      .then((r) => setAdminStatus(r.is_admin ? 'allowed' : 'denied'))
+      .then((r) => {
+        setAdminStatus(r.is_admin ? 'allowed' : 'denied');
+        if (r.is_admin) {
+          setAdminRole(r.account_role === 'super_admin' ? 'super_admin' : 'admin');
+        }
+      })
       .catch(() => setAdminStatus('denied'));
   }, []);
 
@@ -61,7 +67,20 @@ export default function AdminControlPanel() {
             <span>/</span>
             <span className="text-zinc-300">Admin</span>
           </div>
-          <h1 className="text-3xl font-semibold text-white mb-2">Admin Control Panel</h1>
+          <div className="flex items-center gap-3 mb-2">
+            <h1 className="text-3xl font-semibold text-white">Admin Control Panel</h1>
+            {adminRole === 'super_admin' ? (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                <ShieldCheck className="w-3 h-3" />
+                Super Admin
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-zinc-700/60 text-zinc-300 border border-zinc-600/40">
+                <Shield className="w-3 h-3" />
+                Admin
+              </span>
+            )}
+          </div>
           <p className="text-zinc-400">Manage platform access, invites, and admin permissions</p>
         </div>
 

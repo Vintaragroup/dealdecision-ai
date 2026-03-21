@@ -20,10 +20,12 @@ import {
   FileCode,
   ShieldCheck
 } from 'lucide-react';
+import { useState, useEffect } from 'react';
 import { Logo } from './Logo';
 import { useAppSettings } from '../contexts/AppSettingsContext';
 import { useUserRole } from '../contexts/UserRoleContext';
 import { useUser } from '@clerk/clerk-react';
+import { apiGetMyAccess } from '../lib/apiClient';
 
 type LogoVariant = 'orbiting' | 'pulse' | 'network' | 'hexagon' | 'morph';
 export type PageView =
@@ -62,13 +64,21 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
   const { isInvestor, isAnalyst } = useUserRole();
   const { user, isLoaded: userLoaded } = useUser();
 
-  // COSMETIC ONLY — gates Dev Tools section in sidebar. Not a security guard.
-  // Real admin access to /app/admin is DB-backed (platform_access.is_admin).
+  // COSMETIC ONLY — gates Dev Tools (Components, Logo Variants) in sidebar.
   const isRyanAdmin = (() => {
     if (!userLoaded) return false;
     const email = user?.primaryEmailAddress?.emailAddress;
     return typeof email === 'string' && email.toLowerCase() === 'ryan@vintaragroup.com';
   })();
+
+  // DB-backed admin check — gates the System Admin link.
+  const [isActualAdmin, setIsActualAdmin] = useState(false);
+  useEffect(() => {
+    if (!userLoaded) return;
+    apiGetMyAccess()
+      .then((r) => setIsActualAdmin(r.is_admin))
+      .catch(() => setIsActualAdmin(false));
+  }, [userLoaded]);
 
   const getNavItemClass = (page: PageView) => {
     const isActive = currentPage === page;
@@ -274,7 +284,7 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
               </div>
             </div>
 
-            {/* Dev Tools (Ryan Admin Only) */}
+            {/* Dev Tools (Ryan-only internal tools) */}
             {isRyanAdmin && (
               <div>
                 <h3 className={`px-3 mb-2 text-xs uppercase tracking-wider ${
@@ -295,6 +305,17 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                     <Target className="w-4 h-4" />
                     <span className="text-sm">Logo Variants</span>
                   </button>
+                </div>
+              </div>
+            )}
+
+            {/* System Admin — visible to all is_admin = true users (DB-backed) */}
+            {isActualAdmin && (
+              <div>
+                <h3 className={`px-3 mb-2 text-xs uppercase tracking-wider ${
+                  darkMode ? 'text-gray-500' : 'text-gray-400'
+                }`}>Admin</h3>
+                <div className="space-y-1">
                   <button
                     onClick={() => onNavigate('systemAdmin')}
                     className={getNavItemClass('systemAdmin')}

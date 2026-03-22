@@ -330,6 +330,130 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
       );
     }
 
+    // ── 4. Period alignment checks ─────────────────────────────────────────────
+    // Detect when facts for the same metric arrive with incompatible period
+    // granularities (e.g. quarterly burn vs annual cash). Such mismatches would
+    // produce misleading cross-source discrepancy signals or incorrect derivations.
+    //
+    // These checks are purely additive. They do NOT suppress other flags.
+
+    // Group all facts by metric_key (all sources, all periods).
+    const byMetric = new Map<string, FinancialFactV1[]>();
+    for (const fact of facts) {
+      const arr = byMetric.get(fact.metric_key) ?? [];
+      arr.push(fact);
+      byMetric.set(fact.metric_key, arr);
+    }
+
+    // 4a: Per-metric period-type mismatch.
+    // Flag when a metric has facts with fundamentally incompatible granularities.
+    for (const [metric_key, mFacts] of byMetric) {
+      const periodTypes = new Set(
+        mFacts.map((f) => f.period_type ?? "unknown").filter((t) => t !== "unknown"),
+      );
+      if (periodTypes.size < 2) continue; // single type or all unknown → no mismatch possible
+
+      const types = [...periodTypes];
+      let worstCompat: "ok" | "warn" | "incompatible" = "ok";
+      outer: for (let i = 0; i < types.length - 1; i++) {
+        for (let j = i + 1; j < types.length; j++) {
+          const compat = periodTypeCompatibility(types[i], types[j]);
+          if (compat === "incompatible") {
+            worstCompat = "incompatible";
+            break outer;
+          }
+          if (compat === "warn" && worstCompat === "ok") worstCompat = "warn";
+        }
+      }
+      if (worstCompat === "ok") continue;
+
+      const typeList = types.sort().join(", ");
+      if (worstCompat === "incompatible") {
+        flags.push(
+          makeFlag(
+            `period_alignment:period_mismatch:${metric_key}`,
+            "FAIL",
+            "high",
+            `${metric_key} has facts with incompatible period granularities (${typeList}). Direct comparison across these periods would produce misleading signals.`,
+            { fact_type: metric_key },
+          ),
+        );
+      } else {
+        // worstCompat === "warn" — annual + TTM are close but not identical.
+        flags.push(
+          makeFlag(
+            `period_alignment:incompatible_period_comparison:${metric_key}`,
+            "WARN",
+            "medium",
+            `${metric_key} mixes annual and TTM period types (${typeList}). Comparisons may be imprecise due to period boundary differences.`,
+            { fact_type: metric_key },
+          ),
+        );
+      }
+    }
+
+    // 4b: Ambiguous "current" period alongside explicit period labels.
+    // When a metric has facts labeled "current" (no explicit year/quarter) AND facts
+    // with explicit period labels, cross-period comparisons cannot be trusted.
+    for (const [metric_key, mFacts] of byMetric) {
+      const hasCurrentLabel = mFacts.some((f) => f.period_label === "current");
+      const hasExplicitLabel = mFacts.some(
+        (f) => f.period_label !== "current" && f.period_label !== "unknown",
+      );
+      if (hasCurrentLabel && hasExplicitLabel) {
+        flags.push(
+          makeFlag(
+            `period_alignment:ambiguous_current_period:${metric_key}`,
+            "WARN",
+            "low",
+            `${metric_key} has facts labeled 'current' alongside facts with explicit period labels. The 'current' reference period is ambiguous — comparison confidence is reduced.`,
+            { fact_type: metric_key },
+          ),
+        );
+      }
+    }
+
+    // 4c: Derivation period mismatch — cash ÷ burn_rate → runway_months.
+    // The derivation is mathematically valid only when cash and burn_rate share
+    // the same period granularity. A quarterly burn divided into an annual cash
+    // balance produces a runway figure that is off by 3×.
+    {
+      const cashFacts = (byMetric.get("cash") ?? []).filter((f) => !alertIsProjectedFact(f));
+      const burnFacts = (byMetric.get("burn_rate") ?? []).filter((f) => !alertIsProjectedFact(f));
+      if (cashFacts.length > 0 && burnFacts.length > 0) {
+        const cashTypes = [
+          ...new Set(
+            cashFacts.map((f) => f.period_type ?? "unknown").filter((t) => t !== "unknown"),
+          ),
+        ];
+        const burnTypes = [
+          ...new Set(
+            burnFacts.map((f) => f.period_type ?? "unknown").filter((t) => t !== "unknown"),
+          ),
+        ];
+        let hasIncompatibleDerivation = false;
+        derivationCheck: for (const ct of cashTypes) {
+          for (const bt of burnTypes) {
+            if (periodTypeCompatibility(ct, bt) === "incompatible") {
+              hasIncompatibleDerivation = true;
+              break derivationCheck;
+            }
+          }
+        }
+        if (hasIncompatibleDerivation) {
+          flags.push(
+            makeFlag(
+              "period_alignment:derivation_period_mismatch",
+              "WARN",
+              "high",
+              `Runway derivation (cash ÷ burn_rate) involves facts with incompatible period types (cash: ${cashTypes.sort().join(", ")}; burn_rate: ${burnTypes.sort().join(", ")}). Any derived runway_months would be unreliable.`,
+              { fact_type: "runway_months" },
+            ),
+          );
+        }
+      }
+    }
+
     return {
       computed_at,
       completeness_score,
@@ -367,4 +491,49 @@ function formatValue(v: number): string {
   if (Math.abs(v) >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
   if (Math.abs(v) >= 1_000) return `$${(v / 1_000).toFixed(1)}K`;
   return `${v}`;
+}
+
+/**
+ * Returns the compatibility level between two FinancialFactPeriodType strings.
+ *
+ * "ok"           — same type (or one/both unknown) → period comparison is safe.
+ * "warn"         — broadly similar but distinct: annual and TTM overlap but
+ *                  TTM may span calendar-year boundaries.
+ * "incompatible" — fundamentally different granularities that must not be
+ *                  compared or combined directly without unit conversion
+ *                  (e.g. quarterly burn ÷ annual cash → wrong runway).
+ */
+function periodTypeCompatibility(
+  a: string | undefined,
+  b: string | undefined,
+): "ok" | "warn" | "incompatible" {
+  const ta = a ?? "unknown";
+  const tb = b ?? "unknown";
+  if (ta === "unknown" || tb === "unknown") return "ok";
+  if (ta === tb) return "ok";
+  const key = [ta, tb].sort().join(":");
+  // Fundamentally incompatible — mixing these without explicit conversion is wrong.
+  if (
+    key === "annual:quarterly" ||
+    key === "annual:monthly" ||
+    key === "monthly:quarterly" ||
+    key === "monthly:ttm" ||
+    key === "quarterly:ttm"
+  ) {
+    return "incompatible";
+  }
+  // Warn — annual and TTM are the same granularity family but TTM can span
+  // boundaries differently (e.g. TTM ending March ≠ FY2024 ending December).
+  if (key === "annual:ttm") return "warn";
+  return "ok";
+}
+
+/**
+ * Returns true when a fact is projected / scenario / target.
+ * Mirrors the same guard logic in reconcile-financial-facts-v1.ts.
+ * Kept in sync manually — both copies must agree.
+ */
+function alertIsProjectedFact(f: FinancialFactV1): boolean {
+  const scope = f.temporal_scope ?? "unknown";
+  return scope === "projected" || scope === "scenario" || scope === "target";
 }

@@ -41,6 +41,16 @@ export interface ExcelContent {
       formula: string;
       result?: unknown;
     }>;
+    /**
+     * Per-cell formula strings for data rows, keyed by "rowIndex:headerName".
+     * rowIndex is the 0-based position of the row within this sheet's rows[].
+     * headerName is the normalized column header (same key used in rows[]).
+     *
+     * Only present when any data cell in this sheet has an Excel formula.
+     * Used by the financial extraction pipeline (table-detector.ts) to
+     * distinguish literal vs formula-derived values.
+     */
+    formula_grid?: Record<string, string>;
     summary: {
       totalRows: number;
       columnTypes: Record<string, string>;
@@ -103,7 +113,7 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
     return { maxRows, maxCols, cells };
   };
 
-  const buildNormalizedHeadersAndRows = (worksheet: XLSX.WorkSheet): { headers: string[]; rows: Record<string, unknown>[] } => {
+  const buildNormalizedHeadersAndRows = (worksheet: XLSX.WorkSheet): { headers: string[]; rows: Record<string, unknown>[]; formula_grid: Record<string, string> } => {
     const ref = worksheet["!ref"] as string | undefined;
     if (!ref) return { headers: [], rows: [] };
     const r = XLSX.utils.decode_range(ref);
@@ -231,6 +241,9 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
     const dataStartRow = Math.min(r.e.r, Math.max(...headerRows) + 1);
     const maxDataRows = Math.min(r.e.r, dataStartRow + 2000);
     const rows: Record<string, unknown>[] = [];
+    // formula_grid captures formula strings for data cells, keyed by
+    // "rowIndex:headerName" where rowIndex is the 0-based position within rows[].
+    const formula_grid: Record<string, string> = {};
     for (let rr = dataStartRow; rr <= maxDataRows; rr++) {
       const obj: Record<string, unknown> = {};
       let hasAny = false;
@@ -240,6 +253,8 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
         if (d.v == null && !d.f && !(typeof d.w === "string" && d.w.trim())) continue;
         const key = headersByCol.get(cc) ?? `col_${XLSX.utils.encode_col(cc)}`;
         obj[key] = d.v ?? d.w ?? null;
+        // Capture formula before rows.push so rows.length is the future row index.
+        if (d.f) formula_grid[`${rows.length}:${key}`] = d.f;
         hasAny = true;
       }
       if (hasAny) rows.push(obj);
@@ -250,7 +265,7 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
       for (const k of Object.keys(row)) usedHeaders.add(k);
     }
     const filteredHeaders = headers.filter((h) => usedHeaders.has(h));
-    return { headers: filteredHeaders.length ? filteredHeaders : headers, rows };
+    return { headers: filteredHeaders.length ? filteredHeaders : headers, rows, formula_grid };
   };
 
   const detectTimeSeriesTables = (worksheet: XLSX.WorkSheet, sheetName: string): ExcelTimeSeriesTable[] => {
@@ -398,6 +413,7 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
     if (jsonData.length === 0) continue;
 
     const headers = extracted.headers;
+    const formulaGrid = extracted.formula_grid;
     const numericColumns: string[] = [];
     const dateColumns: string[] = [];
     const columnTypes: Record<string, string> = {};
@@ -457,6 +473,7 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
       gridPreview,
       tables,
       formulas,
+      ...(Object.keys(formulaGrid).length > 0 ? { formula_grid: formulaGrid } : {}),
       summary: {
         totalRows: jsonData.length,
         columnTypes,

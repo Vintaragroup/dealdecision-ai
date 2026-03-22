@@ -15,6 +15,20 @@
 import type { FinancialFactV1 } from "@dealdecision/core";
 import { computeFactId } from "@dealdecision/core";
 
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Returns true when a fact represents a projected / estimated / scenario value.
+ *
+ * Projected facts should NOT be used as inputs for mathematical derivations
+ * (e.g. runway from cash + burn) because the derived fact would silently
+ * inherit projection uncertainty without marking it as such in the output.
+ */
+function isProjectedFact(f: FinancialFactV1): boolean {
+  const scope = f.temporal_scope ?? "unknown";
+  return scope === "projected" || scope === "scenario" || scope === "target";
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -49,6 +63,12 @@ export function reconcileFinancialFactsV1(
       );
       if (!burnFact) continue;
       if (burnFact.value <= 0) continue;
+
+      // Projection guard: do NOT derive runway from projected inputs.
+      // Both cash AND burn_rate must be realized (historical or current)
+      // to produce a trustworthy runway figure.
+      // If either is projected/scenario/target, the derivation is skipped.
+      if (isProjectedFact(cashFact) || isProjectedFact(burnFact)) continue;
 
       // Don't derive if runway already present for this period
       const alreadyHasRunway = runwayFacts.some(

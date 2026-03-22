@@ -86,3 +86,92 @@ describe("reconcileFinancialFactsV1 — runway derivation", () => {
     expect(reconcileFinancialFactsV1([], "d1")).toEqual([]);
   });
 });
+
+// ─── Projection guard ─────────────────────────────────────────────────────────
+
+describe("reconcileFinancialFactsV1 — projection guard (no derivation from forecasts)", () => {
+  /** Helper: make projected (temporal_scope="projected") facts. */
+  function makeProjFact(overrides: Partial<FinancialFactV1> & Pick<FinancialFactV1, "metric_key" | "value">): FinancialFactV1 {
+    return {
+      fact_id:        `factv1:d1:${overrides.metric_key}:annual:FY2025E:def5678`,
+      deal_id:        "d1",
+      source_kind:    "xlsx",
+      period_type:    "annual",
+      period_label:   "FY2025",
+      unit:           "currency",
+      confidence:     "medium",
+      temporal_scope: "projected",
+      ...overrides,
+    };
+  }
+
+  it("does NOT derive runway when both cash and burn_rate are projected", () => {
+    const cash = makeProjFact({ metric_key: "cash",      value: 3_000_000 });
+    const burn = makeProjFact({ metric_key: "burn_rate", value:   200_000 });
+    const result = reconcileFinancialFactsV1([cash, burn], "d1");
+
+    // No runway_months should be added — both inputs are projections
+    const runway = result.find((f) => f.metric_key === "runway_months");
+    expect(runway).toBeUndefined();
+    // Original facts preserved unchanged
+    expect(result).toHaveLength(2);
+  });
+
+  it("does NOT derive runway when only cash is projected", () => {
+    const cash = makeProjFact({ metric_key: "cash",      value: 2_400_000 });
+    const burn = makeFact    ({ metric_key: "burn_rate", value:   150_000 });
+    // Align periods
+    cash.period_label = "FY2024";
+    burn.period_label = "FY2024";
+    const result = reconcileFinancialFactsV1([cash, burn], "d1");
+
+    const runway = result.find((f) => f.metric_key === "runway_months");
+    expect(runway).toBeUndefined();
+    expect(result).toHaveLength(2);
+  });
+
+  it("does NOT derive runway when only burn_rate is projected", () => {
+    const cash = makeFact    ({ metric_key: "cash",      value: 1_800_000 });
+    const burn = makeProjFact({ metric_key: "burn_rate", value:   120_000 });
+    // Align periods
+    cash.period_label = "FY2024";
+    burn.period_label = "FY2024";
+    const result = reconcileFinancialFactsV1([cash, burn], "d1");
+
+    const runway = result.find((f) => f.metric_key === "runway_months");
+    expect(runway).toBeUndefined();
+    expect(result).toHaveLength(2);
+  });
+
+  it("DOES derive runway when both are historical (temporal_scope=historical)", () => {
+    const cash = makeFact({ metric_key: "cash",      value: 1_800_000, temporal_scope: "historical" } as Partial<FinancialFactV1> & Pick<FinancialFactV1, "metric_key" | "value">);
+    const burn = makeFact({ metric_key: "burn_rate", value:   150_000, temporal_scope: "historical" } as Partial<FinancialFactV1> & Pick<FinancialFactV1, "metric_key" | "value">);
+    const result = reconcileFinancialFactsV1([cash, burn], "d1");
+
+    const runway = result.find((f) => f.metric_key === "runway_months");
+    expect(runway).toBeDefined();
+    expect(runway!.value).toBeCloseTo(12, 1);
+  });
+
+  it("DOES derive runway when temporal_scope is omitted (treated as non-projected)", () => {
+    // Omitted temporal_scope — original makeFact helper which doesn't set temporal_scope
+    const cash = makeFact({ metric_key: "cash",      value: 900_000 });
+    const burn = makeFact({ metric_key: "burn_rate", value:  90_000 });
+    const result = reconcileFinancialFactsV1([cash, burn], "d1");
+
+    const runway = result.find((f) => f.metric_key === "runway_months");
+    expect(runway).toBeDefined();
+    expect(runway!.value).toBeCloseTo(10, 1);
+  });
+
+  it("does NOT derive runway when temporal_scope=scenario (considered projected)", () => {
+    const cash = makeFact({ metric_key: "cash",      value: 2_400_000, temporal_scope: "scenario" } as Partial<FinancialFactV1> & Pick<FinancialFactV1, "metric_key" | "value">);
+    const burn = makeFact({ metric_key: "burn_rate", value:   200_000 });
+    cash.period_label = "FY2024";
+    burn.period_label = "FY2024";
+    const result = reconcileFinancialFactsV1([cash, burn], "d1");
+
+    const runway = result.find((f) => f.metric_key === "runway_months");
+    expect(runway).toBeUndefined();
+  });
+});

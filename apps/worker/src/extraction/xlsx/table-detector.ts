@@ -73,6 +73,18 @@ export interface FinancialTable {
    * Preserved for downstream traceability (stamped in typing_reason).
    */
   unit_scale_source_text?: string | null;
+  /**
+   * Optional per-cell Excel formula strings, keyed by "rowIdx:colIdx" (both
+   * 0-based within the cell_matrix dimensions).
+   *
+   * Populated by fromExcelSheet() when the source DPU payload carries a
+   * formula_grid (present for workbooks extracted via excel.ts ≥ formula-
+   * traceability version). Absent for excel_range payloads and pre-
+   * formula-traceability extractions.
+   *
+   * Used by parseFinancialTable() to set value_kind / formula on TypedMetric.
+   */
+  formula_map?: Record<string, string>;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -371,7 +383,17 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
   const rowHeaders: string[] = [];
   const matrix: (number | null)[][] = [];
 
-  for (const row of rows) {
+  // Read formula_grid from the DPU payload when available.
+  // Keyed by "rawRowIndex:headerName" (0-based within rows[]).
+  const rawFormulaGrid: Record<string, string> | null =
+    typeof s["formula_grid"] === "object" && s["formula_grid"] !== null && !Array.isArray(s["formula_grid"])
+      ? (s["formula_grid"] as Record<string, string>)
+      : null;
+  // formula_map will be keyed by "matrixRowIdx:colIdx" (0-based within cell_matrix).
+  const formulaMap: Record<string, string> = {};
+
+  for (let rawRowIdx = 0; rawRowIdx < rows.length; rawRowIdx++) {
+    const row = rows[rawRowIdx];
     if (!row || typeof row !== "object") continue;
     const r = row as Record<string, unknown>;
     const label = typeof r[labelCol] === "string" ? (r[labelCol] as string).trim() : "";
@@ -379,6 +401,16 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
 
     const cells = valueCols.map((col) => toNum(r[col]));
     if (cells.every((c) => c === null)) continue;
+
+    // Capture formula references before pushing so matrixRowIdx = rowHeaders.length.
+    if (rawFormulaGrid) {
+      const matrixRowIdx = rowHeaders.length;
+      for (let colIdx = 0; colIdx < valueCols.length; colIdx++) {
+        const colName = valueCols[colIdx]!;
+        const f = rawFormulaGrid[`${rawRowIdx}:${colName}`];
+        if (f) formulaMap[`${matrixRowIdx}:${colIdx}`] = f;
+      }
+    }
 
     rowHeaders.push(label);
     matrix.push(cells);
@@ -408,6 +440,7 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
     source_page_type: "excel_sheet",
     unit_scale_factor,
     unit_scale_source_text,
+    ...(Object.keys(formulaMap).length > 0 ? { formula_map: formulaMap } : {}),
   };
 }
 

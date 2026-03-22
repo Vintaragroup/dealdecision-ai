@@ -27,6 +27,7 @@ import type {
 import { extractScenarioLabels } from "./sheet-classifier.js";
 import type { FinancialTable } from "./table-detector.js";
 import { parsePeriodLabel } from "./period-parser.js";
+import { extractCrossSheetRefs } from "./cross-tab-refs.js";
 
 // ─── Row-label → FieldTypeV1 mapping ─────────────────────────────────────────
 
@@ -240,6 +241,20 @@ export function parseFinancialTable(
 
       const projection_blocked = isProjectedScope(temporal_scope);
 
+      // Formula traceability: look up formula metadata for this (rowIdx, colIdx) pair.
+      // formula_map is present only when the source payload carried formula_grid.
+      const cellFormulaKey = `${rowIdx}:${colIdx}`;
+      const cellFormula = table.formula_map?.[cellFormulaKey] ?? null;
+      // value_kind is deterministic when formula_map is present; otherwise unknown.
+      const value_kind: TypedMetric["value_kind"] = table.formula_map
+        ? (cellFormula !== null ? "formula" : "literal")
+        : "unknown";
+
+      // Cross-tab reference detection: parse the formula string for SheetName!
+      // patterns. Pure regex — no formula evaluation or graph traversal.
+      // Empty array when formula is null (literal or unknown) or has no cross-tab refs.
+      const crossSheetRefs = cellFormula !== null ? extractCrossSheetRefs(cellFormula) : [];
+
       const periodSuffix = col.scenario
         ? `[${col.scenario}]`
         : (col.period_type === "quarterly" || col.period_type === "ttm")
@@ -265,6 +280,11 @@ export function parseFinancialTable(
         typing_confidence,
         projection_blocked,
         ...(col.scenario !== null ? { scenario: col.scenario } : {}),
+        // Formula traceability fields — omit entirely when source had no formula metadata.
+        ...(value_kind !== "unknown" ? { value_kind } : {}),
+        ...(cellFormula !== null ? { formula: cellFormula } : {}),
+        // Cross-tab refs — only set when formula references another worksheet.
+        ...(crossSheetRefs.length > 0 ? { cross_sheet_refs: crossSheetRefs } : {}),
       });
     }
   }

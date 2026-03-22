@@ -176,6 +176,39 @@ export interface FinancialFactV1 {
 
   /** ≤ 280 chars, optional text excerpt from source. */
   excerpt?: string;
+
+  // ── Formula traceability ─────────────────────────────────────────────────
+
+  /**
+   * Whether the source Excel cell value was hard-coded or derived from a formula.
+   *
+   * "literal"  — the cell contained a static/hard-coded value.
+   * "formula"  — the cell value was computed by an Excel formula.
+   * "unknown"  — formula metadata was not available for this extraction
+   *              (e.g. pre-formula-traceability ingestion, or excel_range payloads).
+   *
+   * Only populated for XLSX-sourced facts (source_kind === "xlsx").
+   */
+  value_kind?: "literal" | "formula" | "unknown";
+
+  /**
+   * The raw Excel formula string when value_kind === "formula".
+   * e.g. "=SUM(C3:C17)" or "=B12/B13".
+   *
+   * Preserved for downstream workbook-logic traceability. Null when the cell
+   * was literal or formula metadata was unavailable.
+   */
+  formula?: string | null;
+
+  /**
+   * Worksheet names referenced by the source formula across tab boundaries.
+   * Absent when value_kind !== "formula" or when no cross-tab references
+   * were detected. Sorted and deduplicated.
+   *
+   * Indicates the fact's value was computed from data on another sheet,
+   * which may carry forward uncertainty if the source sheet is unavailable.
+   */
+  cross_sheet_refs?: string[];
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

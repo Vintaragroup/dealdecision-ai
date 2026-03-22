@@ -115,4 +115,44 @@ export type TypedMetric = {
    * Always set when temporal_scope = "scenario".
    */
   scenario?: string;
+
+  // ── Formula traceability ─────────────────────────────────────────────────
+
+  /**
+   * Whether the source cell value was hard-coded or derived from an Excel formula.
+   *
+   * "literal"  — the cell contained a static/hard-coded numeric value.
+   * "formula"  — the cell contained an Excel formula (e.g. =SUM(C3:C17)).
+   * "unknown"  — the source payload did not carry formula metadata (e.g.
+   *              excel_range payloads, or pre-formula-traceability extractions).
+   *
+   * Only populated for facts extracted from XLSX workbooks.
+   */
+  value_kind?: "literal" | "formula" | "unknown";
+
+  /**
+   * The raw formula string from the source cell when value_kind === "formula".
+   * e.g. "=SUM(C3:C17)".
+   *
+   * Preserved for workbook-logic traceability. Null when the cell was literal
+   * or when formula metadata was unavailable from the source payload.
+   */
+  formula?: string | null;
+
+  /**
+   * Worksheet names referenced by the formula across tab boundaries.
+   * Absent when value_kind !== "formula", no cross-tab references exist,
+   * or formula metadata was unavailable from the source payload.
+   *
+   * Derived deterministically by regex parsing of SheetName! patterns.
+   * Sorted and deduplicated. Does not include sheet references that require
+   * full workbook evaluation (e.g. named ranges resolving cross-tab).
+   *
+   * Examples:
+   *   formula "Inputs!C5"              → ["Inputs"]
+   *   formula "SUM(Model!C3:C10)"      → ["Model"]
+   *   formula "'Revenue Build'!D12"    → ["Revenue Build"]
+   *   formula "Sheet1!A1+Sheet2!B2"    → ["Sheet1", "Sheet2"]
+   */
+  cross_sheet_refs?: string[];
 };

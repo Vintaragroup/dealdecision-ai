@@ -175,6 +175,10 @@ export function promoteToFinancialFactV1(
       ...(metric.scenario !== undefined ? { scenario: metric.scenario } : {}),
       ...(opts.sheet_name ? { sheet_name: opts.sheet_name } : {}),
       source_pointer: sourcePointer,
+      // Formula traceability — carry value_kind, formula, and cross_sheet_refs when present.
+      ...(metric.value_kind !== undefined ? { value_kind: metric.value_kind } : {}),
+      ...(metric.formula !== undefined ? { formula: metric.formula } : {}),
+      ...(metric.cross_sheet_refs !== undefined ? { cross_sheet_refs: metric.cross_sheet_refs } : {}),
     };
 
     facts.push(fact);

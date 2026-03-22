@@ -33,6 +33,7 @@ import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAu
 import { selectAuthoritativeProductSummaryV1 } from '../../lib/selectors/selectAuthoritativeProductSummaryV1';
 import { selectAuthoritativeMarketSummaryV1 } from '../../lib/selectors/selectAuthoritativeMarketSummaryV1';
 import { selectAuthoritativeFinancialCoverageV1 } from '../../lib/selectors/selectAuthoritativeFinancialCoverageV1';
+import { selectAuthoritativeFinancialIntegrityV1 } from '../../lib/selectors/selectAuthoritativeFinancialIntegrityV1';
 import { selectAuthoritativeBurnV1 } from '../../lib/selectors/selectAuthoritativeBurnV1';
 import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthoritativeRunwayV1';
 import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
@@ -2336,6 +2337,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     // financial_coverage_v1 is deterministic-only and lives on /report.
     return selectAuthoritativeFinancialCoverageV1((reportFromApi as any) ?? (reportEnvelope as any) ?? null);
   }, [reportFromApi, reportEnvelope]);
+
+  const authoritativeFinancialIntegrityV1 = useMemo(() => {
+    // financial_integrity_v1 lives on the compiled /report payload.
+    return selectAuthoritativeFinancialIntegrityV1((reportFromApi as any) ?? null);
+  }, [reportFromApi]);
 
   const authoritativeProductTextV1 = authoritativeProductSummaryV1.value ?? '';
   const authoritativeMarketTextV1 = authoritativeMarketSummaryV1.value ?? '';
@@ -8491,6 +8497,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 darkMode={darkMode}
                 onRunAnalysis={runAIAnalysis}
                 isAnalyzing={analyzing}
+                financialIntegrityV1={authoritativeFinancialIntegrityV1.value ?? null}
               />
             )}
 

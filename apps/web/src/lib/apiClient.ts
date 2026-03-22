@@ -1445,6 +1445,22 @@ export function apiResolveEvidence(ids: string[]) {
   return request<{ results: EvidenceResolveResult[] }>(`/api/v1/evidence/resolve?ids=${qs}`);
 }
 
+export type DealReportIntegrityFlag = {
+  flag_key: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  fact_type?: string;
+  note: string;
+};
+
+export type DealReportFinancialIntegrityV1 = {
+  computed_at: string;
+  completeness_score: number | null;
+  missing_critical: string[];
+  missing_supplementary: string[];
+  flags: DealReportIntegrityFlag[];
+};
+
 export type DealReport = {
   dealId: string;
   generatedAt: string;
@@ -1458,6 +1474,8 @@ export type DealReport = {
   sections?: Array<{ id: string; title: string; content: string; evidence_ids?: string[] }>;
   completeness?: number;
   metadata?: Record<string, any>;
+  /** Financial integrity cross-source analysis. null = analyzer did not run. */
+  financial_integrity_v1?: DealReportFinancialIntegrityV1 | null;
 };
 
 export type DealReportEnvelope =

@@ -27,6 +27,7 @@ import {
   DEFAULT_REPORT_VIEW_CONFIG,
 } from '../deals/analysis/ReportViewConfigModal';
 import { ReportGeneratorPreviewSplit } from '../deals/analysis/ReportGeneratorPreviewSplit';
+import type { DealReportFinancialIntegrityV1 } from '../../lib/apiClient';
 
 interface AnalysisTabProps {
   darkMode: boolean;
@@ -40,9 +41,11 @@ interface AnalysisTabProps {
    * When it transitions false the orchestrator report is refreshed automatically.
    */
   isAnalyzing?: boolean;
+  /** Financial integrity cross-source analysis from the compiled report. null when not yet available. */
+  financialIntegrityV1?: DealReportFinancialIntegrityV1 | null;
 }
 
-export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnalyzing = false }: AnalysisTabProps) {
+export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnalyzing = false, financialIntegrityV1 }: AnalysisTabProps) {
   const [analysis, setAnalysis] = useState<DealAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
 
@@ -540,6 +543,10 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnaly
           isReanalyzing={isAnalyzing || analyzing}
           onViewFullReport={() => { setFullReportInitialAction('none'); setIsConfigOpen(true); }}
         />
+        {/* Financial Integrity Panel */}
+        {financialIntegrityV1 && (
+          <FinancialIntegrityPanel darkMode={darkMode} data={financialIntegrityV1} />
+        )}
         {/* Step 1: Config pre-screen */}
         <ReportViewConfigModal
           open={isConfigOpen}
@@ -606,3 +613,156 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnaly
   );
 }
 
+// ── Financial Integrity Panel ───────────────────────────────────────────────
+
+const STATUS_LABEL: Record<string, string> = { PASS: 'Pass', WARN: 'Warn', FAIL: 'Fail' };
+const SEVERITY_LABEL: Record<string, string> = { low: 'Low', medium: 'Med', high: 'High', critical: 'Critical' };
+
+function statusColor(status: string, darkMode: boolean): string {
+  if (status === 'PASS') return darkMode ? 'text-emerald-400' : 'text-emerald-700';
+  if (status === 'FAIL') return darkMode ? 'text-red-400' : 'text-red-700';
+  return darkMode ? 'text-amber-400' : 'text-amber-700';
+}
+
+function severityBadgeClass(severity: string, darkMode: boolean): string {
+  if (severity === 'critical' || severity === 'high') {
+    return darkMode
+      ? 'border-red-500/30 bg-red-500/10 text-red-300'
+      : 'border-red-200 bg-red-50 text-red-700';
+  }
+  if (severity === 'medium') {
+    return darkMode
+      ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+      : 'border-amber-200 bg-amber-50 text-amber-700';
+  }
+  return darkMode
+    ? 'border-gray-600/40 bg-white/5 text-gray-400'
+    : 'border-gray-200 bg-gray-50 text-gray-600';
+}
+
+function FinancialIntegrityPanel({
+  darkMode,
+  data,
+}: {
+  darkMode: boolean;
+  data: DealReportFinancialIntegrityV1;
+}) {
+  const cardBase = `rounded-lg border p-4 mt-4 ${
+    darkMode ? 'border-white/10 bg-white/3' : 'border-gray-200 bg-gray-50'
+  }`;
+  const subHeader = `text-xs font-semibold uppercase tracking-wide mb-3 ${
+    darkMode ? 'text-gray-400' : 'text-gray-500'
+  }`;
+  const divider = `border-t my-3 ${darkMode ? 'border-white/8' : 'border-gray-200'}`;
+  const labelClass = `text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`;
+  const valueClass = `text-xs font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`;
+
+  const score = data.completeness_score;
+  const scoreDisplay = score !== null ? `${Math.round(score)}` : '—';
+  const scoreColor =
+    score === null ? (darkMode ? 'text-gray-500' : 'text-gray-400')
+    : score >= 75   ? (darkMode ? 'text-emerald-400' : 'text-emerald-700')
+    : score >= 40   ? (darkMode ? 'text-amber-400' : 'text-amber-700')
+                    : (darkMode ? 'text-red-400' : 'text-red-700');
+
+  const warnFailFlags = data.flags.filter((f) => f.status !== 'PASS');
+  const passFlags = data.flags.filter((f) => f.status === 'PASS');
+
+  return (
+    <div className={cardBase} data-testid="financial-integrity-panel">
+      <p className={subHeader}>Financial Integrity</p>
+
+      {/* Completeness score */}
+      <div className="flex items-center justify-between">
+        <span className={labelClass}>Completeness score</span>
+        <span className={`text-sm font-semibold ${scoreColor}`}>
+          {scoreDisplay}{score !== null ? ' / 100' : ''}
+        </span>
+      </div>
+
+      {/* Missing critical */}
+      {data.missing_critical.length > 0 && (
+        <>
+          <div className={divider} />
+          <p className={labelClass + ' mb-1.5'}>Missing critical fields</p>
+          <div className="flex flex-wrap gap-1.5">
+            {data.missing_critical.map((f) => (
+              <span
+                key={f}
+                className={`inline-flex px-2 py-0.5 rounded text-xs border ${
+                  darkMode
+                    ? 'border-red-500/30 bg-red-500/10 text-red-300'
+                    : 'border-red-200 bg-red-50 text-red-700'
+                }`}
+              >
+                {f}
+              </span>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Flags: WARN + FAIL */}
+      {warnFailFlags.length > 0 && (
+        <>
+          <div className={divider} />
+          <p className={labelClass + ' mb-2'}>Integrity flags</p>
+          <div className="space-y-2">
+            {warnFailFlags.map((flag) => (
+              <div
+                key={flag.flag_key}
+                className={`rounded border px-3 py-2 ${
+                  darkMode ? 'border-white/8 bg-white/3' : 'border-gray-200 bg-white'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className={`text-xs font-semibold ${statusColor(flag.status, darkMode)}`}>
+                    {STATUS_LABEL[flag.status] ?? flag.status}
+                  </span>
+                  <span
+                    className={`inline-flex items-center px-1.5 py-px rounded text-xs border ${severityBadgeClass(flag.severity, darkMode)}`}
+                  >
+                    {SEVERITY_LABEL[flag.severity] ?? flag.severity}
+                  </span>
+                  {flag.fact_type && (
+                    <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                      {flag.fact_type}
+                    </span>
+                  )}
+                </div>
+                <p className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{flag.note}</p>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* PASS flags (collapsed summary) */}
+      {passFlags.length > 0 && (
+        <>
+          <div className={divider} />
+          <div className="flex items-center gap-1.5">
+            <span className={`text-xs font-semibold ${statusColor('PASS', darkMode)}`}>
+              {passFlags.length} check{passFlags.length !== 1 ? 's' : ''} passed
+            </span>
+          </div>
+        </>
+      )}
+
+      {data.flags.length === 0 && (
+        <>
+          <div className={divider} />
+          <p className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+            No integrity flags — insufficient financial data to evaluate.
+          </p>
+        </>
+      )}
+
+      {/* Row metadata */}
+      <div className={valueClass + ' ' + divider} />
+      <p className={`text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+        Computed {new Date(data.computed_at).toLocaleString()}
+      </p>
+    </div>
+  );
+}

@@ -24,6 +24,7 @@ import {
   type FinancialBreakdownV1,
   type UnderwritingReadinessV1,
 } from '../models/financial-breakdown-v1.js';
+import type { FinancialIntegrityV1 } from '../types/financial-integrity-v1.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -43,6 +44,8 @@ type ReportDTO = {
   market_accessibility_signal_v1?: MarketAccessibilitySignalProfileV1;
   traction_signal_v1?: TractionSignalProfileV1;
   team_signal_v1?: TeamSignalProfileV1;
+  /** Financial integrity cross-source analysis (completeness, discrepancy, anomalies). null = analyzer did not run or DIO predates this field. */
+  financial_integrity_v1?: FinancialIntegrityV1 | null;
   structured_summary?: {
     raise: {
       value: string | null;
@@ -1947,6 +1950,15 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
   const scoreExplanationAugmented = existingExplanation && typeof existingExplanation === 'object'
     ? { ...existingExplanation, stage_weighted_v1: stageWeighted }
     : existingExplanation;
+
+  // Pass through financial integrity result from DIO (fail-open: never fail report compilation).
+  let financialIntegrityV1: FinancialIntegrityV1 | null = null;
+  try {
+    financialIntegrityV1 = (dio as any)?.dio?.financial_integrity_v1 ?? null;
+  } catch {
+    // Best-effort: never fail report compilation.
+  }
+
 	return {
 		...base,
     funding_stage_v1: fundingStage,
@@ -1961,6 +1973,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
     team_signal_v1: teamSignal,
     structured_summary: structuredSummary,
     sections,
+    financial_integrity_v1: financialIntegrityV1,
 
 		metadata: {
 			...(base as any).metadata,

@@ -100,6 +100,8 @@ export * from "./analyzers/visual-design";
 export * from "./analyzers/narrative-arc";
 export * from "./analyzers/financial-health";
 export * from "./analyzers/risk-assessment";
+export * from "./analyzers/financial-integrity-analyzer-v1";
+export * from "./types/financial-integrity-v1";
 
 // Storage + services
 export * from "./services/dio-storage";

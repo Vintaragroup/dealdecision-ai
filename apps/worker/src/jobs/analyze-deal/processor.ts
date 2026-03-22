@@ -12,6 +12,7 @@ import {
   NarrativeArcDetector,
   FinancialHealthCalculator,
   RiskAssessmentEngine,
+  FinancialIntegrityAnalyzerV1,
   sanitizeText,
 } from "@dealdecision/core";
 import {
@@ -1225,6 +1226,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 			narrativeArc: new NarrativeArcDetector(),
 			financialHealth: new FinancialHealthCalculator(),
 			riskAssessment: new RiskAssessmentEngine(),
+			financialIntegrity: new FinancialIntegrityAnalyzerV1(),
 		};
 
 		const orchestrator = new DealOrchestrator(analyzers as any, storage as any, {

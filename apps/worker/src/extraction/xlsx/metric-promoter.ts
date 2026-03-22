@@ -18,6 +18,7 @@
 import { createHash } from "crypto";
 import type { FinancialFactV1, FinancialFactConfidence, FinancialFactUnit, FinancialFactSourceKind } from "@dealdecision/core";
 import type { TypedMetric, FieldTypeV1 } from "@dealdecision/core";
+import { inferPeriodType } from "@dealdecision/core";
 
 // ─── Field type mappings ──────────────────────────────────────────────────────
 
@@ -163,7 +164,7 @@ export function promoteToFinancialFactV1(
       source_kind: sourceKind,
       metric_key: metricKey,
       metric_label: metric.label ?? undefined,
-      period_type: "unknown",
+      period_type: inferPeriodType(periodLabel),
       period_label: periodLabel,
       value: metric.value,
       unit,

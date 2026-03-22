@@ -23,6 +23,7 @@
  */
 
 import { classifySheet, type SheetKind } from "./sheet-classifier.js";
+import { parsePeriodLabel } from "./period-parser.js";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -221,6 +222,40 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
         headerRowIdx = i;
         periodKeys   = nonNull.map(([k]) => k);
         periodLabels = nonNull.map(([, v]) => String(v).trim());
+        break;
+      }
+    }
+  }
+
+  // Fallback 1b: mixed period-string + year-integer header row.
+  // Handles patterns like "TTM, 2023, 2024" where at least one column is a
+  // non-integer period string (TTM, Q1 2024, etc.) and the rest are year integers.
+  // This fires when Step 1 (all-year-integers) and Fallback 1 (all-strings) both fail.
+  if (headerRowIdx === -1) {
+    for (let i = 0; i < rowsPreview.length; i++) {
+      const row = rowsPreview[i];
+      if (!row || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      const dataCols = Object.entries(r)
+        .filter(([k]) => k !== "col_A" && k !== "col_B")
+        .sort(([a], [b]) => a.localeCompare(b));
+      const nonNull = dataCols.filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "");
+      if (nonNull.length < MIN_COL_HEADERS) continue;
+      // Every column must be a year integer OR a recognizable period string.
+      const allPeriods = nonNull.every(([, v]) => {
+        if (isYear(v)) return true;
+        return parsePeriodLabel(String(v)).period_type !== "unknown";
+      });
+      // At least one column must be a non-year-integer (otherwise Step 1 fires).
+      const hasNonYearPeriod = nonNull.some(([, v]) => !isYear(v));
+      if (allPeriods && hasNonYearPeriod) {
+        headerRowIdx = i;
+        periodKeys   = nonNull.map(([k]) => k);
+        // Normalize year-integers to strings; period-strings to canonical form.
+        periodLabels = nonNull.map(([, v]) => {
+          if (isYear(v)) return String(Math.round(Number(v)));
+          return parsePeriodLabel(String(v)).normalized || String(v);
+        });
         break;
       }
     }

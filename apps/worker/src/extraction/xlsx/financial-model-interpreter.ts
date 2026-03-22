@@ -15,17 +15,18 @@
 
 import {
   classifyTemporalScope,
-  extractYearFromLabel,
   isProjectedScope,
 } from "@dealdecision/core";
 import type {
   EvidenceRef,
   FieldTypeV1,
+  FinancialFactPeriodType,
   TypedMetric,
 } from "@dealdecision/core";
 
 import { extractScenarioLabels } from "./sheet-classifier.js";
 import type { FinancialTable } from "./table-detector.js";
+import { parsePeriodLabel } from "./period-parser.js";
 
 // ─── Row-label → FieldTypeV1 mapping ─────────────────────────────────────────
 
@@ -83,32 +84,69 @@ function resolveFieldType(rowLabel: string): { field_type: FieldTypeV1; typing_r
 // ─── Column-header scenario detection ────────────────────────────────────────
 
 /**
- * Pre-compute per-column scenario info.
+ * Per-column metadata produced from the `column_headers` array.
  *
- * For scenario columns (Base, Upside, Downside, etc.) the temporal scope must
- * be forced to "scenario" regardless of any year in the header.
+ * `normalized_label` is used (rather than `label`) in period suffixes for
+ * quarterly and TTM headers so that short-form labels like "1Q24" or
+ * "Trailing Twelve Months" are canonicalized before becoming period_label on
+ * the promoted FinancialFactV1.
+ */
+interface ColumnMeta {
+  /** Raw header string (preserved for compatibility). */
+  label: string;
+  /** Normalized canonical period label; falls back to `label` when unknown. */
+  normalized_label: string;
+  year: number | null;
+  quarter: number | null;
+  period_type: FinancialFactPeriodType;
+  scenario: string | null;
+  temporal_scope_context: string;
+}
+
+/**
+ * Pre-compute per-column metadata from column headers.
+ *
+ * For scenario columns (Base, Upside, Downside, etc.) temporal scope is forced
+ * to "scenario" regardless of any year in the header.
+ *
+ * For quarterly and TTM headers, normalized_label and scope_context are derived
+ * via parsePeriodLabel() so that classifyTemporalScope() receives accurate signals.
  */
 function buildColumnMeta(
   columnHeaders: string[],
   currentYear: number,
-): Array<{ label: string; year: number | null; scenario: string | null; temporal_scope_context: string }> {
+): ColumnMeta[] {
   // extractScenarioLabels identifies which headers are scenario names
   const scenarioSet = new Set(extractScenarioLabels(columnHeaders));
 
   return columnHeaders.map((header) => {
-    const year = extractYearFromLabel(header);
     const isScenario = scenarioSet.has(header);
     const scenario = isScenario ? header : null;
 
-    // Build a context-text string that drives `classifyTemporalScope`.
-    // Scenario headers should get the "scenario" scope; others rely on year.
-    const context = isScenario
-      ? `${header} scenario`                      // triggers SCENARIO_KEYWORDS
-      : header.includes("E") && year !== null
-        ? `projected forecast ${year}`              // e.g. "2025E"
-        : "";
+    if (isScenario) {
+      return {
+        label: header,
+        normalized_label: header,
+        year: null,
+        quarter: null,
+        period_type: "unknown" as FinancialFactPeriodType,
+        scenario,
+        temporal_scope_context: `${header} scenario`,
+      };
+    }
 
-    return { label: header, year: isScenario ? null : year, scenario, temporal_scope_context: context };
+    const info = parsePeriodLabel(header);
+    return {
+      label: header,
+      normalized_label: info.normalized || header,
+      year: info.year,
+      quarter: info.quarter,
+      period_type: info.period_type,
+      scenario: null,
+      // scope_context from parsePeriodLabel covers projected and TTM signals.
+      // classifyTemporalScope() falls back to year-vs-currentYear when it is "".
+      temporal_scope_context: info.scope_context,
+    };
   });
 }
 
@@ -204,11 +242,15 @@ export function parseFinancialTable(
 
       const periodSuffix = col.scenario
         ? `[${col.scenario}]`
-        : col.year !== null
-          ? `(${col.year})`
-          : col.label !== ""
-            ? `(${col.label})`
-            : "";
+        : (col.period_type === "quarterly" || col.period_type === "ttm")
+          // Use the full normalized label so "Q1 2024" / "TTM" appear as
+          // the period_label in promoted facts rather than just the year.
+          ? `(${col.normalized_label})`
+          : col.year !== null
+            ? `(${col.year})`
+            : col.label !== ""
+              ? `(${col.label})`
+              : "";
       const label = `${rowLabel} ${periodSuffix}`.trim();
 
       metrics.push({

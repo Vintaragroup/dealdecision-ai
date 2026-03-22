@@ -154,6 +154,13 @@ export function parseFinancialTable(
   const minConf = opts.minConfidence ?? 0.20;
   const metrics: TypedMetric[] = [];
 
+  // Unit scale factor: 1 = no scaling; 1000 = "in thousands"; 1_000_000 = "in millions".
+  // Comes from detectUnitScale() in table-detector; defaults to 1 when absent.
+  const unitScaleFactor = table.unit_scale_factor ?? 1;
+  const scaleAnnotation = unitScaleFactor > 1
+    ? `; unit_scale_factor=${unitScaleFactor} applied (source: "${table.unit_scale_source_text ?? "unknown"}")`
+    : "";
+
   const colMeta = buildColumnMeta(table.column_headers, currentYear);
 
   const evidence: EvidenceRef = {
@@ -177,6 +184,14 @@ export function parseFinancialTable(
 
       const col = colMeta[colIdx]!;
 
+      // Apply unit scale (e.g. ×1000 for "in thousands" workbooks).
+      // Raw cell value is preserved in value_raw with a scale annotation so
+      // source_pointer (and thus fact_id) remains distinct from unscaled facts.
+      const scaledValue = Number.isFinite(cellValue) ? cellValue * unitScaleFactor : null;
+      const value_raw = unitScaleFactor === 1
+        ? String(cellValue)
+        : `${String(cellValue)} [×${unitScaleFactor}]`;
+
       // Determine temporal scope.
       const temporal_scope = classifyTemporalScope(
         col.year,
@@ -187,8 +202,6 @@ export function parseFinancialTable(
 
       const projection_blocked = isProjectedScope(temporal_scope);
 
-      // Format raw value string
-      const value_raw = String(cellValue);
       const periodSuffix = col.scenario
         ? `[${col.scenario}]`
         : col.year !== null
@@ -202,11 +215,11 @@ export function parseFinancialTable(
         field_type,
         temporal_scope,
         value_raw,
-        value: Number.isFinite(cellValue) ? cellValue : null,
+        value: scaledValue,
         label,
         confidence: typing_confidence,
         sources: [evidence],
-        typing_reason: `${typing_reason}; column="${col.label}"`,
+        typing_reason: `${typing_reason}; column="${col.label}"${scaleAnnotation}`,
         typing_confidence,
         projection_blocked,
         ...(col.scenario !== null ? { scenario: col.scenario } : {}),

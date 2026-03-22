@@ -237,3 +237,146 @@ describe("promoteToFinancialFactV1", () => {
     }
   });
 });
+
+// ─── parseFinancialTable — unit scaling ───────────────────────────────────────
+
+/**
+ * Fixtures for unit scaling tests.
+ * Raw cell values are small integers (5, 7, 1, 2) — clearly "in thousands" or
+ * "in millions" workbooks.  After scaling they become the absolute values that
+ * downstream facts should carry.
+ */
+const IN_THOUSANDS_TABLE: FinancialTable = {
+  sheet_name:       "P&L (in thousands)",
+  table_kind:       "income_statement",
+  row_headers:      ["Revenue", "Net Income"],
+  column_headers:   ["2023", "2024"],
+  cell_matrix: [
+    [5, 7],
+    [1, 2],
+  ],
+  source_page_type: "excel_range",
+  unit_scale_factor: 1_000,
+  unit_scale_source_text: "in thousands",
+};
+
+const IN_MILLIONS_TABLE: FinancialTable = {
+  sheet_name:       "Financial Summary",
+  table_kind:       "income_statement",
+  row_headers:      ["Revenue", "Net Income"],
+  column_headers:   ["2023", "2024"],
+  cell_matrix: [
+    [50, 75],
+    [ 5, 10],
+  ],
+  source_page_type: "excel_range",
+  unit_scale_factor: 1_000_000,
+  unit_scale_source_text: "in millions",
+};
+
+describe("parseFinancialTable — unit scaling (×1000)", () => {
+  it("multiplies metric values by 1000 when unit_scale_factor=1000", () => {
+    const metrics = parseFinancialTable(IN_THOUSANDS_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    const revMetrics = metrics.filter((m) => m.field_type === "revenue_canonical_v1");
+    expect(revMetrics.length).toBeGreaterThan(0);
+    const values = revMetrics.map((m) => m.value);
+    expect(values).toContain(5_000);  // 5 × 1000
+    expect(values).toContain(7_000);  // 7 × 1000
+  });
+
+  it("does not emit the raw pre-scale value when scaled", () => {
+    const metrics = parseFinancialTable(IN_THOUSANDS_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    const revMetrics = metrics.filter((m) => m.field_type === "revenue_canonical_v1");
+    const values = revMetrics.map((m) => m.value);
+    // Raw cell values 5 and 7 must not appear — they must have been scaled
+    expect(values).not.toContain(5);
+    expect(values).not.toContain(7);
+  });
+
+  it("includes unit_scale_factor annotation in typing_reason", () => {
+    const metrics = parseFinancialTable(IN_THOUSANDS_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    for (const m of metrics) {
+      expect(m.typing_reason).toContain("unit_scale_factor=1000");
+      expect(m.typing_reason).toContain('source: "in thousands"');
+    }
+  });
+
+  it("encodes scale multiplier in value_raw (e.g. '5 [×1000]')", () => {
+    const metrics = parseFinancialTable(IN_THOUSANDS_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    for (const m of metrics) {
+      expect(m.value_raw).toMatch(/\[×1000\]/);
+    }
+  });
+
+  it("fact_ids are unique (scaled value_raw creates distinct source_pointer)", () => {
+    const metrics = parseFinancialTable(IN_THOUSANDS_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    const facts = promoteToFinancialFactV1(metrics, { deal_id: "d1" });
+    const ids = facts.map((f) => f.fact_id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("parseFinancialTable — unit scaling (×1_000_000)", () => {
+  it("multiplies metric values by 1_000_000 when unit_scale_factor=1_000_000", () => {
+    const metrics = parseFinancialTable(IN_MILLIONS_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    const revMetrics = metrics.filter((m) => m.field_type === "revenue_canonical_v1");
+    expect(revMetrics.length).toBeGreaterThan(0);
+    const values = revMetrics.map((m) => m.value);
+    expect(values).toContain(50_000_000);  // 50 × 1_000_000
+    expect(values).toContain(75_000_000);  // 75 × 1_000_000
+  });
+
+  it("includes unit_scale_factor=1000000 annotation in typing_reason", () => {
+    const metrics = parseFinancialTable(IN_MILLIONS_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    for (const m of metrics) {
+      expect(m.typing_reason).toContain("unit_scale_factor=1000000");
+      expect(m.typing_reason).toContain('source: "in millions"');
+    }
+  });
+
+  it("encodes scale multiplier in value_raw (e.g. '50 [×1000000]')", () => {
+    const metrics = parseFinancialTable(IN_MILLIONS_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    for (const m of metrics) {
+      expect(m.value_raw).toMatch(/\[×1000000\]/);
+    }
+  });
+});
+
+describe("parseFinancialTable — no scaling (unit_scale_factor absent or 1)", () => {
+  it("leaves values unchanged when unit_scale_factor is absent", () => {
+    // INCOME_TABLE has no unit_scale_factor field — identical to factor=1
+    const metrics = parseFinancialTable(INCOME_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    const revMetrics = metrics.filter((m) => m.field_type === "revenue_canonical_v1");
+    const values = revMetrics.map((m) => m.value);
+    expect(values).toContain(5_000_000);
+    expect(values).toContain(7_200_000);
+    expect(values).toContain(9_800_000);
+  });
+
+  it("leaves values unchanged when unit_scale_factor=1 (explicit identity)", () => {
+    const explicitlyUnscaled: FinancialTable = {
+      ...INCOME_TABLE,
+      unit_scale_factor: 1,
+      unit_scale_source_text: null,
+    };
+    const metrics = parseFinancialTable(explicitlyUnscaled, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    const revMetrics = metrics.filter((m) => m.field_type === "revenue_canonical_v1");
+    const values = revMetrics.map((m) => m.value);
+    expect(values).toContain(5_000_000);
+    expect(values).toContain(7_200_000);
+  });
+
+  it("value_raw has no [×...] annotation when unscaled", () => {
+    const metrics = parseFinancialTable(INCOME_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    for (const m of metrics) {
+      expect(m.value_raw).not.toContain("[×");
+    }
+  });
+
+  it("typing_reason has no unit_scale_factor annotation when unscaled", () => {
+    const metrics = parseFinancialTable(INCOME_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    for (const m of metrics) {
+      expect(m.typing_reason).not.toContain("unit_scale_factor");
+    }
+  });
+});

@@ -55,12 +55,84 @@ export interface FinancialTable {
   cell_matrix: (number | null)[][];
   /** Source page type ("excel_range" | "excel_sheet"). */
   source_page_type: string;
+  /**
+   * Detected unit scale multiplier for all numeric cells in this table.
+   *
+   * Default: 1 (no scaling — raw cell values are absolute).
+   * 1_000   = workbook states "in thousands" / "$000s"
+   * 1_000_000 = workbook states "in millions" / "$MM"
+   *
+   * Applied by parseFinancialTable() before emitting TypedMetric values.
+   * When absent (undefined), parseFinancialTable() treats it as 1.
+   */
+  unit_scale_factor?: number;
+  /**
+   * The source text snippet that triggered the unit scale detection,
+   * e.g. "in thousands" or "$000s". Null when no scaling was detected.
+   * Preserved for downstream traceability (stamped in typing_reason).
+   */
+  unit_scale_source_text?: string | null;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 const MIN_ROW_HEADERS = 2;
 const MIN_COL_HEADERS = 2;
+
+// ─── Unit scale detection ─────────────────────────────────────────────────────
+
+/**
+ * Ordered scale patterns. Billions before millions before thousands to prevent
+ * partial matches (e.g. "millions" must not match a "billions" label).
+ *
+ * Covers the most common institutional workbook denominations:
+ *   - "in thousands" / "(in thousands)" / "in US thousands"
+ *   - "$000s" / "£000s" / "€000s" / "(000s)"
+ *   - "in millions" / "(in millions)" / "$MM" / "£MM" / "€MM"
+ *   - "in billions"
+ */
+const UNIT_SCALE_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly factor: number }> = [
+  // Billions
+  {
+    pattern: /\bin\s+(?:us\s+)?billions?\b|\(in\s+billions?\)/i,
+    factor: 1_000_000_000,
+  },
+  // Millions — "in millions", "(in millions)", "$MM", "£MM", "€MM", "(£MM)"
+  {
+    pattern: /\bin\s+(?:us\s+)?millions?\b|\(in\s+millions?\)|[$€£¥₹]\s*mm\b|\([$€£¥₹]?\s*mm\)/i,
+    factor: 1_000_000,
+  },
+  // Thousands — "in thousands", "(in thousands)", "$000s", "£000s", "€000s", "(000s)", "(£000s)"
+  {
+    pattern: /\bin\s+(?:us\s+)?thousands?\b|\(in\s+thousands?\)|[$€£¥₹]\s*000s?\b|\([$€£¥₹]?\s*000s?\)/i,
+    factor: 1_000,
+  },
+];
+
+/**
+ * Scan an array of text strings for workbook/table unit scaling markers.
+ *
+ * Returns { factor: 1, source_text: null } when no scaling marker is found
+ * (i.e. raw cell values should be used as-is).
+ *
+ * First match across texts × patterns wins. Patterns are checked largest-first
+ * to prevent "thousands" from matching a "billions" header.
+ *
+ * @param texts  Candidate strings: sheet title, top-row labels, header cells.
+ * @returns      Scale multiplier and matched source text.
+ */
+export function detectUnitScale(texts: string[]): { factor: number; source_text: string | null } {
+  for (const text of texts) {
+    const t = text.trim();
+    if (!t) continue;
+    for (const { pattern, factor } of UNIT_SCALE_PATTERNS) {
+      if (pattern.test(t)) {
+        return { factor, source_text: t };
+      }
+    }
+  }
+  return { factor: 1, source_text: null };
+}
 
 /** Loose string→number converter. Returns null on failure. */
 function toNum(v: unknown): number | null {
@@ -175,7 +247,24 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
 
   if (periodKeys.length < MIN_COL_HEADERS) return null;
 
-  // ── Step 2: Extract label rows and cell matrix ─────────────────────────
+  // ── Step 2: Detect unit scaling ────────────────────────────────────────
+  // Scan sheet title + first 5 rows (col_A prose + any string-valued data
+  // cells) for denominator markers like "in thousands" or "$000s".
+  const scaleScanTexts: string[] = [sheetTitle];
+  for (let i = 0; i < Math.min(5, rowsPreview.length); i++) {
+    const row = rowsPreview[i];
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    if (typeof r["col_A"] === "string") scaleScanTexts.push(r["col_A"]);
+    // String-valued data cells in top rows may contain column-level markers
+    for (const v of Object.values(r)) {
+      if (typeof v === "string" && v.trim()) scaleScanTexts.push(v);
+    }
+  }
+  const { factor: unit_scale_factor, source_text: unit_scale_source_text } =
+    detectUnitScale(scaleScanTexts);
+
+  // ── Step 3: Extract label rows and cell matrix ─────────────────────────
   const rowHeaders: string[] = [];
   const matrix: (number | null)[][] = [];
 
@@ -197,7 +286,7 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
 
   if (rowHeaders.length < MIN_ROW_HEADERS) return null;
 
-  // ── Step 3: Classify the table ─────────────────────────────────────────
+  // ── Step 4: Classify the table ─────────────────────────────────────────
   const classification = classifySheet({
     name: sheetTitle,
     column_headers: periodLabels,
@@ -211,6 +300,8 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
     column_headers: periodLabels,
     cell_matrix: matrix,
     source_page_type: "excel_range",
+    unit_scale_factor,
+    unit_scale_source_text,
   };
 }
 
@@ -260,7 +351,13 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
 
   if (rowHeaders.length < MIN_ROW_HEADERS) return null;
 
-  // ── Step 3: Classify ──────────────────────────────────────────────────
+  // ── Step 3: Detect unit scaling ───────────────────────────────────────
+  // Scan sheet title + column headers for denominator markers.
+  const scaleScanTexts: string[] = [sheetTitle, ...headers];
+  const { factor: unit_scale_factor, source_text: unit_scale_source_text } =
+    detectUnitScale(scaleScanTexts);
+
+  // ── Step 4: Classify ──────────────────────────────────────────────────
   const classification = classifySheet({
     name: sheetTitle,
     column_headers: valueCols,
@@ -274,6 +371,8 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
     column_headers: valueCols,
     cell_matrix: matrix,
     source_page_type: "excel_sheet",
+    unit_scale_factor,
+    unit_scale_source_text,
   };
 }
 

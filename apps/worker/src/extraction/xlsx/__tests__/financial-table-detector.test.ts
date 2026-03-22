@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { detectFinancialTables } from "../table-detector.js";
+import { detectFinancialTables, detectUnitScale } from "../table-detector.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -160,5 +160,147 @@ describe("detectFinancialTables — edge cases", () => {
     const payload = makeExcelRangePayload("Sheet", rows);
     const [t] = detectFinancialTables(payload);
     expect(t!.cell_matrix[0]![0]).toBe(-500_000);
+  });
+});
+
+// ─── detectUnitScale — pure function ─────────────────────────────────────────
+
+describe("detectUnitScale — marker detection", () => {
+  it("detects 'in thousands' inside a sheet title → factor 1000", () => {
+    const { factor, source_text } = detectUnitScale(["Revenue Model (in thousands)"]);
+    expect(factor).toBe(1_000);
+    expect(source_text).toBe("Revenue Model (in thousands)");
+  });
+
+  it("detects standalone '(in thousands)' → factor 1000", () => {
+    const { factor } = detectUnitScale(["(in thousands)"]);
+    expect(factor).toBe(1_000);
+  });
+
+  it("detects '$000s' → factor 1000", () => {
+    const { factor, source_text } = detectUnitScale(["$000s"]);
+    expect(factor).toBe(1_000);
+    expect(source_text).toBe("$000s");
+  });
+
+  it("detects '£000s' → factor 1000", () => {
+    const { factor } = detectUnitScale(["£000s"]);
+    expect(factor).toBe(1_000);
+  });
+
+  it("detects 'in millions' → factor 1_000_000", () => {
+    const { factor, source_text } = detectUnitScale(["in millions"]);
+    expect(factor).toBe(1_000_000);
+    expect(source_text).toBe("in millions");
+  });
+
+  it("detects '$MM' → factor 1_000_000", () => {
+    const { factor } = detectUnitScale(["$MM"]);
+    expect(factor).toBe(1_000_000);
+  });
+
+  it("detects 'in billions' → factor 1_000_000_000", () => {
+    const { factor } = detectUnitScale(["in billions"]);
+    expect(factor).toBe(1_000_000_000);
+  });
+
+  it("returns factor=1 and source_text=null when no marker present", () => {
+    const { factor, source_text } = detectUnitScale(["P&L", "Revenue", "2023", "2024"]);
+    expect(factor).toBe(1);
+    expect(source_text).toBeNull();
+  });
+
+  it("returns factor=1 for empty array", () => {
+    const { factor, source_text } = detectUnitScale([]);
+    expect(factor).toBe(1);
+    expect(source_text).toBeNull();
+  });
+
+  it("returns the first-text match when multiple markers are present across texts", () => {
+    // "in millions" text appears before "in thousands" → millions wins
+    const { factor } = detectUnitScale(["in millions", "in thousands"]);
+    expect(factor).toBe(1_000_000);
+  });
+
+  it("billions pattern does not false-match on a 'millions' string", () => {
+    const { factor } = detectUnitScale(["in millions"]);
+    expect(factor).toBe(1_000_000);
+    expect(factor).not.toBe(1_000_000_000);
+  });
+});
+
+// ─── detectFinancialTables — unit_scale_factor field (excel_range) ─────────────
+
+describe("detectFinancialTables — unit_scale_factor (excel_range)", () => {
+  it("sets unit_scale_factor=1000 when sheet title contains '(in thousands)'", () => {
+    const payload = makeExcelRangePayload("P&L (in thousands)", INCOME_ROWS_PREVIEW);
+    const [t] = detectFinancialTables(payload);
+    expect(t!.unit_scale_factor).toBe(1_000);
+    expect(t!.unit_scale_source_text).toBe("P&L (in thousands)");
+  });
+
+  it("sets unit_scale_factor=1_000_000 when sheet title contains '(in millions)'", () => {
+    const payload = makeExcelRangePayload("Financial Summary (in millions)", INCOME_ROWS_PREVIEW);
+    const [t] = detectFinancialTables(payload);
+    expect(t!.unit_scale_factor).toBe(1_000_000);
+  });
+
+  it("sets unit_scale_factor=1000 when top-row col_A label is '$000s'", () => {
+    // Scale marker in first data row's label cell — common in institutional workbooks
+    const rows: Record<string, unknown>[] = [
+      { col_A: "$000s",      col_C: null, col_D: null },
+      { col_A: null,         col_C: 2023, col_D: 2024 },
+      { col_A: "Revenue",    col_C: 5,    col_D: 7 },
+      { col_A: "Net Income", col_C: 1,    col_D: 2 },
+    ];
+    const [t] = detectFinancialTables(makeExcelRangePayload("Income Statement", rows));
+    expect(t!.unit_scale_factor).toBe(1_000);
+    expect(t!.unit_scale_source_text).toBe("$000s");
+  });
+
+  it("unit_scale_factor is 1 (or absent) and source_text is null when no marker present", () => {
+    const payload = makeExcelRangePayload("P&L", INCOME_ROWS_PREVIEW);
+    const [t] = detectFinancialTables(payload);
+    expect(t!.unit_scale_factor ?? 1).toBe(1);
+    expect(t!.unit_scale_source_text ?? null).toBeNull();
+  });
+});
+
+// ─── detectFinancialTables — unit_scale_factor field (excel_sheet) ─────────────
+
+describe("detectFinancialTables — unit_scale_factor (excel_sheet)", () => {
+  it("sets unit_scale_factor=1000 when sheet title contains '(in thousands)'", () => {
+    const headers = ["Metric", "FY2023", "FY2024"];
+    const rows = [
+      { Metric: "Revenue",    FY2023: 5, FY2024: 7 },
+      { Metric: "Net Income", FY2023: 1, FY2024: 2 },
+    ];
+    const payload = makeExcelSheetPayload("Income Statement (in thousands)", headers, rows);
+    const [t] = detectFinancialTables(payload);
+    expect(t!.unit_scale_factor).toBe(1_000);
+  });
+
+  it("sets unit_scale_factor=1000 when a column header contains '$000s'", () => {
+    // Scale marker embedded in column header label — e.g. "FY2023 $000s"
+    const headers = ["Metric", "FY2023 $000s", "FY2024 $000s"];
+    const rows = [
+      { Metric: "Revenue",    "FY2023 $000s": 5, "FY2024 $000s": 7 },
+      { Metric: "Net Income", "FY2023 $000s": 1, "FY2024 $000s": 2 },
+    ];
+    const payload = makeExcelSheetPayload("P&L", headers, rows);
+    const [t] = detectFinancialTables(payload);
+    expect(t!.unit_scale_factor).toBe(1_000);
+  });
+
+  it("unit_scale_factor is 1 (or absent) when no scale marker in title or headers", () => {
+    const headers = ["Metric", "FY2023", "FY2024"];
+    const rows = [
+      { Metric: "Revenue",    FY2023: 5_000_000, FY2024: 7_000_000 },
+      { Metric: "Net Income", FY2023:   500_000, FY2024:   900_000 },
+    ];
+    const payload = makeExcelSheetPayload("P&L", headers, rows);
+    const [t] = detectFinancialTables(payload);
+    expect(t!.unit_scale_factor ?? 1).toBe(1);
+    expect(t!.unit_scale_source_text ?? null).toBeNull();
   });
 });

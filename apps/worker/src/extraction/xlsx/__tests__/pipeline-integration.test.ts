@@ -240,3 +240,168 @@ describe("Pipeline integration — empty / unrecognised payload", () => {
     expect(facts.length).toBe(0);
   });
 });
+
+// ─── 7. Unit scaling — in thousands via sheet title (excel_range) ─────────────
+
+/** Income statement expressed in-thousands; marker lives in the sheet title. */
+const IN_THOUSANDS_RANGE_PAYLOAD = {
+  page_type: "excel_range",
+  structured: {
+    sheet_title: "P&L (in thousands)",
+    rows_preview: [
+      { col_A: null,         col_C: 2023, col_D: 2024 },
+      { col_A: "Revenue",    col_C: 5,    col_D: 7 },
+      { col_A: "Net Income", col_C: 1,    col_D: 2 },
+    ],
+  },
+};
+
+describe("Pipeline integration — unit scaling (in thousands, sheet title)", () => {
+  it("scales revenue fact values by 1000", () => {
+    const facts = runPipeline(IN_THOUSANDS_RANGE_PAYLOAD);
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    expect(revFacts.length).toBeGreaterThan(0);
+    const values = revFacts.map((f) => f.value as number);
+    expect(values).toContain(5_000);   // 5 × 1000
+    expect(values).toContain(7_000);   // 7 × 1000
+  });
+
+  it("does not emit the raw pre-scale cell value in any fact", () => {
+    const facts = runPipeline(IN_THOUSANDS_RANGE_PAYLOAD);
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    const values = revFacts.map((f) => f.value);
+    expect(values).not.toContain(5);
+    expect(values).not.toContain(7);
+  });
+
+  it("fact_ids are all unique (scale annotation makes each source_pointer distinct)", () => {
+    const facts = runPipeline(IN_THOUSANDS_RANGE_PAYLOAD);
+    const ids = facts.map((f) => f.fact_id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("source_kind is still xlsx after scaling", () => {
+    const facts = runPipeline(IN_THOUSANDS_RANGE_PAYLOAD);
+    for (const f of facts) {
+      expect(f.source_kind).toBe("xlsx");
+    }
+  });
+});
+
+// ─── 8. Unit scaling — $000s via top-row label (excel_range) ─────────────────
+
+/**
+ * Scale marker lives in col_A of the first row (a common pattern where
+ * workbooks write "$000s" as a label above the numeric grid).
+ */
+const DOLLAR_000S_RANGE_PAYLOAD = {
+  page_type: "excel_range",
+  structured: {
+    sheet_title: "Income Statement",
+    rows_preview: [
+      { col_A: "$000s",      col_C: null, col_D: null },
+      { col_A: null,         col_C: 2023, col_D: 2024 },
+      { col_A: "Revenue",    col_C: 10,   col_D: 15 },
+      { col_A: "Net Income", col_C: 2,    col_D: 4 },
+    ],
+  },
+};
+
+describe("Pipeline integration — unit scaling ($000s, top-row label)", () => {
+  it("detects $000s and scales fact values by 1000", () => {
+    const facts = runPipeline(DOLLAR_000S_RANGE_PAYLOAD);
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    expect(revFacts.length).toBeGreaterThan(0);
+    const values = revFacts.map((f) => f.value as number);
+    expect(values).toContain(10_000);  // 10 × 1000
+    expect(values).toContain(15_000);  // 15 × 1000
+  });
+
+  it("does not emit raw pre-scale values", () => {
+    const facts = runPipeline(DOLLAR_000S_RANGE_PAYLOAD);
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    const values = revFacts.map((f) => f.value);
+    expect(values).not.toContain(10);
+    expect(values).not.toContain(15);
+  });
+});
+
+// ─── 9. Unit scaling — in millions via sheet title (excel_range) ──────────────
+
+const IN_MILLIONS_RANGE_PAYLOAD = {
+  page_type: "excel_range",
+  structured: {
+    sheet_title: "Financial Summary (in millions)",
+    rows_preview: [
+      { col_A: null,         col_C: 2023, col_D: 2024 },
+      { col_A: "Revenue",    col_C: 50,   col_D: 75 },
+      { col_A: "Net Income", col_C: 5,    col_D: 10 },
+    ],
+  },
+};
+
+describe("Pipeline integration — unit scaling (in millions, sheet title)", () => {
+  it("scales revenue fact values by 1_000_000", () => {
+    const facts = runPipeline(IN_MILLIONS_RANGE_PAYLOAD);
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    expect(revFacts.length).toBeGreaterThan(0);
+    const values = revFacts.map((f) => f.value as number);
+    expect(values).toContain(50_000_000);  // 50 × 1_000_000
+    expect(values).toContain(75_000_000);  // 75 × 1_000_000
+  });
+
+  it("does not emit raw pre-scale values", () => {
+    const facts = runPipeline(IN_MILLIONS_RANGE_PAYLOAD);
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    const values = revFacts.map((f) => f.value);
+    expect(values).not.toContain(50);
+    expect(values).not.toContain(75);
+  });
+});
+
+// ─── 10. No scaling — control case ──────────────────────────────────────────
+
+describe("Pipeline integration — no unit scaling (control)", () => {
+  it("INCOME_RANGE_PAYLOAD passes absolute values through unchanged", () => {
+    // This fixture has no scale marker — all values should arrive as-is
+    const facts = runPipeline(INCOME_RANGE_PAYLOAD);
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    const values = revFacts.map((f) => f.value as number);
+    expect(values).toContain(5_000_000);
+    expect(values).toContain(7_200_000);
+    expect(values).toContain(10_000_000);
+  });
+});
+
+// ─── 11. Unit scaling — in thousands via sheet title (excel_sheet) ────────────
+
+const IN_THOUSANDS_SHEET_PAYLOAD = {
+  page_type: "excel_sheet",
+  structured: {
+    sheet_title: "Revenue Model (in thousands)",
+    headers: ["Metric", "FY2023", "FY2024"],
+    rows: [
+      { Metric: "Revenue",    FY2023: 4_000, FY2024: 6_500 },
+      { Metric: "Net Income", FY2023:   500, FY2024:   900 },
+    ],
+    tables: [],
+  },
+};
+
+describe("Pipeline integration — unit scaling (excel_sheet, in thousands)", () => {
+  it("scales excel_sheet revenue values by 1000", () => {
+    const facts = runPipeline(IN_THOUSANDS_SHEET_PAYLOAD);
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    expect(revFacts.length).toBeGreaterThan(0);
+    const values = revFacts.map((f) => f.value as number);
+    expect(values).toContain(4_000_000);  // 4_000 × 1000
+    expect(values).toContain(6_500_000);  // 6_500 × 1000
+  });
+
+  it("source_kind is xlsx for excel_sheet scaled facts", () => {
+    const facts = runPipeline(IN_THOUSANDS_SHEET_PAYLOAD);
+    for (const f of facts) {
+      expect(f.source_kind).toBe("xlsx");
+    }
+  });
+});

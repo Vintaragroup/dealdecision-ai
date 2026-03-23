@@ -18,6 +18,12 @@
 
 import type { FinancialFactV1 } from '../financial-facts/financial-fact-v1.js';
 import type { FinancialCoverageProfileV1 } from './financial-coverage-profile.js';
+import {
+  selectAuthoritativeFact,
+  filterCorruptedFacts,
+  isProjectedFact,
+  isCorruptedFact,
+} from '../financial-facts/select-authoritative-fact.js';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -157,11 +163,8 @@ export type UnderwritingReadinessV1 = {
 
 // ─── Internal constants ───────────────────────────────────────────────────────
 
-const SRC_SCORES: Record<string, number> = {
-  xlsx: 10, pdf_table: 5, pdf_kpi_line: 4, kpi_tile: 3, chart_pixel: 2, deck: 1, unknown: 0,
-};
+// Retained for period-snapshot collection (projection grouping) internal use.
 const CONF_SCORES: Record<string, number> = { high: 3, medium: 2, low: 1 };
-const PERIOD_SCORES: Record<string, number> = { annual: 4, ttm: 3, quarterly: 2, monthly: 1, unknown: 0 };
 
 const HEADCOUNT_FUNCTION_MAP: Array<{ keys: string[]; display_name: string }> = [
   { keys: ['r_d_headcount', 'rd_headcount', 'engineering_headcount', 'product_engineering_headcount'], display_name: 'R&D / Engineering' },
@@ -185,14 +188,6 @@ const PROJECTION_EBITDA_KEYS = ['ebitda', 'net_income', 'operating_income'];
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-function isProjectedFact(f: FinancialFactV1): boolean {
-  const scope = (f as any).temporal_scope as string | undefined;
-  if (scope === 'projected' || scope === 'scenario' || scope === 'target') return true;
-  // Use digit-boundary lookahead/lookbehind so "FY2027" correctly matches (Y is not a digit).
-  const yr = f.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
-  return yr != null && Number(yr[1]) > new Date().getFullYear();
-}
-
 function toMetricPoint(f: FinancialFactV1): FinancialMetricPoint {
   return {
     value: f.value,
@@ -202,36 +197,6 @@ function toMetricPoint(f: FinancialFactV1): FinancialMetricPoint {
     confidence: f.confidence,
     source_kind: f.source_kind,
   };
-}
-
-function bestFact(
-  facts: FinancialFactV1[],
-  metricKeys: string[],
-  opts: { requireNonProjected?: boolean; requireProjected?: boolean } = {}
-): FinancialFactV1 | undefined {
-  const keySet = new Set(metricKeys);
-  const candidates = facts.filter(f => {
-    if (!keySet.has(f.metric_key)) return false;
-    if (opts.requireNonProjected && isProjectedFact(f)) return false;
-    if (opts.requireProjected && !isProjectedFact(f)) return false;
-    return true;
-  });
-
-  candidates.sort((a, b) => {
-    if (!opts.requireProjected) {
-      // Prefer realized (non-projected) facts first for current-state lookups
-      const aP = isProjectedFact(a) ? 0 : 1;
-      const bP = isProjectedFact(b) ? 0 : 1;
-      if (aP !== bP) return bP - aP;
-    }
-    const ss = (SRC_SCORES[b.source_kind] ?? 0) - (SRC_SCORES[a.source_kind] ?? 0);
-    if (ss !== 0) return ss;
-    const cs = (CONF_SCORES[b.confidence] ?? 0) - (CONF_SCORES[a.confidence] ?? 0);
-    if (cs !== 0) return cs;
-    return (PERIOD_SCORES[b.period_type] ?? 0) - (PERIOD_SCORES[a.period_type] ?? 0);
-  });
-
-  return candidates[0];
 }
 
 function fmtC(value: number, currency?: string): string {
@@ -250,11 +215,12 @@ function isCapTableDoc(doc: { filename?: string; kind?: string }): boolean {
 }
 
 function collectProjectionPeriods(facts: FinancialFactV1[]): FinancialPeriodSnapshot[] {
-  // Group projected facts by period_label
+  // Group projected non-corrupted facts by period_label
   const periodMap = new Map<string, { period_type: string; byKey: Map<string, FinancialFactV1> }>();
 
   for (const f of facts) {
     if (!isProjectedFact(f)) continue;
+    if (isCorruptedFact(f).corrupted) continue;
     if (!periodMap.has(f.period_label)) {
       periodMap.set(f.period_label, { period_type: f.period_type, byKey: new Map() });
     }
@@ -348,8 +314,12 @@ function _build(input: {
   structured_summary?: any;
   documents?: Array<{ document_id: string; kind?: string; filename?: string }> | null;
 }): FinancialBreakdownV1 {
-  const { financial_facts: facts, financial_coverage_v1: coverage, structured_summary: ss } = input;
+  const { financial_facts: rawFacts, financial_coverage_v1: coverage, structured_summary: ss } = input;
   const docs = Array.isArray(input.documents) ? input.documents : [];
+
+  // Strip corrupted facts before any selection. Track which were dropped for risk reporting.
+  const corruptedFacts = rawFacts.filter(f => isCorruptedFact(f).corrupted);
+  const facts = filterCorruptedFacts(rawFacts);
 
   const hasXlsx = coverage.sources.some(s => s.kind === 'xlsx');
   const xlsxFacts = facts.filter(f => f.source_kind === 'xlsx');
@@ -365,11 +335,11 @@ function _build(input: {
 
   // ── Section 1: Current Financial State ──────────────────────────────────
 
-  const revFact = bestFact(facts, ['revenue', 'arr', 'mrr'], { requireNonProjected: true });
-  const burnFact = bestFact(facts, ['burn_rate', 'monthly_burn', 'net_burn']);
-  const runwayFact = bestFact(facts, ['runway_months', 'runway']);
-  const cashFact = bestFact(facts, ['cash', 'cash_on_hand', 'cash_and_equivalents']);
-  const grossMarginFact = bestFact(facts, ['gross_margin', 'gross_margin_pct', 'gross_margin_percent'], { requireNonProjected: true });
+  const revFact = selectAuthoritativeFact(['revenue', 'arr', 'mrr'], facts, { requireNonProjected: true });
+  const burnFact = selectAuthoritativeFact(['burn_rate', 'monthly_burn', 'net_burn'], facts);
+  const runwayFact = selectAuthoritativeFact(['runway_months', 'runway'], facts);
+  const cashFact = selectAuthoritativeFact(['cash', 'cash_on_hand', 'cash_and_equivalents'], facts);
+  const grossMarginFact = selectAuthoritativeFact(['gross_margin', 'gross_margin_pct', 'gross_margin_percent'], facts, { requireNonProjected: true });
 
   const has_current_state = revFact != null || burnFact != null || cashFact != null;
   // Actual projected fact-periods take precedence over the coverage flag (which can be set by deck language)
@@ -421,13 +391,13 @@ function _build(input: {
 
   // ── Section 3: Revenue Breakdown ──────────────────────────────────────────
 
-  const mainRevFact = bestFact(facts, ['revenue'], { requireNonProjected: true });
-  const arrFact = bestFact(facts, ['arr'], { requireNonProjected: true });
-  const mrrFact = bestFact(facts, ['mrr'], { requireNonProjected: true });
-  const bookingsFact = bestFact(facts, ['cash_received', 'bookings', 'total_bookings', 'total_cash_received'], { requireNonProjected: true });
-  const ytdRecognizedFact = bestFact(facts, ['ytd_revenue_recognized', 'ytd_recognized_revenue'], { requireNonProjected: true });
-  const ytdCashFact = bestFact(facts, ['ytd_cash_received', 'ytd_cash'], { requireNonProjected: true });
-  const directRevFact = bestFact(facts, ['direct_booked_revenue', 'direct_revenue', 'direct_bookings'], { requireNonProjected: true });
+  const mainRevFact = selectAuthoritativeFact(['revenue'], facts, { requireNonProjected: true });
+  const arrFact = selectAuthoritativeFact(['arr'], facts, { requireNonProjected: true });
+  const mrrFact = selectAuthoritativeFact(['mrr'], facts, { requireNonProjected: true });
+  const bookingsFact = selectAuthoritativeFact(['cash_received', 'bookings', 'total_bookings', 'total_cash_received'], facts, { requireNonProjected: true });
+  const ytdRecognizedFact = selectAuthoritativeFact(['ytd_revenue_recognized', 'ytd_recognized_revenue'], facts, { requireNonProjected: true });
+  const ytdCashFact = selectAuthoritativeFact(['ytd_cash_received', 'ytd_cash'], facts, { requireNonProjected: true });
+  const directRevFact = selectAuthoritativeFact(['direct_booked_revenue', 'direct_revenue', 'direct_bookings'], facts, { requireNonProjected: true });
 
   const revParts: string[] = [];
   if (mainRevFact) revParts.push(`recognized revenue ${fmtC(mainRevFact.value, mainRevFact.currency)} (${mainRevFact.period_label})`);
@@ -444,11 +414,11 @@ function _build(input: {
 
   // ── Section 4: Expense Structure ──────────────────────────────────────────
 
-  const totalHCFact = bestFact(facts, ['total_headcount'], { requireNonProjected: true });
+  const totalHCFact = selectAuthoritativeFact(['total_headcount'], facts, { requireNonProjected: true });
   const hcByFunction: Array<{ function: string; display_name: string; count: number }> = [];
 
   for (const fn of HEADCOUNT_FUNCTION_MAP) {
-    const hcFact = bestFact(facts, fn.keys, { requireNonProjected: true });
+    const hcFact = selectAuthoritativeFact(fn.keys, facts, { requireNonProjected: true });
     if (hcFact != null) {
       hcByFunction.push({ function: fn.keys[0], display_name: fn.display_name, count: hcFact.value });
     }
@@ -536,6 +506,16 @@ function _build(input: {
   // ── Section 8: Risks / Inconsistencies ───────────────────────────────────
 
   const risks: FinancialRiskFlag[] = [];
+
+  // Surface corruption as a risk flag
+  if (corruptedFacts.length > 0) {
+    const uniqueReasons = [...new Set(corruptedFacts.map(f => isCorruptedFact(f).reason ?? 'unknown'))];
+    risks.push({
+      severity: 'medium',
+      code: 'corrupted_extraction_values',
+      message: `${corruptedFacts.length} extracted financial value${corruptedFacts.length > 1 ? 's were' : ' was'} rejected due to extraction artifacts (${uniqueReasons.join(', ')}). These values have been excluded from the analysis.`,
+    });
+  }
 
   if (!hasXlsx) {
     risks.push({

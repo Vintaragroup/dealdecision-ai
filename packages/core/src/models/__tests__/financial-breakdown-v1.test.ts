@@ -634,3 +634,136 @@ describe('buildUnderwritingReadinessV1', () => {
     })).not.toThrow();
   });
 });
+
+// ─── Case: Corrupted value rejection (year-header extraction artifacts) ───────
+
+describe('buildFinancialBreakdownV1 — corrupted value rejection', () => {
+  test('year-equals-value facts are not selected as current revenue', () => {
+    const corrupted = fact('revenue', 2026, { period_label: 'FY2026', source_kind: 'xlsx', confidence: 'high' });
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [corrupted],
+      financial_coverage_v1: xlsxCoverage(),
+    });
+    expect(bd.current_state.revenue).toBeUndefined();
+  });
+
+  test('clean fact is selected when corrupted fact co-exists', () => {
+    const corrupted = fact('revenue', 2026, { period_label: 'FY2026', source_kind: 'xlsx', confidence: 'high' });
+    const clean = fact('revenue', 3_337_000, { period_label: 'FY2026', source_kind: 'xlsx', confidence: 'medium' });
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [corrupted, clean],
+      financial_coverage_v1: xlsxCoverage(),
+    });
+    expect(bd.current_state.revenue?.value).toBe(3_337_000);
+  });
+
+  test('multiple corrupted facts for different years are all rejected', () => {
+    const c1 = fact('revenue', 2025, { period_label: '2025', source_kind: 'xlsx', confidence: 'high' });
+    const c2 = fact('revenue', 2026, { period_label: 'FY2026', source_kind: 'xlsx', confidence: 'high' });
+    const c3 = fact('revenue', 2027, { period_label: 'FY2027', source_kind: 'xlsx', confidence: 'high' });
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [c1, c2, c3],
+      financial_coverage_v1: xlsxCoverage(),
+    });
+    expect(bd.current_state.revenue).toBeUndefined();
+    expect(bd.has_current_state).toBe(false);
+  });
+
+  test('corrupted facts produce a corrupted_extraction_values risk flag', () => {
+    const corrupted = fact('revenue', 2026, { period_label: 'FY2026', source_kind: 'xlsx', confidence: 'high' });
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [corrupted],
+      financial_coverage_v1: xlsxCoverage(),
+    });
+    const codes = bd.risks.map(r => r.code);
+    expect(codes).toContain('corrupted_extraction_values');
+  });
+
+  test('corrupted risk flag has medium severity', () => {
+    const corrupted = fact('revenue', 2026, { period_label: 'FY2026' });
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [corrupted],
+      financial_coverage_v1: xlsxCoverage(),
+    });
+    const risk = bd.risks.find(r => r.code === 'corrupted_extraction_values');
+    expect(risk?.severity).toBe('medium');
+  });
+
+  test('no corrupted_extraction_values risk when all facts are clean', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 3_337_000)],
+      financial_coverage_v1: xlsxCoverage(),
+    });
+    const codes = bd.risks.map(r => r.code);
+    expect(codes).not.toContain('corrupted_extraction_values');
+  });
+
+  test('projected periods skip corrupted facts', () => {
+    const futureYear = new Date().getFullYear() + 2;
+    // Corrupted: value equals the year in the period_label
+    const corrupted = fact('revenue', futureYear, { period_label: `FY${futureYear}`, source_kind: 'xlsx' });
+    // Clean projected fact for same period
+    const cleanProj = fact('revenue', 5_000_000, { period_label: `FY${futureYear}`, source_kind: 'xlsx' });
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [corrupted, cleanProj],
+      financial_coverage_v1: xlsxCoverage({ forecast_revenue_present: true }),
+    });
+    // Only the clean projected fact should appear in projection periods
+    const revenueValues = bd.projections.periods.map(p => p.revenue);
+    expect(revenueValues).not.toContain(futureYear);
+    expect(revenueValues).toContain(5_000_000);
+  });
+});
+
+// ─── Case: Projected vs historical precedence ─────────────────────────────────
+
+describe('buildFinancialBreakdownV1 — projected vs historical precedence', () => {
+  test('current-state revenue uses historical/current fact, not projected', () => {
+    const current = fact('revenue', 800_000, { period_label: 'current', temporal_scope: 'current' });
+    const projected = projFact('revenue', 5_000_000, new Date().getFullYear() + 1);
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [projected, current],
+      financial_coverage_v1: xlsxCoverage({ historical_revenue_present: true, forecast_revenue_present: true }),
+    });
+    expect(bd.current_state.revenue?.value).toBe(800_000);
+  });
+
+  test('projection periods only contain future-year facts', () => {
+    const futureYear = new Date().getFullYear() + 2;
+    const current = fact('revenue', 800_000, { period_label: 'current' });
+    const projected = fact('revenue', 5_000_000, { period_label: `FY${futureYear}`, temporal_scope: 'projected' });
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [current, projected],
+      financial_coverage_v1: xlsxCoverage({ forecast_revenue_present: true }),
+    });
+    expect(bd.projections.periods.length).toBeGreaterThanOrEqual(1);
+    const labels = bd.projections.periods.map(p => p.period_label);
+    expect(labels).toContain(`FY${futureYear}`);
+    expect(labels).not.toContain('current');
+  });
+
+  test('has_projections is false when only historical facts exist', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 800_000, { period_label: 'FY2024', temporal_scope: 'historical' })],
+      financial_coverage_v1: xlsxCoverage(),
+    });
+    expect(bd.has_projections).toBe(false);
+  });
+
+  test('xlxs projected revenue wins over deck projected revenue for same period in projections', () => {
+    const futureYear = new Date().getFullYear() + 1;
+    const xlsxProj = fact('revenue', 3_000_000, {
+      period_label: `FY${futureYear}`,
+      source_kind: 'xlsx',
+      temporal_scope: 'projected',
+    });
+    // Projection period collection uses per-period best-confidence selection (CONF_SCORES).
+    // The xlsx fact should appear in the projection snapshot.
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [xlsxProj],
+      financial_coverage_v1: xlsxCoverage({ forecast_revenue_present: true }),
+    });
+    const period = bd.projections.periods.find(p => p.period_label === `FY${futureYear}`);
+    expect(period?.revenue).toBe(3_000_000);
+  });
+});

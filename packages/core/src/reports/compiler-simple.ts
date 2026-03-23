@@ -10,6 +10,12 @@ import { buildTopSectionV1FromScoreExplanation, type TopSectionV1 } from './tops
 import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
 import { inferFinancialCoverageProfileV1, type FinancialCoverageProfileV1 } from '../models/financial-coverage-profile.js';
 import type { FinancialFactV1 } from '../financial-facts/financial-fact-v1.js';
+import {
+  selectAuthoritativeFact,
+  filterCorruptedFacts,
+  isCorruptedFact,
+  isProjectedFact,
+} from '../financial-facts/select-authoritative-fact.js';
 import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
 import { inferStageExpectationsProfileV1, type StageExpectationsProfileV1 } from '../models/stage-expectations-profile.js';
 import { inferBusinessModelSignalProfileV1, type BusinessModelSignalProfileV1 } from '../models/business-model-signal-profile.js';
@@ -1742,19 +1748,25 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
 /**
  * Inject XLSX-derived revenue facts into structured_summary.revenue.
  *
- * Only activates when financialFacts contains xlsx-sourced revenue/arr/mrr entries.
- * Prefers XLSX facts over deck-only candidates when confidence is >= current selection.
- * Deck-derived candidates are preserved in the candidates list for audit trails.
+ * Uses selectAuthoritativeFact to choose the single best fact, ensuring
+ * year-header corruption and projected overrides are rejected before
+ * the value is written into the structured summary.
+ *
+ * All other xlsx revenue candidates are preserved in the candidates list for
+ * audit trails. Deck-derived candidates keep their existing selected=false state.
  */
 function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financialFacts: FinancialFactV1[]): void {
-  const REVENUE_KEYS = new Set(['revenue', 'arr', 'mrr']);
-  const xlsxRevenue = financialFacts.filter(
+  const REVENUE_KEYS = ['revenue', 'arr', 'mrr'];
+
+  // Strip corrupted facts before any consideration.
+  const cleanFacts = filterCorruptedFacts(financialFacts);
+
+  // Collect all xlsx-sourced revenue facts with valid positive currency values.
+  const xlsxRevenue = cleanFacts.filter(
     (f) =>
-      REVENUE_KEYS.has(f.metric_key) &&
+      REVENUE_KEYS.includes(f.metric_key) &&
       f.source_kind === 'xlsx' &&
       f.unit === 'currency' &&
-      typeof f.value === 'number' &&
-      Number.isFinite(f.value) &&
       f.value > 0
   );
   if (xlsxRevenue.length === 0) return;
@@ -1762,32 +1774,11 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
   const confidenceNum = (c: FinancialFactV1['confidence']): number =>
     c === 'high' ? 0.85 : c === 'medium' ? 0.65 : 0.45;
 
-  const periodTypeScore = (pt: string): number =>
-    pt === 'annual' ? 1 : pt === 'ttm' ? 2 : pt === 'quarterly' ? 3 : 4;
+  // Authoritative selection: prefer realized over projected, then by rank.
+  const best = selectAuthoritativeFact(REVENUE_KEYS, xlsxRevenue, { requireNonProjected: true })
+    ?? selectAuthoritativeFact(REVENUE_KEYS, xlsxRevenue);
 
-  const isFactProjected = (f: FinancialFactV1): boolean => {
-    if (f.temporal_scope === 'projected' || f.temporal_scope === 'scenario' || f.temporal_scope === 'target') return true;
-    const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
-    if (yearMatch && Number(yearMatch[1]) > new Date().getFullYear()) return true;
-    return false;
-  };
-
-  const sorted = xlsxRevenue.slice().sort((a, b) => {
-    // Prefer realized over projected
-    const aProj = isFactProjected(a) ? 1 : 0;
-    const bProj = isFactProjected(b) ? 1 : 0;
-    if (aProj !== bProj) return aProj - bProj;
-    // Prefer annual
-    const aPS = periodTypeScore(a.period_type);
-    const bPS = periodTypeScore(b.period_type);
-    if (aPS !== bPS) return aPS - bPS;
-    // Prefer most recent period label (lexicographic on "FY2024" etc.)
-    const labelCmp = b.period_label.localeCompare(a.period_label);
-    if (labelCmp !== 0) return labelCmp;
-    return confidenceNum(b.confidence) - confidenceNum(a.confidence);
-  });
-
-  const best = sorted[0];
+  if (!best) return;
   const bestConf = confidenceNum(best.confidence);
 
   const buildXlsxCandidate = (f: FinancialFactV1, selected: boolean) => {
@@ -1796,7 +1787,7 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
       selected,
       score: confidenceNum(f.confidence),
       scope: 'company_financials_table',
-      subtype: isFactProjected(f) ? 'forecast' : 'annual',
+      subtype: isProjectedFact(f) ? 'forecast' : 'annual',
       year: yearMatch ? Number(yearMatch[1]) : null,
       value_raw: formatUsdShort(f.value),
       amount: f.value,
@@ -1806,7 +1797,8 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
     };
   };
 
-  const xlsxCandidates = sorted.map((f, i) => buildXlsxCandidate(f, i === 0));
+  // Mark the authoritative selection; all other xlsx candidates are shown as alternatives.
+  const xlsxCandidates = xlsxRevenue.map((f) => buildXlsxCandidate(f, f === best));
 
   const currentRevenue = structuredSummary?.revenue;
   const currentConf = typeof currentRevenue?.confidence === 'number' ? currentRevenue.confidence : 0;

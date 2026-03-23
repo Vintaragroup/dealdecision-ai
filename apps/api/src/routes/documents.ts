@@ -1936,39 +1936,55 @@ export async function registerDocumentRoutes(
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
-    // Get all deals for matching
-    const dealsResult = await pool.query<{ id: string; name: string }>(
-      `SELECT id, name
-         FROM deals
-        WHERE deleted_at IS NULL
-          AND created_by_user_id = $1
-        ORDER BY name`,
-      [userId]
-    );
-    const deals = dealsResult.rows;
-
-    // Parse multipart form data
-    const parts = (request as any).file();
-    const filenames: string[] = [];
-
-    // Unfortunately Fastify's file() returns a single file iterator
-    // For batch analysis, we'll accept filenames via body and analyze them
-    const body = request.body as { filenames?: string[]; dealId?: string };
-
-    if (!body.filenames || body.filenames.length === 0) {
-      return reply.status(400).send({
-        error: "filenames are required",
-        details: "Send array of filenames to analyze",
+    // This endpoint is JSON-only. Reject multipart to avoid FST_INVALID_MULTIPART_CONTENT_TYPE crashes.
+    if (request.isMultipart()) {
+      request.log.warn(
+        { contentType: request.headers["content-type"] },
+        "analyze-batch: received multipart request — expected application/json"
+      );
+      return reply.status(415).send({
+        error: "Unsupported Media Type",
+        details: "This endpoint expects application/json with { filenames: string[] }",
       });
     }
 
-    // Analyze the filenames to detect groupings
-    const analysis = analyzeFilenamesForGrouping(body.filenames, deals);
+    request.log.info(
+      { contentType: request.headers["content-type"] },
+      "analyze-batch request received"
+    );
 
-    return reply.send({
-      analysis,
-      deals: deals.map((d) => ({ id: d.id, name: d.name })),
-    });
+    try {
+      // Get all deals for matching
+      const dealsResult = await pool.query<{ id: string; name: string }>(
+        `SELECT id, name
+           FROM deals
+          WHERE deleted_at IS NULL
+            AND created_by_user_id = $1
+          ORDER BY name`,
+        [userId]
+      );
+      const deals = dealsResult.rows;
+
+      const body = request.body as { filenames?: string[]; dealId?: string };
+
+      if (!body.filenames || body.filenames.length === 0) {
+        return reply.status(400).send({
+          error: "filenames are required",
+          details: "Send array of filenames to analyze",
+        });
+      }
+
+      // Analyze the filenames to detect groupings
+      const analysis = analyzeFilenamesForGrouping(body.filenames, deals);
+
+      return reply.send({
+        analysis,
+        deals: deals.map((d) => ({ id: d.id, name: d.name })),
+      });
+    } catch (err: any) {
+      request.log.error({ err }, "analyze-batch: unexpected error");
+      return reply.status(500).send({ error: "Internal server error", message: err?.message ?? "unknown" });
+    }
   });
 
   /**

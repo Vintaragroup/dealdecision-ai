@@ -149,7 +149,7 @@ describe("FinancialIntegrityAnalyzerV1 — Phase 4: Period Alignment", () => {
     expect(derivFlags).toHaveLength(0);
   });
 
-  test("cash annual + burn quarterly → WARN derivation_period_mismatch", async () => {
+  test("cash annual + burn quarterly → FAIL derivation_period_mismatch", async () => {
     const facts: FinancialFactV1[] = [
       makeFact({ metric_key: "cash", period_type: "annual", period_label: "2024", value: 3_000_000 }),
       makeFact({ metric_key: "burn_rate", period_type: "quarterly", period_label: "Q4 2024", value: 300_000 }),
@@ -159,7 +159,7 @@ describe("FinancialIntegrityAnalyzerV1 — Phase 4: Period Alignment", () => {
       f.flag_key === "period_alignment:derivation_period_mismatch",
     );
     expect(derivFlags).toHaveLength(1);
-    expect(derivFlags[0]!.status).toBe("WARN");
+    expect(derivFlags[0]!.status).toBe("FAIL");
     expect(derivFlags[0]!.severity).toBe("high");
     expect(derivFlags[0]!.fact_type).toBe("runway_months");
     expect(derivFlags[0]!.note).toContain("cash");
@@ -224,5 +224,55 @@ describe("FinancialIntegrityAnalyzerV1 — Phase 4: Period Alignment", () => {
     const paFlags = periodAlignmentFlags(result.flags);
     expect(paFlags).toHaveLength(1);
     expect(paFlags[0]!.flag_key).toBe("period_alignment:period_mismatch:revenue");
+  });
+
+  // ── 4d: Temporal scope mismatch (projected vs historical) ───────────────────────
+
+  test("projected vs historical same metric → FAIL temporal_scope_mismatch", async () => {
+    const facts: FinancialFactV1[] = [
+      makeFact({ metric_key: "revenue", period_type: "annual", period_label: "2024", value: 5_000_000, temporal_scope: "historical" }),
+      makeFact({ metric_key: "revenue", period_type: "annual", period_label: "2026", value: 12_000_000, temporal_scope: "projected" }),
+    ];
+    const result = await analyzer.analyze({ financial_facts: facts });
+    const paFlags = periodAlignmentFlags(result.flags);
+    const scopeMismatch = paFlags.find((f) => f.flag_key === "period_alignment:temporal_scope_mismatch:revenue");
+    expect(scopeMismatch).toBeDefined();
+    expect(scopeMismatch!.status).toBe("FAIL");
+    expect(scopeMismatch!.severity).toBe("high");
+  });
+
+  test("both projected same metric → no temporal_scope_mismatch flag", async () => {
+    const facts: FinancialFactV1[] = [
+      makeFact({ metric_key: "revenue", period_type: "annual", period_label: "2026", value: 12_000_000, temporal_scope: "projected", source_kind: "xlsx" }),
+      makeFact({ metric_key: "revenue", period_type: "annual", period_label: "2026", value: 11_500_000, temporal_scope: "projected", source_kind: "deck" }),
+    ];
+    const result = await analyzer.analyze({ financial_facts: facts });
+    const scopeFlags = periodAlignmentFlags(result.flags).filter((f) => f.flag_key.includes("temporal_scope_mismatch"));
+    expect(scopeFlags).toHaveLength(0);
+  });
+
+  // ── 4e: Quarterly label mismatch (Q1 vs Q2) ──────────────────────────────
+
+  test("Q1 vs Q2 same metric quarterly → WARN quarter_label_mismatch", async () => {
+    const facts: FinancialFactV1[] = [
+      makeFact({ metric_key: "revenue", period_type: "quarterly", period_label: "Q1 2024", value: 1_200_000 }),
+      makeFact({ metric_key: "revenue", period_type: "quarterly", period_label: "Q2 2024", value: 1_400_000 }),
+    ];
+    const result = await analyzer.analyze({ financial_facts: facts });
+    const paFlags = periodAlignmentFlags(result.flags);
+    const quarterMismatch = paFlags.find((f) => f.flag_key === "period_alignment:quarter_label_mismatch:revenue");
+    expect(quarterMismatch).toBeDefined();
+    expect(quarterMismatch!.status).toBe("WARN");
+    expect(quarterMismatch!.severity).toBe("medium");
+  });
+
+  test("Q1 2024 vs Q1 2024 same quarter different sources → no quarter_label_mismatch flag", async () => {
+    const facts: FinancialFactV1[] = [
+      makeFact({ metric_key: "revenue", period_type: "quarterly", period_label: "Q1 2024", value: 1_200_000, source_kind: "xlsx" }),
+      makeFact({ metric_key: "revenue", period_type: "quarterly", period_label: "Q1 2024", value: 1_150_000, source_kind: "deck" }),
+    ];
+    const result = await analyzer.analyze({ financial_facts: facts });
+    const qFlags = periodAlignmentFlags(result.flags).filter((f) => f.flag_key.includes("quarter_label_mismatch"));
+    expect(qFlags).toHaveLength(0);
   });
 });

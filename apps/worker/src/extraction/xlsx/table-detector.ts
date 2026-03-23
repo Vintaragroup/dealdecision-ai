@@ -24,6 +24,7 @@
 
 import { classifySheet, type SheetKind } from "./sheet-classifier.js";
 import { parsePeriodLabel } from "./period-parser.js";
+import type { WorkbookGraphPayload } from "./dependency-graph.js";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -85,6 +86,41 @@ export interface FinancialTable {
    * Used by parseFinancialTable() to set value_kind / formula on TypedMetric.
    */
   formula_map?: Record<string, string>;
+
+  /**
+   * Optional workbook-level cell value index for cross-sheet reference resolution.
+   *
+   * Maps lookup keys ("SheetName!CellAddr") to raw cell values extracted from
+   * the workbook at processing time (built in excel.ts while all sheets are
+   * in memory). Populated by fromExcelSheet() when the DPU page payload carries
+   * a `cross_sheet_resolved` field in its `structured` block.
+   *
+   * Used by parseFinancialTable() to resolve direct single-cell cross-tab refs
+   * (e.g. =Inputs!C5) into concrete values on TypedMetric.
+   *
+   * Keys format: "SheetName!CELLADDR"  e.g. "Inputs!C5", "Revenue Build!D12"
+   * Values: raw numeric or string cell values; absent keys → unresolvable.
+   *
+   * Absent when the DPU payload did not include cross-sheet resolution data
+   * (pre-2D extractions, excel_range payloads, or non-workbook sources).
+   */
+  cross_sheet_value_index?: Record<string, unknown>;
+
+  /**
+   * Workbook dependency graph summary from Phase 2E analysis.
+   *
+   * Contains:
+   *   - `circular_cells`: cell keys ("SheetName!CellAddr") involved in circular
+   *     reference chains detected in the workbook.
+   *   - `cell_depths`: depth of each formula cell from its literal leaf inputs.
+   *
+   * Used by parseFinancialTable() to populate `formula_dependencies`,
+   * `dependency_depth`, and `circular_reference_detected` on TypedMetric.
+   *
+   * Absent when the DPU payload did not include workbook graph data
+   * (pre-2E extractions, excel_range payloads, or non-workbook sources).
+   */
+  workbook_graph?: WorkbookGraphPayload;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -392,6 +428,26 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
   // formula_map will be keyed by "matrixRowIdx:colIdx" (0-based within cell_matrix).
   const formulaMap: Record<string, string> = {};
 
+  // Read cross_sheet_resolved from the DPU payload when available.
+  // Keys: "SheetName!CellAddr" → raw cell value (number | string | null).
+  // Built by excel.ts at workbook extraction time while all sheets are in memory.
+  const rawCrossSheetResolved: Record<string, unknown> | null =
+    typeof s["cross_sheet_resolved"] === "object" && s["cross_sheet_resolved"] !== null && !Array.isArray(s["cross_sheet_resolved"])
+      ? (s["cross_sheet_resolved"] as Record<string, unknown>)
+      : null;
+
+  // Read workbook_graph from the DPU payload when available.
+  // Built by excel.ts after all sheets are processed; contains circular_cells
+  // and cell_depths for dependency graph analysis (Phase 2E).
+  const rawWorkbookGraph: WorkbookGraphPayload | null = (() => {
+    const g = s["workbook_graph"];
+    if (!g || typeof g !== "object" || Array.isArray(g)) return null;
+    const gObj = g as Record<string, unknown>;
+    if (!Array.isArray(gObj["circular_cells"])) return null;
+    if (typeof gObj["cell_depths"] !== "object" || gObj["cell_depths"] === null) return null;
+    return g as WorkbookGraphPayload;
+  })();
+
   for (let rawRowIdx = 0; rawRowIdx < rows.length; rawRowIdx++) {
     const row = rows[rawRowIdx];
     if (!row || typeof row !== "object") continue;
@@ -441,6 +497,10 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
     unit_scale_factor,
     unit_scale_source_text,
     ...(Object.keys(formulaMap).length > 0 ? { formula_map: formulaMap } : {}),
+    ...(rawCrossSheetResolved && Object.keys(rawCrossSheetResolved).length > 0
+      ? { cross_sheet_value_index: rawCrossSheetResolved }
+      : {}),
+    ...(rawWorkbookGraph ? { workbook_graph: rawWorkbookGraph } : {}),
   };
 }
 

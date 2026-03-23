@@ -357,7 +357,7 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
       let worstCompat: "ok" | "warn" | "incompatible" = "ok";
       outer: for (let i = 0; i < types.length - 1; i++) {
         for (let j = i + 1; j < types.length; j++) {
-          const compat = periodTypeCompatibility(types[i], types[j]);
+          const compat = periodGranularityCompatibility(types[i], types[j]);
           if (compat === "incompatible") {
             worstCompat = "incompatible";
             break outer;
@@ -434,7 +434,7 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
         let hasIncompatibleDerivation = false;
         derivationCheck: for (const ct of cashTypes) {
           for (const bt of burnTypes) {
-            if (periodTypeCompatibility(ct, bt) === "incompatible") {
+            if (periodGranularityCompatibility(ct, bt) === "incompatible") {
               hasIncompatibleDerivation = true;
               break derivationCheck;
             }
@@ -444,13 +444,60 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
           flags.push(
             makeFlag(
               "period_alignment:derivation_period_mismatch",
-              "WARN",
+              "FAIL",
               "high",
               `Runway derivation (cash ÷ burn_rate) involves facts with incompatible period types (cash: ${cashTypes.sort().join(", ")}; burn_rate: ${burnTypes.sort().join(", ")}). Any derived runway_months would be unreliable.`,
               { fact_type: "runway_months" },
             ),
           );
         }
+      }
+    }
+
+    // 4d: Temporal scope mismatch — projected vs historical for same metric.
+    // Mixing projected and historical facts in cross-source comparisons produces
+    // misleading signals: a projected 2026 ARR vs actual 2024 ARR diverging is
+    // expected, not an integrity problem. Flag so consumers can suppress invalid
+    // comparisons rather than acting on spurious discrepancy flags.
+    for (const [metric_key, mFacts] of byMetric) {
+      const hasHistorical = mFacts.some((f) => !alertIsProjectedFact(f));
+      const hasProjected = mFacts.some((f) => alertIsProjectedFact(f));
+      if (hasHistorical && hasProjected) {
+        flags.push(
+          makeFlag(
+            `period_alignment:temporal_scope_mismatch:${metric_key}`,
+            "FAIL",
+            "high",
+            `${metric_key} mixes projected and historical facts. Cross-source comparisons between projected and realized values are invalid and may produce misleading integrity signals.`,
+            { fact_type: metric_key },
+          ),
+        );
+      }
+    }
+
+    // 4e: Quarterly label mismatch — Q1 vs Q2 for the same metric.
+    // When a metric has quarterly facts anchored to different calendar quarters,
+    // cross-source comparisons are not like-for-like. A divergence signal for
+    // Q1 revenue vs Q2 revenue is expected, not an integrity failure.
+    for (const [metric_key, mFacts] of byMetric) {
+      const quarterlyFacts = mFacts.filter((f) => (f.period_type ?? "unknown") === "quarterly");
+      if (quarterlyFacts.length < 2) continue;
+      const normalizedLabels = new Set(
+        quarterlyFacts
+          .map((f) => normalizePeriodLabel(f.period_label ?? ""))
+          .filter((l) => l !== ""),
+      );
+      if (normalizedLabels.size >= 2) {
+        const labelList = [...normalizedLabels].sort().join(", ");
+        flags.push(
+          makeFlag(
+            `period_alignment:quarter_label_mismatch:${metric_key}`,
+            "WARN",
+            "medium",
+            `${metric_key} has quarterly facts anchored to different quarters (${labelList}). Cross-quarter comparisons should be treated as trend data, not like-for-like comparisons.`,
+            { fact_type: metric_key },
+          ),
+        );
       }
     }
 
@@ -494,7 +541,28 @@ function formatValue(v: number): string {
 }
 
 /**
- * Returns the compatibility level between two FinancialFactPeriodType strings.
+ * Normalises a period label so that different representations of the same
+ * quarter can be compared reliably.
+ *
+ * Examples:
+ *   "Q1 2024", "q1 2024", "2024-Q1", "Q1-2024" → "Q1 2024"
+ *   "2024", "TTM", "current" → returned as-is (trimmed)
+ */
+function normalizePeriodLabel(label: string): string {
+  const t = label.trim();
+  // Match quarter patterns: Q1 2024, q2-2024, 2024-Q3, 2024 Q4, etc.
+  const m = t.match(/(?:[Qq](\d)\D*(\d{4}))|(?:(\d{4})\D*[Qq](\d))/);
+  if (m) {
+    const q = m[1] ?? m[4] ?? "?";
+    const year = m[2] ?? m[3] ?? "?";
+    return `Q${q} ${year}`;
+  }
+  return t;
+}
+
+/**
+ * Returns the granularity-level compatibility between two period_type strings.
+ * Used internally by the Phase 4 checks.
  *
  * "ok"           — same type (or one/both unknown) → period comparison is safe.
  * "warn"         — broadly similar but distinct: annual and TTM overlap but
@@ -503,7 +571,7 @@ function formatValue(v: number): string {
  *                  compared or combined directly without unit conversion
  *                  (e.g. quarterly burn ÷ annual cash → wrong runway).
  */
-function periodTypeCompatibility(
+function periodGranularityCompatibility(
   a: string | undefined,
   b: string | undefined,
 ): "ok" | "warn" | "incompatible" {
@@ -536,4 +604,74 @@ function periodTypeCompatibility(
 function alertIsProjectedFact(f: FinancialFactV1): boolean {
   const scope = f.temporal_scope ?? "unknown";
   return scope === "projected" || scope === "scenario" || scope === "target";
+}
+
+/**
+ * Full fact-level period compatibility check.
+ * Evaluates three rules in descending priority:
+ *   1. Temporal scope clash  — projected vs historical → FAIL
+ *   2. Granularity mismatch  — annual vs quarterly     → FAIL / WARN (via periodGranularityCompatibility)
+ *   3. Quarterly label clash  — Q1 vs Q2               → WARN
+ *
+ * Returns { compatible, severity, reason } for use in derivation guards and
+ * caller-side comparison logic.
+ */
+export function periodTypeCompatibility(
+  a: FinancialFactV1,
+  b: FinancialFactV1,
+): { compatible: boolean; severity: "PASS" | "WARN" | "FAIL"; reason: string } {
+  // Rule 1: projected vs historical → FAIL
+  const aProjected = alertIsProjectedFact(a);
+  const bProjected = alertIsProjectedFact(b);
+  if (aProjected !== bProjected) {
+    return {
+      compatible: false,
+      severity: "FAIL",
+      reason: `temporal scope mismatch: '${a.temporal_scope ?? "historical"}' vs '${b.temporal_scope ?? "historical"}' — projected and historical facts must not be compared directly`,
+    };
+  }
+
+  // Rule 2: granularity check
+  const granularity = periodGranularityCompatibility(a.period_type, b.period_type);
+  if (granularity === "incompatible") {
+    return {
+      compatible: false,
+      severity: "FAIL",
+      reason: `incompatible period granularities: ${a.period_type ?? "unknown"} vs ${b.period_type ?? "unknown"}`,
+    };
+  }
+
+  // Rule 3: within-quarterly label mismatch (Q1 vs Q2)
+  if (
+    (a.period_type ?? "unknown") === "quarterly" &&
+    (b.period_type ?? "unknown") === "quarterly"
+  ) {
+    const na = normalizePeriodLabel(a.period_label ?? "");
+    const nb = normalizePeriodLabel(b.period_label ?? "");
+    if (na !== nb && na !== "" && nb !== "") {
+      return {
+        compatible: false,
+        severity: "WARN",
+        reason: `quarterly period label mismatch: '${na}' vs '${nb}' — facts span different quarters`,
+      };
+    }
+  }
+
+  if (granularity === "warn") {
+    return {
+      compatible: true,
+      severity: "WARN",
+      reason: `${a.period_type ?? "unknown"} and ${b.period_type ?? "unknown"} are similar but may differ by boundary`,
+    };
+  }
+
+  return { compatible: true, severity: "PASS", reason: "periods are compatible" };
+}
+
+/**
+ * Convenience wrapper — returns true only when the two facts can be safely
+ * compared or used together in a derivation.
+ */
+export function isComparablePeriod(a: FinancialFactV1, b: FinancialFactV1): boolean {
+  return periodTypeCompatibility(a, b).compatible;
 }

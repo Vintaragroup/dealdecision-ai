@@ -179,6 +179,18 @@ export function promoteToFinancialFactV1(
       ...(metric.value_kind !== undefined ? { value_kind: metric.value_kind } : {}),
       ...(metric.formula !== undefined ? { formula: metric.formula } : {}),
       ...(metric.cross_sheet_refs !== undefined ? { cross_sheet_refs: metric.cross_sheet_refs } : {}),
+      ...(metric.named_range_refs !== undefined ? { named_range_refs: metric.named_range_refs } : {}),
+      ...(metric.resolved_cross_sheet_values !== undefined ? { resolved_cross_sheet_values: metric.resolved_cross_sheet_values } : {}),
+      // Dependency graph metadata — carry through formula dependencies, depth, circular flag.
+      ...(metric.formula_dependencies !== undefined ? { formula_dependencies: metric.formula_dependencies } : {}),
+      ...(metric.dependency_depth !== undefined ? { dependency_depth: metric.dependency_depth } : {}),
+      ...(metric.circular_reference_detected !== undefined ? { circular_reference_detected: metric.circular_reference_detected } : {}),
+      // Extraction assumption metadata — scale factor, period normalization, typing reason.
+      ...(metric.unit_scale_factor_applied !== undefined ? { unit_scale_factor_applied: metric.unit_scale_factor_applied } : {}),
+      ...(metric.unit_scale_source_text !== undefined ? { unit_scale_source_text: metric.unit_scale_source_text } : {}),
+      ...(metric.normalized_period_label !== undefined ? { normalized_period_label: metric.normalized_period_label } : {}),
+      ...(metric.original_period_label !== undefined ? { original_period_label: metric.original_period_label } : {}),
+      ...(metric.typing_reason !== undefined ? { typing_reason: metric.typing_reason } : {}),
     };
 
     facts.push(fact);

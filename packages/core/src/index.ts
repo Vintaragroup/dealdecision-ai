@@ -235,6 +235,8 @@ export type {
   FinancialFactConfidence,
   FinancialFactReconciliationStatus,
   CrossSourceReconciliationStatus,
+  ResolvedCrossSheetValue,
+  CellDependency,
 } from "./financial-facts/financial-fact-v1";
 export {
   isFiniteFactValue,

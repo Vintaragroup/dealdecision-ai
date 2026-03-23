@@ -28,6 +28,9 @@ import { extractScenarioLabels } from "./sheet-classifier.js";
 import type { FinancialTable } from "./table-detector.js";
 import { parsePeriodLabel } from "./period-parser.js";
 import { extractCrossSheetRefs } from "./cross-tab-refs.js";
+import { extractNamedRangeRefs } from "./named-range-refs.js";
+import { resolveDirectCrossSheetRefs } from "./cross-tab-resolver.js";
+import { parseAllDirectCellDeps } from "./dependency-graph.js";
 
 // ─── Row-label → FieldTypeV1 mapping ─────────────────────────────────────────
 
@@ -255,6 +258,53 @@ export function parseFinancialTable(
       // Empty array when formula is null (literal or unknown) or has no cross-tab refs.
       const crossSheetRefs = cellFormula !== null ? extractCrossSheetRefs(cellFormula) : [];
 
+      // Named-range reference detection: parse the formula string for workbook-level
+      // named identifiers (e.g. Revenue_2024, ChurnRate). Excludes function names,
+      // cell addresses, and sheet references. Does NOT resolve named-range values.
+      const namedRangeRefs = cellFormula !== null ? extractNamedRangeRefs(cellFormula) : [];
+
+      // Cross-tab value resolution: look up direct single-cell cross-sheet refs
+      // (e.g. =Inputs!C5) against the workbook cell index when available.
+      // Always returns [] for range refs (SUM(Model!C3:C10)) or when the index
+      // is absent. Never throws — fails open with { value: null }.
+      const resolvedCrossSheetValues =
+        cellFormula !== null && table.cross_sheet_value_index
+          ? resolveDirectCrossSheetRefs(cellFormula, table.cross_sheet_value_index)
+          : [];
+
+      // Dependency graph: parse all direct single-cell dependencies from the formula
+      // (same-sheet + cross-sheet). Used to populate formula_dependencies,
+      // dependency_depth, and circular_reference_detected on TypedMetric.
+      const formulaDependencies =
+        cellFormula !== null
+          ? parseAllDirectCellDeps(cellFormula, table.sheet_name)
+          : [];
+
+      // Dependency depth and circular reference detection:
+      // Look up each direct dep in the workbook graph payload (built in excel.ts).
+      // If any dep key appears in circular_cells, flag circular reference risk.
+      // depth = 1 + max depth of direct deps (deps not in cell_depths are literals, depth 0).
+      let dependencyDepth: number | null = null;
+      let circularReferenceDetected = false;
+      if (formulaDependencies.length > 0 && table.workbook_graph) {
+        const { circular_cells, cell_depths } = table.workbook_graph;
+        const circularSet = new Set(circular_cells);
+        for (const dep of formulaDependencies) {
+          if (circularSet.has(`${dep.sheet}!${dep.cell}`)) {
+            circularReferenceDetected = true;
+            break;
+          }
+        }
+        if (!circularReferenceDetected) {
+          const depDepths = formulaDependencies.map((dep) => {
+            const key = `${dep.sheet}!${dep.cell}`;
+            // Dep in cell_depths means it's a formula cell; dep absent = literal (depth 0).
+            return cell_depths[key] ?? 0;
+          });
+          dependencyDepth = 1 + Math.max(...depDepths);
+        }
+      }
+
       const periodSuffix = col.scenario
         ? `[${col.scenario}]`
         : (col.period_type === "quarterly" || col.period_type === "ttm")
@@ -285,6 +335,21 @@ export function parseFinancialTable(
         ...(cellFormula !== null ? { formula: cellFormula } : {}),
         // Cross-tab refs — only set when formula references another worksheet.
         ...(crossSheetRefs.length > 0 ? { cross_sheet_refs: crossSheetRefs } : {}),
+        // Named-range refs — only set when named workbook references are detected.
+        ...(namedRangeRefs.length > 0 ? { named_range_refs: namedRangeRefs } : {}),
+        // Resolved cross-sheet values — only set when direct refs were resolvable.
+        ...(resolvedCrossSheetValues.length > 0 ? { resolved_cross_sheet_values: resolvedCrossSheetValues } : {}),
+        // Dependency graph metadata — formula cell dependencies, depth, circular reference risk.
+        ...(formulaDependencies.length > 0 ? { formula_dependencies: formulaDependencies } : {}),
+        ...(dependencyDepth !== null ? { dependency_depth: dependencyDepth } : {}),
+        ...(circularReferenceDetected ? { circular_reference_detected: true } : {}),
+        // Extraction assumption metadata — unit scale and period normalization.
+        ...(unitScaleFactor > 1 ? { unit_scale_factor_applied: unitScaleFactor } : {}),
+        ...(unitScaleFactor > 1 && table.unit_scale_source_text != null
+          ? { unit_scale_source_text: table.unit_scale_source_text }
+          : {}),
+        ...(col.normalized_label ? { normalized_period_label: col.normalized_label } : {}),
+        ...(col.label ? { original_period_label: col.label } : {}),
       });
     }
   }

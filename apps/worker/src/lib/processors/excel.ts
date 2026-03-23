@@ -1,4 +1,6 @@
 import * as XLSX from "xlsx";
+import { parseDirectCrossSheetRefs } from "../../extraction/xlsx/cross-tab-resolver.js";
+import { buildWorkbookGraph, type WorkbookGraphPayload } from "../../extraction/xlsx/dependency-graph.js";
 
 type ExcelGridCell = {
   a: string; // A1 address
@@ -51,6 +53,37 @@ export interface ExcelContent {
      * distinguish literal vs formula-derived values.
      */
     formula_grid?: Record<string, string>;
+    /**
+     * Resolved workbook-level cross-sheet cell values for direct single-cell
+     * references found in this sheet's formula_grid.
+     *
+     * Keys: "SheetName!CellAddr" (e.g. "Inputs!C5", "Revenue Build!D12").
+     * Values: raw numeric or string cell value from the referenced sheet;
+     *         key absent when the referenced cell was empty or not found.
+     *
+     * Built at workbook extraction time while all sheets are in memory.
+     * Only present when formula_grid is non-empty and at least one direct
+     * cross-sheet reference was found and resolved.
+     *
+     * Passed through to the DPU page payload as `structured.cross_sheet_resolved`
+     * so that table-detector.ts can feed it into FinancialTable.cross_sheet_value_index.
+     */
+    cross_sheet_resolved?: Record<string, unknown>;
+    /**
+     * Workbook dependency graph payload built in Phase 2E.
+     *
+     * Contains:
+     *   - `circular_cells`: cell keys ("SheetName!CellAddr") in circular reference chains.
+     *   - `cell_depths`: depth of each formula cell from its literal leaf inputs.
+     *
+     * Built post-loop (all sheets in memory simultaneously) from the raw formulas
+     * array. Passed through to the DPU page payload as `structured.workbook_graph`
+     * so that table-detector.ts can feed it into FinancialTable.workbook_graph.
+     *
+     * Only present when the workbook contains at least one formula cell.
+     * Identical across all sheets of the same workbook (workbook-level data).
+     */
+    workbook_graph?: WorkbookGraphPayload;
     summary: {
       totalRows: number;
       columnTypes: Record<string, string>;
@@ -481,6 +514,56 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
         dateColumns,
       },
     });
+  }
+
+  // ── Cross-sheet value resolution ─────────────────────────────────────────
+  // For each sheet that has formula_grid, scan all formula strings for direct
+  // single-cell cross-tab references (e.g. =Inputs!C5) and resolve their
+  // values from the corresponding worksheet in the XLSX workbook.
+  // Done post-loop so all sheets are available for lookup.
+  for (const sheet of sheets) {
+    if (!sheet.formula_grid || Object.keys(sheet.formula_grid).length === 0) continue;
+
+    const resolved: Record<string, unknown> = {};
+    for (const formula of Object.values(sheet.formula_grid)) {
+      const refs = parseDirectCrossSheetRefs(formula);
+      for (const ref of refs) {
+        if (ref.key in resolved) continue; // already resolved
+        const targetWs = workbook.Sheets[ref.sheet];
+        if (!targetWs) continue; // referenced sheet not found — fail open
+        const targetCell = (targetWs as any)[ref.cell];
+        if (targetCell != null && targetCell.v != null) {
+          resolved[ref.key] = targetCell.v;
+        }
+      }
+    }
+
+    if (Object.keys(resolved).length > 0) {
+      sheet.cross_sheet_resolved = resolved;
+    }
+  }
+
+  // ── Workbook dependency graph ─────────────────────────────────────────────
+  // Build a lightweight dependency graph across all sheets using the raw
+  // formulas array (which carries actual A1 cell addresses, unlike formula_grid
+  // which uses rowIdx:colName keys). Done post-loop so all sheets are available.
+  // The resulting payload is stored on every sheet so downstream DPU pages
+  // (one per sheet) each carry the full workbook graph for per-cell lookups.
+  const sheetFormulasForGraph = sheets
+    .filter((s) => s.formulas.length > 0)
+    .map((s) => ({
+      sheet: s.name,
+      cells: s.formulas.map((f) => ({ addr: f.cell, formula: f.formula })),
+    }));
+
+  if (sheetFormulasForGraph.length > 0) {
+    const graphPayload = buildWorkbookGraph(sheetFormulasForGraph);
+    // Attach to every sheet (workbook-level data, same payload on each).
+    if (graphPayload.circular_cells.length > 0 || Object.keys(graphPayload.cell_depths).length > 0) {
+      for (const sheet of sheets) {
+        sheet.workbook_graph = graphPayload;
+      }
+    }
   }
 
   return {

@@ -12,6 +12,7 @@
  */
 
 import type { TemporalScope } from "../temporal/temporal-scope";
+import type { CellDependency, ResolvedCrossSheetValue } from "../financial-facts/financial-fact-v1";
 
 export type EvidenceRef = {
   source_document_id: string;
@@ -155,4 +156,100 @@ export type TypedMetric = {
    *   formula "Sheet1!A1+Sheet2!B2"    → ["Sheet1", "Sheet2"]
    */
   cross_sheet_refs?: string[];
+
+  /**
+   * Workbook-level named range identifiers referenced by the formula.
+   * Absent when value_kind !== "formula", no named-range candidates were
+   * detected, or formula metadata was unavailable.
+   *
+   * Derived deterministically by regex parsing — does NOT resolve what value
+   * a named range holds (requires full workbook context to resolve).
+   * Sorted and deduplicated.
+   *
+   * Examples:
+   *   formula "=Revenue_2024"                          → ["Revenue_2024"]
+   *   formula "=SUM(Revenue_2024, Cost_2024)"           → ["Cost_2024", "Revenue_2024"]
+   *   formula "=IF(ChurnRate > 0.05, ARR_Base, ARR_Low)" → ["ARR_Base", "ARR_Low", "ChurnRate"]
+   *   formula "=Inputs!C5"                              → [] (sheet ref, not named range)
+   */
+  named_range_refs?: string[];
+
+  /**
+   * Resolved values for direct single-cell cross-sheet references in the formula.
+   *
+   * Populated when the formula contained at least one direct cross-tab ref
+   * (e.g. `=Inputs!C5`) AND the workbook cell index was available at extraction
+   * time. One entry per unique direct ref in the formula.
+   *
+   * `value` is the raw cell value when found; null when the ref could not be
+   * resolved (sheet not in index, cell empty, no workbook index available).
+   *
+   * Range references (SUM(Model!C3:C10)) are not resolved in this phase —
+   * see `cross_sheet_refs` for detection-only coverage.
+   */
+  resolved_cross_sheet_values?: ResolvedCrossSheetValue[];
+
+  // ── Dependency graph metadata ────────────────────────────────────────────────
+
+  /**
+   * Direct single-cell dependencies of the source formula.
+   *
+   * Includes both same-sheet refs and cross-sheet direct single-cell refs.
+   * Range endpoints are not expanded. Named ranges are not resolved.
+   *
+   * Absent when value_kind !== "formula" or when formula has no direct cell refs.
+   *
+   * See `FinancialFactV1.formula_dependencies` for full field documentation.
+   */
+  formula_dependencies?: CellDependency[];
+
+  /**
+   * Depth of this formula cell in the workbook dependency chain.
+   *
+   * Depth 1 = depends only on literal cells. null when circular or unknown.
+   * See `FinancialFactV1.dependency_depth` for full semantics.
+   */
+  dependency_depth?: number | null;
+
+  /**
+   * True when any direct dependency of this formula is part of a circular
+   * reference chain detected in the workbook.
+   *
+   * Only set when `true`; absent when no circular reference risk was detected.
+   * See `FinancialFactV1.circular_reference_detected` for full semantics.
+   */
+  circular_reference_detected?: boolean;
+
+  // ── Extraction assumption metadata ──────────────────────────────────────────
+
+  /**
+   * Numeric scale factor applied to the raw cell value during extraction.
+   * 1 = no scaling; 1000 = "in thousands"; 1_000_000 = "in millions".
+   * Absent when the source was not XLSX or no scale annotation was detected.
+   * Present only when the factor is > 1 (no-op scalings are omitted).
+   */
+  unit_scale_factor_applied?: number;
+
+  /**
+   * Source text that indicated the scale factor.
+   * e.g. "in thousands", "$000s", "$MM", "in millions".
+   * Present only when unit_scale_factor_applied > 1.
+   */
+  unit_scale_source_text?: string | null;
+
+  /**
+   * Canonical normalized period label produced by parsePeriodLabel().
+   * e.g. raw header "1Q24" → normalized "Q1 2024";
+   *      "Trailing Twelve Months" → "TTM";
+   *      "FY2024" → "FY2024" (unchanged).
+   * Present for XLSX-sourced metrics where a column header was available.
+   */
+  normalized_period_label?: string;
+
+  /**
+   * Raw column header string before period normalization.
+   * e.g. "1Q24", "FY 2024", "Trailing Twelve Months".
+   * Present for XLSX-sourced metrics where a column header was available.
+   */
+  original_period_label?: string;
 };

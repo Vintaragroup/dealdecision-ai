@@ -28,6 +28,7 @@ import {
 } from '../deals/analysis/ReportViewConfigModal';
 import { ReportGeneratorPreviewSplit } from '../deals/analysis/ReportGeneratorPreviewSplit';
 import type { DealReportFinancialIntegrityV1 } from '../../lib/apiClient';
+import type { FinancialBreakdownV1Like, UnderwritingReadinessV1Like } from '../../lib/selectors/selectAuthoritativeFinancialBreakdownV1';
 
 interface AnalysisTabProps {
   darkMode: boolean;
@@ -43,9 +44,13 @@ interface AnalysisTabProps {
   isAnalyzing?: boolean;
   /** Financial integrity cross-source analysis from the compiled report. null when not yet available. */
   financialIntegrityV1?: DealReportFinancialIntegrityV1 | null;
+  /** Financial breakdown v1: current state, projections, burn/runway, cap table, risks. */
+  financialBreakdownV1?: FinancialBreakdownV1Like | null;
+  /** Underwriting readiness v1: status, score (0-100), gaps, narrative. */
+  underwritingReadinessV1?: UnderwritingReadinessV1Like | null;
 }
 
-export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnalyzing = false, financialIntegrityV1 }: AnalysisTabProps) {
+export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnalyzing = false, financialIntegrityV1, financialBreakdownV1, underwritingReadinessV1 }: AnalysisTabProps) {
   const [analysis, setAnalysis] = useState<DealAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
 
@@ -547,6 +552,14 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnaly
         {financialIntegrityV1 && (
           <FinancialIntegrityPanel darkMode={darkMode} data={financialIntegrityV1} />
         )}
+        {/* Financial Breakdown + Underwriting Readiness Panel */}
+        {(financialBreakdownV1 || underwritingReadinessV1) && (
+          <FinancialBreakdownPanel
+            darkMode={darkMode}
+            breakdown={financialBreakdownV1 ?? null}
+            readiness={underwritingReadinessV1 ?? null}
+          />
+        )}
         {/* Step 1: Config pre-screen */}
         <ReportViewConfigModal
           open={isConfigOpen}
@@ -763,6 +776,212 @@ function FinancialIntegrityPanel({
       <p className={`text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
         Computed {new Date(data.computed_at).toLocaleString()}
       </p>
+    </div>
+  );
+}
+
+// ─── Financial Breakdown + Underwriting Readiness Panel ────────────────────
+
+function fmtMetric(m: { value?: number | null; unit?: string | null; currency?: string | null; period_label?: string | null; confidence?: string | null } | null | undefined): string {
+  if (!m || m.value == null) return '—';
+  const currency = m.currency === 'USD' ? '$' : (m.currency ? `${m.currency} ` : '');
+  const abs = Math.abs(m.value);
+  const sign = m.value < 0 ? '-' : '';
+  let num: string;
+  if (abs >= 1_000_000_000) num = `${(abs / 1_000_000_000).toFixed(1)}B`;
+  else if (abs >= 1_000_000) num = `${(abs / 1_000_000).toFixed(1)}M`;
+  else if (abs >= 1_000) num = `${(abs / 1_000).toFixed(1)}K`;
+  else num = abs.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  const parts: string[] = [`${sign}${currency}${num}${m.unit && m.unit !== 'USD' ? ` ${m.unit}` : ''}`];
+  if (m.period_label) parts.push(m.period_label);
+  if (m.confidence && m.confidence !== 'unknown') parts.push(`${m.confidence} confidence`);
+  return parts.join(' · ');
+}
+
+function FinancialBreakdownPanel({
+  darkMode,
+  breakdown,
+  readiness,
+}: {
+  darkMode: boolean;
+  breakdown: FinancialBreakdownV1Like | null;
+  readiness: UnderwritingReadinessV1Like | null;
+}) {
+  const cardBase = `rounded-lg border p-4 mt-4 ${
+    darkMode ? 'border-white/10 bg-white/3' : 'border-gray-200 bg-gray-50'
+  }`;
+  const subHeaderClass = `text-xs font-semibold uppercase tracking-wide mb-3 ${
+    darkMode ? 'text-gray-400' : 'text-gray-500'
+  }`;
+  const dividerClass = `border-t my-3 ${darkMode ? 'border-white/8' : 'border-gray-200'}`;
+  const labelClass = `text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`;
+  const valueClass = `text-xs font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`;
+
+  const curr = breakdown?.current_state;
+  const brun = breakdown?.burn_runway;
+  const proj = breakdown?.projections;
+  const risks = breakdown?.risks ?? [];
+
+  const readinessStatusColor = (status: string): string => {
+    if (status === 'sufficient') return darkMode ? 'text-emerald-400' : 'text-emerald-700';
+    if (status === 'insufficient') return darkMode ? 'text-red-400' : 'text-red-700';
+    return darkMode ? 'text-amber-400' : 'text-amber-700';
+  };
+
+  const readinessStatusLabel: Record<string, string> = {
+    sufficient: 'Sufficient',
+    partially_sufficient: 'Partially Sufficient',
+    insufficient: 'Insufficient',
+  };
+
+  const riskSeverityClass = (severity: string): string => {
+    if (severity === 'high') return darkMode ? 'border-red-500/30 bg-red-500/10 text-red-300' : 'border-red-200 bg-red-50 text-red-700';
+    if (severity === 'medium') return darkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700';
+    return darkMode ? 'border-gray-600/40 bg-white/5 text-gray-400' : 'border-gray-200 bg-gray-50 text-gray-600';
+  };
+
+  const hasCurrentState = breakdown?.has_current_state && curr;
+  const hasBurnRunway = !!(brun?.monthly_burn?.value != null || brun?.runway_months?.value != null || brun?.cash?.value != null);
+  const hasProjections = breakdown?.has_projections && proj;
+
+  return (
+    <div className={cardBase} data-testid="financial-breakdown-panel">
+      {/* ── Section: Underwriting Readiness ── */}
+      {readiness && (
+        <>
+          <p className={subHeaderClass}>Underwriting Readiness</p>
+          <div className="flex items-center justify-between">
+            <span className={labelClass}>Status</span>
+            <span className={`text-sm font-semibold ${readinessStatusColor(readiness.status)}`}>
+              {readinessStatusLabel[readiness.status] ?? readiness.status}
+            </span>
+          </div>
+          <div className="flex items-center justify-between mt-1.5">
+            <span className={labelClass}>Score</span>
+            <span className={`text-sm font-semibold ${
+              readiness.score >= 70 ? (darkMode ? 'text-emerald-400' : 'text-emerald-700')
+              : readiness.score >= 40 ? (darkMode ? 'text-amber-400' : 'text-amber-700')
+              : (darkMode ? 'text-red-400' : 'text-red-700')
+            }`}>
+              {Math.round(readiness.score)} / 100
+            </span>
+          </div>
+          {readiness.reasons.length > 0 && (
+            <>
+              <div className={dividerClass} />
+              <p className={labelClass + ' mb-1.5'}>Reasons</p>
+              <ul className="space-y-1">
+                {readiness.reasons.map((r, i) => (
+                  <li key={i} className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>• {r}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          {readiness.missing.length > 0 && (
+            <>
+              <div className={dividerClass} />
+              <p className={labelClass + ' mb-1.5'}>Missing</p>
+              <div className="flex flex-wrap gap-1.5">
+                {readiness.missing.map((m, i) => (
+                  <span key={i} className={`inline-flex px-2 py-0.5 rounded text-xs border ${
+                    darkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' : 'border-amber-200 bg-amber-50 text-amber-700'
+                  }`}>{m}</span>
+                ))}
+              </div>
+            </>
+          )}
+          {readiness.narrative && (
+            <>
+              <div className={dividerClass} />
+              <p className={`text-xs italic ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{readiness.narrative}</p>
+            </>
+          )}
+        </>
+      )}
+
+      {/* ── Section: Financial Snapshot ── */}
+      {hasCurrentState && (
+        <>
+          <div className={readiness ? dividerClass : ''} />
+          <p className={subHeaderClass}>Financial Snapshot</p>
+          {([
+            { label: 'Revenue', metric: curr?.revenue },
+            { label: 'Burn rate', metric: curr?.burn_rate },
+            { label: 'Runway', metric: curr?.runway_months },
+            { label: 'Cash', metric: curr?.cash },
+            { label: 'Gross margin', metric: curr?.gross_margin_pct },
+          ] as const).filter((r) => r.metric?.value != null).map((row) => (
+            <div key={row.label} className="flex items-center justify-between mt-1.5">
+              <span className={labelClass}>{row.label}</span>
+              <span className={valueClass}>{fmtMetric(row.metric)}</span>
+            </div>
+          ))}
+          {curr?.summary && (
+            <p className={`text-xs mt-2 italic ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{curr.summary}</p>
+          )}
+        </>
+      )}
+
+      {/* ── Section: Burn + Runway (from burn_runway block when current_state is absent) ── */}
+      {!hasCurrentState && hasBurnRunway && (
+        <>
+          <div className={readiness ? dividerClass : ''} />
+          <p className={subHeaderClass}>Burn & Runway</p>
+          {([
+            { label: 'Monthly burn', metric: brun?.monthly_burn },
+            { label: 'Runway', metric: brun?.runway_months },
+            { label: 'Cash', metric: brun?.cash },
+          ] as const).filter((r) => r.metric?.value != null).map((row) => (
+            <div key={row.label} className="flex items-center justify-between mt-1.5">
+              <span className={labelClass}>{row.label}</span>
+              <span className={valueClass}>{fmtMetric(row.metric)}</span>
+            </div>
+          ))}
+          {brun?.summary && (
+            <p className={`text-xs mt-2 italic ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{brun.summary}</p>
+          )}
+        </>
+      )}
+
+      {/* ── Section: Projections ── */}
+      {hasProjections && (proj?.summary || proj?.path_to_profitability_label) && (
+        <>
+          <div className={dividerClass} />
+          <p className={subHeaderClass}>Projections</p>
+          {proj?.path_to_profitability_label && (
+            <div className="flex items-center justify-between mt-1.5">
+              <span className={labelClass}>Path to profitability</span>
+              <span className={valueClass}>{proj.path_to_profitability_label}</span>
+            </div>
+          )}
+          {proj?.summary && (
+            <p className={`text-xs mt-2 italic ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{proj.summary}</p>
+          )}
+        </>
+      )}
+
+      {/* ── Section: Risk Flags ── */}
+      {risks.length > 0 && (
+        <>
+          <div className={dividerClass} />
+          <p className={subHeaderClass}>Risk Flags</p>
+          <div className="space-y-2">
+            {risks.map((r, i) => (
+              <div key={i} className={`rounded border px-3 py-2 ${
+                darkMode ? 'border-white/8 bg-white/3' : 'border-gray-200 bg-white'
+              }`}>
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className={`inline-flex items-center px-1.5 py-px rounded text-xs border ${riskSeverityClass(r.severity)}`}>
+                    {r.severity}
+                  </span>
+                  <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>{r.code}</span>
+                </div>
+                <p className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{r.message}</p>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

@@ -1499,6 +1499,10 @@ export type DealReport = {
   metadata?: Record<string, any>;
   /** Financial integrity cross-source analysis. null = analyzer did not run. */
   financial_integrity_v1?: DealReportFinancialIntegrityV1 | null;
+  /** Financial breakdown v1: current state, projections, burn/runway, cap table, risks. null when not computed. */
+  financial_breakdown_v1?: Record<string, unknown> | null;
+  /** Underwriting readiness v1: status, score (0-100), gaps, narrative. null when not computed. */
+  underwriting_readiness_v1?: Record<string, unknown> | null;
 };
 
 export type DealReportEnvelope =

@@ -199,19 +199,31 @@ export async function upsertFinancialFactsV1(
 }
 
 /**
+ * Safety ceiling for analysis-path fact loads.
+ *
+ * Exported so callers can detect potential truncation by comparing
+ * the returned array length against this constant.
+ *
+ * 500 covers realistic dense multi-period financial models
+ * (e.g. 20 metrics × 10 periods × 2 sources = 400 facts).
+ * Raise this if production deals consistently exceed the ceiling.
+ */
+export const FINANCIAL_FACTS_ANALYSIS_LIMIT = 500;
+
+/**
  * Fetch FinancialFactV1 rows for a deal, ordered most-recent period first.
  *
  * @param pool
  * @param dealId
  * @param opts.metricKey - optional filter by metric_key
- * @param opts.limit - max rows (default 25)
+ * @param opts.limit - max rows (default 25, hard ceiling FINANCIAL_FACTS_ANALYSIS_LIMIT)
  */
 export async function getFinancialFactsForDeal(
   pool: Pool,
   dealId: string,
   opts: { metricKey?: string; limit?: number } = {}
 ): Promise<FinancialFactV1[]> {
-  const limit = Math.min(opts.limit ?? 25, 100);
+  const limit = Math.min(opts.limit ?? 25, FINANCIAL_FACTS_ANALYSIS_LIMIT);
   const params: unknown[] = [dealId, limit];
   const metricFilter = opts.metricKey
     ? `AND metric_key = $3::text`
@@ -224,7 +236,9 @@ export async function getFinancialFactsForDeal(
        metric_key, metric_label, period_type, period_label,
        value::float8, unit, currency, confidence, reconciliation_status,
        sheet_name, page_number, row_index, col_index,
-       source_pointer, evidence_id, excerpt
+       source_pointer, evidence_id, excerpt,
+       slide_type, slide_title,
+       provenance_metadata
      FROM public.financial_facts_v1
      WHERE deal_id = $1::uuid
      ${metricFilter}
@@ -272,6 +286,8 @@ function rowToFact(r: Record<string, unknown>): FinancialFactV1 {
     source_pointer:r["source_pointer"]!= null ? String(r["source_pointer"]): undefined,
     evidence_id:   r["evidence_id"]   != null ? String(r["evidence_id"])   : undefined,
     excerpt:       r["excerpt"]       != null ? String(r["excerpt"])       : undefined,
+    slide_type:    r["slide_type"]    != null ? String(r["slide_type"])    : undefined,
+    slide_title:   r["slide_title"]   != null ? String(r["slide_title"])   : undefined,
   };
   unpackProvenanceMetadata(r["provenance_metadata"], fact);
   return fact;

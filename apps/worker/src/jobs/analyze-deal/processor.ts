@@ -45,7 +45,7 @@ import { OpenAIGPT4oProvider } from "../../lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "../../lib/llm/types";
 import type { JobStatus } from "@dealdecision/contracts";
 import { applySlideUnderstandingV1Shadow } from "../../lib/pdf_v2/slide-understanding-v1";
-import { getFinancialFactsForDeal } from "../../lib/db/financial-facts-db";
+import { getFinancialFactsForDeal, FINANCIAL_FACTS_ANALYSIS_LIMIT } from "../../lib/db/financial-facts-db";
 
 // -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
 function safeJsonParseObject(raw: string): Record<string, unknown> | null {
@@ -1254,9 +1254,15 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 		}
 
 		// Load financial facts for the financial integrity analyzer (fail-open: empty array is safe).
+		// Uses FINANCIAL_FACTS_ANALYSIS_LIMIT to ensure dense multi-period models are not silently truncated.
 		let financialFactsForOrchestrator: Awaited<ReturnType<typeof getFinancialFactsForDeal>> = [];
 		try {
-			financialFactsForOrchestrator = await getFinancialFactsForDeal(getPool(), dealId, { limit: 200 });
+			financialFactsForOrchestrator = await getFinancialFactsForDeal(getPool(), dealId, { limit: FINANCIAL_FACTS_ANALYSIS_LIMIT });
+			if (financialFactsForOrchestrator.length >= FINANCIAL_FACTS_ANALYSIS_LIMIT) {
+				job.log(
+					`[analyze-deal] financial_facts truncation warning: returned ${financialFactsForOrchestrator.length} rows — deal may have more facts than the analysis ceiling (${FINANCIAL_FACTS_ANALYSIS_LIMIT}). Integrity analysis may be incomplete.`
+				);
+			}
 		} catch {
 			// Integrity analysis degrades gracefully with no facts — never block orchestration.
 		}

@@ -36,7 +36,10 @@ const FIELD_TYPE_TO_METRIC_KEY: Record<FieldTypeV1, string> = {
   sam_v1:                        "sam",
   som_v1:                        "som",
   raise_amount_v1:               "raise_amount",
-  valuation_v1:                  "valuation",
+  // valuation_v1 is resolved to pre_money_valuation by default (startup XLSX
+  // "Valuation" rows are pre-money). The caller disambiguates post-money via
+  // the metric label at promotion time — see promoteToFinancialFactV1.
+  valuation_v1:                  "pre_money_valuation",
   ebitda_v1:                     "ebitda",
   burn_rate_v1:                  "burn_rate",
   runway_months_v1:              "runway_months",
@@ -140,7 +143,13 @@ export function promoteToFinancialFactV1(
     // Drop low-confidence other_metric_v1 (noisy rows)
     if (metric.field_type === "other_metric_v1" && metric.typing_confidence < 0.30) continue;
 
-    const metricKey = FIELD_TYPE_TO_METRIC_KEY[metric.field_type] ?? "other_metric";
+    const rawMetricKey = FIELD_TYPE_TO_METRIC_KEY[metric.field_type] ?? "other_metric";
+    // For valuation rows, inspect the label to distinguish post-money from pre-money.
+    // Default is pre_money_valuation (the common case in startup financial models).
+    const metricKey =
+      rawMetricKey === "pre_money_valuation" && /post.?money/i.test(metric.label ?? "")
+        ? "post_money_valuation"
+        : rawMetricKey;
     const periodLabel = extractPeriodLabel(metric);
     const unit = inferUnit(metricKey);
 

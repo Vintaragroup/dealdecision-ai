@@ -31,6 +31,47 @@ async function hasFinancialFactsTable(pool: PoolLike): Promise<boolean> {
 }
 
 /**
+ * Unpack provenance metadata from the JSONB column back into FinancialFactV1 fields.
+ * No-op when raw is null/undefined (pre-migration or non-XLSX facts).
+ */
+function unpackProvenanceMetadata(raw: unknown, fact: FinancialFactV1): void {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  const m = raw as Record<string, unknown>;
+  if (m["value_kind"] != null)
+    fact.value_kind = m["value_kind"] as FinancialFactV1["value_kind"];
+  if ("formula" in m)
+    fact.formula = m["formula"] as string | null;
+  if (Array.isArray(m["cross_sheet_refs"]))
+    fact.cross_sheet_refs = m["cross_sheet_refs"] as string[];
+  if (Array.isArray(m["named_range_refs"]))
+    fact.named_range_refs = m["named_range_refs"] as string[];
+  if (Array.isArray(m["resolved_cross_sheet_values"]))
+    fact.resolved_cross_sheet_values = m["resolved_cross_sheet_values"] as FinancialFactV1["resolved_cross_sheet_values"];
+  if (Array.isArray(m["formula_dependencies"]))
+    fact.formula_dependencies = m["formula_dependencies"] as FinancialFactV1["formula_dependencies"];
+  if ("dependency_depth" in m)
+    fact.dependency_depth = m["dependency_depth"] as number | null;
+  if (m["circular_reference_detected"] === true)
+    fact.circular_reference_detected = true;
+  if (m["temporal_scope"] != null)
+    fact.temporal_scope = m["temporal_scope"] as FinancialFactV1["temporal_scope"];
+  if (m["scenario"] != null)
+    fact.scenario = String(m["scenario"]);
+  if (m["cross_source_status"] != null)
+    fact.cross_source_status = m["cross_source_status"] as FinancialFactV1["cross_source_status"];
+  if (m["unit_scale_factor_applied"] != null)
+    fact.unit_scale_factor_applied = Number(m["unit_scale_factor_applied"]);
+  if ("unit_scale_source_text" in m)
+    fact.unit_scale_source_text = m["unit_scale_source_text"] as string | null;
+  if (m["normalized_period_label"] != null)
+    fact.normalized_period_label = String(m["normalized_period_label"]);
+  if (m["original_period_label"] != null)
+    fact.original_period_label = String(m["original_period_label"]);
+  if (m["typing_reason"] != null)
+    fact.typing_reason = String(m["typing_reason"]);
+}
+
+/**
  * Query financial facts for a deal.
  * Returns up to `limit` rows ordered: annual first, most-recent period first.
  */
@@ -54,7 +95,8 @@ async function queryFacts(
        value::float8, unit, currency, confidence, reconciliation_status,
        sheet_name, page_number, row_index, col_index,
        source_pointer, evidence_id, excerpt,
-       slide_type, slide_title
+       slide_type, slide_title,
+       provenance_metadata
      FROM public.financial_facts_v1
      WHERE deal_id = $1::uuid
      ${metricClause}
@@ -76,7 +118,7 @@ async function queryFacts(
 }
 
 function rowToFact(r: Record<string, unknown>): FinancialFactV1 {
-  return {
+  const fact: FinancialFactV1 = {
     fact_id:               String(r["fact_id"] ?? ""),
     deal_id:               String(r["deal_id"] ?? ""),
     document_id:           r["document_id"] != null ? String(r["document_id"]) : undefined,
@@ -102,6 +144,8 @@ function rowToFact(r: Record<string, unknown>): FinancialFactV1 {
     slide_type:    r["slide_type"]     != null ? String(r["slide_type"])     : undefined,
     slide_title:   r["slide_title"]    != null ? String(r["slide_title"])    : undefined,
   };
+  unpackProvenanceMetadata(r["provenance_metadata"], fact);
+  return fact;
 }
 
 // ─── Chat retrieval helper ────────────────────────────────────────────────────

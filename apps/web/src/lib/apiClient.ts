@@ -1365,6 +1365,29 @@ export function apiGetDealExtractionReport(dealId: string) {
   }>(`/api/v1/deals/${dealId}/documents/extraction-report`);
 }
 
+/**
+ * GET /api/v1/deals/:id/financial-facts
+ *
+ * Returns FinancialFactV1 rows from the financial_facts_v1 registry table.
+ * Includes provenance_metadata fields (value_kind, formula, cross_sheet_refs,
+ * formula_dependencies, dependency_depth, temporal_scope, etc.) when present.
+ *
+ * @param metricKey - optional filter by metric_key
+ * @param limit     - max rows, 1–100 (default 50)
+ */
+export function apiGetDealFinancialFacts(
+  dealId: string,
+  opts?: { metricKey?: string; limit?: number }
+) {
+  const params = new URLSearchParams();
+  if (opts?.metricKey) params.set("metric_key", opts.metricKey);
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return request<{ facts: import("@dealdecision/core").FinancialFactV1[] }>(
+    `/api/v1/deals/${dealId}/financial-facts${qs ? `?${qs}` : ""}`
+  );
+}
+
 export type DocumentAnalysisResponse = {
   document_id: string;
   deal_id: string;

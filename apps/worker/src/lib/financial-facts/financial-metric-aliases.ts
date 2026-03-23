@@ -82,6 +82,7 @@ export const METRIC_ALIAS_MAP: Record<string, string> = {
   "cash and cash equivalents": "cash",
   "ending cash":             "cash",
   "closing cash":            "cash",
+  "cash position":           "cash",
   // ── Burn Rate ────────────────────────────────────────────────────────────
   burn:                      "burn_rate",
   "burn rate":               "burn_rate",
@@ -98,6 +99,7 @@ export const METRIC_ALIAS_MAP: Record<string, string> = {
   "months runway":           "runway_months",
   "months of runway":        "runway_months",
   "months of cash":          "runway_months",
+  "operating runway":        "runway_months",
   // ── ARR ──────────────────────────────────────────────────────────────────
   arr:                       "arr",
   "annual recurring revenue":"arr",
@@ -153,6 +155,7 @@ export const METRIC_ALIAS_MAP: Record<string, string> = {
   "pre money":                     "pre_money_valuation",
   "current valuation":             "pre_money_valuation",
   "implied valuation":             "pre_money_valuation",
+  "valuation cap":                 "pre_money_valuation",
   // ── Post-Money Valuation ──────────────────────────────────────────────────
   "post-money valuation":          "post_money_valuation",
   "post money valuation":          "post_money_valuation",
@@ -176,6 +179,11 @@ export const METRIC_ALIAS_MAP: Record<string, string> = {
   "funding amount":                "raise_amount",
   "seeking":                       "raise_amount",
   "amount sought":                 "raise_amount",
+  "amount raising":                "raise_amount",
+  "funding sought":                "raise_amount",
+  "the ask":                       "raise_amount",
+  "pre-seed raise":                "raise_amount",
+  "pre seed raise":                "raise_amount",
   "seed round":                    "raise_amount",
   "seed funding":                  "raise_amount",
   "series a":                      "raise_amount",
@@ -218,7 +226,7 @@ export function isKnownMetricKey(key: string): boolean {
  * these words to be considered a plausible (if non-canonical) financial metric.
  */
 export const FINANCIAL_SIGNAL_KEYWORDS_RE =
-  /\b(revenue|sales|income|profit|loss|cost|expense|margin|burn|runway|cash|arr|mrr|gmv|ebitda|arpu|cac|ltv|nrr|churn|retention|raise|valuation|funding|budget|forecast|opex|headcount|employees)\b/i;
+  /\b(revenue|sales|income|profit|loss|cost|expense|margin|burn|runway|cash|arr|mrr|gmv|ebitda|arpu|cac|ltv|nrr|churn|retention|raise|ask|valuation|funding|budget|forecast|opex|headcount|employees)\b/i;
 
 /**
  * Normalize a raw metric label to a canonical metric_key.

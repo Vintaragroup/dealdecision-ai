@@ -45,6 +45,7 @@ import { OpenAIGPT4oProvider } from "../../lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "../../lib/llm/types";
 import type { JobStatus } from "@dealdecision/contracts";
 import { applySlideUnderstandingV1Shadow } from "../../lib/pdf_v2/slide-understanding-v1";
+import { getFinancialFactsForDeal } from "../../lib/db/financial-facts-db";
 
 // -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
 function safeJsonParseObject(raw: string): Record<string, unknown> | null {
@@ -1252,6 +1253,14 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 			);
 		}
 
+		// Load financial facts for the financial integrity analyzer (fail-open: empty array is safe).
+		let financialFactsForOrchestrator: Awaited<ReturnType<typeof getFinancialFactsForDeal>> = [];
+		try {
+			financialFactsForOrchestrator = await getFinancialFactsForDeal(getPool(), dealId, { limit: 200 });
+		} catch {
+			// Integrity analysis degrades gracefully with no facts — never block orchestration.
+		}
+
 		const heartbeat = startHeartbeat(job, {
 			stage: "running",
 			dealId,
@@ -1275,6 +1284,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 					phase1_update_report_v1,
 					phase1_deal_summary_v2,
 					llm_calls,
+					financial_facts: financialFactsForOrchestrator,
 				},
 			});
 		} finally {

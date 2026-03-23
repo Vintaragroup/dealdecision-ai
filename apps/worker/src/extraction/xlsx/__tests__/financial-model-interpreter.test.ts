@@ -380,3 +380,43 @@ describe("parseFinancialTable — no scaling (unit_scale_factor absent or 1)", (
     }
   });
 });
+
+// ─── promoteToFinancialFactV1 — valuation_v1 → pre_money_valuation ───────────
+
+const VALUATION_TABLE: FinancialTable = {
+  sheet_name:       "Cap Table",
+  table_kind:       "other",
+  row_headers:      ["Valuation", "Post-Money Valuation", "Pre-Money Valuation"],
+  column_headers:   ["2026"],
+  cell_matrix:      [[25_000_000], [30_000_000], [22_000_000]],
+  source_page_type: "excel_range",
+};
+
+describe("promoteToFinancialFactV1 — valuation_v1 → pre_money_valuation (bug fix)", () => {
+  it("maps bare 'Valuation' row to pre_money_valuation (not 'valuation')", () => {
+    const metrics = parseFinancialTable(VALUATION_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    const facts = promoteToFinancialFactV1(metrics, { deal_id: "d1" });
+    const valFact = facts.find(
+      (f) => f.metric_label?.toLowerCase() === "valuation (2026)"
+    );
+    expect(valFact?.metric_key).toBe("pre_money_valuation");
+  });
+
+  it("maps 'Post-Money Valuation' row to post_money_valuation (label-aware)", () => {
+    const metrics = parseFinancialTable(VALUATION_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    const facts = promoteToFinancialFactV1(metrics, { deal_id: "d1" });
+    const postFact = facts.find(
+      (f) => f.metric_label?.toLowerCase().startsWith("post-money valuation")
+    );
+    expect(postFact?.metric_key).toBe("post_money_valuation");
+  });
+
+  it("maps 'Pre-Money Valuation' row to pre_money_valuation", () => {
+    const metrics = parseFinancialTable(VALUATION_TABLE, { deal_id: "d1", currentYear: CURRENT_YEAR });
+    const facts = promoteToFinancialFactV1(metrics, { deal_id: "d1" });
+    const preFact = facts.find(
+      (f) => f.metric_label?.toLowerCase().startsWith("pre-money valuation")
+    );
+    expect(preFact?.metric_key).toBe("pre_money_valuation");
+  });
+});

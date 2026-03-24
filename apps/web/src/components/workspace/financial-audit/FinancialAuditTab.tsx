@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
 import { useState } from 'react';
 import { FinancialAuditTabProps } from '../../../types/financialAudit';
 import { useFinancialAuditData } from '../../../hooks/useFinancialAuditData';
@@ -49,6 +49,27 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
             </div>
             <div className={`text-xs mt-0.5 ${darkMode ? 'text-amber-400/70' : 'text-amber-600'}`}>
               Last updated {auditData.lastUpdated}. Re-run analysis to refresh the financial audit snapshot.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty Report State Banner */}
+      {auditData.isReportEmpty && (
+        <div className={`p-5 rounded-xl border flex items-start gap-4 ${
+          darkMode
+            ? 'bg-blue-500/10 border-blue-500/30'
+            : 'bg-blue-50 border-blue-200'
+        }`}>
+          <RefreshCw className={`w-5 h-5 mt-0.5 flex-shrink-0 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
+          <div>
+            <div className={`text-sm font-medium ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>
+              Report compiled before financial data was available
+            </div>
+            <div className={`text-xs mt-1 leading-relaxed ${darkMode ? 'text-blue-400/70' : 'text-blue-600'}`}>
+              The compiled report does not yet include XLSX or structured financial data. Source of Truth, 
+              Snapshot, and Projection panels will be empty until analysis is re-run. Facts already 
+              extracted may be visible in the Raw Facts panel after a fresh compile.
             </div>
           </div>
         </div>

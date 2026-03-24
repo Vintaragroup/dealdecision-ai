@@ -59,6 +59,17 @@ export function isCorruptedFact(fact: FinancialFactV1): CorruptionCheckResult {
     if (yearMatch && Number(yearMatch[1]) === v) {
       return { corrupted: true, reason: 'year_equals_value' };
     }
+
+    // Guard 3 — year-integer-as-currency (year mismatch variant)
+    // Extends Guard 2: when the period_label names a specific year but the value
+    // is a *different* year integer on a currency-unit fact, the XLSX parser almost
+    // certainly read a column-header cell as a data value.
+    // E.g. value=2027, period_label='FY2026', unit='currency' → extraction artefact.
+    // Guard only fires when period_label contains a year (prevents false positives on
+    // period_label='current' / 'TTM' / etc. where a $2026 revenue is theoretically valid).
+    if (fact.unit === 'currency' && yearMatch) {
+      return { corrupted: true, reason: 'year_integer_as_currency' };
+    }
   }
 
   return { corrupted: false };

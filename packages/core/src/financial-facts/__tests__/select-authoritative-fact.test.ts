@@ -103,8 +103,17 @@ describe('isCorruptedFact', () => {
       expect(isCorruptedFact(f).corrupted).toBe(false);
     });
 
-    test('value=2027 with period_label=FY2026 is NOT corrupted (year mismatch)', () => {
-      const f = fact('revenue', 2027, { period_label: 'FY2026' });
+    test('value=2027 with period_label=FY2026 is corrupted (year-integer-as-currency guard)', () => {
+      // Guard 3: currency fact whose integer value is a different year than the period_label year.
+      // This is the XLSX column-header-as-data-cell extraction artefact (year mismatch variant).
+      const f = fact('revenue', 2027, { period_label: 'FY2026', unit: 'currency' });
+      expect(isCorruptedFact(f).corrupted).toBe(true);
+      expect(isCorruptedFact(f).reason).toBe('year_integer_as_currency');
+    });
+
+    test('value=2027 with unit=number is NOT corrupted (headcount=2027 is valid)', () => {
+      // Guard 3 only fires for currency-unit facts. A headcount of 2027 is a valid integer.
+      const f = fact('total_headcount', 2027, { period_label: 'FY2026', unit: 'number' });
       expect(isCorruptedFact(f).corrupted).toBe(false);
     });
 

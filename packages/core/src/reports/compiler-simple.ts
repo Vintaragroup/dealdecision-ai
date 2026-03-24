@@ -50,8 +50,8 @@ type ReportDTO = {
   market_accessibility_signal_v1?: MarketAccessibilitySignalProfileV1;
   traction_signal_v1?: TractionSignalProfileV1;
   team_signal_v1?: TeamSignalProfileV1;
-  /** Financial integrity cross-source analysis (completeness, discrepancy, anomalies). null = analyzer did not run or DIO predates this field. */
-  financial_integrity_v1?: FinancialIntegrityV1 | null;
+  /** Financial integrity cross-source analysis (completeness, discrepancy, anomalies). Always non-null: falls back to empty baseline when analyzer did not run or DIO predates this field. */
+  financial_integrity_v1?: FinancialIntegrityV1;
   structured_summary?: {
     raise: {
       value: string | null;
@@ -1831,6 +1831,37 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
   }
 }
 
+/**
+ * Returns a valid FinancialIntegrityV1 baseline used when the integrity
+ * analyzer did not run or the DIO predates the financial_integrity_v1 field.
+ *
+ * All critical and supplementary metrics are listed as missing, completeness_score
+ * is 0, and a single FAIL flag explains why the data is absent.
+ *
+ * This ensures the UI always receives a well-typed object rather than null.
+ */
+function buildEmptyFinancialIntegrityV1(): FinancialIntegrityV1 {
+  return {
+    computed_at: new Date().toISOString(),
+    completeness_score: 0,
+    missing_critical: [
+      'revenue', 'arr', 'mrr', 'burn_rate', 'cash',
+      'runway_months', 'raise_amount', 'pre_money_valuation',
+    ],
+    missing_supplementary: [
+      'gross_margin', 'opex', 'churn_pct', 'cac', 'ltv', 'arpu', 'net_income',
+    ],
+    flags: [
+      {
+        flag_key: 'completeness:no_facts',
+        status: 'FAIL',
+        severity: 'high',
+        note: 'No financial integrity data available. Re-run analysis with financial documents to populate integrity checks.',
+      },
+    ],
+  };
+}
+
 export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedFacts?: PromotedFactInput[]; financialFacts?: FinancialFactV1[] | null }): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
@@ -1944,9 +1975,10 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
     : existingExplanation;
 
   // Pass through financial integrity result from DIO (fail-open: never fail report compilation).
-  let financialIntegrityV1: FinancialIntegrityV1 | null = null;
+  // Always produces a non-null value: falls back to empty baseline when the field is absent.
+  let financialIntegrityV1: FinancialIntegrityV1 = buildEmptyFinancialIntegrityV1();
   try {
-    financialIntegrityV1 = (dio as any)?.dio?.financial_integrity_v1 ?? null;
+    financialIntegrityV1 = (dio as any)?.dio?.financial_integrity_v1 ?? buildEmptyFinancialIntegrityV1();
   } catch {
     // Best-effort: never fail report compilation.
   }

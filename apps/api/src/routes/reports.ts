@@ -34,6 +34,7 @@ import { computeArchetypeSegmentDriftV1 } from '../lib/archetype-segment-drift-v
 import { computeOverrideQualityV1 } from '../lib/override-quality-v1';
 import { computeDeterministicModifierV1, computeDeterministicScorePreviewV1Diagnostics, shouldPinUnadjusted } from '../lib/deterministic-score-preview-v1';
 import { StageTimer, nowMs } from '../lib/telemetry/stage-timer';
+import { enqueueJob } from '../services/jobs';
 
 const isUuid = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
 
@@ -3096,6 +3097,14 @@ export async function registerReportRoutes(
             // Best-effort: inject live staleness flag. Never persisted — always computed fresh on cache-hit.
             let financial_snapshot_stale = false;
             try { financial_snapshot_stale = await computeReportFinancialSnapshotStale(pool, deal_id, versionNum); } catch { /* fail-open */ }
+            // Lazy recompile: when financial_facts_v1 are newer than the cached report, trigger a
+            // fresh analyze_deal job in the background. Idempotent via dedupe — never blocks response.
+            if (financial_snapshot_stale) {
+              void enqueueJob(
+                { deal_id: deal_id, type: 'analyze_deal', payload: { reason: 'financial_snapshot_stale' } },
+                { dedupe: { by: 'deal' } },
+              ).catch(() => { /* fail-open: never break /report for a recompile trigger */ });
+            }
             return reply.status(200).send({ ...cached, financial_snapshot_stale });
           }
         }
@@ -3355,5 +3364,41 @@ export async function registerReportRoutes(
         });
       }
     }
+  );
+
+  /**
+   * POST /api/v1/deals/:deal_id/recompute-financials
+   *
+   * Manually trigger a fresh analyze_deal job to recompile financial data.
+   * Idempotent: returns the existing active job if one is already queued or running
+   * (deduped by deal within a 30-minute window).
+   *
+   * Returns 202 Accepted with { ok, job_id, status }.
+   */
+  app.post<{ Params: ReportParams }>(
+    '/api/v1/deals/:deal_id/recompute-financials',
+    async (request: FastifyRequest<{ Params: ReportParams }>, reply: FastifyReply) => {
+      const { deal_id } = request.params;
+      if (!isUuid(deal_id)) {
+        return reply.status(400).send({ ok: false, error: 'invalid_deal_id' });
+      }
+      const dealRow = await pool.query(
+        `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+        [deal_id],
+      );
+      if (dealRow.rows.length === 0) {
+        return reply.status(404).send({ ok: false, error: 'deal_not_found' });
+      }
+      try {
+        const result = await enqueueJob(
+          { deal_id, type: 'analyze_deal', payload: { reason: 'manual_recompute_financials' } },
+          { dedupe: { by: 'deal' } },
+        );
+        return reply.status(202).send({ ok: true, job_id: result.job_id, status: result.status });
+      } catch (err) {
+        request.log.error({ event: 'recompute_financials.enqueue_failed', deal_id, err }, 'Failed to enqueue recompute-financials job');
+        return reply.status(500).send({ ok: false, error: 'enqueue_failed' });
+      }
+    },
   );
 }

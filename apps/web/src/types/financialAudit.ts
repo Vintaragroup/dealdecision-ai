@@ -152,6 +152,8 @@ export interface FinancialAuditTabProps {
 export interface ProcessedAuditData {
   status: AuditStatus;
   isStale: boolean;
+  /** True when the compiled report has no numeric data in any core panel — typically because the report predates XLSX extraction */
+  isReportEmpty: boolean;
   lastUpdated: string;
   actionPanel: InvestorActionPanelProps;
   summaryMetrics: SummaryMetricsBarProps;

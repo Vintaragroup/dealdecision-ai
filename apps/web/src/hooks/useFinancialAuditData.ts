@@ -1,255 +1,438 @@
 import { useMemo } from 'react';
-import { ProcessedAuditData, FinancialAuditTabProps } from '../types/financialAudit';
+import {
+  ProcessedAuditData,
+  FinancialAuditTabProps,
+  AuditStatus,
+  ConfidenceLevel,
+  SupportStatus,
+  ImpactSeverity,
+  SourceOfTruthRow,
+} from '../types/financialAudit';
+import type {
+  FinancialMetricPointLike,
+} from '../lib/selectors/selectAuthoritativeFinancialBreakdownV1';
+import type {
+  IntegrityFlag,
+} from '../lib/selectors/selectAuthoritativeFinancialIntegrityV1';
+
+// ─── Formatting helpers ───────────────────────────────────────────────────────
+
+function formatMetricValue(m: FinancialMetricPointLike | null | undefined): string {
+  if (!m || m.value == null) return '—';
+  const v = m.value;
+  switch (m.unit) {
+    case 'currency': {
+      const pfx = !m.currency || m.currency === 'USD' ? '$' : `${m.currency} `;
+      const abs = Math.abs(v);
+      if (abs >= 1_000_000) return `${pfx}${(v / 1_000_000).toFixed(1)}M`;
+      if (abs >= 1_000) return `${pfx}${Math.round(v / 1_000)}K`;
+      return `${pfx}${v.toFixed(0)}`;
+    }
+    case 'percent': {
+      // Support both 0–1 decimal and 0–100 percentage representations
+      const pct = Math.abs(v) <= 1 ? v * 100 : v;
+      return `${pct.toFixed(1)}%`;
+    }
+    case 'months':
+      return `${v.toFixed(1)} months`;
+    default:
+      return String(v);
+  }
+}
+
+function mapConfidence(c: string | null | undefined): ConfidenceLevel {
+  if (c === 'high') return 'High';
+  if (c === 'medium') return 'Medium';
+  return 'Low';
+}
+
+function mapConfidenceToSourceWeight(c: string | null | undefined): number {
+  if (c === 'high') return 5;
+  if (c === 'medium') return 3;
+  return 1;
+}
+
+function mapReadinessStatus(status: string | undefined): AuditStatus {
+  if (status === 'sufficient') return 'READY';
+  if (status === 'partially_sufficient') return 'PARTIAL';
+  return 'WARNING';
+}
+
+function mapIntegritySeverityToImpact(s: string): ImpactSeverity {
+  if (s === 'critical' || s === 'high') return 'high';
+  if (s === 'medium') return 'medium';
+  return 'low';
+}
+
+function formatFlagKey(key: string): string {
+  // 'cross_source_discrepancy:revenue' → 'Revenue'
+  const parts = key.split(':');
+  const label = parts[parts.length - 1] ?? key;
+  return label.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function formatSourceKind(kind: string): string {
+  if (kind === 'xlsx') return 'XLSX Model';
+  if (kind === 'deck') return 'Pitch Deck';
+  if (kind === 'pdf') return 'PDF Document';
+  if (kind === 'webmax') return 'WebMax';
+  return kind;
+}
+
+function percentDiff(a: number, b: number): string {
+  if (b === 0) return 'N/A';
+  const pct = ((a - b) / Math.abs(b)) * 100;
+  const sign = pct >= 0 ? '+' : '';
+  return `${sign}${pct.toFixed(1)}%`;
+}
+
+function getSupportStatusFromFlags(
+  factType: string,
+  flags: IntegrityFlag[],
+): SupportStatus {
+  const relevant = flags.filter(
+    (f) =>
+      (f.fact_type && f.fact_type === factType) ||
+      f.flag_key.includes(factType),
+  );
+  if (
+    relevant.some(
+      (f) =>
+        f.flag_key.startsWith('cross_source') && f.source_a && f.source_b,
+    )
+  )
+    return 'Conflicting';
+  if (relevant.some((f) => f.flag_key.startsWith('single_source')))
+    return 'Single Source';
+  return 'Supported';
+}
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
 
 /**
- * Hook to process and transform Financial Audit data
- * Maps raw API data to component-ready format
+ * Maps real financial report payload fields to the Financial Audit tab's
+ * component-ready data model. All data comes from:
+ *   - financialBreakdownV1  (FinancialBreakdownV1Like)
+ *   - underwritingReadinessV1 (UnderwritingReadinessV1Like)
+ *   - financialIntegrityV1  (FinancialIntegrityV1Like)
+ *   - financialSnapshotStale (boolean envelope flag)
+ *
+ * No API calls are made here. Fails open: missing fields render as '—'.
  */
 export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedAuditData {
   const {
     financialBreakdownV1,
     underwritingReadinessV1,
     financialIntegrityV1,
-    financialSnapshotStale = false
+    financialSnapshotStale = false,
   } = props;
 
   return useMemo(() => {
-    // This is where you would map real API data
-    // For now, returning mock data structure
-    
-    const processedData: ProcessedAuditData = {
-      status: 'WARNING',
-      isStale: financialSnapshotStale,
-      lastUpdated: '2 hours ago',
-      
-      actionPanel: {
-        status: 'WARNING',
-        criticalActions: [
-          { text: 'Cash balance conflict ($400K discrepancy)', severity: 'critical' },
-          { text: 'Missing CAC / LTV / Churn metrics', severity: 'critical' }
-        ],
-        validationActions: [
-          { text: 'Customer count (deck only)', severity: 'warning' },
-          { text: 'Runway assumptions need validation', severity: 'warning' }
-        ],
-        strengths: [
-          { text: 'Revenue supported (XLSX + Deck)', severity: 'success' },
-          { text: 'Gross margin validated across sources', severity: 'success' }
-        ]
-      },
-      
-      summaryMetrics: {
-        completeness: 67,
-        criticalMetrics: '5 / 7 present',
-        conflicts: 3,
-        factsAnalyzed: 127
-      },
-      
-      sourceOfTruth: {
-        rows: [
-          { 
-            metric: 'ARR', 
-            value: '$5.2M', 
-            source: 'XLSX', 
-            sources: 2, 
-            confidence: 'High', 
-            confidenceExplanation: 'XLSX + Deck aligned', 
-            status: 'Supported', 
-            sourceWeight: 5 
-          },
-          { 
-            metric: 'Revenue (2024)', 
-            value: '$4.8M', 
-            source: 'Deck', 
-            sources: 3, 
-            confidence: 'High', 
-            confidenceExplanation: 'XLSX + Deck + PDF aligned', 
-            status: 'Supported', 
-            sourceWeight: 5 
-          },
-          { 
-            metric: 'Burn Rate', 
-            value: '$180K/mo', 
-            source: 'XLSX', 
-            sources: 1, 
-            confidence: 'Medium', 
-            confidenceExplanation: 'Single source', 
-            status: 'Single Source', 
-            sourceWeight: 5 
-          },
-          { 
-            metric: 'Cash Balance', 
-            value: '$2.1M', 
-            source: 'PDF', 
-            sources: 2, 
-            confidence: 'Medium', 
-            confidenceExplanation: 'Sources conflict', 
-            status: 'Conflicting', 
-            sourceWeight: 2 
-          },
-          { 
-            metric: 'Gross Margin', 
-            value: '68%', 
-            source: 'XLSX', 
-            sources: 2, 
-            confidence: 'High', 
-            confidenceExplanation: 'XLSX + Deck aligned', 
-            status: 'Supported', 
-            sourceWeight: 5 
-          },
-          { 
-            metric: 'Customer Count', 
-            value: '250', 
-            source: 'Deck', 
-            sources: 1, 
-            confidence: 'Low', 
-            confidenceExplanation: 'Deck only', 
-            status: 'Single Source', 
-            sourceWeight: 3 
-          },
-          { 
-            metric: 'MRR Growth', 
-            value: '+12% MoM', 
-            source: 'XLSX', 
-            sources: 2, 
-            confidence: 'High', 
-            confidenceExplanation: 'XLSX + Deck aligned', 
-            status: 'Supported', 
-            sourceWeight: 5 
-          }
-        ]
-      },
-      
-      conflicts: {
-        conflicts: [
-          { 
-            metric: 'Cash Balance', 
-            sourceA: { name: 'XLSX Model', value: '$2.1M' }, 
-            sourceB: { name: 'Pitch Deck', value: '$2.5M' }, 
-            difference: '+$400K (19%)',
-            impact: 'Affects runway by ~2 months',
-            impactSeverity: 'high'
-          },
-          { 
-            metric: 'Team Size', 
-            sourceA: { name: 'Deck', value: '15 people' }, 
-            sourceB: { name: 'PDF Doc', value: '12 people' }, 
-            difference: '+3 (25%)',
-            impact: 'Low impact — rounding or timing difference',
-            impactSeverity: 'low'
-          },
-          { 
-            metric: 'Runway', 
-            sourceA: { name: 'XLSX', value: '11.7 months' }, 
-            sourceB: { name: 'Deck', value: '12 months' }, 
-            difference: '+0.3 months',
-            impact: 'Low impact — rounding difference',
-            impactSeverity: 'low'
-          }
-        ]
-      },
-      
-      timeAudit: {
-        items: [
-          { metric: 'Revenue', period: 'TTM (Actual)', clarity: 'Clear', type: 'historical' },
-          { metric: 'ARR', period: 'Current', clarity: 'Clear', type: 'historical' },
-          { 
-            metric: 'Revenue (2025)', 
-            period: 'FY Projection', 
-            clarity: 'Warning', 
-            type: 'projected', 
-            warning: 'Mixed temporal data: Projected revenue compared to historical burn rate' 
-          },
-          { 
-            metric: 'Customer Count', 
-            period: 'Quarterly', 
-            clarity: 'Ambiguous', 
-            type: 'historical', 
-            warning: 'Period not clearly specified' 
-          }
-        ]
-      },
-      
-      snapshot: {
-        metrics: [
-          { 
-            label: 'Revenue', 
-            value: '$4.8M', 
-            change: '+120%', 
-            confidence: 'High', 
-            confidenceReason: 'XLSX + Deck aligned'
-          },
-          { 
-            label: 'Burn Rate', 
-            value: '$180K/mo', 
-            change: '+15%', 
-            confidence: 'Medium', 
-            confidenceReason: 'Single source'
-          },
-          { 
-            label: 'Cash', 
-            value: '$2.1M', 
-            change: '-$540K', 
-            confidence: 'Medium', 
-            confidenceReason: 'Sources conflict — needs resolution'
-          },
-          { 
-            label: 'Runway', 
-            value: '11.7 months', 
-            change: '-2.3 months', 
-            confidence: 'High', 
-            confidenceReason: 'XLSX calculation validated'
-          },
-          { 
-            label: 'Gross Margin', 
-            value: '68%', 
-            change: '+3%', 
-            confidence: 'High', 
-            confidenceReason: 'XLSX + Deck aligned'
-          }
-        ]
-      },
-      
-      riskFlags: {
-        critical: [
-          { message: 'Cash balance shows $400K discrepancy between sources' }
-        ],
-        validation: [
-          { message: '3 metrics rely on single source with no cross-validation' },
-          { message: 'Customer count confidence is low (deck only)' }
-        ],
-        dataQuality: [
-          { message: '2 time periods are ambiguous or not clearly labeled' }
-        ]
-      },
-      
-      readiness: {
-        score: 72,
-        status: 'PARTIAL',
-        missingMetrics: ['Customer CAC', 'LTV', 'Churn Rate'],
-        weakAreas: ['Cash balance conflicts', 'Ambiguous time periods'],
-        summary: 'Core financials present and mostly supported. Critical gaps in unit economics. Resolve cash balance conflict and obtain missing CAC/LTV metrics before proceeding to investment decision.'
-      },
-      
-      formulas: {
-        traces: [
-          { metric: 'ARR', formula: '=MRR*12', depth: 1, sheets: ['Financials'], circular: false, confidence: 'High' },
-          { metric: 'Runway', formula: '=Cash/BurnRate', depth: 2, sheets: ['Financials', 'Assumptions'], circular: false, confidence: 'High' },
-          { metric: 'Gross Margin', formula: '=(Revenue-COGS)/Revenue', depth: 2, sheets: ['P&L'], circular: false, confidence: 'Medium' },
-          { metric: 'Growth Rate', formula: '=(Current-Prior)/Prior', depth: 3, sheets: ['Financials', 'Historical', 'Metrics'], circular: false, confidence: 'Low' }
-        ]
-      },
-      
-      rawFacts: {
-        facts: [
-          { metric: 'ARR', period: 'Current', value: '$5.2M', source: 'XLSX', sheet: 'Financials', cell: 'B12', confidence: 'High', formula: '=MRR*12' },
-          { metric: 'MRR', period: 'Current', value: '$433K', source: 'XLSX', sheet: 'Financials', cell: 'B11', confidence: 'High', formula: '=SUM(CustomerRevenue)' },
-          { metric: 'Revenue', period: '2024', value: '$4.8M', source: 'Deck', sheet: null, cell: 'Slide 8', confidence: 'High', formula: null },
-          { metric: 'Cash', period: 'Current', value: '$2.1M', source: 'XLSX', sheet: 'Balance Sheet', cell: 'D5', confidence: 'Medium', formula: null }
-        ]
+    const bd = financialBreakdownV1 as any ?? null;
+    const ur = underwritingReadinessV1 as any ?? null;
+    const fi = financialIntegrityV1 as any ?? null;
+
+    const flags: IntegrityFlag[] = fi?.flags ?? [];
+    const missing_critical: string[] = fi?.missing_critical ?? [];
+    const missing_supplementary: string[] = fi?.missing_supplementary ?? [];
+    const completeness: number = fi?.completeness_score ?? 0;
+
+    // ── Overall status ──────────────────────────────────────────────────────
+    const status: AuditStatus = mapReadinessStatus(ur?.status);
+
+    // ── Summary Metrics ─────────────────────────────────────────────────────
+    const conflictFlags = flags.filter(
+      (f) => f.flag_key.startsWith('cross_source') && f.source_a && f.source_b,
+    );
+    const missingCount = missing_critical.length + (ur?.missing?.length ?? 0);
+    const criticalMetricsTotal = missingCount + (ur?.reasons?.length ?? 0) + 5; // denominator estimate
+    const criticalPresent = Math.max(0, criticalMetricsTotal - missingCount);
+    const factsAnalyzed = flags.length > 0 ? flags.length : (bd ? 1 : 0);
+
+    // ── Investor Action Panel ───────────────────────────────────────────────
+    const criticalActions = [
+      // High/critical integrity failures
+      ...flags
+        .filter((f) => (f.severity === 'critical' || f.severity === 'high') && f.status === 'FAIL')
+        .map((f) => ({ text: f.note, severity: 'critical' as const })),
+      // Missing critical underwriting metrics
+      ...(ur?.missing ?? []).map((m: string) => ({
+        text: `Missing: ${m}`,
+        severity: 'critical' as const,
+      })),
+    ];
+
+    const validationActions = [
+      // Medium severity warnings
+      ...flags
+        .filter((f) => f.severity === 'medium' && f.status === 'WARN')
+        .map((f) => ({ text: f.note, severity: 'warning' as const })),
+      // Supplementary missing fields
+      ...missing_supplementary.map((m: string) => ({
+        text: `Supplementary gap: ${m.replace(/_/g, ' ')}`,
+        severity: 'warning' as const,
+      })),
+    ];
+
+    const strengths = [
+      // Passing integrity checks
+      ...flags
+        .filter((f) => f.status === 'PASS' && (f.severity === 'low' || f.severity === 'medium'))
+        .slice(0, 5)
+        .map((f) => ({ text: f.note, severity: 'success' as const })),
+    ];
+
+    // Ensure all panels have at least an empty state rather than nothing
+    if (criticalActions.length === 0 && validationActions.length === 0 && strengths.length === 0) {
+      if (!bd && !ur && !fi) {
+        criticalActions.push({ text: 'No financial data available — run analysis first', severity: 'critical' });
       }
+    }
+
+    // ── Source of Truth Table ───────────────────────────────────────────────
+    const currentState = bd?.current_state ?? null;
+    const burnRunway = bd?.burn_runway ?? null;
+
+    type MetricDef = { label: string; factType: string; metric: FinancialMetricPointLike | null | undefined };
+    const metricDefs: MetricDef[] = [
+      { label: 'Revenue', factType: 'revenue', metric: currentState?.revenue },
+      { label: 'Burn Rate', factType: 'burn_rate', metric: currentState?.burn_rate ?? burnRunway?.monthly_burn },
+      { label: 'Cash', factType: 'cash', metric: currentState?.cash ?? burnRunway?.cash },
+      { label: 'Runway', factType: 'runway', metric: currentState?.runway_months ?? burnRunway?.runway_months },
+      { label: 'Gross Margin', factType: 'gross_margin_pct', metric: currentState?.gross_margin_pct },
+    ];
+
+    const sotRows: SourceOfTruthRow[] = metricDefs
+      .filter((d) => d.metric?.value != null)
+      .map((d) => {
+        const m = d.metric!;
+        const conf = mapConfidence(m.confidence);
+        const supportStatus = getSupportStatusFromFlags(d.factType, flags);
+        const conflictFlag = flags.find(
+          (f) => f.flag_key.startsWith('cross_source') && f.fact_type === d.factType,
+        );
+        const confidenceExplanation = conflictFlag
+          ? conflictFlag.note
+          : conf === 'High'
+          ? `${formatSourceKind(m.source_kind ?? 'unknown')} — high confidence`
+          : conf === 'Medium'
+          ? `${formatSourceKind(m.source_kind ?? 'unknown')} — single or partial source`
+          : 'Low confidence — deck-only or unverified';
+
+        return {
+          metric: d.label,
+          value: formatMetricValue(m),
+          source: formatSourceKind(m.source_kind ?? ''),
+          sources: supportStatus === 'Supported' ? 2 : 1,
+          confidence: conf,
+          confidenceExplanation,
+          status: supportStatus as SupportStatus,
+          sourceWeight: mapConfidenceToSourceWeight(m.confidence),
+        };
+      });
+
+    // ── Cross Source Reconciliation ─────────────────────────────────────────
+    const conflicts = conflictFlags.map((f) => {
+      const aVal = f.source_a!.value;
+      const bVal = f.source_b!.value;
+      const diff = percentDiff(aVal, bVal);
+      const metricLabel = f.fact_type ? f.fact_type.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : formatFlagKey(f.flag_key);
+      return {
+        metric: metricLabel,
+        sourceA: {
+          name: formatSourceKind(f.source_a!.source_kind),
+          value: aVal.toLocaleString(),
+        },
+        sourceB: {
+          name: formatSourceKind(f.source_b!.source_kind),
+          value: bVal.toLocaleString(),
+        },
+        difference: diff,
+        impact: f.note,
+        impactSeverity: mapIntegritySeverityToImpact(f.severity),
+      };
+    });
+
+    // ── Time Projection Audit ───────────────────────────────────────────────
+    const projectionPeriods = bd?.projections?.periods ?? [];
+    const timeItems = projectionPeriods.map((p: any) => {
+      const label: string = p.period_label ?? 'Unknown period';
+      // Heuristic: labels containing future years or 'Proj' are projected
+      const currentYear = new Date().getFullYear();
+      const looksProjected =
+        /proj|forecast|estimate/i.test(label) ||
+        (Number(label.match(/\d{4}/)?.[0]) > currentYear);
+      const hasMissingData = p.revenue == null && p.net_income == null;
+
+      return {
+        metric: 'Revenue / Net Income',
+        period: label,
+        type: looksProjected ? ('projected' as const) : ('historical' as const),
+        clarity: hasMissingData
+          ? ('Ambiguous' as const)
+          : looksProjected
+          ? ('Warning' as const)
+          : ('Clear' as const),
+        ...(looksProjected
+          ? { warning: 'Projected period — verify assumptions before relying on these figures' }
+          : hasMissingData
+          ? { warning: 'Period label present but revenue/net income data absent' }
+          : {}),
+      };
+    });
+
+    // ── Financial Snapshot ──────────────────────────────────────────────────
+    const snapshotDefs = [
+      { label: 'Revenue', m: currentState?.revenue },
+      { label: 'Burn Rate', m: currentState?.burn_rate ?? burnRunway?.monthly_burn },
+      { label: 'Cash', m: currentState?.cash ?? burnRunway?.cash },
+      { label: 'Runway', m: currentState?.runway_months ?? burnRunway?.runway_months },
+      { label: 'Gross Margin', m: currentState?.gross_margin_pct },
+    ];
+
+    const snapshotMetrics = snapshotDefs
+      .filter((d) => d.m?.value != null)
+      .map((d) => {
+        const m = d.m!;
+        const conf = mapConfidence(m.confidence);
+        const conflictFlag = flags.find(
+          (f) => f.flag_key.startsWith('cross_source') && f.fact_type?.includes(d.label.toLowerCase().replace(' ', '_')),
+        );
+        return {
+          label: d.label,
+          value: formatMetricValue(m),
+          confidence: conf,
+          confidenceReason: conflictFlag
+            ? conflictFlag.note
+            : conf === 'High'
+            ? `${formatSourceKind(m.source_kind ?? '')} — validated`
+            : conf === 'Medium'
+            ? 'Single source or partial validation'
+            : 'Low confidence — verify independently',
+        };
+      });
+
+    // ── Risk Flags Panel ────────────────────────────────────────────────────
+    const riskFlagsFromBreakdown = (bd?.risks ?? []) as Array<{ severity: string; message: string }>;
+    const riskFlagsFromIntegrity = flags.filter((f) => f.status === 'FAIL' || f.status === 'WARN');
+
+    const allRiskMessages = [
+      ...riskFlagsFromBreakdown.map((r) => ({ severity: r.severity, message: r.message })),
+      ...riskFlagsFromIntegrity.map((f) => ({ severity: f.severity, message: f.note })),
+    ];
+
+    // De-duplicate by message
+    const seen = new Set<string>();
+    const uniqueRisks = allRiskMessages.filter((r) => {
+      if (seen.has(r.message)) return false;
+      seen.add(r.message);
+      return true;
+    });
+
+    const criticalRisks = uniqueRisks
+      .filter((r) => r.severity === 'critical' || r.severity === 'high')
+      .map((r) => ({ message: r.message }));
+    const validationRisks = uniqueRisks
+      .filter((r) => r.severity === 'medium')
+      .map((r) => ({ message: r.message }));
+    const dataQualityRisks = uniqueRisks
+      .filter((r) => r.severity === 'low')
+      .map((r) => ({ message: r.message }));
+
+    // ── Underwriting Readiness ──────────────────────────────────────────────
+    const readiness = {
+      score: ur?.score ?? 0,
+      status,
+      missingMetrics: ur?.missing ?? missing_critical.map((m: string) => m.replace(/_/g, ' ')),
+      weakAreas: ur?.reasons ?? [],
+      summary: ur?.narrative ?? bd?.narrative ?? 'No readiness narrative available.',
     };
 
-    return processedData;
+    // ── Formula Trace ───────────────────────────────────────────────────────
+    // financial_integrity_v1 does not carry formula traces; surface XLSX availability
+    const formulas = bd?.has_xlsx
+      ? {
+          traces: [
+            {
+              metric: 'XLSX Model',
+              formula: 'See XLSX document for cell-level formula tracing',
+              depth: 0,
+              sheets: [],
+              circular: false,
+              confidence: 'Medium' as ConfidenceLevel,
+            },
+          ],
+        }
+      : { traces: [] };
+
+    // ── Raw Fact Explorer ───────────────────────────────────────────────────
+    // financial_breakdown_v1 does not carry raw per-cell facts; surface what we have
+    const rawFactRows = snapshotDefs
+      .filter((d) => d.m?.value != null)
+      .map((d) => ({
+        metric: d.label,
+        period: d.m!.period_label ?? 'Current',
+        value: formatMetricValue(d.m),
+        source: formatSourceKind(d.m!.source_kind ?? ''),
+        sheet: bd?.has_xlsx ? 'XLSX' : null,
+        cell: '',
+        confidence: mapConfidence(d.m!.confidence),
+        formula: null,
+      }));
+
+    // ── Empty-state detection ───────────────────────────────────────────────
+    // True when the compiled report carries no numeric data in any core panel.
+    // This happens when a report was generated before XLSX facts were extracted.
+    const isReportEmpty =
+      sotRows.length === 0 &&
+      snapshotMetrics.length === 0 &&
+      conflicts.length === 0 &&
+      timeItems.length === 0;
+
+    // ── Assemble ────────────────────────────────────────────────────────────
+    return {
+      status,
+      isStale: financialSnapshotStale,
+      isReportEmpty,
+      lastUpdated: fi?.computed_at
+        ? new Date(fi.computed_at).toLocaleString()
+        : 'Unknown',
+
+      actionPanel: {
+        status,
+        criticalActions,
+        validationActions,
+        strengths,
+      },
+
+      summaryMetrics: {
+        completeness,
+        criticalMetrics: missingCount === 0
+          ? 'All present'
+          : `${missingCount} missing`,
+        conflicts: conflictFlags.length,
+        factsAnalyzed,
+      },
+
+      sourceOfTruth: { rows: sotRows },
+
+      conflicts: { conflicts },
+
+      timeAudit: { items: timeItems },
+
+      snapshot: { metrics: snapshotMetrics },
+
+      riskFlags: {
+        critical: criticalRisks,
+        validation: validationRisks,
+        dataQuality: dataQualityRisks,
+      },
+
+      readiness,
+
+      formulas,
+
+      rawFacts: { facts: rawFactRows },
+    };
   }, [financialBreakdownV1, underwritingReadinessV1, financialIntegrityV1, financialSnapshotStale]);
 }

@@ -243,6 +243,35 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
       );
     }
 
+    // ── 2b. Fact-level conflict propagation ──────────────────────────────────
+    // Promote facts whose reconciliation_status='conflict' into integrity flags.
+    // This is ADDITIVE: it catches conflicts the threshold-based check above misses
+    // when conflicting facts have different period_labels (normalized during registration
+    // but stored separately in the DB) or source_kinds outside the WORKBOOK/DECK split.
+    //
+    // Merge rule: FAIL beats WARN for the same flag_key. A pre-computed conflict
+    // signal is authoritative — upgrade any existing WARN to FAIL.
+    const conflictFlags = buildConflictFlagsFromFactStatus(facts);
+    for (const cf of conflictFlags) {
+      const idx = flags.findIndex((f) => f.flag_key === cf.flag_key);
+      if (idx === -1) {
+        flags.push(cf);
+      } else if (cf.status === "FAIL" && flags[idx]!.status !== "FAIL") {
+        // Upgrade: replace the WARN with the richer FAIL flag (carries source_a/source_b).
+        flags[idx] = cf;
+      }
+      // Already FAIL → keep existing (first-writer wins; both are authoritative).
+    }
+
+    // Penalise completeness_score for confirmed conflicts. Each new conflict flag
+    // subtracts 2 points (capped at 20) to surface data-quality risk in scoring.
+    if (conflictFlags.length > 0 && completeness_score !== null) {
+      completeness_score = Math.max(
+        0,
+        completeness_score - Math.min(20, conflictFlags.length * 2),
+      );
+    }
+
     // ── 3. Anomaly checks ───────────────────────────────────────────────────
     const latestFact = (metricKey: string): number | null => {
       const candidates = facts.filter((f) => f.metric_key === metricKey);
@@ -512,6 +541,89 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
 }
 
 // ─── Private utilities ─────────────────────────────────────────────────────────
+
+/**
+ * Extracts cross-source conflict flags from facts whose persisted
+ * `reconciliation_status === 'conflict'`.
+ *
+ * The reconciliation step (buildFinancialFactRegistryV1) runs during extraction
+ * with full in-memory access to all facts and can detect conflicts across
+ * period_label variants (e.g. 'current' vs 'FY2026') and non-standard source
+ * kind combinations that the divergence-based section 2 of the analyzer may miss.
+ *
+ * Design rules:
+ *  - Additive: never removes or changes existing flags.
+ *  - Deterministic: pure function, no side effects.
+ *  - Groups by (metric_key, period_label) to match section 2 bucketing.
+ *  - Always emits FAIL (not WARN) since 'conflict' is pre-confirmed.
+ *  - Gracefully handles the single-sided case (one conflicting fact visible
+ *    in the period_label bucket; the other may have a different stored label).
+ */
+function buildConflictFlagsFromFactStatus(facts: FinancialFactV1[]): IntegrityFlag[] {
+  const conflictFacts = facts.filter((f) => f.reconciliation_status === "conflict");
+  if (conflictFacts.length === 0) return [];
+
+  // Group by (metric_key, period_label) — same bucketing as the divergence check.
+  const byGroup = new Map<string, FinancialFactV1[]>();
+  for (const f of conflictFacts) {
+    const gk = `${f.metric_key}:${f.period_label}`;
+    const arr = byGroup.get(gk) ?? [];
+    arr.push(f);
+    byGroup.set(gk, arr);
+  }
+
+  const flags: IntegrityFlag[] = [];
+
+  for (const [gk, group] of byGroup) {
+    const colonIdx = gk.indexOf(":");
+    const metric_key = gk.slice(0, colonIdx);
+    const period_label = gk.slice(colonIdx + 1);
+
+    // Prefer workbook vs deck pairing for meaningful source_a/source_b.
+    const workbook = group.find((f) => WORKBOOK_SOURCE_KINDS.has(f.source_kind));
+    const deck = group.find((f) => DECK_SOURCE_KINDS.has(f.source_kind));
+    const sourceA = workbook ?? group[0]!;
+    const sourceB = deck ?? group.find((f) => f !== sourceA) ?? null;
+
+    if (sourceB === null) {
+      // Single-sided: only one conflict-tagged fact in this (metric_key, period_label)
+      // bucket. The opposing fact has a different period_label — emit without source_b
+      // so the conflict is not silently dropped.
+      flags.push(
+        makeFlag(
+          `cross_source_discrepancy:${metric_key}`,
+          "FAIL",
+          "high",
+          `${metric_key} is marked conflicting (${sourceA.source_kind}: ${formatValue(sourceA.value)} for period '${period_label}'). A disagreeing value was detected at fact registration time.`,
+          {
+            fact_type: metric_key,
+            source_a: { source_kind: sourceA.source_kind, value: sourceA.value, period_label },
+          },
+        ),
+      );
+      continue;
+    }
+
+    const div = relativeDivergence(sourceA.value, sourceB.value);
+    const pct = Math.round(div * 100);
+
+    flags.push(
+      makeFlag(
+        `cross_source_discrepancy:${metric_key}`,
+        "FAIL",
+        "high",
+        `${metric_key} has confirmed conflicting values for period '${period_label}': ${sourceA.source_kind} ${formatValue(sourceA.value)} vs ${sourceB.source_kind} ${formatValue(sourceB.value)} (${pct}% divergence).`,
+        {
+          fact_type: metric_key,
+          source_a: { source_kind: sourceA.source_kind, value: sourceA.value, period_label },
+          source_b: { source_kind: sourceB.source_kind, value: sourceB.value, period_label },
+        },
+      ),
+    );
+  }
+
+  return flags;
+}
 
 function medianValue(values: number[]): number {
   if (values.length === 0) return 0;

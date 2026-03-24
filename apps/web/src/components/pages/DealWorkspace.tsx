@@ -18,6 +18,7 @@ import { AnalysisTab } from '../workspace/AnalysisTab';
 import { DataTab } from '../workspace/DataTab';
 import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
 import { InvestorInsightsTab } from '../workspace/investor-insights/InvestorInsightsTab';
+import { FinancialAuditTab } from '../workspace/financial-audit/FinancialAuditTab';
 import { InvestmentQuestionsPanel } from '../workspace/InvestmentQuestionsPanel';
 import { adaptReportToInsightsData } from '../../types/investor-insights';
 import { ShareModal } from '../collaboration/ShareModal';
@@ -4669,6 +4670,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const primaryTabs = [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'investor-insights', label: 'Investor Insights', icon: <Lightbulb className="w-4 h-4" /> },
+    { id: 'financial-audit', label: 'Financial Audit', icon: <Clipboard className="w-4 h-4" /> },
     { id: 'analyst', label: 'Graph', icon: <Eye className="w-4 h-4" /> },
     { id: 'analysis', label: 'AI Analysis', icon: <Sparkles className="w-4 h-4" /> },
   ];
@@ -8598,6 +8600,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Investor Insights Tab */}
             {activeTab === 'investor-insights' && (
               <InvestorInsightsTab dealId={dealId || 'demo'} dealName={displayName} darkMode={darkMode} />
+            )}
+
+            {/* Financial Audit Tab */}
+            {activeTab === 'financial-audit' && (
+              <FinancialAuditTab
+                financialBreakdownV1={authoritativeFinancialBreakdownV1}
+                underwritingReadinessV1={authoritativeUnderwritingReadinessV1}
+                financialIntegrityV1={authoritativeFinancialIntegrityV1}
+                financialSnapshotStale={financialSnapshotStale}
+                darkMode={darkMode}
+              />
             )}
 
             {/* Reports Generated Tab */}

@@ -8605,9 +8605,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Financial Audit Tab */}
             {activeTab === 'financial-audit' && (
               <FinancialAuditTab
-                financialBreakdownV1={authoritativeFinancialBreakdownV1}
-                underwritingReadinessV1={authoritativeUnderwritingReadinessV1}
-                financialIntegrityV1={authoritativeFinancialIntegrityV1}
+                financialBreakdownV1={authoritativeFinancialBreakdownV1.value ?? null}
+                underwritingReadinessV1={authoritativeUnderwritingReadinessV1.value ?? null}
+                financialIntegrityV1={authoritativeFinancialIntegrityV1.value ?? null}
                 financialSnapshotStale={financialSnapshotStale}
                 darkMode={darkMode}
               />

@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw, BarChart2 } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw, BarChart2, FileText } from 'lucide-react';
 import { useState } from 'react';
 import { FinancialAuditTabProps } from '../../../types/financialAudit';
 import { useFinancialAuditData } from '../../../hooks/useFinancialAuditData';
@@ -32,7 +32,7 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
 
-  // ── no_data: unified empty state — no panels below ───────────────────────
+  // ── no_data: no financial data of any kind ────────────────────────────────
   if (auditData.dataState === 'no_data') {
     return (
       <div className={`p-8 rounded-xl border flex flex-col items-center gap-4 text-center ${
@@ -55,55 +55,69 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
     );
   }
 
+  // ── deck_only: deck-extracted signals present, not underwriting-grade ──────
+  if (auditData.dataState === 'deck_only') {
+    return (
+      <div className={`p-8 rounded-xl border flex flex-col items-center gap-4 text-center ${
+        darkMode
+          ? 'bg-white/5 border-white/10'
+          : 'bg-gray-50 border-gray-200'
+      }`}>
+        <FileText className={`w-10 h-10 ${darkMode ? 'text-amber-500/60' : 'text-amber-500'}`} />
+        <div>
+          <div className={`text-base font-semibold mb-1 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+            Deck-derived financial signals only
+          </div>
+          <div className={`text-sm leading-relaxed max-w-md ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+            This deal contains financial figures inferred from pitch materials, but no
+            spreadsheet-backed underwriting model has been processed. These signals are
+            not sufficient for financial due diligence. Upload an XLSX financial model
+            and re-run analysis to unlock the full Financial Audit surface.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── stale: report lags newly uploaded facts ────────────────────────────────
+  if (auditData.dataState === 'stale') {
+    return (
+      <div className={`p-8 rounded-xl border flex flex-col items-center gap-4 text-center ${
+        darkMode
+          ? 'bg-amber-500/10 border-amber-500/30'
+          : 'bg-amber-50 border-amber-200'
+      }`}>
+        <AlertTriangle className={`w-10 h-10 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+        <div>
+          <div className={`text-base font-semibold mb-1 ${darkMode ? 'text-amber-300' : 'text-amber-800'}`}>
+            Financial data is out of date
+          </div>
+          <div className={`text-sm leading-relaxed max-w-md ${darkMode ? 'text-amber-400/80' : 'text-amber-700'}`}>
+            New financial facts have been uploaded since the last analysis run. The audit
+            panels are hidden until the report is refreshed to avoid surfacing stale metrics.
+            Re-run analysis to generate an up-to-date Financial Audit.
+          </div>
+          <div className={`text-xs mt-3 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+            Last compiled: {auditData.lastUpdated}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── valid: full audit surface ──────────────────────────────────────────────
   return (
     <div className="space-y-6">
-      
-      {/* Staleness Warning Banner */}
-      {auditData.isStale && (
-        <div className={`p-4 rounded-xl border flex items-center gap-3 ${
-          darkMode 
-            ? 'bg-amber-500/10 border-amber-500/30' 
-            : 'bg-amber-50 border-amber-200'
-        }`}>
-          <AlertTriangle className={`w-5 h-5 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
-          <div className="flex-1">
-            <div className={`text-sm font-medium ${darkMode ? 'text-amber-400' : 'text-amber-700'}`}>
-              Financial data may be outdated
-            </div>
-            <div className={`text-xs mt-0.5 ${darkMode ? 'text-amber-400/70' : 'text-amber-600'}`}>
-              Last updated {auditData.lastUpdated}. Re-run analysis to refresh the financial audit snapshot.
-            </div>
-          </div>
-        </div>
-      )}
 
-      {/* Empty Report State Banner */}
-      {auditData.isReportEmpty && (
-        <div className={`p-5 rounded-xl border flex items-start gap-4 ${
-          darkMode
-            ? 'bg-blue-500/10 border-blue-500/30'
-            : 'bg-blue-50 border-blue-200'
-        }`}>
-          <RefreshCw className={`w-5 h-5 mt-0.5 flex-shrink-0 ${darkMode ? 'text-blue-400' : 'text-blue-600'}`} />
-          <div>
-            <div className={`text-sm font-medium ${darkMode ? 'text-blue-300' : 'text-blue-800'}`}>
-              Report compiled before financial data was available
-            </div>
-            <div className={`text-xs mt-1 leading-relaxed ${darkMode ? 'text-blue-400/70' : 'text-blue-600'}`}>
-              The compiled report does not yet include XLSX or structured financial data. Source of Truth, 
-              Snapshot, and Projection panels will be empty until analysis is re-run. Facts already 
-              extracted may be visible in the Raw Facts panel after a fresh compile.
-            </div>
-          </div>
-        </div>
-      )}
+      {/* 1. Investor Action Panel — valid state only */}
+      {auditData.showDetailedPanels && <InvestorActionPanel {...auditData.actionPanel} darkMode={darkMode} />}
 
-      {/* 1. Investor Action Panel */}
-      <InvestorActionPanel {...auditData.actionPanel} darkMode={darkMode} />
+      {/* 2. Summary Metrics Bar — valid state only */}
+      {auditData.showSummaryMetrics && <SummaryMetricsBar {...auditData.summaryMetrics} darkMode={darkMode} />}
 
-      {/* 2. Summary Metrics Bar */}
-      <SummaryMetricsBar {...auditData.summaryMetrics} darkMode={darkMode} />
-
+      {/* 3–10. Detailed audit panels — valid state only */}
+      {auditData.showDetailedPanels && (
+        <>
       {/* 3. Source of Truth Table */}
       <section>
         <div
@@ -268,6 +282,8 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
           <RawFactExplorer {...auditData.rawFacts} darkMode={darkMode} />
         )}
       </section>
+        </>
+      )}
 
     </div>
   );

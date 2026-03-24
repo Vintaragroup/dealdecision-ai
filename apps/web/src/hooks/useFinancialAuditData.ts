@@ -148,19 +148,70 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
         fi.flags[0]?.flag_key === 'completeness:no_facts');
 
     const hasXlsx = bd?.has_xlsx === true;
-    const hasCurrentState = bd?.has_current_state === true;
-    const hasProjections = bd?.has_projections === true;
+    // Check both the boolean flag AND the actual sub-object, since flags may lag
+    // behind actual data availability in some payload versions.
+    const hasCurrentState =
+      bd?.has_current_state === true ||
+      (bd?.current_state != null && typeof bd.current_state === 'object');
+    const hasProjections =
+      bd?.has_projections === true ||
+      (bd?.projections?.periods?.length ?? 0) > 0;
     const underwritingInsufficient = !ur || ur.status === 'insufficient';
 
-    // no_data: no structured finance inputs; stale: data exists but report lags facts; valid: ready
-    const isNoData =
-      !hasXlsx && !hasCurrentState && !hasProjections && isBaselineIntegrity && underwritingInsufficient;
+    // ── Structured vs deck-only finance ────────────────────────────────────
+    // Only XLSX-backed data is underwriting-grade. Deck-extracted current_state /
+    // projections are NOT sufficient to unlock the full audit surface.
+    const hasStructuredFinancials = hasXlsx;
+    const hasRealCurrentState = hasStructuredFinancials && hasCurrentState;
+    const hasRealProjections = hasStructuredFinancials && hasProjections;
 
-    const dataState: 'no_data' | 'stale' | 'valid' = isNoData
-      ? 'no_data'
-      : financialSnapshotStale
-      ? 'stale'
-      : 'valid';
+    // hasMeaningfulIntegrity: fi is present with real flags or a non-zero completeness score.
+    // Replaces the old isBaselineIntegrity inversion — read positively for clarity.
+    const hasMeaningfulIntegrity =
+      !!fi &&
+      ((fi.flags?.length ?? 0) > 0 || typeof fi.completeness_score === 'number');
+
+    // deck_only: financial objects present but none are spreadsheet-backed
+    const hasDeckOnlyFinancialSignals = !hasStructuredFinancials && (hasCurrentState || hasProjections);
+
+    // valid: XLSX backed + at least one real signal (current state, projections, or meaningful integrity)
+    const isValid =
+      hasStructuredFinancials &&
+      (hasRealCurrentState || hasRealProjections || hasMeaningfulIntegrity) &&
+      !financialSnapshotStale;
+
+    const isDeckOnly = !hasStructuredFinancials && hasDeckOnlyFinancialSignals;
+
+    // no_data: nothing useful present at all
+    const isNoData =
+      !hasStructuredFinancials &&
+      !hasCurrentState &&
+      !hasProjections &&
+      !hasMeaningfulIntegrity;
+
+    // Precedence: stale > valid > deck_only > no_data
+    const dataState: 'no_data' | 'deck_only' | 'stale' | 'valid' =
+      financialSnapshotStale
+        ? 'stale'
+        : isValid
+        ? 'valid'
+        : isDeckOnly
+        ? 'deck_only'
+        : 'no_data';
+
+    // View-model gates — only valid state unlocks the full audit surface
+    const showSummaryMetrics = dataState === 'valid';
+    const showDetailedPanels = dataState === 'valid';
+
+    // Temporary debug log — remove after confirming classification is correct
+    console.log('[FinancialAudit] state', {
+      hasStructuredFinancials,
+      hasCurrentState,
+      hasProjections,
+      hasMeaningfulIntegrity,
+      financialSnapshotStale,
+      dataState,
+    });
 
     // ── Overall status ──────────────────────────────────────────────────────
     const status: AuditStatus = mapReadinessStatus(ur?.status);
@@ -172,8 +223,8 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const missingCount = missing_critical.length + (ur?.missing?.length ?? 0);
     const criticalMetricsTotal = missingCount + (ur?.reasons?.length ?? 0) + 5; // denominator estimate
     const criticalPresent = Math.max(0, criticalMetricsTotal - missingCount);
-    // factsAnalyzed: don't count the synthetic baseline flag as a real analyzed fact
-    const factsAnalyzed = isBaselineIntegrity ? 0 : (flags.length > 0 ? flags.length : (bd ? 1 : 0));
+    // factsAnalyzed: zero for no_data and deck_only — non-XLSX signals are not auditable facts
+    const factsAnalyzed = (isBaselineIntegrity || isDeckOnly) ? 0 : (flags.length > 0 ? flags.length : (bd ? 1 : 0));
 
     // ── Investor Action Panel ───────────────────────────────────────────────
     const criticalActions = [
@@ -419,6 +470,11 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     return {
       status,
       dataState,
+      hasStructuredFinancials,
+      hasRealCurrentState,
+      hasRealProjections,
+      showSummaryMetrics,
+      showDetailedPanels,
       isStale: financialSnapshotStale,
       isReportEmpty,
       lastUpdated: fi?.computed_at
@@ -436,6 +492,8 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
         completeness,
         criticalMetrics: isNoData
           ? 'No data'
+          : isDeckOnly
+          ? 'Deck only'
           : missingCount === 0
           ? 'All present'
           : `${missingCount} missing`,

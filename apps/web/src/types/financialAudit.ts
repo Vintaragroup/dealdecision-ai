@@ -151,11 +151,24 @@ export interface FinancialAuditTabProps {
 // Processed Audit Data (output from hook)
 export interface ProcessedAuditData {
   status: AuditStatus;
-  /** Canonical finance-specific data state. Controls which UI sections render. */
-  dataState: 'no_data' | 'stale' | 'valid';
+  /** Canonical finance-specific data state. Controls which UI sections render.
+   *  - valid:     XLSX-backed structured finance present, not stale
+   *  - stale:     Finance data exists but report lags newly uploaded facts
+   *  - deck_only: Financial signals present but deck-derived only (not underwriting-grade)
+   *  - no_data:   No financial data of any kind
+   */
+  dataState: 'no_data' | 'deck_only' | 'stale' | 'valid';
   isStale: boolean;
   /** True when the compiled report has no numeric data in any core panel — typically because the report predates XLSX extraction */
   isReportEmpty: boolean;
+  /** True only when XLSX-backed structured financials are present */
+  hasStructuredFinancials: boolean;
+  hasRealCurrentState: boolean;
+  hasRealProjections: boolean;
+  /** Gates the Summary Metrics Bar — only valid when dataState === 'valid' */
+  showSummaryMetrics: boolean;
+  /** Gates all detailed audit panels — only valid when dataState === 'valid' */
+  showDetailedPanels: boolean;
   lastUpdated: string;
   actionPanel: InvestorActionPanelProps;
   summaryMetrics: SummaryMetricsBarProps;

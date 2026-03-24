@@ -151,6 +151,8 @@ export interface FinancialAuditTabProps {
 // Processed Audit Data (output from hook)
 export interface ProcessedAuditData {
   status: AuditStatus;
+  /** Canonical finance-specific data state. Controls which UI sections render. */
+  dataState: 'no_data' | 'stale' | 'valid';
   isStale: boolean;
   /** True when the compiled report has no numeric data in any core panel — typically because the report predates XLSX extraction */
   isReportEmpty: boolean;

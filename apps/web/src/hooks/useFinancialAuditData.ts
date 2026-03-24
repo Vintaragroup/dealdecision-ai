@@ -137,6 +137,31 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const missing_supplementary: string[] = fi?.missing_supplementary ?? [];
     const completeness: number = fi?.completeness_score ?? 0;
 
+    // ── Canonical data-state derivation ────────────────────────────────────
+    // Baseline integrity: fi is null OR contains only the synthetic "no_facts" flag
+    // produced by buildEmptyFinancialIntegrityV1() when no facts exist.
+    const isBaselineIntegrity =
+      !fi ||
+      (Number(fi.completeness_score) === 0 &&
+        Array.isArray(fi.flags) &&
+        fi.flags.length === 1 &&
+        fi.flags[0]?.flag_key === 'completeness:no_facts');
+
+    const hasXlsx = bd?.has_xlsx === true;
+    const hasCurrentState = bd?.has_current_state === true;
+    const hasProjections = bd?.has_projections === true;
+    const underwritingInsufficient = !ur || ur.status === 'insufficient';
+
+    // no_data: no structured finance inputs; stale: data exists but report lags facts; valid: ready
+    const isNoData =
+      !hasXlsx && !hasCurrentState && !hasProjections && isBaselineIntegrity && underwritingInsufficient;
+
+    const dataState: 'no_data' | 'stale' | 'valid' = isNoData
+      ? 'no_data'
+      : financialSnapshotStale
+      ? 'stale'
+      : 'valid';
+
     // ── Overall status ──────────────────────────────────────────────────────
     const status: AuditStatus = mapReadinessStatus(ur?.status);
 
@@ -147,7 +172,8 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const missingCount = missing_critical.length + (ur?.missing?.length ?? 0);
     const criticalMetricsTotal = missingCount + (ur?.reasons?.length ?? 0) + 5; // denominator estimate
     const criticalPresent = Math.max(0, criticalMetricsTotal - missingCount);
-    const factsAnalyzed = flags.length > 0 ? flags.length : (bd ? 1 : 0);
+    // factsAnalyzed: don't count the synthetic baseline flag as a real analyzed fact
+    const factsAnalyzed = isBaselineIntegrity ? 0 : (flags.length > 0 ? flags.length : (bd ? 1 : 0));
 
     // ── Investor Action Panel ───────────────────────────────────────────────
     const criticalActions = [
@@ -381,8 +407,8 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
       }));
 
     // ── Empty-state detection ───────────────────────────────────────────────
-    // True when the compiled report carries no numeric data in any core panel.
-    // This happens when a report was generated before XLSX facts were extracted.
+    // isReportEmpty uses structural signals (row counts) as a UI-layer hint about
+    // whether meaningful panels can be rendered. dataState is the authoritative gate.
     const isReportEmpty =
       sotRows.length === 0 &&
       snapshotMetrics.length === 0 &&
@@ -392,6 +418,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     // ── Assemble ────────────────────────────────────────────────────────────
     return {
       status,
+      dataState,
       isStale: financialSnapshotStale,
       isReportEmpty,
       lastUpdated: fi?.computed_at
@@ -407,7 +434,9 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
 
       summaryMetrics: {
         completeness,
-        criticalMetrics: missingCount === 0
+        criticalMetrics: isNoData
+          ? 'No data'
+          : missingCount === 0
           ? 'All present'
           : `${missingCount} missing`,
         conflicts: conflictFlags.length,

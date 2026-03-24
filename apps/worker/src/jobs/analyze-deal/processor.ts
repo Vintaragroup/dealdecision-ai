@@ -1484,6 +1484,8 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 					? compileDIOToReportWithPromotedFacts(result.dio as any, { promotedFacts })
 					: compileDIOToReport(result.dio as any);
 
+				// Explicitly stamp updated_at so the staleness detector can use DIO.updated_at
+				// as the authoritative freshness anchor for the financial snapshot.
 				const persisted = await pool.query<{ persisted: boolean }>(
 					`UPDATE deal_intelligence_objects
 						SET dio_data = jsonb_set(
@@ -1491,7 +1493,8 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 							'{report}',
 							$1::jsonb,
 							true
-						)
+						),
+						updated_at = now()
 					 WHERE dio_id = $2::uuid
 					 RETURNING true as persisted`,
 					[JSON.stringify(compiledReport), dioIdToUpdate]
@@ -1506,6 +1509,18 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						analysis_version: (result.storage_result as any)?.version ?? null,
 						row_count: persisted.rowCount,
 						report_version: (compiledReport as any)?.version ?? null,
+						ts: new Date().toISOString(),
+					})
+				);
+				console.log(
+					JSON.stringify({
+						// Stale detector reads DIO.updated_at as the freshness anchor.
+						// Stamping now() here marks financial snapshot as fresh for this run.
+						event: "FINANCIAL_SNAPSHOT_FRESHNESS_UPDATED",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						dio_id: dioIdToUpdate,
+						analysis_version: (result.storage_result as any)?.version ?? null,
 						ts: new Date().toISOString(),
 					})
 				);

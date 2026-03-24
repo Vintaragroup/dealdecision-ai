@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw, BarChart2 } from 'lucide-react';
 import { useState } from 'react';
 import { FinancialAuditTabProps } from '../../../types/financialAudit';
 import { useFinancialAuditData } from '../../../hooks/useFinancialAuditData';
@@ -31,6 +31,29 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
   const toggleSection = (section: string) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
+
+  // ── no_data: unified empty state — no panels below ───────────────────────
+  if (auditData.dataState === 'no_data') {
+    return (
+      <div className={`p-8 rounded-xl border flex flex-col items-center gap-4 text-center ${
+        darkMode
+          ? 'bg-white/5 border-white/10'
+          : 'bg-gray-50 border-gray-200'
+      }`}>
+        <BarChart2 className={`w-10 h-10 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`} />
+        <div>
+          <div className={`text-base font-semibold mb-1 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+            No financial data available
+          </div>
+          <div className={`text-sm leading-relaxed max-w-md ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+            This deal has no verified structured financial data yet. Structured sources (XLSX model,
+            cap table, or validated extraction) must be present before this tab can surface meaningful
+            results. Re-run analysis once financial documents are uploaded.
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

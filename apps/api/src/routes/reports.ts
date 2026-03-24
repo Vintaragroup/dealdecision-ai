@@ -168,24 +168,70 @@ async function upsertIngestionReportSummaryByDealAndVersion(params: {
  *
  * Fail-open: always returns false on any error to never break /report.
  */
+/**
+ * Computes whether the financial snapshot embedded in the compiled report is stale
+ * relative to the latest financial_facts_v1 data for the deal.
+ *
+ * Freshness anchor: deal_intelligence_objects.updated_at (the canonical artifact that
+ * analyze_deal refreshes). NOT ingestion_reports.created_at — that column is set at
+ * first cache insert and is never touched by analyze_deal, which would cause a permanent
+ * stale signal and an infinite requeue loop.
+ *
+ * Rule: stale = max(financial_facts_v1.created_at) > deal_intelligence_objects.updated_at
+ *
+ * @param opts.dioUpdatedAt  Pass the DIO row's updated_at when already in scope to skip
+ *   the DB lookup. When absent, the function falls back to querying DIO directly.
+ */
 async function computeReportFinancialSnapshotStale(
   pool: Pool,
   dealId: string,
   analysisVersion: number,
-): Promise<boolean> {
+  opts?: { dioUpdatedAt?: string | null },
+): Promise<{ stale: boolean; max_fact_ts: string | null; report_ts: string; freshness_basis: string }> {
+  const FRESH = { stale: false, max_fact_ts: null as string | null, report_ts: '', freshness_basis: 'none' };
   try {
-    const [maxFactTs, reportRow] = await Promise.all([
-      getFinancialFactsMaxTimestamp(pool, dealId),
-      pool.query<{ created_at: Date | null }>(
-        `SELECT created_at FROM ingestion_reports WHERE deal_id = $1 AND analysis_version = $2 LIMIT 1`,
+    const maxFactTs = await getFinancialFactsMaxTimestamp(pool, dealId);
+
+    // Determine freshness anchor from DIO.updated_at.
+    // Prefer caller-supplied value to avoid an extra DB round-trip on the hot /report path.
+    let freshnessAnchor: Date | null = null;
+    let freshnessBasis = 'none';
+
+    const provided = opts?.dioUpdatedAt;
+    if (provided != null) {
+      const d = new Date(provided);
+      if (!isNaN(d.getTime())) {
+        freshnessAnchor = d;
+        freshnessBasis = 'dio_updated_at_caller';
+      }
+    }
+
+    if (!freshnessAnchor) {
+      // Fallback: query DIO for updated_at (covers call sites that don't yet have a DIO row in scope).
+      const dioRow = await pool.query<{ updated_at: string | null }>(
+        `SELECT updated_at
+           FROM deal_intelligence_objects
+          WHERE deal_id = $1::uuid AND analysis_version = $2::int
+          ORDER BY updated_at DESC NULLS LAST, dio_id DESC
+          LIMIT 1`,
         [dealId, analysisVersion],
-      ),
-    ]);
-    const reportCreatedAt = reportRow.rows?.[0]?.created_at ?? null;
-    if (!reportCreatedAt) return false;
-    return detectFinancialSnapshotStaleness({ maxFactCreatedAt: maxFactTs, reportCreatedAt }).stale;
+      );
+      const rawAt = dioRow.rows?.[0]?.updated_at ?? null;
+      if (rawAt) {
+        const d = new Date(rawAt);
+        if (!isNaN(d.getTime())) {
+          freshnessAnchor = d;
+          freshnessBasis = 'dio_updated_at_queried';
+        }
+      }
+    }
+
+    if (!freshnessAnchor) return FRESH;
+
+    const result = detectFinancialSnapshotStaleness({ maxFactCreatedAt: maxFactTs, reportCreatedAt: freshnessAnchor });
+    return { ...result, freshness_basis: freshnessBasis };
   } catch {
-    return false; // fail-open: never break /report for a staleness check
+    return FRESH; // fail-open: never break /report for a staleness check
   }
 }
 
@@ -3095,15 +3141,84 @@ export async function registerReportRoutes(
           if (cached && typeof cached === 'object') {
             await upsertIngestionReportSummaryByDealAndVersion({ pool, dealId: deal_id, analysisVersion: versionNum, summary: cached, documentIds: [] });
             // Best-effort: inject live staleness flag. Never persisted — always computed fresh on cache-hit.
+            // Uses DIO.updated_at (from row) as freshness anchor — the artifact analyze_deal actually refreshes.
             let financial_snapshot_stale = false;
-            try { financial_snapshot_stale = await computeReportFinancialSnapshotStale(pool, deal_id, versionNum); } catch { /* fail-open */ }
-            // Lazy recompile: when financial_facts_v1 are newer than the cached report, trigger a
+            let _stale_max_fact_ts: string | null = null;
+            let _stale_report_ts = '';
+            let _stale_freshness_basis = 'none';
+            try {
+              const _sr = await computeReportFinancialSnapshotStale(pool, deal_id, versionNum, { dioUpdatedAt: row.updated_at });
+              financial_snapshot_stale = _sr.stale;
+              _stale_max_fact_ts = _sr.max_fact_ts;
+              _stale_report_ts = _sr.report_ts;
+              _stale_freshness_basis = _sr.freshness_basis;
+            } catch { /* fail-open */ }
+            // Lazy recompile: when financial_facts_v1 are newer than the DIO's updated_at, trigger a
             // fresh analyze_deal job in the background. Idempotent via dedupe — never blocks response.
             if (financial_snapshot_stale) {
-              void enqueueJob(
-                { deal_id: deal_id, type: 'analyze_deal', payload: { reason: 'financial_snapshot_stale' } },
-                { dedupe: { by: 'deal' } },
-              ).catch(() => { /* fail-open: never break /report for a recompile trigger */ });
+              // Fingerprint guard: skip if a recent analyze_deal job for this deal was already created
+              // AFTER the stale watermark. Prevents re-enqueueing when a completed job already covers
+              // the same facts — the complement to the running/queued dedupe.
+              let fingerprintBlocked = false;
+              if (_stale_max_fact_ts) {
+                try {
+                  const fpCheck = await pool.query(
+                    `SELECT 1 FROM jobs
+                      WHERE deal_id = $1
+                        AND type = 'analyze_deal'
+                        AND created_at > $2::timestamptz
+                        AND created_at >= (now() - interval '60 minutes')
+                      LIMIT 1`,
+                    [deal_id, _stale_max_fact_ts],
+                  );
+                  if ((fpCheck.rowCount ?? 0) > 0) {
+                    fingerprintBlocked = true;
+                    request.log.info(
+                      {
+                        event: 'STALE_REQUEUE_SKIPPED_FINGERPRINT',
+                        deal_id,
+                        analysis_version: versionNum,
+                        max_fact_ts: _stale_max_fact_ts,
+                        freshness_basis: _stale_freshness_basis,
+                        reason: 'recent_analyze_deal_covers_watermark',
+                      },
+                      'stale requeue skipped: recent analyze_deal already covers stale watermark',
+                    );
+                  }
+                } catch { /* fail-open: don't block on fingerprint check */ }
+              }
+              if (!fingerprintBlocked) {
+                request.log.info(
+                  {
+                    event: 'STALE_REQUEUE_TRIGGERED',
+                    deal_id,
+                    analysis_version: versionNum,
+                    max_fact_ts: _stale_max_fact_ts,
+                    freshness_basis: _stale_freshness_basis,
+                    freshness_anchor_ts: _stale_report_ts,
+                    reason: 'financial_snapshot_stale',
+                    dedupe_key: `analyze_deal:deal:${deal_id}`,
+                    stale_facts_watermark: _stale_max_fact_ts,
+                  },
+                  'lazy recompile enqueued: financial snapshot stale',
+                );
+                void enqueueJob(
+                  { deal_id: deal_id, type: 'analyze_deal', payload: { reason: 'financial_snapshot_stale', stale_facts_watermark: _stale_max_fact_ts } },
+                  { dedupe: { by: 'deal' } },
+                ).catch(() => { /* fail-open: never break /report for a recompile trigger */ });
+              }
+            } else if (_stale_max_fact_ts) {
+              request.log.debug(
+                {
+                  event: 'STALE_NOT_TRIGGERED',
+                  deal_id,
+                  analysis_version: versionNum,
+                  max_fact_ts: _stale_max_fact_ts,
+                  freshness_basis: _stale_freshness_basis,
+                  freshness_anchor_ts: _stale_report_ts,
+                },
+                'financial snapshot not stale: DIO covers current facts',
+              );
             }
             return reply.status(200).send({ ...cached, financial_snapshot_stale });
           }
@@ -3353,7 +3468,7 @@ export async function registerReportRoutes(
 
         // Best-effort: inject live staleness flag AFTER upsert (so ingestion_reports row exists).
         // Fresh compiles load current facts → expected false; detects edge cases where facts arrived mid-compile.
-        try { payload.financial_snapshot_stale = await computeReportFinancialSnapshotStale(pool, deal_id, versionNum); } catch { payload.financial_snapshot_stale = false; }
+        try { payload.financial_snapshot_stale = (await computeReportFinancialSnapshotStale(pool, deal_id, versionNum, { dioUpdatedAt: row.updated_at })).stale; } catch { payload.financial_snapshot_stale = false; }
 
         return reply.status(200).send(payload);
         

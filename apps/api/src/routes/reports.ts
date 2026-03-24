@@ -22,7 +22,8 @@ import { buildOverviewPrompt, degradeOverviewV1 } from '@dealdecision/core';
 import { buildInvestmentAnalysisOverviewPrompt, LlmOverviewV1CitationSchema, LlmOverviewV1Schema } from '@dealdecision/core';
 import { loadPromotedFactsForDeal } from '../lib/promoted-facts';
 import { derivePromotedFactsFromDpuForDeal } from '../lib/promoted-facts-from-dpu';
-import { getFinancialFactsForReport } from './financial-facts';
+import { getFinancialFactsForReport, getFinancialFactsMaxTimestamp } from './financial-facts';
+import { detectFinancialSnapshotStaleness } from '@dealdecision/core';
 import { compileDealSummaryV1 } from '../lib/deal-summary-v1';
 import { getSegmentedNodesForDeal } from '../lib/segmented-nodes-for-deal';
 import { inferDeckArchetypeV1 } from '../lib/deck-archetypes';
@@ -154,6 +155,36 @@ async function upsertIngestionReportSummaryByDealAndVersion(params: {
   } catch (err) {
     void err;
     return null;
+  }
+}
+
+/**
+ * Computes whether the compiled financial snapshot (financial_breakdown_v1,
+ * underwriting_readiness_v1) stored in ingestion_reports is stale relative
+ * to the financial_facts_v1 data for the deal.
+ *
+ * Rule: stale = max(financial_facts_v1.created_at) > ingestion_reports.created_at
+ *
+ * Fail-open: always returns false on any error to never break /report.
+ */
+async function computeReportFinancialSnapshotStale(
+  pool: Pool,
+  dealId: string,
+  analysisVersion: number,
+): Promise<boolean> {
+  try {
+    const [maxFactTs, reportRow] = await Promise.all([
+      getFinancialFactsMaxTimestamp(pool, dealId),
+      pool.query<{ created_at: Date | null }>(
+        `SELECT created_at FROM ingestion_reports WHERE deal_id = $1 AND analysis_version = $2 LIMIT 1`,
+        [dealId, analysisVersion],
+      ),
+    ]);
+    const reportCreatedAt = reportRow.rows?.[0]?.created_at ?? null;
+    if (!reportCreatedAt) return false;
+    return detectFinancialSnapshotStaleness({ maxFactCreatedAt: maxFactTs, reportCreatedAt }).stale;
+  } catch {
+    return false; // fail-open: never break /report for a staleness check
   }
 }
 
@@ -3062,7 +3093,10 @@ export async function registerReportRoutes(
           const cached = await readIngestionReportSummaryByDealAndVersion(pool, deal_id, versionNum);
           if (cached && typeof cached === 'object') {
             await upsertIngestionReportSummaryByDealAndVersion({ pool, dealId: deal_id, analysisVersion: versionNum, summary: cached, documentIds: [] });
-            return reply.status(200).send(cached);
+            // Best-effort: inject live staleness flag. Never persisted — always computed fresh on cache-hit.
+            let financial_snapshot_stale = false;
+            try { financial_snapshot_stale = await computeReportFinancialSnapshotStale(pool, deal_id, versionNum); } catch { /* fail-open */ }
+            return reply.status(200).send({ ...cached, financial_snapshot_stale });
           }
         }
 
@@ -3307,6 +3341,10 @@ export async function registerReportRoutes(
         if (!narrateEnabled && Number.isFinite(versionNum) && versionNum >= 1) {
           await upsertIngestionReportSummaryByDealAndVersion({ pool, dealId: deal_id, analysisVersion: versionNum, summary: payload, documentIds: [] });
         }
+
+        // Best-effort: inject live staleness flag AFTER upsert (so ingestion_reports row exists).
+        // Fresh compiles load current facts → expected false; detects edge cases where facts arrived mid-compile.
+        try { payload.financial_snapshot_stale = await computeReportFinancialSnapshotStale(pool, deal_id, versionNum); } catch { payload.financial_snapshot_stale = false; }
 
         return reply.status(200).send(payload);
         

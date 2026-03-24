@@ -191,6 +191,28 @@ export async function getFinancialFactsForReport(
 }
 
 /**
+ * Returns the max created_at timestamp across all financial_facts_v1 rows for a deal.
+ * Returns null when no facts exist or the table is absent.
+ * Used by the staleness detector to determine if facts are newer than the compiled report.
+ */
+export async function getFinancialFactsMaxTimestamp(
+  pool: PoolLike,
+  dealId: string
+): Promise<Date | null> {
+  try {
+    const tableExists = await hasFinancialFactsTable(pool);
+    if (!tableExists) return null;
+    const r = await pool.query<{ max_ts: Date | null }>(
+      `SELECT max(created_at) AS max_ts FROM financial_facts_v1 WHERE deal_id = $1`,
+      [dealId],
+    );
+    return r.rows?.[0]?.max_ts ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Build a FinancialCoverageV1 for a deal.
  * Fetches all facts then runs buildFinancialCoverageV1 (pure, no LLM).
  * Returns null when the table doesn't exist or facts are absent.

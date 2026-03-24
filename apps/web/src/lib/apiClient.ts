@@ -1518,6 +1518,10 @@ export type DealReportEnvelope =
       version: number;
       artifact: unknown;
       report?: DealReport | null;
+      /** True when financial_facts_v1 rows are newer than the compiled report snapshot.
+       *  The compiled financial_breakdown_v1 / underwriting_readiness_v1 may not reflect
+       *  the latest extracted facts. Re-running analysis will refresh the snapshot. */
+      financial_snapshot_stale?: boolean;
       // Backward compat: API may also include report fields at top-level.
       [key: string]: unknown;
     }

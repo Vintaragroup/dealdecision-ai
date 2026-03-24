@@ -151,6 +151,8 @@ export * from "./services/purge-deal-cascade";
 
 // Reports
 export { compileDIOToReport, compileDIOToReportWithPromotedFacts } from "./reports/compiler-simple";
+export { detectFinancialSnapshotStaleness } from "./reports/financial-snapshot-staleness";
+export type { FinancialSnapshotStalenessResult } from "./reports/financial-snapshot-staleness";
 export { buildDeterministicDealSummaryV1FromStructuredSummary } from "./reports/deal-summary-v1-deterministic";
 export { buildInvestmentAnalysisOverviewV2 } from "./reports/investment-analysis-overview-v2";
 export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";

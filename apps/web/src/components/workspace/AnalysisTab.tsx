@@ -48,9 +48,11 @@ interface AnalysisTabProps {
   financialBreakdownV1?: FinancialBreakdownV1Like | null;
   /** Underwriting readiness v1: status, score (0-100), gaps, narrative. */
   underwritingReadinessV1?: UnderwritingReadinessV1Like | null;
+  /** True when financial_facts_v1 rows are newer than the compiled breakdown/readiness snapshot. */
+  financialSnapshotStale?: boolean;
 }
 
-export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnalyzing = false, financialIntegrityV1, financialBreakdownV1, underwritingReadinessV1 }: AnalysisTabProps) {
+export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnalyzing = false, financialIntegrityV1, financialBreakdownV1, underwritingReadinessV1, financialSnapshotStale = false }: AnalysisTabProps) {
   const [analysis, setAnalysis] = useState<DealAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
 
@@ -558,6 +560,7 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnaly
             darkMode={darkMode}
             breakdown={financialBreakdownV1 ?? null}
             readiness={underwritingReadinessV1 ?? null}
+            snapshotStale={financialSnapshotStale}
           />
         )}
         {/* Step 1: Config pre-screen */}
@@ -802,10 +805,12 @@ function FinancialBreakdownPanel({
   darkMode,
   breakdown,
   readiness,
+  snapshotStale = false,
 }: {
   darkMode: boolean;
   breakdown: FinancialBreakdownV1Like | null;
   readiness: UnderwritingReadinessV1Like | null;
+  snapshotStale?: boolean;
 }) {
   const cardBase = `rounded-lg border p-4 mt-4 ${
     darkMode ? 'border-white/10 bg-white/3' : 'border-gray-200 bg-gray-50'
@@ -846,6 +851,25 @@ function FinancialBreakdownPanel({
 
   return (
     <div className={cardBase} data-testid="financial-breakdown-panel">
+      {/* ── Stale snapshot warning ── */}
+      {snapshotStale && (
+        <div
+          className={`flex items-start gap-2 rounded border px-3 py-2 mb-3 text-xs ${
+            darkMode
+              ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+              : 'border-amber-300 bg-amber-50 text-amber-800'
+          }`}
+          data-testid="financial-snapshot-stale-banner"
+          role="alert"
+        >
+          <span className="mt-0.5 shrink-0">⚠</span>
+          <span>
+            <strong>Financial snapshot may be outdated.</strong> Newer data was extracted after this
+            report was compiled — the financial model and underwriting readiness shown below may not
+            reflect the latest analysis. Re-run analysis to refresh.
+          </span>
+        </div>
+      )}
       {/* ── Section: Underwriting Readiness ── */}
       {readiness && (
         <>

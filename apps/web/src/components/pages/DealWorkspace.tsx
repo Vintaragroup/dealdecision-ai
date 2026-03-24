@@ -2352,6 +2352,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return selectAuthoritativeUnderwritingReadinessV1((reportFromApi as any) ?? null);
   }, [reportFromApi]);
 
+  // Live staleness flag: true when financial_facts_v1 rows are newer than the compiled report snapshot.
+  // Sourced from the envelope top-level (not from report), since it is computed fresh on every /report request.
+  const financialSnapshotStale = useMemo(() => {
+    return (reportEnvelope as any)?.financial_snapshot_stale === true;
+  }, [reportEnvelope]);
+
   const authoritativeProductTextV1 = authoritativeProductSummaryV1.value ?? '';
   const authoritativeMarketTextV1 = authoritativeMarketSummaryV1.value ?? '';
 
@@ -8509,6 +8515,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 financialIntegrityV1={authoritativeFinancialIntegrityV1.value ?? null}
                 financialBreakdownV1={authoritativeFinancialBreakdownV1.value ?? null}
                 underwritingReadinessV1={authoritativeUnderwritingReadinessV1.value ?? null}
+                financialSnapshotStale={financialSnapshotStale}
               />
             )}
 

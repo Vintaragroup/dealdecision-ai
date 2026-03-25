@@ -10,7 +10,8 @@ export function SummaryMetricsBar({
   completeness,
   criticalMetrics,
   conflicts,
-  factsAnalyzed,
+  extractedFactsCount,
+  validatedFactsCount,
   darkMode = true
 }: Props) {
   return (
@@ -64,13 +65,35 @@ export function SummaryMetricsBar({
 
         <div className={`w-px h-12 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
 
-        {/* Facts Analyzed */}
+        {/* Extracted Facts */}
         <div>
           <div className={`text-xs mb-1.5 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-            Facts Analyzed
+            Extracted Facts
           </div>
           <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-            {factsAnalyzed} <span className="font-normal">facts</span>
+            {extractedFactsCount != null
+              ? <>{extractedFactsCount} <span className="font-normal">facts</span></>
+              : <span className={`font-normal ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>—</span>
+            }
+          </div>
+        </div>
+
+        <div className={`w-px h-12 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
+
+        {/* Validated Facts */}
+        <div>
+          <div className={`text-xs mb-1.5 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
+            Validated Facts
+          </div>
+          <div className={`text-sm font-bold ${
+            validatedFactsCount != null && validatedFactsCount > 0
+              ? (darkMode ? 'text-emerald-400' : 'text-emerald-600')
+              : (darkMode ? 'text-gray-500' : 'text-gray-400')
+          }`}>
+            {validatedFactsCount != null
+              ? <>{validatedFactsCount} <span className="font-normal">passed</span></>
+              : <span className="font-normal">—</span>
+            }
           </div>
         </div>
       </div>

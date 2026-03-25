@@ -87,9 +87,25 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
           <Info className="w-4 h-4 mt-0.5 shrink-0" />
           <div className="text-sm">
             <span className="font-semibold">Non-structured financial data.</span>{' '}
-            Financial data has been extracted from non-structured sources such as deck slides or PDF
-            materials. Coverage may be incomplete and values may require validation against a
-            spreadsheet-backed financial model. Upload an XLSX model to unlock full audit coverage.
+            Financial data was extracted from non-structured sources such as decks or PDF materials.
+            Coverage may be incomplete and some values may require spreadsheet-backed confirmation.
+            Upload an XLSX model to unlock full audit coverage.
+          </div>
+        </div>
+      )}
+
+      {/* Integrity-incomplete banner (shown on any state when integrity hasn't run) */}
+      {auditData.isIntegrityIncomplete && auditData.hasAnyFinancialData && !auditData.showLimitedDataWarning && (
+        <div className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${
+          darkMode
+            ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-300'
+            : 'bg-yellow-50 border-yellow-200 text-yellow-800'
+        }`}>
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <div className="text-sm">
+            <span className="font-semibold">Integrity validation incomplete.</span>{' '}
+            Financial data has been extracted, but validation is incomplete.
+            Review source-linked values carefully before relying on them in an investment decision.
           </div>
         </div>
       )}

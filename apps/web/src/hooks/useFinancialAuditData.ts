@@ -230,7 +230,29 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const showDetailedPanels = showCoveragePanels;
 
     // ── Overall status ──────────────────────────────────────────────────────
-    const status: AuditStatus = mapReadinessStatus(ur?.status);
+    // Block READY/PARTIAL when integrity has not run or has no facts to analyse.
+    // This prevents the tab showing READY while completeness_score = 0 or has_facts = false.
+    const _rawStatus: AuditStatus = mapReadinessStatus(ur?.status);
+    const hasFacts = fi?.has_facts === true || (fi?.completeness_score != null && fi.completeness_score > 0);
+    // Only flag integrity-incomplete when data IS present but validation hasn't run.
+    // No-data case is handled separately — it should not trigger this flag.
+    const isIntegrityIncomplete = hasAnyFinancialData && (isBaselineIntegrity || !hasFacts);
+    const status: AuditStatus =
+      !hasAnyFinancialData
+        ? 'WARNING'
+        : isIntegrityIncomplete && _rawStatus !== 'WARNING'
+        ? 'PARTIAL'  // downgrade READY → PARTIAL when integrity hasn't run
+        : _rawStatus;
+
+    // ── Visible status label (investor-safe display string) ─────────────────
+    const visibleStatusLabel: string =
+      !hasAnyFinancialData
+        ? 'No Financial Data'
+        : isIntegrityIncomplete
+        ? 'Data Extracted — Validation Incomplete'
+        : status === 'PARTIAL' || status === 'WARNING'
+        ? 'Partially Ready'
+        : 'Ready for Investment Review';
 
     // ── Summary Metrics ─────────────────────────────────────────────────────
     const conflictFlags = flags.filter(
@@ -239,14 +261,28 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const missingCount = missing_critical.length + (ur?.missing?.length ?? 0);
     const criticalMetricsTotal = missingCount + (ur?.reasons?.length ?? 0) + 5; // denominator estimate
     const criticalPresent = Math.max(0, criticalMetricsTotal - missingCount);
-    // factsAnalyzed: count extracted facts for any non-no_data state
-    const factsAnalyzed = isNoData
-      ? 0
-      : flags.length > 0
-      ? flags.length
-      : bd != null
-      ? 1
-      : 0;
+
+    // extractedFactsCount: how many distinct financial signals exist in the payload
+    // Counts: SoT row candidates + projection periods as a proxy for raw extracted facts.
+    const _sotCandidates = [
+      bd?.current_state?.revenue,
+      bd?.current_state?.burn_rate,
+      bd?.current_state?.cash,
+      bd?.current_state?.runway_months,
+      bd?.current_state?.gross_margin_pct,
+    ].filter((m: any) => m?.value != null).length;
+    const _projPeriods = (bd?.projections?.periods ?? []).length;
+    const extractedFactsCount: number | null = isNoData
+      ? null
+      : Math.max(_sotCandidates + _projPeriods, flags.length > 0 ? flags.length : 0) || null;
+
+    // validatedFactsCount: facts with integrity PASS status
+    const validatedFactsCount: number | null = !hasAnyFinancialData || isIntegrityIncomplete
+      ? null
+      : flags.filter((f) => f.status === 'PASS').length || null;
+
+    // factsAnalyzed: single number for summary bar (use extracted count, fall back to 1 when data present)
+    const factsAnalyzed = extractedFactsCount ?? (hasAnyFinancialData ? 1 : 0);
 
     // ── Investor Action Panel ───────────────────────────────────────────────
     const criticalActions = [
@@ -262,6 +298,10 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     ];
 
     const validationActions = [
+      // Integrity-incomplete warning: data detected but validation has not run
+      ...(hasAnyFinancialData && isIntegrityIncomplete
+        ? [{ text: 'Financial data has been extracted, but integrity validation is incomplete. Review source-linked values carefully before relying on them in an investment decision.', severity: 'warning' as const }]
+        : []),
       // Medium severity warnings
       ...flags
         .filter((f) => f.severity === 'medium' && f.status === 'WARN')
@@ -506,6 +546,10 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
       showStaleWarning,
       showSummaryMetrics,
       showDetailedPanels,
+      isIntegrityIncomplete,
+      extractedFactsCount,
+      validatedFactsCount,
+      visibleStatusLabel,
       isStale: financialSnapshotStale,
       isReportEmpty,
       lastUpdated: fi?.computed_at
@@ -523,13 +567,15 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
         completeness,
         criticalMetrics: isNoData
           ? 'No data'
-          : dataState === 'limited_data'
-          ? 'Non-structured'
+          : isIntegrityIncomplete
+          ? 'Validation incomplete'
           : missingCount === 0
           ? 'All present'
           : `${missingCount} missing`,
         conflicts: conflictFlags.length,
         factsAnalyzed,
+        extractedFactsCount,
+        validatedFactsCount,
       },
 
       sourceOfTruth: { rows: sotRows },

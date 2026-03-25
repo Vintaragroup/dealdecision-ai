@@ -26,6 +26,10 @@ export interface SummaryMetricsBarProps {
   criticalMetrics: string;
   conflicts: number;
   factsAnalyzed: number;
+  /** Extracted facts count (distinct financial signals in the payload) */
+  extractedFactsCount?: number | null;
+  /** Optional validated/extracted split for richer display */
+  validatedFactsCount?: number | null;
 }
 
 // Source of Truth Table Types
@@ -187,6 +191,23 @@ export interface ProcessedAuditData {
   showSummaryMetrics: boolean;
   /** Gates all detailed audit panels — true whenever hasAnyFinancialData */
   showDetailedPanels: boolean;
+  /** True when integrity validation has not run or has only the synthetic no-facts baseline */
+  isIntegrityIncomplete: boolean;
+  /**
+   * Human-readable label describing the current financial data / validation state.
+   * Safe for display in investor-facing UI.
+   */
+  visibleStatusLabel: string;
+  /**
+   * Number of distinct financial fact signals detected from the report payload.
+   * null when no data is present.
+   */
+  extractedFactsCount: number | null;
+  /**
+   * Number of facts that passed integrity validation (status PASS).
+   * null when integrity did not run or has no data.
+   */
+  validatedFactsCount: number | null;
   lastUpdated: string;
   actionPanel: InvestorActionPanelProps;
   summaryMetrics: SummaryMetricsBarProps;

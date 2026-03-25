@@ -2300,7 +2300,14 @@ export async function registerReportRoutes(
               upsertIngestionReportSummaryByDealAndVersion({ pool, dealId: deal_id, analysisVersion: version, summary: cached.value, documentIds: [] })
             );
             logStage('db.ingestion_reports.upsert', touch.ms, true, { cache: 'hit' });
-            return reply.status(200).send(cached.value);
+            // Inject live staleness flag — same pattern as the versioned route.
+            // Never persisted; always computed fresh on cache-hit.
+            let financial_snapshot_stale = false;
+            try {
+              const _sr = await computeReportFinancialSnapshotStale(pool, deal_id, version, { dioUpdatedAt: row.updated_at });
+              financial_snapshot_stale = _sr.stale;
+            } catch { /* fail-open */ }
+            return reply.status(200).send({ ...cached.value, financial_snapshot_stale });
           }
         }
 

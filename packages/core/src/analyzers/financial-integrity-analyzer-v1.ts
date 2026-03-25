@@ -536,6 +536,7 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
       missing_critical,
       missing_supplementary,
       flags,
+      has_facts: facts.length > 0,
     };
   }
 }

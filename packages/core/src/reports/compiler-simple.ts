@@ -1859,6 +1859,7 @@ function buildEmptyFinancialIntegrityV1(): FinancialIntegrityV1 {
         note: 'No financial integrity data available. Re-run analysis with financial documents to populate integrity checks.',
       },
     ],
+    has_facts: false,
   };
 }
 
@@ -1918,9 +1919,19 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
       : null,
   });
 
+  // Extract financial integrity from DIO before computing readiness so it can
+  // be passed into buildUnderwritingReadinessV1. Fail-open: never fail compilation.
+  let financialIntegrityV1: FinancialIntegrityV1 = buildEmptyFinancialIntegrityV1();
+  try {
+    financialIntegrityV1 = (dio as any)?.dio?.financial_integrity_v1 ?? buildEmptyFinancialIntegrityV1();
+  } catch {
+    // Best-effort: never fail report compilation.
+  }
+
   const underwritingReadiness = buildUnderwritingReadinessV1({
     financial_breakdown_v1: financialBreakdown,
     financial_coverage_v1: financialCoverage,
+    financial_integrity_v1: financialIntegrityV1,
   });
 
   const capitalLogic = inferCapitalLogicProfileV1({
@@ -1973,15 +1984,6 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
   const scoreExplanationAugmented = existingExplanation && typeof existingExplanation === 'object'
     ? { ...existingExplanation, stage_weighted_v1: stageWeighted }
     : existingExplanation;
-
-  // Pass through financial integrity result from DIO (fail-open: never fail report compilation).
-  // Always produces a non-null value: falls back to empty baseline when the field is absent.
-  let financialIntegrityV1: FinancialIntegrityV1 = buildEmptyFinancialIntegrityV1();
-  try {
-    financialIntegrityV1 = (dio as any)?.dio?.financial_integrity_v1 ?? buildEmptyFinancialIntegrityV1();
-  } catch {
-    // Best-effort: never fail report compilation.
-  }
 
 	return {
 		...base,

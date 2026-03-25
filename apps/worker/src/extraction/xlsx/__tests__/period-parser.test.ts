@@ -319,3 +319,61 @@ describe("parsePeriodLabel — scope_context for classifyTemporalScope integrati
     expect(r.scope_context).toBe("");
   });
 });
+
+describe("ordinal forecast-year labels (Year N / Yr N)", () => {
+  it("Year 1 → annual, is_projected=true, scope_context='projected forecast ordinal'", () => {
+    const r = parsePeriodLabel("Year 1");
+    expect(r.period_type).toBe("annual");
+    expect(r.is_projected).toBe(true);
+    expect(r.scope_context).toBe("projected forecast ordinal");
+    expect(r.year).toBeNull();
+    expect(r.normalized).toBe("Year 1");
+  });
+
+  it("Year 2 → projected", () => {
+    const r = parsePeriodLabel("Year 2");
+    expect(r.is_projected).toBe(true);
+    expect(r.period_type).toBe("annual");
+  });
+
+  it("Yr 3 → projected (abbreviated prefix)", () => {
+    const r = parsePeriodLabel("Yr 3");
+    expect(r.is_projected).toBe(true);
+    expect(r.scope_context).toBe("projected forecast ordinal");
+  });
+
+  it("Year 1E → is_projected=true (E suffix variant)", () => {
+    const r = parsePeriodLabel("Year 1E");
+    expect(r.is_projected).toBe(true);
+    expect(r.period_type).toBe("annual");
+  });
+
+  it("Year 2F → is_projected=true (F suffix forecast variant)", () => {
+    const r = parsePeriodLabel("Year 2F");
+    expect(r.is_projected).toBe(true);
+    expect(r.period_type).toBe("annual");
+  });
+
+  it("Year 5 → projected (large ordinal)", () => {
+    const r = parsePeriodLabel("Year 5");
+    expect(r.is_projected).toBe(true);
+    expect(r.period_type).toBe("annual");
+  });
+
+  it("Year 1 → year is null (no calendar year determinable)", () => {
+    const r = parsePeriodLabel("Year 1");
+    expect(r.year).toBeNull();
+    expect(r.quarter).toBeNull();
+  });
+
+  it("YEAR 1 (uppercase) → matched (case-insensitive)", () => {
+    const r = parsePeriodLabel("YEAR 1");
+    expect(r.is_projected).toBe(true);
+  });
+
+  it("'Year' alone (no number) → falls through to fallback (not ordinal match)", () => {
+    const r = parsePeriodLabel("Year");
+    // No number → no match for pattern 12 → fallback
+    expect(r.is_projected).toBe(false);
+  });
+});

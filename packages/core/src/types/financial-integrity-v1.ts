@@ -95,5 +95,13 @@ export const FinancialIntegrityV1Schema = z.object({
 
   /** All integrity flags produced by this analysis run */
   flags: z.array(IntegrityFlagSchema).default([]),
+
+  /**
+   * True when the analyzer received at least one valid financial fact.
+   * Distinguishes "no facts analyzed (integrity unknown)" from
+   * "facts analyzed, no issues found".
+   * false when built from buildEmptyFinancialIntegrityV1() or when facts = [].
+   */
+  has_facts: z.boolean().default(false),
 });
 export type FinancialIntegrityV1 = z.infer<typeof FinancialIntegrityV1Schema>;

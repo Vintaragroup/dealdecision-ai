@@ -18,6 +18,7 @@
 
 import type { FinancialFactV1 } from '../financial-facts/financial-fact-v1.js';
 import type { FinancialCoverageProfileV1 } from './financial-coverage-profile.js';
+import type { FinancialIntegrityV1 } from '../types/financial-integrity-v1.js';
 import {
   selectAuthoritativeFact,
   filterCorruptedFacts,
@@ -663,6 +664,7 @@ function _build(input: {
 export function buildUnderwritingReadinessV1(input: {
   financial_breakdown_v1: FinancialBreakdownV1;
   financial_coverage_v1: FinancialCoverageProfileV1;
+  financial_integrity_v1?: FinancialIntegrityV1;
 }): UnderwritingReadinessV1 {
   try {
     return _buildReadiness(input);
@@ -681,8 +683,9 @@ export function buildUnderwritingReadinessV1(input: {
 function _buildReadiness(input: {
   financial_breakdown_v1: FinancialBreakdownV1;
   financial_coverage_v1: FinancialCoverageProfileV1;
+  financial_integrity_v1?: FinancialIntegrityV1;
 }): UnderwritingReadinessV1 {
-  const { financial_breakdown_v1: bd, financial_coverage_v1: cov } = input;
+  const { financial_breakdown_v1: bd, financial_coverage_v1: cov, financial_integrity_v1: fi } = input;
 
   let score = 0;
   const reasons: string[] = [];
@@ -745,13 +748,23 @@ function _buildReadiness(input: {
   }
 
   // +5 pts: No critical data contradictions
+  // Blocked when integrity analysis has confirmed FAIL-level discrepancies.
+  const hasIntegrityFail = fi
+    ? fi.has_facts && fi.flags.some(f => f.status === 'FAIL' && (f.severity === 'critical' || f.severity === 'high'))
+    : false;
   const hasCriticalRisk = bd.risks.some(r => r.severity === 'high' && r.code !== 'no_cap_table' && r.code !== 'deck_only');
-  if (!hasCriticalRisk) {
+  if (!hasCriticalRisk && !hasIntegrityFail) {
     score += 5;
     reasons.push('No critical financial data inconsistencies were detected.');
   } else {
+    if (hasIntegrityFail) {
+      const failFlags = fi!.flags.filter(f => f.status === 'FAIL' && (f.severity === 'critical' || f.severity === 'high'));
+      const flagSummary = failFlags.map(f => f.flag_key).slice(0, 3).join(', ');
+      reasons.push(`Financial integrity check detected critical discrepancies: ${flagSummary}.`);
+      gaps.push('conflicting_revenue');
+    }
     if (bd.risks.some(r => r.code === 'projection_only')) gaps.push('projection_only');
-    if (bd.risks.some(r => r.code === 'conflicting_revenue')) gaps.push('conflicting_revenue');
+    if (!hasIntegrityFail && bd.risks.some(r => r.code === 'conflicting_revenue')) gaps.push('conflicting_revenue');
   }
 
   const status: UnderwritingReadinessV1['status'] =

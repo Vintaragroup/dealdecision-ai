@@ -344,6 +344,17 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
       if (typeof v === "string" && v.trim()) scaleScanTexts.push(v);
     }
   }
+  // Also scan the detected period-header row when it falls beyond row 4.
+  // Workbooks with multi-row title sections can push the header row to index 5+,
+  // causing denominator markers like "($000)" in the header to be missed above.
+  if (headerRowIdx >= 5 && headerRowIdx < rowsPreview.length) {
+    const hRow = rowsPreview[headerRowIdx];
+    if (hRow && typeof hRow === "object") {
+      for (const v of Object.values(hRow as Record<string, unknown>)) {
+        if (typeof v === "string" && v.trim()) scaleScanTexts.push(v);
+      }
+    }
+  }
   const { factor: unit_scale_factor, source_text: unit_scale_source_text } =
     detectUnitScale(scaleScanTexts);
 

@@ -5,6 +5,7 @@ import {
 import type { FinancialBreakdownV1 } from '../financial-breakdown-v1.js';
 import type { FinancialFactV1 } from '../../financial-facts/financial-fact-v1.js';
 import type { FinancialCoverageProfileV1 } from '../financial-coverage-profile.js';
+import type { FinancialIntegrityV1 } from '../../types/financial-integrity-v1.js';
 
 // ─── Fixture helpers ─────────────────────────────────────────────────────────
 
@@ -765,5 +766,153 @@ describe('buildFinancialBreakdownV1 — projected vs historical precedence', () 
     });
     const period = bd.projections.periods.find(p => p.period_label === `FY${futureYear}`);
     expect(period?.revenue).toBe(3_000_000);
+  });
+});
+
+// ─── Tests: integrity FAIL propagation into readiness ─────────────────────────
+
+describe('buildUnderwritingReadinessV1 — integrity FAIL propagation', () => {
+  function makeIntegrity(overrides: Partial<FinancialIntegrityV1> = {}): FinancialIntegrityV1 {
+    return {
+      computed_at: new Date().toISOString(),
+      completeness_score: 80,
+      missing_critical: [],
+      missing_supplementary: [],
+      flags: [],
+      has_facts: true,
+      ...overrides,
+    };
+  }
+
+  const richCoverage = xlsxCoverage({
+    historical_revenue_present: true,
+    forecast_revenue_present: true,
+    income_statement_present: true,
+    burn_rate_present: true,
+    runway_present: true,
+  });
+
+  test('integrity FAIL (critical severity, has_facts=true) blocks the +5 consistency bonus', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 2_000_000)],
+      financial_coverage_v1: richCoverage,
+      documents: [{ document_id: 'cap1', filename: 'CapTable.xlsx' }],
+    });
+    // Without integrity FAIL — should get the bonus
+    const urClean = buildUnderwritingReadinessV1({
+      financial_breakdown_v1: bd,
+      financial_coverage_v1: richCoverage,
+      financial_integrity_v1: makeIntegrity({ flags: [] }),
+    });
+
+    // With integrity FAIL — should NOT get the bonus
+    const urFail = buildUnderwritingReadinessV1({
+      financial_breakdown_v1: bd,
+      financial_coverage_v1: richCoverage,
+      financial_integrity_v1: makeIntegrity({
+        flags: [{
+          flag_key: 'cross_source_discrepancy:revenue',
+          status: 'FAIL',
+          severity: 'critical',
+          message: 'Revenue from deck ($5M) vs XLSX ($2M) differs by >50%',
+          fact_ids: [],
+        }],
+      }),
+    });
+
+    expect(urFail.score).toBeLessThan(urClean.score);
+  });
+
+  test('integrity FAIL pushes a reason mentioning discrepancy', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 2_000_000)],
+      financial_coverage_v1: richCoverage,
+    });
+    const ur = buildUnderwritingReadinessV1({
+      financial_breakdown_v1: bd,
+      financial_coverage_v1: richCoverage,
+      financial_integrity_v1: makeIntegrity({
+        flags: [{
+          flag_key: 'cross_source_discrepancy:revenue',
+          status: 'FAIL',
+          severity: 'high',
+          message: 'Revenue conflict between deck and XLSX',
+          fact_ids: [],
+        }],
+      }),
+    });
+    const allReasons = ur.reasons.join(' ');
+    expect(allReasons).toMatch(/discrepanc|integrity|conflict/i);
+  });
+
+  test('integrity FAIL with has_facts=false does NOT block the bonus (prevents empty-facts false positives)', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 2_000_000)],
+      financial_coverage_v1: richCoverage,
+      documents: [{ document_id: 'cap1', filename: 'CapTable.xlsx' }],
+    });
+    // has_facts=false simulates an empty/default integrity result (buildEmptyFinancialIntegrityV1)
+    const urNoFacts = buildUnderwritingReadinessV1({
+      financial_breakdown_v1: bd,
+      financial_coverage_v1: richCoverage,
+      financial_integrity_v1: makeIntegrity({
+        has_facts: false,
+        flags: [{
+          flag_key: 'cross_source_discrepancy:revenue',
+          status: 'FAIL',
+          severity: 'critical',
+          message: 'Should be ignored when has_facts=false',
+          fact_ids: [],
+        }],
+      }),
+    });
+    // Same setup but no integrity at all
+    const urNoIntegrity = buildUnderwritingReadinessV1({
+      financial_breakdown_v1: bd,
+      financial_coverage_v1: richCoverage,
+    });
+    // Scores should be equal: has_facts=false makes the FAIL irrelevant
+    expect(urNoFacts.score).toBe(urNoIntegrity.score);
+  });
+
+  test('WARN-severity integrity flags do NOT block the bonus', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 2_000_000)],
+      financial_coverage_v1: richCoverage,
+      documents: [{ document_id: 'cap1', filename: 'CapTable.xlsx' }],
+    });
+    const urWarn = buildUnderwritingReadinessV1({
+      financial_breakdown_v1: bd,
+      financial_coverage_v1: richCoverage,
+      financial_integrity_v1: makeIntegrity({
+        flags: [{
+          flag_key: 'period_alignment:revenue',
+          status: 'WARN',
+          severity: 'low',
+          message: 'Minor period label inconsistency',
+          fact_ids: [],
+        }],
+      }),
+    });
+    const urClean = buildUnderwritingReadinessV1({
+      financial_breakdown_v1: bd,
+      financial_coverage_v1: richCoverage,
+      financial_integrity_v1: makeIntegrity({ flags: [] }),
+    });
+    // WARN should not reduce score
+    expect(urWarn.score).toBe(urClean.score);
+  });
+
+  test('without financial_integrity_v1 (undefined), behavior is unchanged from pre-fix baseline', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 2_000_000)],
+      financial_coverage_v1: richCoverage,
+      documents: [{ document_id: 'cap1', filename: 'CapTable.xlsx' }],
+    });
+    expect(() => buildUnderwritingReadinessV1({
+      financial_breakdown_v1: bd,
+      financial_coverage_v1: richCoverage,
+      // financial_integrity_v1 omitted
+    })).not.toThrow();
   });
 });

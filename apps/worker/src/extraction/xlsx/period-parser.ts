@@ -254,6 +254,23 @@ export function parsePeriodLabel(raw: string): PeriodInfo {
     }
   }
 
+  // ── 12. "Year 1", "Year 2", "Yr 1", "Year 1E", "Year 2F" ────────────────
+  // Ordinal forecast-year headers used in 3–5 year financial models where a
+  // calendar year is not specified. Always treated as projected periods.
+  {
+    const m = /^(?:Year|Yr)\s+(\d+)([EeFf])?$/i.exec(s);
+    if (m) {
+      return {
+        normalized: s,
+        period_type: "annual",
+        year: null,       // no calendar year determinable
+        quarter: null,
+        is_projected: true,
+        scope_context: "projected forecast ordinal",
+      };
+    }
+  }
+
   // ── Fallback ──────────────────────────────────────────────────────────────
   return { ...UNKNOWN_PERIOD, normalized: s };
 }

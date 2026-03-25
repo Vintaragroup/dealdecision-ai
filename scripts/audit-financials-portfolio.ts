@@ -323,11 +323,48 @@ const DISCOVERY_SQL = `
 WITH latest_ir AS (
   SELECT DISTINCT ON (deal_id)
     deal_id,
-    analysis_version,
-    summary,
-    created_at AS report_updated_at
+    analysis_version     AS ir_analysis_version,
+    summary              AS ir_summary,
+    GREATEST(created_at, updated_at) AS ir_report_updated_at
   FROM ingestion_reports
   ORDER BY deal_id, analysis_version DESC
+),
+-- DIO is the canonical live report store (API /report reads from here).
+-- ingestion_reports may lag behind when analyze_deal refreshes without incrementing version.
+latest_dio AS (
+  SELECT DISTINCT ON (deal_id)
+    deal_id,
+    analysis_version     AS dio_analysis_version,
+    dio_data             AS dio_summary,
+    GREATEST(created_at, updated_at) AS dio_report_updated_at
+  FROM deal_intelligence_objects
+  ORDER BY deal_id, analysis_version DESC, updated_at DESC
+),
+-- Prefer DIO when it is newer than ingestion_reports for the same deal
+merged AS (
+  SELECT
+    COALESCE(dio.deal_id, ir.deal_id)               AS deal_id,
+    COALESCE(dio.dio_analysis_version,
+             ir.ir_analysis_version)                 AS analysis_version,
+    -- Use DIO when it has report data AND (no IR exists OR DIO updated_at >= IR updated_at)
+    CASE
+      WHEN dio.deal_id IS NOT NULL
+        AND dio.dio_summary->'report' IS NOT NULL
+        AND (ir.deal_id IS NULL
+             OR dio.dio_report_updated_at >= ir.ir_report_updated_at)
+      THEN dio.dio_summary
+      ELSE ir.ir_summary
+    END                                              AS report_summary,
+    CASE
+      WHEN dio.deal_id IS NOT NULL
+        AND dio.dio_summary->'report' IS NOT NULL
+        AND (ir.deal_id IS NULL
+             OR dio.dio_report_updated_at >= ir.ir_report_updated_at)
+      THEN dio.dio_report_updated_at
+      ELSE ir.ir_report_updated_at
+    END                                              AS report_updated_at
+  FROM latest_ir ir
+  FULL OUTER JOIN latest_dio dio ON dio.deal_id = ir.deal_id
 ),
 fact_counts AS (
   SELECT
@@ -355,28 +392,28 @@ doc_xlsx AS (
 SELECT
   d.id                                                              AS deal_id,
   d.name                                                            AS deal_name,
-  ir.analysis_version,
-  ir.report_updated_at,
+  mr.analysis_version,
+  mr.report_updated_at,
 
   -- Compiler version
-  ir.summary->'report'->>'__compiler_version'                       AS compiler_version,
+  mr.report_summary->'report'->>'__compiler_version'                AS compiler_version,
 
   -- financial_breakdown_v1
-  (ir.summary->'report'->'financial_breakdown_v1'->>'has_xlsx')             AS has_xlsx,
-  (ir.summary->'report'->'financial_breakdown_v1'->>'has_current_state')    AS has_current_state,
-  (ir.summary->'report'->'financial_breakdown_v1'->>'has_projections')      AS has_projections,
-  (ir.summary->'report'->'financial_breakdown_v1'->>'has_cap_table')        AS has_cap_table,
+  (mr.report_summary->'report'->'financial_breakdown_v1'->>'has_xlsx')             AS has_xlsx,
+  (mr.report_summary->'report'->'financial_breakdown_v1'->>'has_current_state')    AS has_current_state,
+  (mr.report_summary->'report'->'financial_breakdown_v1'->>'has_projections')      AS has_projections,
+  (mr.report_summary->'report'->'financial_breakdown_v1'->>'has_cap_table')        AS has_cap_table,
 
   -- financial_integrity_v1
-  (ir.summary->'report'->'financial_integrity_v1'->>'has_facts')            AS fi_has_facts,
-  (ir.summary->'report'->'financial_integrity_v1'->>'completeness_score')   AS fi_completeness_score,
-  (ir.summary->'report'->'financial_integrity_v1'->'missing_critical')      AS fi_missing_critical,
-  (ir.summary->'report'->'financial_integrity_v1'->'flags')                 AS fi_flags,
+  (mr.report_summary->'report'->'financial_integrity_v1'->>'has_facts')            AS fi_has_facts,
+  (mr.report_summary->'report'->'financial_integrity_v1'->>'completeness_score')   AS fi_completeness_score,
+  (mr.report_summary->'report'->'financial_integrity_v1'->'missing_critical')      AS fi_missing_critical,
+  (mr.report_summary->'report'->'financial_integrity_v1'->'flags')                 AS fi_flags,
 
   -- underwriting_readiness_v1
-  (ir.summary->'report'->'underwriting_readiness_v1'->>'status')            AS ur_status,
-  (ir.summary->'report'->'underwriting_readiness_v1'->>'score')             AS ur_score,
-  (ir.summary->'report'->'underwriting_readiness_v1'->'gaps')               AS ur_gaps,
+  (mr.report_summary->'report'->'underwriting_readiness_v1'->>'status')            AS ur_status,
+  (mr.report_summary->'report'->'underwriting_readiness_v1'->>'score')             AS ur_score,
+  (mr.report_summary->'report'->'underwriting_readiness_v1'->'gaps')               AS ur_gaps,
 
   -- fact counts
   COALESCE(fc.total_facts, 0)    AS total_facts,
@@ -387,11 +424,11 @@ SELECT
   COALESCE(dx.xlsx_docs_in_db, 0) AS xlsx_docs_in_db
 
 FROM deals d
-JOIN latest_ir ir ON ir.deal_id = d.id
+JOIN merged mr ON mr.deal_id = d.id
 LEFT JOIN fact_counts fc ON fc.deal_id = d.id
 LEFT JOIN doc_xlsx dx ON dx.deal_id = d.id
 WHERE d.deleted_at IS NULL
-ORDER BY ir.analysis_version DESC, d.name
+ORDER BY mr.analysis_version DESC, d.name
 `;
 
 // ─── Phase 2+3 — Classification + Scoring ─────────────────────────────────────

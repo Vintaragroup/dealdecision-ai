@@ -173,9 +173,10 @@ type IssueCode =
   | "MISSING_CAP_TABLE"
   | "INTEGRITY_NO_FACTS"
   | "INTEGRITY_ZERO_SCORE"
+  | "XLSX_INTEGRITY_FLAGS"
   | "READINESS_MISMATCH"
   | "STALE_REPORT"
-  | "PDF_FACTS_ONLY"
+  | "NON_XLSX_FINANCE"
   | "UNKNOWN";
 
 const ISSUE_METADATA: Record<IssueCode, { severity: IssueSeverity; description: string; recommended_fixes: string[] }> = {
@@ -197,12 +198,22 @@ const ISSUE_METADATA: Record<IssueCode, { severity: IssueSeverity; description: 
       "Verify isXlsxLikeDocument() MIME check fires for spreadsheetml MIME type",
     ],
   },
-  PDF_FACTS_ONLY: {
+  NON_XLSX_FINANCE: {
     severity: "low",
-    description: "Facts extracted from PDF/PPTX sources only — no XLSX financial model has been uploaded",
+    description: "Financial facts extracted from PDF/PPTX/deck sources only — no XLSX financial model has been uploaded",
     recommended_fixes: [
       "Request a structured financial model (XLSX) from the founder",
       "Upload financial model to trigger XLSX extraction pipeline",
+    ],
+  },
+  XLSX_INTEGRITY_FLAGS: {
+    severity: "medium",
+    description: "XLSX financial data is present but integrity checks detected FAIL-level discrepancies (temporal scope mismatch, cross-source revenue conflict, etc.)",
+    recommended_fixes: [
+      "Review cross-source revenue discrepancy — deck vs XLSX values diverge significantly",
+      "Check period_label classification: projected vs historical facts may be mixed",
+      "Verify temporal_scope assignment in extract-financial-table-claims.ts",
+      "Re-run analysis after correcting XLSX period structure",
     ],
   },
   FACTS_PRESENT_NO_BREAKDOWN: {
@@ -295,9 +306,10 @@ const ISSUE_PRIORITY: IssueCode[] = [
   "MISSING_CAP_TABLE",
   "INTEGRITY_NO_FACTS",
   "INTEGRITY_ZERO_SCORE",
+  "XLSX_INTEGRITY_FLAGS",
   "READINESS_MISMATCH",
   "STALE_REPORT",
-  "PDF_FACTS_ONLY",
+  "NON_XLSX_FINANCE",
   "UNKNOWN",
 ];
 
@@ -499,9 +511,15 @@ function assignIssueCodes(opts: {
     candidates.push("XLSX_NOT_DETECTED");
   }
 
-  // PDF_FACTS_ONLY: has facts but no XLSX document was ever uploaded — PDF/PPTX source only
+  // NON_XLSX_FINANCE: has facts but no XLSX document was ever uploaded — PDF/PPTX/deck source only
   if (breakdown.has_xlsx === false && opts.xlsx_docs_in_db === 0 && total_facts > 0) {
-    candidates.push("PDF_FACTS_ONLY");
+    candidates.push("NON_XLSX_FINANCE");
+  }
+
+  // XLSX_INTEGRITY_FLAGS: XLSX detected and breakdown compiled, but integrity checks produced FAIL-level flags
+  // (e.g. temporal scope mismatch, cross-source revenue discrepancy)
+  if (breakdown.has_xlsx === true && integrity.flag_count_fail > 0) {
+    candidates.push("XLSX_INTEGRITY_FLAGS");
   }
 
   // FACTS_PRESENT_NO_BREAKDOWN: facts in DB but financial_breakdown_v1 was never compiled

@@ -96,15 +96,6 @@ export type AuthoritativeUnderwritingReadinessSelectionV1 = {
   source: 'report.underwriting_readiness_v1' | 'missing';
 };
 
-function reportLooksReady(report: unknown): boolean {
-  if (!report || typeof report !== 'object') return false;
-  const r = report as any;
-  const readyFlag = typeof r?.ready === 'boolean' ? r.ready : null;
-  if (readyFlag === false) return false;
-  if (readyFlag === true) return true;
-  return Boolean(r?.structured_summary && typeof r.structured_summary === 'object');
-}
-
 function unwrapEnvelope(reportOrEnvelope: unknown): any {
   const r = reportOrEnvelope as any;
   return r?.report && typeof r.report === 'object' ? r.report : r;
@@ -115,10 +106,12 @@ export function selectAuthoritativeFinancialBreakdownV1(
 ): AuthoritativeFinancialBreakdownSelectionV1 {
   const report = unwrapEnvelope(reportOrEnvelope);
 
-  if (!reportLooksReady(report)) {
+  if (!report || typeof report !== 'object') {
     return { value: null, source: 'missing' };
   }
 
+  // Return the block whenever it is actually present — do not gate on overall report readiness.
+  // Non-XLSX deals often have financial_breakdown_v1 but lack structured_summary / ready:true.
   const block = (report as any)?.financial_breakdown_v1;
   if (!block || typeof block !== 'object') {
     return { value: null, source: 'missing' };
@@ -132,10 +125,11 @@ export function selectAuthoritativeUnderwritingReadinessV1(
 ): AuthoritativeUnderwritingReadinessSelectionV1 {
   const report = unwrapEnvelope(reportOrEnvelope);
 
-  if (!reportLooksReady(report)) {
+  if (!report || typeof report !== 'object') {
     return { value: null, source: 'missing' };
   }
 
+  // Return the block whenever it is actually present.
   const block = (report as any)?.underwriting_readiness_v1;
   if (!block || typeof block !== 'object') {
     return { value: null, source: 'missing' };

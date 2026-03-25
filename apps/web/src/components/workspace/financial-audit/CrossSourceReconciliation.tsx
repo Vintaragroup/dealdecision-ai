@@ -1,4 +1,4 @@
-import { AlertTriangle, Info } from 'lucide-react';
+import { AlertTriangle, Info, HelpCircle } from 'lucide-react';
 import { CrossSourceReconciliationProps } from '../../../types/financialAudit';
 import { getConflictBackground, getImpactColor, getCardBackground } from '../../../utils/financialAuditHelpers';
 
@@ -6,12 +6,24 @@ interface Props extends CrossSourceReconciliationProps {
   darkMode?: boolean;
 }
 
-export function CrossSourceReconciliation({ conflicts, darkMode = true }: Props) {
+export function CrossSourceReconciliation({ conflicts, reconciliationStatus, reconciliationMessage, darkMode = true }: Props) {
   if (conflicts.length === 0) {
     return (
       <div className={`p-6 rounded-xl border text-center ${getCardBackground(darkMode)}`}>
-        <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-          No cross-source conflicts detected
+        {reconciliationStatus === 'unknown' && (
+          <HelpCircle className={`w-5 h-5 mx-auto mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`} />
+        )}
+        {reconciliationStatus === 'conflicted' && (
+          <AlertTriangle className={`w-5 h-5 mx-auto mb-2 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+        )}
+        <p className={`text-sm ${
+          reconciliationStatus === 'conflicted'
+            ? (darkMode ? 'text-amber-300' : 'text-amber-700')
+            : reconciliationStatus === 'unknown'
+            ? (darkMode ? 'text-gray-400' : 'text-gray-500')
+            : (darkMode ? 'text-gray-400' : 'text-gray-600')
+        }`}>
+          {reconciliationMessage}
         </p>
       </div>
     );

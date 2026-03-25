@@ -7,6 +7,12 @@ import {
   SupportStatus,
   ImpactSeverity,
   SourceOfTruthRow,
+  ValidationState,
+  IntegrityState,
+  ReadinessState,
+  ReconciliationStatus,
+  VisibleStatusTone,
+  VisibleAuditState,
 } from '../types/financialAudit';
 import type {
   FinancialMetricPointLike,
@@ -105,6 +111,158 @@ function getSupportStatusFromFlags(
   if (relevant.some((f) => f.flag_key.startsWith('single_source')))
     return 'Single Source';
   return 'Supported';
+}
+
+// ─── Canonical state-derivation helpers ──────────────────────────────────────
+//
+// These functions form the single source of truth for the visible audit state.
+// All UI sections (status badge, conflict count, reconciliation panel, readiness)
+// MUST derive their display from the output of these functions — never from
+// independent readings of individual payload fields.
+//
+// Rule: addding a new visible contradiction → add a check here, not in a component.
+
+/**
+ * Determines how many and which flags count as "discrepancies/conflicts" for
+ * the purpose of the canonical conflict count.
+ *
+ * Broader than the structured reconciliation set (which requires source_a/source_b).
+ * Any cross-source, discrepancy, mismatch, or conflict-pattern flag is a conflict.
+ */
+function deriveConflictState(flags: IntegrityFlag[]): {
+  discrepancyFlags: IntegrityFlag[];
+  structuredConflictFlags: IntegrityFlag[];
+  conflictCount: number;
+  hasConflicts: boolean;
+} {
+  // Canonical conflict set: any flag that signals a data disagreement
+  const discrepancyFlags = flags.filter(
+    (f) =>
+      f.flag_key.startsWith('cross_source') ||
+      f.flag_key.startsWith('discrepancy:') ||
+      f.flag_key.startsWith('mismatch:') ||
+      f.flag_key.startsWith('conflict:'),
+  );
+  // Structured subset: has source_a/source_b → renderable in the reconciliation panel
+  const structuredConflictFlags = discrepancyFlags.filter(
+    (f) => f.source_a != null && f.source_b != null,
+  );
+  const conflictCount = discrepancyFlags.length;
+  return { discrepancyFlags, structuredConflictFlags, conflictCount, hasConflicts: conflictCount > 0 };
+}
+
+/**
+ * Derives the validation state — describes whether integrity validation has
+ * run and produced meaningful results, independently of readiness score.
+ */
+function deriveValidationState(
+  hasAnyFinancialData: boolean,
+  isIntegrityIncomplete: boolean,
+  flags: IntegrityFlag[],
+): ValidationState {
+  if (!hasAnyFinancialData) return 'not_applicable';
+  if (isIntegrityIncomplete) return 'unvalidated';
+  if (flags.some((f) => f.status === 'FAIL')) return 'partially_validated';
+  if (flags.some((f) => f.status === 'PASS')) return 'validated';
+  return 'unvalidated'; // no PASS/FAIL flags despite integrity supposedly running
+}
+
+/**
+ * Derives the integrity state — summary of the severity of integrity flags.
+ * 'unknown' when validation has not completed.
+ */
+function deriveIntegrityState(
+  flags: IntegrityFlag[],
+  isIntegrityIncomplete: boolean,
+): IntegrityState {
+  if (isIntegrityIncomplete) return 'unknown';
+  if (flags.some((f) => (f.severity === 'critical' || f.severity === 'high') && f.status === 'FAIL')) return 'critical';
+  if (flags.some((f) => f.status === 'WARN' || (f.status === 'FAIL' && f.severity === 'medium'))) return 'warning';
+  return 'clean';
+}
+
+/**
+ * Derives the readiness state — gated by validation and integrity state.
+ * A deal can ONLY be 'ready' if validation has completed and no critical conflicts exist.
+ */
+function deriveReadinessState(
+  ur: any,
+  validationState: ValidationState,
+  integrityState: IntegrityState,
+  hasConflicts: boolean,
+): ReadinessState {
+  // Cannot be ready if validation hasn't run
+  if (validationState === 'not_applicable' || validationState === 'unvalidated') return 'not_ready';
+  // Cannot be ready if critical integrity issues exist
+  if (integrityState === 'critical') return 'not_ready';
+  // Conflicts or warnings downgrade to partially_ready
+  if (hasConflicts || integrityState === 'warning') return 'partially_ready';
+  // Now gate on the raw readiness score
+  const rawStatus = ur?.status;
+  if (rawStatus === 'sufficient') return 'ready';
+  if (rawStatus === 'partially_sufficient') return 'partially_ready';
+  return 'not_ready';
+}
+
+/**
+ * Derives the canonical reconciliation state from the conflict set.
+ * This drives the CrossSourceReconciliation panel's empty-state text — never hardcoded.
+ */
+function deriveReconciliationState(
+  discrepancyFlags: IntegrityFlag[],
+  structuredConflictFlags: IntegrityFlag[],
+  isIntegrityIncomplete: boolean,
+): { status: ReconciliationStatus; message: string } {
+  if (isIntegrityIncomplete) {
+    return {
+      status: 'unknown',
+      message: 'Cross-source reconciliation requires completed integrity validation. Re-run analysis to generate reconciliation results.',
+    };
+  }
+  if (discrepancyFlags.length === 0) {
+    return { status: 'clean', message: 'No cross-source discrepancies detected.' };
+  }
+  const n = discrepancyFlags.length;
+  const noun = n === 1 ? 'discrepancy' : 'discrepancies';
+  if (structuredConflictFlags.length > 0) {
+    return { status: 'conflicted', message: `${n} cross-source ${noun} detected.` };
+  }
+  // Discrepancy flags exist but lack source_a/source_b (not renderable as structured cards)
+  return {
+    status: 'conflicted',
+    message: `${n} discrepancy ${n === 1 ? 'flag' : 'flags'} detected — see Risk Flags panel for details.`,
+  };
+}
+
+/**
+ * Derives the investor-safe visible status label from the full union of state layers.
+ *
+ * INVARIANT: 'Ready for Investment Review' is ONLY returned when:
+ *   - data exists
+ *   - validation has completed (validated or partially_validated)
+ *   - no critical integrity issues
+ *   - no conflicts
+ *   - readiness state is 'ready'
+ */
+function deriveVisibleStatus(
+  hasAnyFinancialData: boolean,
+  validationState: ValidationState,
+  integrityState: IntegrityState,
+  readinessState: ReadinessState,
+  conflictCount: number,
+): string {
+  if (!hasAnyFinancialData) return 'No Financial Data';
+  if (validationState === 'unvalidated') return 'Data Extracted — Validation Incomplete';
+  if (integrityState === 'critical' || conflictCount > 0 || readinessState === 'partially_ready') return 'Partially Ready';
+  if (readinessState === 'not_ready') return 'Not Ready for Investment Review';
+  return 'Ready for Investment Review';
+}
+
+function deriveVisibleStatusTone(label: string): VisibleStatusTone {
+  if (label === 'Ready for Investment Review') return 'success';
+  if (label === 'No Financial Data') return 'neutral';
+  if (label === 'Partially Ready' || label === 'Data Extracted — Validation Incomplete') return 'warning';
+  return 'warning'; // Not Ready → warning
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -244,20 +402,49 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
         ? 'PARTIAL'  // downgrade READY → PARTIAL when integrity hasn't run
         : _rawStatus;
 
-    // ── Visible status label (investor-safe display string) ─────────────────
-    const visibleStatusLabel: string =
-      !hasAnyFinancialData
-        ? 'No Financial Data'
-        : isIntegrityIncomplete
-        ? 'Data Extracted — Validation Incomplete'
-        : status === 'PARTIAL' || status === 'WARNING'
-        ? 'Partially Ready'
-        : 'Ready for Investment Review';
+    // ── Canonical visible-state model (single source of truth for all UI sections) ─
+    const { discrepancyFlags, structuredConflictFlags, conflictCount, hasConflicts } =
+      deriveConflictState(flags);
+    const validationState = deriveValidationState(hasAnyFinancialData, isIntegrityIncomplete, flags);
+    const integrityState = deriveIntegrityState(flags, isIntegrityIncomplete);
+    const readinessState = deriveReadinessState(ur, validationState, integrityState, hasConflicts);
+    const visibleStatusLabel = deriveVisibleStatus(
+      hasAnyFinancialData,
+      validationState,
+      integrityState,
+      readinessState,
+      conflictCount,
+    );
+    const visibleStatusTone = deriveVisibleStatusTone(visibleStatusLabel);
+    const { status: reconciliationStatus, message: reconciliationMessage } =
+      deriveReconciliationState(discrepancyFlags, structuredConflictFlags, isIntegrityIncomplete);
+
+    // isProvisional: readiness score should not be taken at face value
+    const isProvisional = validationState === 'unvalidated' || integrityState === 'critical' || hasConflicts;
+
+    // dataPresenceState: presence-only (excludes the stale envelope flag)
+    const dataPresenceState =
+      isNoData ? 'no_data' : isStructuredData ? 'structured_data' : 'limited_data';
+
+    const visibleAuditState: VisibleAuditState = {
+      dataPresenceState,
+      validationState,
+      integrityState,
+      readinessState,
+      visibleStatusLabel,
+      visibleStatusTone,
+      conflictCount,
+      hasConflicts,
+      reconciliationStatus,
+      reconciliationMessage,
+      isProvisional,
+    };
 
     // ── Summary Metrics ─────────────────────────────────────────────────────
-    const conflictFlags = flags.filter(
-      (f) => f.flag_key.startsWith('cross_source') && f.source_a && f.source_b,
-    );
+    // NOTE: conflictFlags below is kept as a local alias for the structured set (for
+    // backward-compat path used to build conflict detail rows). The canonical COUNT
+    // comes from visibleAuditState.conflictCount (discrepancyFlags.length).
+    const conflictFlags = structuredConflictFlags;
     const missingCount = missing_critical.length + (ur?.missing?.length ?? 0);
     const criticalMetricsTotal = missingCount + (ur?.reasons?.length ?? 0) + 5; // denominator estimate
     const criticalPresent = Math.max(0, criticalMetricsTotal - missingCount);
@@ -482,6 +669,8 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const readiness = {
       score: ur?.score ?? 0,
       status,
+      visibleStatusLabel,
+      isProvisional,
       missingMetrics: ur?.missing ?? missing_critical.map((m: string) => m.replace(/_/g, ' ')),
       weakAreas: ur?.reasons ?? [],
       summary: ur?.narrative ?? bd?.narrative ?? 'No readiness narrative available.',
@@ -550,6 +739,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
       extractedFactsCount,
       validatedFactsCount,
       visibleStatusLabel,
+      visibleAuditState,
       isStale: financialSnapshotStale,
       isReportEmpty,
       lastUpdated: fi?.computed_at
@@ -558,6 +748,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
 
       actionPanel: {
         status,
+        visibleStatusLabel,
         criticalActions,
         validationActions,
         strengths,
@@ -572,7 +763,8 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
           : missingCount === 0
           ? 'All present'
           : `${missingCount} missing`,
-        conflicts: conflictFlags.length,
+        // Use the canonical conflict count from visibleAuditState — not just structured cross_source flags.
+        conflicts: conflictCount,
         factsAnalyzed,
         extractedFactsCount,
         validatedFactsCount,
@@ -580,7 +772,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
 
       sourceOfTruth: { rows: sotRows },
 
-      conflicts: { conflicts },
+      conflicts: { conflicts, reconciliationStatus, reconciliationMessage },
 
       timeAudit: { items: timeItems },
 

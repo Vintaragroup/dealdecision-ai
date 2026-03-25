@@ -8,6 +8,7 @@ interface Props extends InvestorActionPanelProps {
 
 export function InvestorActionPanel({
   status,
+  visibleStatusLabel,
   criticalActions,
   validationActions,
   strengths,
@@ -18,11 +19,11 @@ export function InvestorActionPanel({
       <div className="flex items-start gap-6">
         {/* Left: Status Badge */}
         <div className="flex-shrink-0">
-          <div className={`px-6 py-3 rounded-xl border font-bold text-lg ${getStatusColor(status, darkMode)}`}>
-            {status === 'WARNING' && <AlertTriangle className="w-6 h-6 inline mr-2" />}
-            {status === 'PARTIAL' && <AlertCircle className="w-6 h-6 inline mr-2" />}
-            {status === 'READY' && <CheckCircle className="w-6 h-6 inline mr-2" />}
-            {status}
+          <div className={`px-6 py-3 rounded-xl border font-bold text-base ${getStatusColor(status, darkMode)}`}>
+            {status === 'WARNING' && <AlertTriangle className="w-5 h-5 inline mr-2" />}
+            {status === 'PARTIAL' && <AlertCircle className="w-5 h-5 inline mr-2" />}
+            {status === 'READY' && <CheckCircle className="w-5 h-5 inline mr-2" />}
+            {visibleStatusLabel}
           </div>
         </div>
 

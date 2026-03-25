@@ -7,6 +7,42 @@ export type SeverityLevel = 'critical' | 'validation' | 'dataQuality';
 export type DataType = 'historical' | 'projected';
 export type ImpactSeverity = 'high' | 'medium' | 'low';
 
+// ── Canonical visible-state layer types ─────────────────────────────────────
+/** Has any financial evidence been extracted? */
+export type DataPresenceState = 'no_data' | 'limited_data' | 'structured_data';
+/** Has integrity validation run and produced meaningful results? */
+export type ValidationState = 'not_applicable' | 'unvalidated' | 'partially_validated' | 'validated';
+/** Summary of integrity flag severity across all analysed facts. */
+export type IntegrityState = 'unknown' | 'clean' | 'warning' | 'critical';
+/** Derived underwriting readiness — blocked by validation/integrity state. */
+export type ReadinessState = 'not_ready' | 'partially_ready' | 'ready';
+/** Cross-source reconciliation determination. */
+export type ReconciliationStatus = 'none' | 'clean' | 'conflicted' | 'unknown';
+/** Tone used for colouring/icons — mapped from the canonical status label. */
+export type VisibleStatusTone = 'neutral' | 'warning' | 'success' | 'critical';
+
+/**
+ * Single canonical view-model object that every Financial Audit UI section
+ * must derive its display from. Prevents contradictions between sections.
+ */
+export interface VisibleAuditState {
+  dataPresenceState: DataPresenceState;
+  validationState: ValidationState;
+  integrityState: IntegrityState;
+  readinessState: ReadinessState;
+  /** Investor-safe visible label — derived from ALL layers. NEVER shows "Ready" when validation or integrity is incomplete. */
+  visibleStatusLabel: string;
+  visibleStatusTone: VisibleStatusTone;
+  /** Canonical conflict count: all discrepancy/cross-source flags (broader than structured reconciliation set). */
+  conflictCount: number;
+  hasConflicts: boolean;
+  reconciliationStatus: ReconciliationStatus;
+  /** Plain-language reconciliation summary for use in CrossSourceReconciliation empty state. */
+  reconciliationMessage: string;
+  /** True when validation has not completed or critical conflicts exist — indicates readiness score is provisional. */
+  isProvisional: boolean;
+}
+
 // Investor Action Panel Types
 export interface ActionItem {
   text: string;
@@ -15,6 +51,8 @@ export interface ActionItem {
 
 export interface InvestorActionPanelProps {
   status: AuditStatus;
+  /** Canonical investor-safe label derived from all layers — shown in badge instead of raw status enum. */
+  visibleStatusLabel: string;
   criticalActions: ActionItem[];
   validationActions: ActionItem[];
   strengths: ActionItem[];
@@ -65,6 +103,10 @@ export interface Conflict {
 
 export interface CrossSourceReconciliationProps {
   conflicts: Conflict[];
+  /** Canonical reconciliation determination from the unified state model. */
+  reconciliationStatus: ReconciliationStatus;
+  /** Plain-language summary shown when there are no structured conflicts to render. */
+  reconciliationMessage: string;
 }
 
 // Time Projection Audit Types
@@ -108,6 +150,10 @@ export interface RiskFlagsPanelProps {
 export interface UnderwritingReadinessProps {
   score: number;
   status: AuditStatus;
+  /** Canonical investor-safe label — shown instead of raw status enum. */
+  visibleStatusLabel: string;
+  /** True when validation is incomplete or critical conflicts exist; triggers a provisional sublabel. */
+  isProvisional: boolean;
   missingMetrics: string[];
   weakAreas: string[];
   summary: string;
@@ -193,6 +239,11 @@ export interface ProcessedAuditData {
   showDetailedPanels: boolean;
   /** True when integrity validation has not run or has only the synthetic no-facts baseline */
   isIntegrityIncomplete: boolean;
+  /**
+   * The single canonical visible-state object that all UI sections must derive from.
+   * Prevents contradictions between status, conflict count, reconciliation text, and readiness.
+   */
+  visibleAuditState: VisibleAuditState;
   /**
    * Human-readable label describing the current financial data / validation state.
    * Safe for display in investor-facing UI.

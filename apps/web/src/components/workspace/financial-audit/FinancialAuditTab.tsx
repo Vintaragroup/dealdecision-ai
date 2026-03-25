@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronDown, ChevronRight, RefreshCw, BarChart2, FileText } from 'lucide-react';
+import { AlertTriangle, ChevronDown, ChevronRight, BarChart2, Info, CheckCircle2, Database } from 'lucide-react';
 import { useState } from 'react';
 import { FinancialAuditTabProps } from '../../../types/financialAudit';
 import { useFinancialAuditData } from '../../../hooks/useFinancialAuditData';
@@ -32,7 +32,7 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
   };
 
-  // ── no_data: no financial data of any kind ────────────────────────────────
+  // ── no_data: no financial signals of any kind ─────────────────────────────
   if (auditData.dataState === 'no_data') {
     return (
       <div className={`p-8 rounded-xl border flex flex-col items-center gap-4 text-center ${
@@ -46,76 +46,74 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
             No financial data available
           </div>
           <div className={`text-sm leading-relaxed max-w-md ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-            This deal has no verified structured financial data yet. Structured sources (XLSX model,
-            cap table, or validated extraction) must be present before this tab can surface meaningful
-            results. Re-run analysis once financial documents are uploaded.
+            No financial signals have been extracted for this deal yet. Upload financial documents
+            (XLSX model, cap table, PDF financials, or pitch deck) and re-run analysis.
           </div>
         </div>
       </div>
     );
   }
 
-  // ── deck_only: deck-extracted signals present, not underwriting-grade ──────
-  if (auditData.dataState === 'deck_only') {
-    return (
-      <div className={`p-8 rounded-xl border flex flex-col items-center gap-4 text-center ${
-        darkMode
-          ? 'bg-white/5 border-white/10'
-          : 'bg-gray-50 border-gray-200'
-      }`}>
-        <FileText className={`w-10 h-10 ${darkMode ? 'text-amber-500/60' : 'text-amber-500'}`} />
-        <div>
-          <div className={`text-base font-semibold mb-1 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-            Deck-derived financial signals only
-          </div>
-          <div className={`text-sm leading-relaxed max-w-md ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-            This deal contains financial figures inferred from pitch materials, but no
-            spreadsheet-backed underwriting model has been processed. These signals are
-            not sufficient for financial due diligence. Upload an XLSX financial model
-            and re-run analysis to unlock the full Financial Audit surface.
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── stale: report lags newly uploaded facts ────────────────────────────────
-  if (auditData.dataState === 'stale') {
-    return (
-      <div className={`p-8 rounded-xl border flex flex-col items-center gap-4 text-center ${
-        darkMode
-          ? 'bg-amber-500/10 border-amber-500/30'
-          : 'bg-amber-50 border-amber-200'
-      }`}>
-        <AlertTriangle className={`w-10 h-10 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
-        <div>
-          <div className={`text-base font-semibold mb-1 ${darkMode ? 'text-amber-300' : 'text-amber-800'}`}>
-            Financial data is out of date
-          </div>
-          <div className={`text-sm leading-relaxed max-w-md ${darkMode ? 'text-amber-400/80' : 'text-amber-700'}`}>
-            New financial facts have been uploaded since the last analysis run. The audit
-            panels are hidden until the report is refreshed to avoid surfacing stale metrics.
-            Re-run analysis to generate an up-to-date Financial Audit.
-          </div>
-          <div className={`text-xs mt-3 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-            Last compiled: {auditData.lastUpdated}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // ── valid: full audit surface ──────────────────────────────────────────────
+  // ── All other states: render the full tab with appropriate banners ─────────
   return (
     <div className="space-y-6">
 
-      {/* 1. Investor Action Panel — valid state only */}
+      {/* Stale warning banner */}
+      {auditData.showStaleWarning && (
+        <div className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${
+          darkMode
+            ? 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+            : 'bg-amber-50 border-amber-200 text-amber-800'
+        }`}>
+          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+          <div className="text-sm">
+            <span className="font-semibold">Financial data may be out of date.</span>{' '}
+            New financial facts have been uploaded since the last analysis run. Re-run analysis
+            to refresh this view. The data shown below reflects the last compiled report.
+            <span className={`ml-2 text-xs ${darkMode ? 'text-amber-400/70' : 'text-amber-600'}`}>
+              Last compiled: {auditData.lastUpdated}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Limited data info banner */}
+      {auditData.showLimitedDataWarning && (
+        <div className={`flex items-start gap-3 px-4 py-3 rounded-lg border ${
+          darkMode
+            ? 'bg-blue-500/10 border-blue-500/30 text-blue-300'
+            : 'bg-blue-50 border-blue-200 text-blue-800'
+        }`}>
+          <Info className="w-4 h-4 mt-0.5 shrink-0" />
+          <div className="text-sm">
+            <span className="font-semibold">Non-structured financial data.</span>{' '}
+            Financial data has been extracted from non-structured sources such as deck slides or PDF
+            materials. Coverage may be incomplete and values may require validation against a
+            spreadsheet-backed financial model. Upload an XLSX model to unlock full audit coverage.
+          </div>
+        </div>
+      )}
+
+      {/* Structured financials badge */}
+      {auditData.showStructuredBadge && (
+        <div className={`flex items-center gap-2 px-4 py-2 rounded-lg border w-fit text-sm ${
+          darkMode
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+            : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+        }`}>
+          <Database className="w-3.5 h-3.5" />
+          <span className="font-medium">Structured financials detected</span>
+          <CheckCircle2 className="w-3.5 h-3.5" />
+        </div>
+      )}
+
+      {/* 1. Investor Action Panel */}
       {auditData.showDetailedPanels && <InvestorActionPanel {...auditData.actionPanel} darkMode={darkMode} />}
 
-      {/* 2. Summary Metrics Bar — valid state only */}
+      {/* 2. Summary Metrics Bar */}
       {auditData.showSummaryMetrics && <SummaryMetricsBar {...auditData.summaryMetrics} darkMode={darkMode} />}
 
-      {/* 3–10. Detailed audit panels — valid state only */}
+      {/* 3–10. Detailed audit panels */}
       {auditData.showDetailedPanels && (
         <>
       {/* 3. Source of Truth Table */}

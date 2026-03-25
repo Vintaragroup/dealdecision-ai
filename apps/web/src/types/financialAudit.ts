@@ -152,22 +152,40 @@ export interface FinancialAuditTabProps {
 export interface ProcessedAuditData {
   status: AuditStatus;
   /** Canonical finance-specific data state. Controls which UI sections render.
-   *  - valid:     XLSX-backed structured finance present, not stale
-   *  - stale:     Finance data exists but report lags newly uploaded facts
-   *  - deck_only: Financial signals present but deck-derived only (not underwriting-grade)
-   *  - no_data:   No financial data of any kind
+   *  - structured_data: XLSX-backed structured finance present, not stale
+   *  - stale:           Finance data exists but report lags newly uploaded facts
+   *  - limited_data:    Financial signals from non-structured sources (deck, PDF, etc.)
+   *  - no_data:         No financial data of any kind
    */
-  dataState: 'no_data' | 'deck_only' | 'stale' | 'valid';
+  dataState: 'no_data' | 'limited_data' | 'stale' | 'structured_data';
   isStale: boolean;
-  /** True when the compiled report has no numeric data in any core panel — typically because the report predates XLSX extraction */
+  /** True when the compiled report has no numeric data in any core panel */
   isReportEmpty: boolean;
+  /** True when any financial signals exist regardless of source */
+  hasAnyFinancialData: boolean;
   /** True only when XLSX-backed structured financials are present */
   hasStructuredFinancials: boolean;
+  /** True when financial data exists but it is not XLSX-backed */
+  hasNonXlsxFinancialData: boolean;
   hasRealCurrentState: boolean;
   hasRealProjections: boolean;
-  /** Gates the Summary Metrics Bar — only valid when dataState === 'valid' */
+  /** Which source types contributed financial signals */
+  sourceMix: {
+    xlsx: boolean;
+    pdf: boolean;
+    deck: boolean;
+    pptx: boolean;
+    docx: boolean;
+  };
+  showTabContent: boolean;
+  showCoveragePanels: boolean;
+  showMetrics: boolean;
+  showLimitedDataWarning: boolean;
+  showStructuredBadge: boolean;
+  showStaleWarning: boolean;
+  /** Gates the Summary Metrics Bar — true whenever hasAnyFinancialData */
   showSummaryMetrics: boolean;
-  /** Gates all detailed audit panels — only valid when dataState === 'valid' */
+  /** Gates all detailed audit panels — true whenever hasAnyFinancialData */
   showDetailedPanels: boolean;
   lastUpdated: string;
   actionPanel: InvestorActionPanelProps;

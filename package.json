@@ -44,6 +44,7 @@
     "audit:api-routes:update": "tsx scripts/audit/api-route-inventory.ts",
     "test:api-routes": "node --test --import tsx scripts/audit/__tests__/api-route-inventory.test.ts",
     "audit:unknown-segments": "tsx scripts/audit-unknown-segments.ts",
+    "audit:financials": "tsx scripts/audit-financials-portfolio.ts",
     "backfill:document-metadata": "tsx scripts/backfill-document-metadata.ts",
     "report:fundability:compare": "tsx scripts/compare-fundability-v1.ts",
     "report:fundability:compare:md": "tsx scripts/compare-fundability-v1.ts --format md --out-md docs/Active/audit/analizer-debug/fundability-compare.md",

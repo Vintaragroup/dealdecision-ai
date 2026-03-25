@@ -11,6 +11,81 @@ import type { Pool } from "pg";
 import type { FinancialFactV1 } from "@dealdecision/core";
 import { validateFinancialFact } from "@dealdecision/core";
 
+// ─── Provenance packing/unpacking ──────────────────────────────────────────────
+
+/**
+ * Pack all provenance metadata fields from a FinancialFactV1 into a single
+ * JSONB-compatible plain object for storage in `provenance_metadata`.
+ *
+ * Only includes keys that are actually present (no undefined padding).
+ * Returns null when no provenance fields are set (non-XLSX sources, etc.).
+ *
+ * @internal — exported for unit tests only
+ */
+export function packProvenanceMetadata(f: FinancialFactV1): Record<string, unknown> | null {
+  const m: Record<string, unknown> = {};
+  if (f.value_kind !== undefined)                   m.value_kind = f.value_kind;
+  if (f.formula !== undefined)                      m.formula = f.formula;
+  if (f.cross_sheet_refs !== undefined)             m.cross_sheet_refs = f.cross_sheet_refs;
+  if (f.named_range_refs !== undefined)             m.named_range_refs = f.named_range_refs;
+  if (f.resolved_cross_sheet_values !== undefined)  m.resolved_cross_sheet_values = f.resolved_cross_sheet_values;
+  if (f.formula_dependencies !== undefined)         m.formula_dependencies = f.formula_dependencies;
+  if (f.dependency_depth !== undefined)             m.dependency_depth = f.dependency_depth;
+  if (f.circular_reference_detected !== undefined)  m.circular_reference_detected = f.circular_reference_detected;
+  if (f.temporal_scope !== undefined)               m.temporal_scope = f.temporal_scope;
+  if (f.scenario !== undefined)                     m.scenario = f.scenario;
+  if (f.cross_source_status !== undefined)          m.cross_source_status = f.cross_source_status;
+  if (f.unit_scale_factor_applied !== undefined)    m.unit_scale_factor_applied = f.unit_scale_factor_applied;
+  if (f.unit_scale_source_text !== undefined)       m.unit_scale_source_text = f.unit_scale_source_text;
+  if (f.normalized_period_label !== undefined)      m.normalized_period_label = f.normalized_period_label;
+  if (f.original_period_label !== undefined)        m.original_period_label = f.original_period_label;
+  if (f.typing_reason !== undefined)                m.typing_reason = f.typing_reason;
+  return Object.keys(m).length > 0 ? m : null;
+}
+
+/**
+ * Unpack provenance metadata from the JSONB column back into FinancialFactV1 fields.
+ * No-op when raw is null/undefined (pre-migration or non-XLSX facts).
+ *
+ * @internal — exported for unit tests only
+ */
+export function unpackProvenanceMetadata(raw: unknown, fact: FinancialFactV1): void {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  const m = raw as Record<string, unknown>;
+  if (m["value_kind"] != null)
+    fact.value_kind = m["value_kind"] as FinancialFactV1["value_kind"];
+  if ("formula" in m)
+    fact.formula = m["formula"] as string | null;
+  if (Array.isArray(m["cross_sheet_refs"]))
+    fact.cross_sheet_refs = m["cross_sheet_refs"] as string[];
+  if (Array.isArray(m["named_range_refs"]))
+    fact.named_range_refs = m["named_range_refs"] as string[];
+  if (Array.isArray(m["resolved_cross_sheet_values"]))
+    fact.resolved_cross_sheet_values = m["resolved_cross_sheet_values"] as FinancialFactV1["resolved_cross_sheet_values"];
+  if (Array.isArray(m["formula_dependencies"]))
+    fact.formula_dependencies = m["formula_dependencies"] as FinancialFactV1["formula_dependencies"];
+  if ("dependency_depth" in m)
+    fact.dependency_depth = m["dependency_depth"] as number | null;
+  if (m["circular_reference_detected"] === true)
+    fact.circular_reference_detected = true;
+  if (m["temporal_scope"] != null)
+    fact.temporal_scope = m["temporal_scope"] as FinancialFactV1["temporal_scope"];
+  if (m["scenario"] != null)
+    fact.scenario = String(m["scenario"]);
+  if (m["cross_source_status"] != null)
+    fact.cross_source_status = m["cross_source_status"] as FinancialFactV1["cross_source_status"];
+  if (m["unit_scale_factor_applied"] != null)
+    fact.unit_scale_factor_applied = Number(m["unit_scale_factor_applied"]);
+  if ("unit_scale_source_text" in m)
+    fact.unit_scale_source_text = m["unit_scale_source_text"] as string | null;
+  if (m["normalized_period_label"] != null)
+    fact.normalized_period_label = String(m["normalized_period_label"]);
+  if (m["original_period_label"] != null)
+    fact.original_period_label = String(m["original_period_label"]);
+  if (m["typing_reason"] != null)
+    fact.typing_reason = String(m["typing_reason"]);
+}
+
 /**
  * Upsert a batch of FinancialFactV1 rows into public.financial_facts_v1.
  *
@@ -33,14 +108,15 @@ export async function upsertFinancialFactsV1(
   if (valid.length === 0) return 0;
 
   // Build parameterised multi-row upsert
-  // Columns (20 value cols + created_at):
+  // Columns (23 value cols + created_at):
   //   fact_id, deal_id, document_id, source_kind,
   //   metric_key, metric_label, period_type, period_label,
   //   value, unit, currency, confidence, reconciliation_status,
   //   sheet_name, page_number, row_index, col_index,
   //   source_pointer, evidence_id, excerpt,
-  //   slide_type, slide_title
-  const COL_COUNT = 22;
+  //   slide_type, slide_title,
+  //   provenance_metadata
+  const COL_COUNT = 23;
   const params: unknown[] = [];
   const rowPlaceholders: string[] = [];
 
@@ -54,8 +130,10 @@ export async function upsertFinancialFactsV1(
         $${base + 12}::text, $${base + 13}::text, $${base + 14}::int,
         $${base + 15}::int, $${base + 16}::int, $${base + 17}::text,
         $${base + 18}::text, $${base + 19}::text,
-        $${base + 20}::text, $${base + 21}::text)`
+        $${base + 20}::text, $${base + 21}::text,
+        $${base + 22}::jsonb)`
     );
+    const provenanceMeta = packProvenanceMetadata(f);
     params.push(
       f.fact_id,
       f.deal_id,
@@ -78,7 +156,8 @@ export async function upsertFinancialFactsV1(
       f.evidence_id ?? null,
       f.excerpt ?? null,
       f.slide_type ?? null,
-      f.slide_title ?? null
+      f.slide_title ?? null,
+      provenanceMeta !== null ? JSON.stringify(provenanceMeta) : null
     );
   }
 
@@ -89,7 +168,8 @@ export async function upsertFinancialFactsV1(
        value, unit, currency, confidence, reconciliation_status,
        sheet_name, page_number, row_index, col_index,
        source_pointer, evidence_id, excerpt,
-       slide_type, slide_title)
+       slide_type, slide_title,
+       provenance_metadata)
     VALUES ${rowPlaceholders.join(",\n    ")}
     ON CONFLICT (fact_id) DO UPDATE SET
       document_id           = EXCLUDED.document_id,
@@ -110,6 +190,7 @@ export async function upsertFinancialFactsV1(
       excerpt               = EXCLUDED.excerpt,
       slide_type            = EXCLUDED.slide_type,
       slide_title           = EXCLUDED.slide_title,
+      provenance_metadata   = EXCLUDED.provenance_metadata,
       updated_at            = now()
   `;
 
@@ -118,19 +199,64 @@ export async function upsertFinancialFactsV1(
 }
 
 /**
+ * Safety ceiling for analysis-path fact loads.
+ *
+ * Exported so callers can detect potential truncation by comparing
+ * the returned array length against this constant.
+ *
+ * 500 covers realistic dense multi-period financial models
+ * (e.g. 20 metrics × 10 periods × 2 sources = 400 facts).
+ * Raise this if production deals consistently exceed the ceiling.
+ */
+export const FINANCIAL_FACTS_ANALYSIS_LIMIT = 500;
+
+/**
  * Fetch FinancialFactV1 rows for a deal, ordered most-recent period first.
  *
  * @param pool
  * @param dealId
  * @param opts.metricKey - optional filter by metric_key
- * @param opts.limit - max rows (default 25)
+ * @param opts.limit - max rows (default 25, hard ceiling FINANCIAL_FACTS_ANALYSIS_LIMIT)
  */
+/**
+ * Fetch enriched document metadata for a deal to support financial coverage
+ * detection (cap-table, xlsx MIME type matching) in the report compiler.
+ *
+ * Mirrors the API-side `getDocumentsForReport` — kept in sync intentionally.
+ * Uses a LEFT JOIN against document_files so deals without file rows still
+ * return document records (filename will be null in that case).
+ *
+ * Fail-open: callers should catch and default to [] on error.
+ */
+export async function getDocumentsForReport(
+  pool: Pool,
+  dealId: string,
+): Promise<Array<{ document_id: string; filename: string | null; kind: string | null; mime_type: string | null }>> {
+  const { rows } = await pool.query<{
+    document_id: string;
+    filename: string | null;
+    kind: string | null;
+    mime_type: string | null;
+  }>(
+    `SELECT d.id AS document_id,
+            df.file_name AS filename,
+            d.type AS kind,
+            COALESCE(df.mime_type, d.mime_type) AS mime_type
+       FROM documents d
+       LEFT JOIN document_files df ON df.document_id = d.id
+      WHERE d.deal_id = $1::uuid
+        AND d.deleted_at IS NULL`,
+    [dealId],
+  );
+  return rows ?? [];
+}
+
 export async function getFinancialFactsForDeal(
   pool: Pool,
   dealId: string,
   opts: { metricKey?: string; limit?: number } = {}
 ): Promise<FinancialFactV1[]> {
-  const limit = Math.min(opts.limit ?? 25, 100);
+  const limit = Math.min(opts.limit ?? 25, FINANCIAL_FACTS_ANALYSIS_LIMIT);
   const params: unknown[] = [dealId, limit];
   const metricFilter = opts.metricKey
     ? `AND metric_key = $3::text`
@@ -143,7 +269,9 @@ export async function getFinancialFactsForDeal(
        metric_key, metric_label, period_type, period_label,
        value::float8, unit, currency, confidence, reconciliation_status,
        sheet_name, page_number, row_index, col_index,
-       source_pointer, evidence_id, excerpt
+       source_pointer, evidence_id, excerpt,
+       slide_type, slide_title,
+       provenance_metadata
      FROM public.financial_facts_v1
      WHERE deal_id = $1::uuid
      ${metricFilter}
@@ -168,7 +296,7 @@ export async function getFinancialFactsForDeal(
 // ─── Internal mapper ──────────────────────────────────────────────────────────
 
 function rowToFact(r: Record<string, unknown>): FinancialFactV1 {
-  return {
+  const fact: FinancialFactV1 = {
     fact_id:               String(r["fact_id"] ?? ""),
     deal_id:               String(r["deal_id"] ?? ""),
     document_id:           r["document_id"] != null ? String(r["document_id"]) : undefined,
@@ -191,5 +319,9 @@ function rowToFact(r: Record<string, unknown>): FinancialFactV1 {
     source_pointer:r["source_pointer"]!= null ? String(r["source_pointer"]): undefined,
     evidence_id:   r["evidence_id"]   != null ? String(r["evidence_id"])   : undefined,
     excerpt:       r["excerpt"]       != null ? String(r["excerpt"])       : undefined,
+    slide_type:    r["slide_type"]    != null ? String(r["slide_type"])    : undefined,
+    slide_title:   r["slide_title"]   != null ? String(r["slide_title"])   : undefined,
   };
+  unpackProvenanceMetadata(r["provenance_metadata"], fact);
+  return fact;
 }

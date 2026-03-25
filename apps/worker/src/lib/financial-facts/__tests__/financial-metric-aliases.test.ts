@@ -89,3 +89,99 @@ describe("isKnownMetricKey", () => {
     }
   });
 });
+
+// ─── Critical metric alias coverage ──────────────────────────────────────────
+
+describe("normalizeMetricKey — raise_amount aliases", () => {
+  it("maps 'the ask' to raise_amount (DealDecision real-deal pattern)", () => {
+    expect(normalizeMetricKey("The Ask")).toBe("raise_amount");
+    expect(normalizeMetricKey("the ask")).toBe("raise_amount");
+  });
+
+  it("maps 'amount raising' to raise_amount", () => {
+    expect(normalizeMetricKey("Amount Raising")).toBe("raise_amount");
+  });
+
+  it("maps 'funding sought' to raise_amount", () => {
+    expect(normalizeMetricKey("Funding Sought")).toBe("raise_amount");
+  });
+
+  it("maps 'pre-seed raise' to raise_amount", () => {
+    expect(normalizeMetricKey("Pre-Seed Raise")).toBe("raise_amount");
+    expect(normalizeMetricKey("Pre Seed Raise")).toBe("raise_amount");
+  });
+
+  it("maps existing raise aliases unchanged", () => {
+    expect(normalizeMetricKey("Raising")).toBe("raise_amount");
+    expect(normalizeMetricKey("Capital Raise")).toBe("raise_amount");
+    expect(normalizeMetricKey("Seed Round")).toBe("raise_amount");
+    expect(normalizeMetricKey("Series A")).toBe("raise_amount");
+  });
+});
+
+describe("normalizeMetricKey — cash aliases", () => {
+  it("maps 'cash position' to cash", () => {
+    expect(normalizeMetricKey("Cash Position")).toBe("cash");
+    expect(normalizeMetricKey("cash position")).toBe("cash");
+  });
+
+  it("maps existing cash aliases unchanged", () => {
+    expect(normalizeMetricKey("Cash Balance")).toBe("cash");
+    expect(normalizeMetricKey("Cash on Hand")).toBe("cash");
+    expect(normalizeMetricKey("Ending Cash")).toBe("cash");
+  });
+});
+
+describe("normalizeMetricKey — runway aliases", () => {
+  it("maps 'operating runway' to runway_months", () => {
+    expect(normalizeMetricKey("Operating Runway")).toBe("runway_months");
+  });
+
+  it("maps existing runway aliases unchanged", () => {
+    expect(normalizeMetricKey("Runway")).toBe("runway_months");
+    expect(normalizeMetricKey("Cash Runway")).toBe("runway_months");
+    expect(normalizeMetricKey("Months of Runway")).toBe("runway_months");
+  });
+});
+
+describe("normalizeMetricKey — pre_money_valuation aliases", () => {
+  it("maps 'valuation cap' to pre_money_valuation", () => {
+    expect(normalizeMetricKey("Valuation Cap")).toBe("pre_money_valuation");
+  });
+
+  it("maps existing valuation aliases unchanged", () => {
+    expect(normalizeMetricKey("Pre-Money Valuation")).toBe("pre_money_valuation");
+    expect(normalizeMetricKey("Pre Money")).toBe("pre_money_valuation");
+    expect(normalizeMetricKey("Company Valuation")).toBe("pre_money_valuation");
+  });
+});
+
+describe("normalizeMetricKey — arr and mrr aliases", () => {
+  it("maps 'annual recurring revenue' to arr", () => {
+    expect(normalizeMetricKey("Annual Recurring Revenue")).toBe("arr");
+  });
+
+  it("maps 'monthly recurring revenue' to mrr", () => {
+    expect(normalizeMetricKey("Monthly Recurring Revenue")).toBe("mrr");
+  });
+});
+
+// ─── Ambiguity regression guards ─────────────────────────────────────────────
+
+describe("normalizeMetricKey — ambiguity guards", () => {
+  it("does NOT map bare 'ask' to raise_amount (too generic)", () => {
+    // "ask" alone should not match — only "the ask" is in the alias map
+    const result = normalizeMetricKey("ask");
+    expect(result).not.toBe("raise_amount");
+  });
+
+  it("does NOT map 'subscription revenue' to mrr", () => {
+    // subscription revenue → revenue (not mrr), as it could be non-recurring
+    expect(normalizeMetricKey("Subscription Revenue")).toBe("revenue");
+  });
+
+  it("does NOT map 'post-money valuation' to pre_money_valuation", () => {
+    expect(normalizeMetricKey("Post-Money Valuation")).toBe("post_money_valuation");
+    expect(normalizeMetricKey("Post Money")).toBe("post_money_valuation");
+  });
+});

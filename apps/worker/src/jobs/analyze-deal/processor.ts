@@ -12,6 +12,7 @@ import {
   NarrativeArcDetector,
   FinancialHealthCalculator,
   RiskAssessmentEngine,
+  FinancialIntegrityAnalyzerV1,
   sanitizeText,
 } from "@dealdecision/core";
 import {
@@ -44,6 +45,7 @@ import { OpenAIGPT4oProvider } from "../../lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "../../lib/llm/types";
 import type { JobStatus } from "@dealdecision/contracts";
 import { applySlideUnderstandingV1Shadow } from "../../lib/pdf_v2/slide-understanding-v1";
+import { getFinancialFactsForDeal, getDocumentsForReport, FINANCIAL_FACTS_ANALYSIS_LIMIT } from "../../lib/db/financial-facts-db";
 
 // -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
 function safeJsonParseObject(raw: string): Record<string, unknown> | null {
@@ -1225,6 +1227,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 			narrativeArc: new NarrativeArcDetector(),
 			financialHealth: new FinancialHealthCalculator(),
 			riskAssessment: new RiskAssessmentEngine(),
+			financialIntegrity: new FinancialIntegrityAnalyzerV1(),
 		};
 
 		const orchestrator = new DealOrchestrator(analyzers as any, storage as any, {
@@ -1250,6 +1253,20 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 			);
 		}
 
+		// Load financial facts for the financial integrity analyzer (fail-open: empty array is safe).
+		// Uses FINANCIAL_FACTS_ANALYSIS_LIMIT to ensure dense multi-period models are not silently truncated.
+		let financialFactsForOrchestrator: Awaited<ReturnType<typeof getFinancialFactsForDeal>> = [];
+		try {
+			financialFactsForOrchestrator = await getFinancialFactsForDeal(getPool(), dealId, { limit: FINANCIAL_FACTS_ANALYSIS_LIMIT });
+			if (financialFactsForOrchestrator.length >= FINANCIAL_FACTS_ANALYSIS_LIMIT) {
+				job.log(
+					`[analyze-deal] financial_facts truncation warning: returned ${financialFactsForOrchestrator.length} rows — deal may have more facts than the analysis ceiling (${FINANCIAL_FACTS_ANALYSIS_LIMIT}). Integrity analysis may be incomplete.`
+				);
+			}
+		} catch {
+			// Integrity analysis degrades gracefully with no facts — never block orchestration.
+		}
+
 		const heartbeat = startHeartbeat(job, {
 			stage: "running",
 			dealId,
@@ -1273,6 +1290,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 					phase1_update_report_v1,
 					phase1_deal_summary_v2,
 					llm_calls,
+					financial_facts: financialFactsForOrchestrator,
 				},
 			});
 		} finally {
@@ -1462,10 +1480,29 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 					promotedFacts = [];
 				}
 
-				const compiledReport = promotedFacts.length > 0
-					? compileDIOToReportWithPromotedFacts(result.dio as any, { promotedFacts })
-					: compileDIOToReport(result.dio as any);
+				// Load enriched document metadata (filename + MIME) for the compiler so
+				// cap-table and XLSX detection work the same as the API recompile path.
+				// Fail-open: any error defaults to empty array, which degrades gracefully.
+				let documentsForCompile: Awaited<ReturnType<typeof getDocumentsForReport>> = [];
+				try {
+					documentsForCompile = await getDocumentsForReport(pool, dealId);
+				} catch {
+					// Non-blocking — compiler falls back to DIO inputs.documents
+				}
 
+				const compiledReport = (() => {
+					// Always use the WithPromotedFacts variant so financialFacts and documents
+					// can be supplied for consistent has_xlsx / has_cap_table / has_facts output
+					// regardless of whether any promoted facts were found this run.
+					return compileDIOToReportWithPromotedFacts(result.dio as any, {
+						promotedFacts,
+						financialFacts: financialFactsForOrchestrator,
+						documents: documentsForCompile,
+					});
+				})();
+
+				// Explicitly stamp updated_at so the staleness detector can use DIO.updated_at
+				// as the authoritative freshness anchor for the financial snapshot.
 				const persisted = await pool.query<{ persisted: boolean }>(
 					`UPDATE deal_intelligence_objects
 						SET dio_data = jsonb_set(
@@ -1473,7 +1510,8 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 							'{report}',
 							$1::jsonb,
 							true
-						)
+						),
+						updated_at = now()
 					 WHERE dio_id = $2::uuid
 					 RETURNING true as persisted`,
 					[JSON.stringify(compiledReport), dioIdToUpdate]
@@ -1488,6 +1526,18 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						analysis_version: (result.storage_result as any)?.version ?? null,
 						row_count: persisted.rowCount,
 						report_version: (compiledReport as any)?.version ?? null,
+						ts: new Date().toISOString(),
+					})
+				);
+				console.log(
+					JSON.stringify({
+						// Stale detector reads DIO.updated_at as the freshness anchor.
+						// Stamping now() here marks financial snapshot as fresh for this run.
+						event: "FINANCIAL_SNAPSHOT_FRESHNESS_UPDATED",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						dio_id: dioIdToUpdate,
+						analysis_version: (result.storage_result as any)?.version ?? null,
 						ts: new Date().toISOString(),
 					})
 				);

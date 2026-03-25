@@ -10,6 +10,7 @@ import {
 } from '../../lib/apiClient';
 import { AlertCircle, RefreshCw } from 'lucide-react';
 import { InsightsDataPanel } from './InsightsDataPanel';
+import { FinancialFactsRegistryPanel } from './FinancialFactsRegistryPanel';
 
 type DataTabProps = {
   dealId: string;
@@ -265,6 +266,20 @@ export function DataTab({ dealId, darkMode }: DataTabProps) {
           </p>
         </div>
         <InsightsDataPanel dealId={dealId} darkMode={darkMode} />
+      </div>
+
+      {/* ── Financial Facts Registry ── */}
+      <div className={`border-t pt-6 ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+        <div className="mb-4">
+          <h3 className={`text-base font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+            Financial Facts Registry
+          </h3>
+          <p className={`text-sm mt-0.5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+            Extracted financial datapoints with formula traceability and provenance metadata.
+            Click any row to expand its extraction assumptions.
+          </p>
+        </div>
+        <FinancialFactsRegistryPanel dealId={dealId} darkMode={darkMode} />
       </div>
     </div>
   );

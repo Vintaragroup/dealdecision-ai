@@ -25,6 +25,7 @@ import {
   NarrativeArcDetector,
   FinancialHealthCalculator,
   RiskAssessmentEngine,
+  FinancialIntegrityAnalyzerV1,
 } from "@dealdecision/core";
 import {
   MockMCPClient,
@@ -85,6 +86,7 @@ function createOrchestrator(): DealOrchestrator {
     narrativeArc: new NarrativeArcDetector(),
     financialHealth: new FinancialHealthCalculator(),
     riskAssessment: new RiskAssessmentEngine(),
+    financialIntegrity: new FinancialIntegrityAnalyzerV1(),
   };
   
   return new DealOrchestrator(analyzers, storage, {

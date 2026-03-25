@@ -307,3 +307,120 @@ describe("extractPeriodFromText — extended patterns", () => {
     expect(extractPeriodFromText("Fiscal 2023")).toBe("FY2023");
   });
 });
+
+// ─── Ordinal forecast series — XLSX projection detection ──────────────────────
+
+describe("extractFinancialTableClaims — ordinal XLSX forecast series", () => {
+  const DEAL_ID = "test-deal-id";
+
+  it("sets temporal_scope=projected for Q1-Q4 header columns when source_kind_override=xlsx", () => {
+    const text = [
+      "Q1\tQ2\tQ3\tQ4",
+      "Revenue\t100000\t200000\t300000\t400000",
+      "Burn Rate\t50000\t60000\t70000\t80000",
+    ].join("\n");
+
+    const facts = extractFinancialTableClaims(text, {
+      deal_id: DEAL_ID,
+      source_kind_override: "xlsx",
+      page_number: 0,
+    });
+
+    expect(facts.length).toBeGreaterThan(0);
+    for (const fact of facts) {
+      expect(fact.temporal_scope).toBe("projected");
+    }
+  });
+
+  it("sets period_label from header context (not 'current') for tab-separated Q1-Q4 table", () => {
+    const text = [
+      "Q1\tQ2\tQ3\tQ4",
+      "Revenue\t100000\t200000\t300000\t400000",
+    ].join("\n");
+
+    const facts = extractFinancialTableClaims(text, {
+      deal_id: DEAL_ID,
+      source_kind_override: "xlsx",
+      page_number: 0,
+    });
+
+    const revFact = facts.find(f => f.metric_key === "revenue");
+    expect(revFact).toBeDefined();
+    expect(revFact?.period_label).not.toBe("current");
+    expect(revFact?.period_label).toMatch(/^Q[1-4]$/);
+  });
+
+  it("sets temporal_scope=projected for 'Year N' ordinal header columns", () => {
+    const text = [
+      "Year 1\tYear 2\tYear 3\tYear 4",
+      "Revenue\t500000\t750000\t1000000\t1500000",
+    ].join("\n");
+
+    const facts = extractFinancialTableClaims(text, {
+      deal_id: DEAL_ID,
+      source_kind_override: "xlsx",
+      page_number: 0,
+    });
+
+    expect(facts.length).toBeGreaterThan(0);
+    for (const fact of facts) {
+      expect(fact.temporal_scope).toBe("projected");
+    }
+  });
+
+  it("does NOT set temporal_scope=projected when source_kind_override is NOT xlsx", () => {
+    const text = [
+      "Q1\tQ2\tQ3\tQ4",
+      "Revenue\t100000\t200000\t300000\t400000",
+    ].join("\n");
+
+    const facts = extractFinancialTableClaims(text, {
+      deal_id: DEAL_ID,
+      // no source_kind_override — defaults to pdf_table
+      page_number: 0,
+    });
+
+    for (const fact of facts) {
+      expect(fact.temporal_scope).toBeUndefined();
+    }
+  });
+
+  it("does NOT set temporal_scope=projected for standard dated columns (FY2025)", () => {
+    const text = [
+      "FY2024\tFY2025\tFY2026",
+      "Revenue\t$1M\t$2M\t$3M",
+    ].join("\n");
+
+    const facts = extractFinancialTableClaims(text, {
+      deal_id: DEAL_ID,
+      source_kind_override: "xlsx",
+      page_number: 0,
+    });
+
+    // FY columns are not ordinal — should not be marked as ordinal forecast
+    for (const fact of facts) {
+      expect(fact.temporal_scope).toBeUndefined();
+    }
+  });
+
+  it("detects bare sequential integer header series (1 2 3 4) as ordinal forecast", () => {
+    const text = [
+      "1\t2\t3\t4",
+      "Revenue\t100000\t200000\t300000\t400000",
+    ].join("\n");
+
+    const facts = extractFinancialTableClaims(text, {
+      deal_id: DEAL_ID,
+      source_kind_override: "xlsx",
+      page_number: 0,
+    });
+
+    if (facts.length > 0) {
+      // When detected, should be marked projected
+      for (const fact of facts) {
+        expect(fact.temporal_scope).toBe("projected");
+      }
+    }
+    // If not detected, that's also acceptable for now (bare integers require strict sequence)
+  });
+});

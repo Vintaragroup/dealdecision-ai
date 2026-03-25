@@ -70,6 +70,49 @@ export type CrossSourceReconciliationStatus =
   | "projected_only"
   | "unresolved";
 
+// ─── Cell dependency ────────────────────────────────────────────────────────
+
+/**
+ * A direct cell dependency extracted from an Excel formula.
+ *
+ * Represents a single-cell reference (not a range) to a specific cell,
+ * either on the same worksheet or a different one.
+ *
+ * Populated in Phase 2E by `parseAllDirectCellDeps()` in `dependency-graph.ts`.
+ * Present in `FinancialFactV1.formula_dependencies` and `TypedMetric.formula_dependencies`.
+ */
+export interface CellDependency {
+  /** Worksheet name. For same-sheet refs this is the current sheet name. */
+  sheet: string;
+  /** Cell address, uppercase, $ stripped. e.g. "C5", "D12". */
+  cell: string;
+}
+
+// ─── Resolved cross-sheet value ─────────────────────────────────────────────
+
+/**
+ * A resolved direct single-cell cross-sheet reference value.
+ *
+ * Produced by `resolveDirectCrossSheetRefs()` in `cross-tab-resolver.ts`
+ * when a formula like `=Inputs!C5` or `='Revenue Build'!D12` was resolved
+ * against the workbook cell index at extraction time.
+ *
+ * Only direct single-cell refs are resolved in Phase 2D.
+ * Range references (SUM(Model!C3:C10)) remain detection-only (cross_sheet_refs).
+ */
+export interface ResolvedCrossSheetValue {
+  /** Worksheet name, exact case. */
+  sheet: string;
+  /** Cell address, uppercase, $ stripped. e.g. "C5", "D12". */
+  cell: string;
+  /**
+   * Raw cell value when resolved; null when the referenced sheet or cell
+   * was not found in the workbook index, or when the value was non-numeric
+   * and non-string (boolean, error, etc.).
+   */
+  value: number | string | null;
+}
+
 // ─── FinancialFactV1 ──────────────────────────────────────────────────────────
 
 export interface FinancialFactV1 {
@@ -176,6 +219,169 @@ export interface FinancialFactV1 {
 
   /** ≤ 280 chars, optional text excerpt from source. */
   excerpt?: string;
+
+  // ── Formula traceability ─────────────────────────────────────────────────
+
+  /**
+   * Whether the source Excel cell value was hard-coded or derived from a formula.
+   *
+   * "literal"  — the cell contained a static/hard-coded value.
+   * "formula"  — the cell value was computed by an Excel formula.
+   * "unknown"  — formula metadata was not available for this extraction
+   *              (e.g. pre-formula-traceability ingestion, or excel_range payloads).
+   *
+   * Only populated for XLSX-sourced facts (source_kind === "xlsx").
+   */
+  value_kind?: "literal" | "formula" | "unknown";
+
+  /**
+   * The raw Excel formula string when value_kind === "formula".
+   * e.g. "=SUM(C3:C17)" or "=B12/B13".
+   *
+   * Preserved for downstream workbook-logic traceability. Null when the cell
+   * was literal or formula metadata was unavailable.
+   */
+  formula?: string | null;
+
+  /**
+   * Worksheet names referenced by the source formula across tab boundaries.
+   * Absent when value_kind !== "formula" or when no cross-tab references
+   * were detected. Sorted and deduplicated.
+   *
+   * Indicates the fact's value was computed from data on another sheet,
+   * which may carry forward uncertainty if the source sheet is unavailable.
+   */
+  cross_sheet_refs?: string[];
+
+  /**
+   * Workbook-level named range identifiers referenced by the source formula.
+   * Absent when value_kind !== "formula" or when no named-range candidates
+   * were detected. Sorted and deduplicated.
+   *
+   * Detected deterministically by `extractNamedRangeRefs()` — does NOT
+   * resolve what value a named range holds (requires full workbook context).
+   * Indicates the fact depends on a named workbook assumption whose definition
+   * may not be available from the extracted page payload alone.
+   *
+   * Examples:
+   *   formula "=Revenue_2024"            → ["Revenue_2024"]
+   *   formula "=IF(ChurnRate > 0.05, …)" → ["ChurnRate", …]
+   */
+  named_range_refs?: string[];
+
+  /**
+   * Resolved values for direct single-cell cross-sheet references in the formula.
+   *
+   * Populated when the source formula contained at least one direct cross-tab
+   * reference (e.g. `=Inputs!C5`) AND the workbook cell index was available
+   * at extraction time (`cross_sheet_resolved` in the DPU payload).
+   *
+   * One entry per unique direct ref found in the formula:
+   *   - `value` is the raw cell value when found in the index.
+   *   - `value` is null when the referenced sheet/cell was not found.
+   *
+   * Range references (e.g. `SUM(Model!C3:C10)`) remain detection-only in
+   * `cross_sheet_refs` and are NOT resolved here.
+   *
+   * Examples:
+   *   formula "=Inputs!C5"               → [{ sheet: "Inputs", cell: "C5", value: 12.5 }]
+   *   formula "='Revenue Build'!D12"     → [{ sheet: "Revenue Build", cell: "D12", value: 450000 }]
+   *   formula "=SUM(Model!C3:C10)"       → []  (range ref — not resolved)
+   */
+  resolved_cross_sheet_values?: ResolvedCrossSheetValue[];
+
+  // ── Dependency graph metadata ─────────────────────────────────────────────
+
+  /**
+   * Direct single-cell dependencies of the source formula.
+   *
+   * Includes both same-sheet refs (e.g. `{ sheet: "Revenue", cell: "C3" }`) and
+   * cross-sheet refs (e.g. `{ sheet: "Inputs", cell: "C5" }`).
+   *
+   * Only direct cell references are included — range endpoints (SUM(C3:C17))
+   * are not expanded in this phase. Named ranges are not resolved.
+   *
+   * Absent when value_kind !== "formula" or when formula has no direct cell refs.
+   *
+   * Examples:
+   *   formula "=C3+D3"              → [{ sheet: "Revenue", cell: "C3" }, { sheet: "Revenue", cell: "D3" }]
+   *   formula "=Inputs!C5"          → [{ sheet: "Inputs", cell: "C5" }]
+   *   formula "=SUM(Inputs!C3:C10)" → []  (range ref — not expanded)
+   */
+  formula_dependencies?: CellDependency[];
+
+  /**
+   * Depth of this formula cell in the workbook dependency chain.
+   *
+   * Depth 1 = formula depends only on literal (non-formula) cells.
+   * Depth 2 = formula depends on at least one depth-1 formula cell.
+   * Depth N = N formula hops from the nearest literal leaf input.
+   *
+   * null when:
+   *   - This cell or one of its dependencies is involved in a circular reference.
+   *   - The workbook graph was not available at extraction time.
+   *   - All dependencies are outside the processed sheets (depth unknown).
+   *
+   * Absent when value_kind !== "formula" or when formula has no direct cell deps.
+   */
+  dependency_depth?: number | null;
+
+  /**
+   * True when any of this formula's direct dependencies is involved in a
+   * circular reference chain detected in the workbook.
+   *
+   * Indicates that this fact's value may be unreliable or undefined — circular
+   * references in Excel produce iteration-dependent results or errors.
+   *
+   * Only set when `true`; absent when no circular reference risk was detected.
+   *
+   * Note: Phase 2E detects adjacency to circular nodes (any direct dep is in
+   * a cycle), not just membership in a cycle, to surface risk conservatively.
+   */
+  circular_reference_detected?: boolean;
+
+  // ── Extraction assumption metadata ────────────────────────────────────────
+
+  /**
+   * Numeric scale factor applied to the raw cell value during XLSX extraction.
+   * 1 = no scaling; 1000 = "in thousands"; 1_000_000 = "in millions".
+   * Absent for non-XLSX sources or when no scale annotation was detected.
+   * Present only when the factor is > 1 (no-op scalings are omitted).
+   */
+  unit_scale_factor_applied?: number;
+
+  /**
+   * Source text that indicated the scale factor.
+   * e.g. "in thousands", "$000s", "$MM", "in millions".
+   * Present only when unit_scale_factor_applied > 1.
+   */
+  unit_scale_source_text?: string | null;
+
+  /**
+   * Canonical normalized period label produced by parsePeriodLabel().
+   * e.g. raw header "1Q24" → "Q1 2024"; "Trailing Twelve Months" → "TTM".
+   * Present for XLSX-sourced facts.
+   */
+  normalized_period_label?: string;
+
+  /**
+   * Raw column header string before period normalization.
+   * e.g. "1Q24", "FY 2024", "Trailing Twelve Months".
+   * Present for XLSX-sourced facts.
+   */
+  original_period_label?: string;
+
+  /**
+   * Deterministic explanation of why this metric_key was assigned.
+   * Carried from TypedMetric.typing_reason through metric-promoter.
+   * Includes the row label match, column context, and any scale-factor
+   * annotation. Useful for analyst traceability without code inspection.
+   *
+   * Example:
+   *   `Row label "Revenue" matched pattern for revenue_canonical_v1;
+   *    column="FY2024"; unit_scale_factor=1000 applied (source: "in thousands")`
+   */
+  typing_reason?: string;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

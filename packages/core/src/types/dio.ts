@@ -12,6 +12,7 @@
  */
 
 import { z } from "zod";
+import { FinancialIntegrityV1Schema } from "./financial-integrity-v1.js";
 
 // ============================================================================
 // Phase 1 UI-usability contract (V1)
@@ -1109,6 +1110,9 @@ export const DealIntelligenceObjectSchema = z.object({
       phase_inference_v1: PhaseInferenceV1Schema.optional(),
       fundability_assessment_v1: FundabilityAssessmentV1Schema.optional(),
       fundability_decision_v1: FundabilityDecisionV1Schema.optional(),
+
+      // Additive: financial integrity analysis (cross-source discrepancy, completeness, anomalies).
+      financial_integrity_v1: FinancialIntegrityV1Schema.optional(),
     })
     .optional(),
   

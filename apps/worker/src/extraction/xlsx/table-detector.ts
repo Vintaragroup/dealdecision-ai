@@ -23,6 +23,8 @@
  */
 
 import { classifySheet, type SheetKind } from "./sheet-classifier.js";
+import { parsePeriodLabel } from "./period-parser.js";
+import type { WorkbookGraphPayload } from "./dependency-graph.js";
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -55,12 +57,131 @@ export interface FinancialTable {
   cell_matrix: (number | null)[][];
   /** Source page type ("excel_range" | "excel_sheet"). */
   source_page_type: string;
+  /**
+   * Detected unit scale multiplier for all numeric cells in this table.
+   *
+   * Default: 1 (no scaling — raw cell values are absolute).
+   * 1_000   = workbook states "in thousands" / "$000s"
+   * 1_000_000 = workbook states "in millions" / "$MM"
+   *
+   * Applied by parseFinancialTable() before emitting TypedMetric values.
+   * When absent (undefined), parseFinancialTable() treats it as 1.
+   */
+  unit_scale_factor?: number;
+  /**
+   * The source text snippet that triggered the unit scale detection,
+   * e.g. "in thousands" or "$000s". Null when no scaling was detected.
+   * Preserved for downstream traceability (stamped in typing_reason).
+   */
+  unit_scale_source_text?: string | null;
+  /**
+   * Optional per-cell Excel formula strings, keyed by "rowIdx:colIdx" (both
+   * 0-based within the cell_matrix dimensions).
+   *
+   * Populated by fromExcelSheet() when the source DPU payload carries a
+   * formula_grid (present for workbooks extracted via excel.ts ≥ formula-
+   * traceability version). Absent for excel_range payloads and pre-
+   * formula-traceability extractions.
+   *
+   * Used by parseFinancialTable() to set value_kind / formula on TypedMetric.
+   */
+  formula_map?: Record<string, string>;
+
+  /**
+   * Optional workbook-level cell value index for cross-sheet reference resolution.
+   *
+   * Maps lookup keys ("SheetName!CellAddr") to raw cell values extracted from
+   * the workbook at processing time (built in excel.ts while all sheets are
+   * in memory). Populated by fromExcelSheet() when the DPU page payload carries
+   * a `cross_sheet_resolved` field in its `structured` block.
+   *
+   * Used by parseFinancialTable() to resolve direct single-cell cross-tab refs
+   * (e.g. =Inputs!C5) into concrete values on TypedMetric.
+   *
+   * Keys format: "SheetName!CELLADDR"  e.g. "Inputs!C5", "Revenue Build!D12"
+   * Values: raw numeric or string cell values; absent keys → unresolvable.
+   *
+   * Absent when the DPU payload did not include cross-sheet resolution data
+   * (pre-2D extractions, excel_range payloads, or non-workbook sources).
+   */
+  cross_sheet_value_index?: Record<string, unknown>;
+
+  /**
+   * Workbook dependency graph summary from Phase 2E analysis.
+   *
+   * Contains:
+   *   - `circular_cells`: cell keys ("SheetName!CellAddr") involved in circular
+   *     reference chains detected in the workbook.
+   *   - `cell_depths`: depth of each formula cell from its literal leaf inputs.
+   *
+   * Used by parseFinancialTable() to populate `formula_dependencies`,
+   * `dependency_depth`, and `circular_reference_detected` on TypedMetric.
+   *
+   * Absent when the DPU payload did not include workbook graph data
+   * (pre-2E extractions, excel_range payloads, or non-workbook sources).
+   */
+  workbook_graph?: WorkbookGraphPayload;
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 const MIN_ROW_HEADERS = 2;
 const MIN_COL_HEADERS = 2;
+
+// ─── Unit scale detection ─────────────────────────────────────────────────────
+
+/**
+ * Ordered scale patterns. Billions before millions before thousands to prevent
+ * partial matches (e.g. "millions" must not match a "billions" label).
+ *
+ * Covers the most common institutional workbook denominations:
+ *   - "in thousands" / "(in thousands)" / "in US thousands"
+ *   - "$000s" / "£000s" / "€000s" / "(000s)"
+ *   - "in millions" / "(in millions)" / "$MM" / "£MM" / "€MM"
+ *   - "in billions"
+ */
+const UNIT_SCALE_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly factor: number }> = [
+  // Billions
+  {
+    pattern: /\bin\s+(?:us\s+)?billions?\b|\(in\s+billions?\)/i,
+    factor: 1_000_000_000,
+  },
+  // Millions — "in millions", "(in millions)", "$MM", "£MM", "€MM", "(£MM)"
+  {
+    pattern: /\bin\s+(?:us\s+)?millions?\b|\(in\s+millions?\)|[$€£¥₹]\s*mm\b|\([$€£¥₹]?\s*mm\)/i,
+    factor: 1_000_000,
+  },
+  // Thousands — "in thousands", "(in thousands)", "$000s", "£000s", "€000s", "(000s)", "(£000s)"
+  {
+    pattern: /\bin\s+(?:us\s+)?thousands?\b|\(in\s+thousands?\)|[$€£¥₹]\s*000s?\b|\([$€£¥₹]?\s*000s?\)/i,
+    factor: 1_000,
+  },
+];
+
+/**
+ * Scan an array of text strings for workbook/table unit scaling markers.
+ *
+ * Returns { factor: 1, source_text: null } when no scaling marker is found
+ * (i.e. raw cell values should be used as-is).
+ *
+ * First match across texts × patterns wins. Patterns are checked largest-first
+ * to prevent "thousands" from matching a "billions" header.
+ *
+ * @param texts  Candidate strings: sheet title, top-row labels, header cells.
+ * @returns      Scale multiplier and matched source text.
+ */
+export function detectUnitScale(texts: string[]): { factor: number; source_text: string | null } {
+  for (const text of texts) {
+    const t = text.trim();
+    if (!t) continue;
+    for (const { pattern, factor } of UNIT_SCALE_PATTERNS) {
+      if (pattern.test(t)) {
+        return { factor, source_text: t };
+      }
+    }
+  }
+  return { factor: 1, source_text: null };
+}
 
 /** Loose string→number converter. Returns null on failure. */
 function toNum(v: unknown): number | null {
@@ -154,6 +275,40 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
     }
   }
 
+  // Fallback 1b: mixed period-string + year-integer header row.
+  // Handles patterns like "TTM, 2023, 2024" where at least one column is a
+  // non-integer period string (TTM, Q1 2024, etc.) and the rest are year integers.
+  // This fires when Step 1 (all-year-integers) and Fallback 1 (all-strings) both fail.
+  if (headerRowIdx === -1) {
+    for (let i = 0; i < rowsPreview.length; i++) {
+      const row = rowsPreview[i];
+      if (!row || typeof row !== "object") continue;
+      const r = row as Record<string, unknown>;
+      const dataCols = Object.entries(r)
+        .filter(([k]) => k !== "col_A" && k !== "col_B")
+        .sort(([a], [b]) => a.localeCompare(b));
+      const nonNull = dataCols.filter(([, v]) => v !== null && v !== undefined && String(v).trim() !== "");
+      if (nonNull.length < MIN_COL_HEADERS) continue;
+      // Every column must be a year integer OR a recognizable period string.
+      const allPeriods = nonNull.every(([, v]) => {
+        if (isYear(v)) return true;
+        return parsePeriodLabel(String(v)).period_type !== "unknown";
+      });
+      // At least one column must be a non-year-integer (otherwise Step 1 fires).
+      const hasNonYearPeriod = nonNull.some(([, v]) => !isYear(v));
+      if (allPeriods && hasNonYearPeriod) {
+        headerRowIdx = i;
+        periodKeys   = nonNull.map(([k]) => k);
+        // Normalize year-integers to strings; period-strings to canonical form.
+        periodLabels = nonNull.map(([, v]) => {
+          if (isYear(v)) return String(Math.round(Number(v)));
+          return parsePeriodLabel(String(v)).normalized || String(v);
+        });
+        break;
+      }
+    }
+  }
+
   // Fallback 2: no explicit header row — use column key names as labels.
   if (headerRowIdx === -1) {
     // Find the first row with >= MIN_COL_HEADERS numeric data cells
@@ -175,7 +330,35 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
 
   if (periodKeys.length < MIN_COL_HEADERS) return null;
 
-  // ── Step 2: Extract label rows and cell matrix ─────────────────────────
+  // ── Step 2: Detect unit scaling ────────────────────────────────────────
+  // Scan sheet title + first 5 rows (col_A prose + any string-valued data
+  // cells) for denominator markers like "in thousands" or "$000s".
+  const scaleScanTexts: string[] = [sheetTitle];
+  for (let i = 0; i < Math.min(5, rowsPreview.length); i++) {
+    const row = rowsPreview[i];
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    if (typeof r["col_A"] === "string") scaleScanTexts.push(r["col_A"]);
+    // String-valued data cells in top rows may contain column-level markers
+    for (const v of Object.values(r)) {
+      if (typeof v === "string" && v.trim()) scaleScanTexts.push(v);
+    }
+  }
+  // Also scan the detected period-header row when it falls beyond row 4.
+  // Workbooks with multi-row title sections can push the header row to index 5+,
+  // causing denominator markers like "($000)" in the header to be missed above.
+  if (headerRowIdx >= 5 && headerRowIdx < rowsPreview.length) {
+    const hRow = rowsPreview[headerRowIdx];
+    if (hRow && typeof hRow === "object") {
+      for (const v of Object.values(hRow as Record<string, unknown>)) {
+        if (typeof v === "string" && v.trim()) scaleScanTexts.push(v);
+      }
+    }
+  }
+  const { factor: unit_scale_factor, source_text: unit_scale_source_text } =
+    detectUnitScale(scaleScanTexts);
+
+  // ── Step 3: Extract label rows and cell matrix ─────────────────────────
   const rowHeaders: string[] = [];
   const matrix: (number | null)[][] = [];
 
@@ -197,7 +380,7 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
 
   if (rowHeaders.length < MIN_ROW_HEADERS) return null;
 
-  // ── Step 3: Classify the table ─────────────────────────────────────────
+  // ── Step 4: Classify the table ─────────────────────────────────────────
   const classification = classifySheet({
     name: sheetTitle,
     column_headers: periodLabels,
@@ -211,6 +394,8 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
     column_headers: periodLabels,
     cell_matrix: matrix,
     source_page_type: "excel_range",
+    unit_scale_factor,
+    unit_scale_source_text,
   };
 }
 
@@ -245,7 +430,37 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
   const rowHeaders: string[] = [];
   const matrix: (number | null)[][] = [];
 
-  for (const row of rows) {
+  // Read formula_grid from the DPU payload when available.
+  // Keyed by "rawRowIndex:headerName" (0-based within rows[]).
+  const rawFormulaGrid: Record<string, string> | null =
+    typeof s["formula_grid"] === "object" && s["formula_grid"] !== null && !Array.isArray(s["formula_grid"])
+      ? (s["formula_grid"] as Record<string, string>)
+      : null;
+  // formula_map will be keyed by "matrixRowIdx:colIdx" (0-based within cell_matrix).
+  const formulaMap: Record<string, string> = {};
+
+  // Read cross_sheet_resolved from the DPU payload when available.
+  // Keys: "SheetName!CellAddr" → raw cell value (number | string | null).
+  // Built by excel.ts at workbook extraction time while all sheets are in memory.
+  const rawCrossSheetResolved: Record<string, unknown> | null =
+    typeof s["cross_sheet_resolved"] === "object" && s["cross_sheet_resolved"] !== null && !Array.isArray(s["cross_sheet_resolved"])
+      ? (s["cross_sheet_resolved"] as Record<string, unknown>)
+      : null;
+
+  // Read workbook_graph from the DPU payload when available.
+  // Built by excel.ts after all sheets are processed; contains circular_cells
+  // and cell_depths for dependency graph analysis (Phase 2E).
+  const rawWorkbookGraph: WorkbookGraphPayload | null = (() => {
+    const g = s["workbook_graph"];
+    if (!g || typeof g !== "object" || Array.isArray(g)) return null;
+    const gObj = g as Record<string, unknown>;
+    if (!Array.isArray(gObj["circular_cells"])) return null;
+    if (typeof gObj["cell_depths"] !== "object" || gObj["cell_depths"] === null) return null;
+    return g as WorkbookGraphPayload;
+  })();
+
+  for (let rawRowIdx = 0; rawRowIdx < rows.length; rawRowIdx++) {
+    const row = rows[rawRowIdx];
     if (!row || typeof row !== "object") continue;
     const r = row as Record<string, unknown>;
     const label = typeof r[labelCol] === "string" ? (r[labelCol] as string).trim() : "";
@@ -254,13 +469,29 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
     const cells = valueCols.map((col) => toNum(r[col]));
     if (cells.every((c) => c === null)) continue;
 
+    // Capture formula references before pushing so matrixRowIdx = rowHeaders.length.
+    if (rawFormulaGrid) {
+      const matrixRowIdx = rowHeaders.length;
+      for (let colIdx = 0; colIdx < valueCols.length; colIdx++) {
+        const colName = valueCols[colIdx]!;
+        const f = rawFormulaGrid[`${rawRowIdx}:${colName}`];
+        if (f) formulaMap[`${matrixRowIdx}:${colIdx}`] = f;
+      }
+    }
+
     rowHeaders.push(label);
     matrix.push(cells);
   }
 
   if (rowHeaders.length < MIN_ROW_HEADERS) return null;
 
-  // ── Step 3: Classify ──────────────────────────────────────────────────
+  // ── Step 3: Detect unit scaling ───────────────────────────────────────
+  // Scan sheet title + column headers for denominator markers.
+  const scaleScanTexts: string[] = [sheetTitle, ...headers];
+  const { factor: unit_scale_factor, source_text: unit_scale_source_text } =
+    detectUnitScale(scaleScanTexts);
+
+  // ── Step 4: Classify ──────────────────────────────────────────────────
   const classification = classifySheet({
     name: sheetTitle,
     column_headers: valueCols,
@@ -274,6 +505,13 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
     column_headers: valueCols,
     cell_matrix: matrix,
     source_page_type: "excel_sheet",
+    unit_scale_factor,
+    unit_scale_source_text,
+    ...(Object.keys(formulaMap).length > 0 ? { formula_map: formulaMap } : {}),
+    ...(rawCrossSheetResolved && Object.keys(rawCrossSheetResolved).length > 0
+      ? { cross_sheet_value_index: rawCrossSheetResolved }
+      : {}),
+    ...(rawWorkbookGraph ? { workbook_graph: rawWorkbookGraph } : {}),
   };
 }
 

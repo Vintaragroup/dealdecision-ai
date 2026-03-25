@@ -1,4 +1,6 @@
 import * as XLSX from "xlsx";
+import { parseDirectCrossSheetRefs } from "../../extraction/xlsx/cross-tab-resolver.js";
+import { buildWorkbookGraph, type WorkbookGraphPayload } from "../../extraction/xlsx/dependency-graph.js";
 
 type ExcelGridCell = {
   a: string; // A1 address
@@ -41,6 +43,47 @@ export interface ExcelContent {
       formula: string;
       result?: unknown;
     }>;
+    /**
+     * Per-cell formula strings for data rows, keyed by "rowIndex:headerName".
+     * rowIndex is the 0-based position of the row within this sheet's rows[].
+     * headerName is the normalized column header (same key used in rows[]).
+     *
+     * Only present when any data cell in this sheet has an Excel formula.
+     * Used by the financial extraction pipeline (table-detector.ts) to
+     * distinguish literal vs formula-derived values.
+     */
+    formula_grid?: Record<string, string>;
+    /**
+     * Resolved workbook-level cross-sheet cell values for direct single-cell
+     * references found in this sheet's formula_grid.
+     *
+     * Keys: "SheetName!CellAddr" (e.g. "Inputs!C5", "Revenue Build!D12").
+     * Values: raw numeric or string cell value from the referenced sheet;
+     *         key absent when the referenced cell was empty or not found.
+     *
+     * Built at workbook extraction time while all sheets are in memory.
+     * Only present when formula_grid is non-empty and at least one direct
+     * cross-sheet reference was found and resolved.
+     *
+     * Passed through to the DPU page payload as `structured.cross_sheet_resolved`
+     * so that table-detector.ts can feed it into FinancialTable.cross_sheet_value_index.
+     */
+    cross_sheet_resolved?: Record<string, unknown>;
+    /**
+     * Workbook dependency graph payload built in Phase 2E.
+     *
+     * Contains:
+     *   - `circular_cells`: cell keys ("SheetName!CellAddr") in circular reference chains.
+     *   - `cell_depths`: depth of each formula cell from its literal leaf inputs.
+     *
+     * Built post-loop (all sheets in memory simultaneously) from the raw formulas
+     * array. Passed through to the DPU page payload as `structured.workbook_graph`
+     * so that table-detector.ts can feed it into FinancialTable.workbook_graph.
+     *
+     * Only present when the workbook contains at least one formula cell.
+     * Identical across all sheets of the same workbook (workbook-level data).
+     */
+    workbook_graph?: WorkbookGraphPayload;
     summary: {
       totalRows: number;
       columnTypes: Record<string, string>;
@@ -103,9 +146,9 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
     return { maxRows, maxCols, cells };
   };
 
-  const buildNormalizedHeadersAndRows = (worksheet: XLSX.WorkSheet): { headers: string[]; rows: Record<string, unknown>[] } => {
+  const buildNormalizedHeadersAndRows = (worksheet: XLSX.WorkSheet): { headers: string[]; rows: Record<string, unknown>[]; formula_grid: Record<string, string> } => {
     const ref = worksheet["!ref"] as string | undefined;
-    if (!ref) return { headers: [], rows: [] };
+    if (!ref) return { headers: [], rows: [], formula_grid: {} };
     const r = XLSX.utils.decode_range(ref);
 
     const merges = Array.isArray((worksheet as any)["!merges"]) ? ((worksheet as any)["!merges"] as any[]) : [];
@@ -231,6 +274,9 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
     const dataStartRow = Math.min(r.e.r, Math.max(...headerRows) + 1);
     const maxDataRows = Math.min(r.e.r, dataStartRow + 2000);
     const rows: Record<string, unknown>[] = [];
+    // formula_grid captures formula strings for data cells, keyed by
+    // "rowIndex:headerName" where rowIndex is the 0-based position within rows[].
+    const formula_grid: Record<string, string> = {};
     for (let rr = dataStartRow; rr <= maxDataRows; rr++) {
       const obj: Record<string, unknown> = {};
       let hasAny = false;
@@ -240,6 +286,8 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
         if (d.v == null && !d.f && !(typeof d.w === "string" && d.w.trim())) continue;
         const key = headersByCol.get(cc) ?? `col_${XLSX.utils.encode_col(cc)}`;
         obj[key] = d.v ?? d.w ?? null;
+        // Capture formula before rows.push so rows.length is the future row index.
+        if (d.f) formula_grid[`${rows.length}:${key}`] = d.f;
         hasAny = true;
       }
       if (hasAny) rows.push(obj);
@@ -250,7 +298,7 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
       for (const k of Object.keys(row)) usedHeaders.add(k);
     }
     const filteredHeaders = headers.filter((h) => usedHeaders.has(h));
-    return { headers: filteredHeaders.length ? filteredHeaders : headers, rows };
+    return { headers: filteredHeaders.length ? filteredHeaders : headers, rows, formula_grid };
   };
 
   const detectTimeSeriesTables = (worksheet: XLSX.WorkSheet, sheetName: string): ExcelTimeSeriesTable[] => {
@@ -398,6 +446,7 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
     if (jsonData.length === 0) continue;
 
     const headers = extracted.headers;
+    const formulaGrid = extracted.formula_grid;
     const numericColumns: string[] = [];
     const dateColumns: string[] = [];
     const columnTypes: Record<string, string> = {};
@@ -457,6 +506,7 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
       gridPreview,
       tables,
       formulas,
+      ...(Object.keys(formulaGrid).length > 0 ? { formula_grid: formulaGrid } : {}),
       summary: {
         totalRows: jsonData.length,
         columnTypes,
@@ -464,6 +514,56 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
         dateColumns,
       },
     });
+  }
+
+  // ── Cross-sheet value resolution ─────────────────────────────────────────
+  // For each sheet that has formula_grid, scan all formula strings for direct
+  // single-cell cross-tab references (e.g. =Inputs!C5) and resolve their
+  // values from the corresponding worksheet in the XLSX workbook.
+  // Done post-loop so all sheets are available for lookup.
+  for (const sheet of sheets) {
+    if (!sheet.formula_grid || Object.keys(sheet.formula_grid).length === 0) continue;
+
+    const resolved: Record<string, unknown> = {};
+    for (const formula of Object.values(sheet.formula_grid)) {
+      const refs = parseDirectCrossSheetRefs(formula);
+      for (const ref of refs) {
+        if (ref.key in resolved) continue; // already resolved
+        const targetWs = workbook.Sheets[ref.sheet];
+        if (!targetWs) continue; // referenced sheet not found — fail open
+        const targetCell = (targetWs as any)[ref.cell];
+        if (targetCell != null && targetCell.v != null) {
+          resolved[ref.key] = targetCell.v;
+        }
+      }
+    }
+
+    if (Object.keys(resolved).length > 0) {
+      sheet.cross_sheet_resolved = resolved;
+    }
+  }
+
+  // ── Workbook dependency graph ─────────────────────────────────────────────
+  // Build a lightweight dependency graph across all sheets using the raw
+  // formulas array (which carries actual A1 cell addresses, unlike formula_grid
+  // which uses rowIdx:colName keys). Done post-loop so all sheets are available.
+  // The resulting payload is stored on every sheet so downstream DPU pages
+  // (one per sheet) each carry the full workbook graph for per-cell lookups.
+  const sheetFormulasForGraph = sheets
+    .filter((s) => s.formulas.length > 0)
+    .map((s) => ({
+      sheet: s.name,
+      cells: s.formulas.map((f) => ({ addr: f.cell, formula: f.formula })),
+    }));
+
+  if (sheetFormulasForGraph.length > 0) {
+    const graphPayload = buildWorkbookGraph(sheetFormulasForGraph);
+    // Attach to every sheet (workbook-level data, same payload on each).
+    if (graphPayload.circular_cells.length > 0 || Object.keys(graphPayload.cell_depths).length > 0) {
+      for (const sheet of sheets) {
+        sheet.workbook_graph = graphPayload;
+      }
+    }
   }
 
   return {

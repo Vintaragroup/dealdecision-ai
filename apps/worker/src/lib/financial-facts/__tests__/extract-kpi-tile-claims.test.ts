@@ -528,6 +528,77 @@ describe("extractKpiTileClaims — market projection suppression", () => {
   });
 });
 
+// ─── Extended raise / cash / runway / valuation patterns ─────────────────────
+
+describe("extractKpiTileClaims — extended critical-metric patterns", () => {
+  // raise_amount: "the ask" — DealDecision real-deal pattern
+  it("extracts raise_amount from 'The Ask $4M'", () => {
+    const facts = extractKpiTileClaims("The Ask $4M", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.metric_key).toBe("raise_amount");
+    expect(facts[0]!.value).toBe(4_000_000);
+  });
+
+  it("extracts raise_amount from '$2M funding sought'", () => {
+    const facts = extractKpiTileClaims("$2M funding sought", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.metric_key).toBe("raise_amount");
+    expect(facts[0]!.value).toBe(2_000_000);
+  });
+
+  it("extracts raise_amount from 'amount raising $3M'", () => {
+    const facts = extractKpiTileClaims("amount raising $3M", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.metric_key).toBe("raise_amount");
+    expect(facts[0]!.value).toBe(3_000_000);
+  });
+
+  // cash: "cash position" and "ending cash" variants
+  it("extracts cash from '$1.2M cash position'", () => {
+    const facts = extractKpiTileClaims("$1.2M cash position", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.metric_key).toBe("cash");
+    expect(facts[0]!.value).toBe(1_200_000);
+  });
+
+  it("extracts cash from '$800K ending cash'", () => {
+    const facts = extractKpiTileClaims("$800K ending cash", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.metric_key).toBe("cash");
+    expect(facts[0]!.value).toBe(800_000);
+  });
+
+  // pre_money_valuation: "valuation cap"
+  it("extracts pre_money_valuation from '$10M valuation cap'", () => {
+    const facts = extractKpiTileClaims("$10M valuation cap", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.metric_key).toBe("pre_money_valuation");
+    expect(facts[0]!.value).toBe(10_000_000);
+  });
+
+  // runway_months: "operating runway"
+  it("extracts runway_months from '18 months operating runway'", () => {
+    const facts = extractKpiTileClaims("18 months operating runway", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.metric_key).toBe("runway_months");
+    expect(facts[0]!.value).toBe(18);
+  });
+
+  // DealDecision real-deal fixture
+  it("DealDecision fixture: 'The Ask $2M Pre-Seed' → raise_amount", () => {
+    const facts = extractKpiTileClaims("The Ask $2M Pre-Seed", BASE_OPTS);
+    expect(facts.some((f) => f.metric_key === "raise_amount" && f.value === 2_000_000)).toBe(true);
+  });
+
+  // Regression: existing raise pattern still works
+  it("regression: '$4M raising' still extracts raise_amount", () => {
+    const facts = extractKpiTileClaims("$4M raising", BASE_OPTS);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.metric_key).toBe("raise_amount");
+    expect(facts[0]!.value).toBe(4_000_000);
+  });
+});
+
 // ─── isExampleOrScenarioContext ───────────────────────────────────────────────
 
 describe("isExampleOrScenarioContext", () => {

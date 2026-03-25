@@ -25,6 +25,7 @@ import { describe, it, expect } from "vitest";
 import type { FinancialFactV1 } from "@dealdecision/core";
 import {
   SOURCE_KIND_RANK,
+  TEMPORAL_SCOPE_RANK,
   rankFinancialFacts,
   mergeFinancialFacts,
   extractFinancialTableClaims,
@@ -228,5 +229,116 @@ describe("detectFinancialTableCandidate — re-exported guard", () => {
 
   it("returns false for text with no financial signals", () => {
     expect(detectFinancialTableCandidate("Hello world, this is a cover slide.")).toBe(false);
+  });
+});
+
+// ─── TEMPORAL_SCOPE_RANK tiers ────────────────────────────────────────────────
+
+describe("TEMPORAL_SCOPE_RANK — tier values", () => {
+  it("historical and current are tier 2 (realized)", () => {
+    expect(TEMPORAL_SCOPE_RANK["historical"]).toBe(2);
+    expect(TEMPORAL_SCOPE_RANK["current"]).toBe(2);
+  });
+
+  it("projected, scenario, target are tier 1 (forecast)", () => {
+    expect(TEMPORAL_SCOPE_RANK["projected"]).toBe(1);
+    expect(TEMPORAL_SCOPE_RANK["scenario"]).toBe(1);
+    expect(TEMPORAL_SCOPE_RANK["target"]).toBe(1);
+  });
+
+  it("unknown is tier 0 (lowest)", () => {
+    expect(TEMPORAL_SCOPE_RANK["unknown"]).toBe(0);
+  });
+
+  it("realized > forecast > unknown ordering", () => {
+    expect(TEMPORAL_SCOPE_RANK["historical"]).toBeGreaterThan(TEMPORAL_SCOPE_RANK["projected"]);
+    expect(TEMPORAL_SCOPE_RANK["projected"]).toBeGreaterThan(TEMPORAL_SCOPE_RANK["unknown"]);
+  });
+});
+
+// ─── rankFinancialFacts — temporal preference ─────────────────────────────────
+
+describe("rankFinancialFacts — temporal scope is primary sort key", () => {
+  it("historical fact ranks above projected of same source_kind", () => {
+    const projected = makeFact({ source_kind: "xlsx", metric_key: "revenue", temporal_scope: "projected" } as any);
+    const historical = makeFact({ source_kind: "xlsx", metric_key: "revenue", temporal_scope: "historical" } as any);
+
+    const ranked = rankFinancialFacts([projected, historical]);
+    expect(ranked[0]!.temporal_scope).toBe("historical");
+    expect(ranked[1]!.temporal_scope).toBe("projected");
+  });
+
+  it("historical deck outranks projected xlsx (scope tier beats source_kind)", () => {
+    const projXlsx = makeFact({ source_kind: "xlsx", metric_key: "revenue", temporal_scope: "projected" } as any);
+    const histDeck = makeFact({ source_kind: "deck", metric_key: "revenue", temporal_scope: "historical" } as any);
+
+    const ranked = rankFinancialFacts([projXlsx, histDeck]);
+    expect(ranked[0]!.source_kind).toBe("deck");      // historical deck > projected xlsx
+    expect(ranked[1]!.source_kind).toBe("xlsx");
+  });
+
+  it("current (TTM) scope ranks at same tier as historical — tiebreak by source_kind", () => {
+    const ttm = makeFact({ source_kind: "deck", metric_key: "arr", temporal_scope: "current" } as any);
+    const ann = makeFact({ source_kind: "xlsx", metric_key: "arr", temporal_scope: "historical" } as any);
+
+    const ranked = rankFinancialFacts([ttm, ann]);
+    // Both tier 2 — xlsx outranks deck in secondary sort
+    expect(ranked[0]!.source_kind).toBe("xlsx");
+    expect(ranked[1]!.source_kind).toBe("deck");
+  });
+
+  it("scenario and target rank together with projected (all tier 1)", () => {
+    const scenario = makeFact({ source_kind: "xlsx", metric_key: "revenue", temporal_scope: "scenario" } as any);
+    const target   = makeFact({ source_kind: "xlsx", metric_key: "revenue", temporal_scope: "target"   } as any);
+    const histDeck = makeFact({ source_kind: "deck", metric_key: "revenue", temporal_scope: "historical" } as any);
+
+    const ranked = rankFinancialFacts([scenario, target, histDeck]);
+    expect(ranked[0]!.temporal_scope).toBe("historical"); // tier 2 beats both tier-1 items
+  });
+
+  it("projected xlsx NOT filtered out when no historical facts exist", () => {
+    const proj = makeFact({ source_kind: "xlsx", metric_key: "revenue", temporal_scope: "projected" } as any);
+    const ranked = rankFinancialFacts([proj]);
+    expect(ranked).toHaveLength(1);
+    expect(ranked[0]!.temporal_scope).toBe("projected");
+  });
+
+  it("mergeFinancialFacts: realized fact stays when projected fact of same metric+period is also present", () => {
+    // Both have period_label "2024" (a projected "2024E" column and an actual "2024" column
+    // both produce period_label="2024" after the interpreter's periodSuffix logic)
+    const projFact = makeFact({
+      source_kind:    "xlsx",
+      metric_key:     "revenue",
+      period_label:   "2024",
+      value:          9_000_000,
+      temporal_scope: "projected",
+    } as any);
+    const actualFact = makeFact({
+      source_kind:    "xlsx",
+      metric_key:     "revenue",
+      period_label:   "2024",
+      value:          5_000_000,
+      temporal_scope: "historical",
+    } as any);
+
+    const { merged } = mergeFinancialFacts([projFact, actualFact]);
+    expect(merged).toHaveLength(1);
+    // Realized fact wins
+    expect(merged[0]!.temporal_scope).toBe("historical");
+    expect(merged[0]!.value).toBe(5_000_000);
+  });
+
+  it("mergeFinancialFacts: projected fact used as fallback when no actual exists", () => {
+    const projFact = makeFact({
+      source_kind:    "xlsx",
+      metric_key:     "revenue",
+      period_label:   "2025",
+      value:          12_000_000,
+      temporal_scope: "projected",
+    } as any);
+
+    const { merged } = mergeFinancialFacts([projFact]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.temporal_scope).toBe("projected");
   });
 });

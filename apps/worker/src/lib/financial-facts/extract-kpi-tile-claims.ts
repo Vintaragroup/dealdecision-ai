@@ -80,11 +80,11 @@ const KPI_METRIC_PATTERNS: ReadonlyArray<{ key: string; pat: RegExp }> = [
   // ── Revenue (broad — after ARR/MRR so they take priority) ────────────────
   { key: "revenue",               pat: /\brevenue\b|\bsales\b(?!\s+processor)|\bgtv\b/i },
   // ── Raise / valuation ────────────────────────────────────────────────────
-  { key: "pre_money_valuation",   pat: /\bvaluation\b|\bpre.?money\b/i },
-  { key: "raise_amount",          pat: /\braising\b|\braised?\b|\bfunding\b|\bseries\s+[a-c]\b|\bseed\s+round\b|\bcapital\s+raise\b/i },
+  { key: "pre_money_valuation",   pat: /\bvaluation\b|\bpre.?money\b|\bvaluation\s+cap\b/i },
+  { key: "raise_amount",          pat: /\braising\b|\braised?\b|\bfunding\b|\bseries\s+[a-c]\b|\bseed\s+round\b|\bcapital\s+raise\b|\bthe\s+ask\b|\bfunding\s+sought\b|\bamount\s+raising\b/i },
   // ── Unit economics ────────────────────────────────────────────────────────
   { key: "burn_rate",             pat: /\bburn\s+rate\b|\bmonthly\s+burn\b|\bnet\s+burn\b/i },
-  { key: "runway_months",         pat: /\brunway\b/i },
+  { key: "runway_months",         pat: /\brunway\b|\boperating\s+runway\b/i },
   { key: "gross_margin",          pat: /\bgross\s+margin\b/i },
   { key: "gross_profit",          pat: /\bgross\s+profit\b/i },
   { key: "ebitda",                pat: /\bebitda\b/i },
@@ -103,7 +103,7 @@ const KPI_METRIC_PATTERNS: ReadonlyArray<{ key: string; pat: RegExp }> = [
   { key: "partner_count",         pat: /\bpayment\s+processors?\b|\bprocessors?\b|\bpartners?\b|\binstitutions?\b/i },
   // ── Other ─────────────────────────────────────────────────────────────────
   { key: "headcount",             pat: /\bemployees?\b|\bheadcount\b|\bteam\s+size\b/i },
-  { key: "cash",                  pat: /\bcash\s+(?:balance|on\s+hand|reserves?)\b/i },
+  { key: "cash",                  pat: /\bcash\s+(?:balance|on\s+hand|reserves?|position)\b|\bending\s+cash\b/i },
 ];
 
 /** Canonical KPI metric keys valid for this extractor. */

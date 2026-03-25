@@ -15,17 +15,22 @@
 
 import {
   classifyTemporalScope,
-  extractYearFromLabel,
   isProjectedScope,
 } from "@dealdecision/core";
 import type {
   EvidenceRef,
   FieldTypeV1,
+  FinancialFactPeriodType,
   TypedMetric,
 } from "@dealdecision/core";
 
 import { extractScenarioLabels } from "./sheet-classifier.js";
 import type { FinancialTable } from "./table-detector.js";
+import { parsePeriodLabel } from "./period-parser.js";
+import { extractCrossSheetRefs } from "./cross-tab-refs.js";
+import { extractNamedRangeRefs } from "./named-range-refs.js";
+import { resolveDirectCrossSheetRefs } from "./cross-tab-resolver.js";
+import { parseAllDirectCellDeps } from "./dependency-graph.js";
 
 // ─── Row-label → FieldTypeV1 mapping ─────────────────────────────────────────
 
@@ -83,32 +88,69 @@ function resolveFieldType(rowLabel: string): { field_type: FieldTypeV1; typing_r
 // ─── Column-header scenario detection ────────────────────────────────────────
 
 /**
- * Pre-compute per-column scenario info.
+ * Per-column metadata produced from the `column_headers` array.
  *
- * For scenario columns (Base, Upside, Downside, etc.) the temporal scope must
- * be forced to "scenario" regardless of any year in the header.
+ * `normalized_label` is used (rather than `label`) in period suffixes for
+ * quarterly and TTM headers so that short-form labels like "1Q24" or
+ * "Trailing Twelve Months" are canonicalized before becoming period_label on
+ * the promoted FinancialFactV1.
+ */
+interface ColumnMeta {
+  /** Raw header string (preserved for compatibility). */
+  label: string;
+  /** Normalized canonical period label; falls back to `label` when unknown. */
+  normalized_label: string;
+  year: number | null;
+  quarter: number | null;
+  period_type: FinancialFactPeriodType;
+  scenario: string | null;
+  temporal_scope_context: string;
+}
+
+/**
+ * Pre-compute per-column metadata from column headers.
+ *
+ * For scenario columns (Base, Upside, Downside, etc.) temporal scope is forced
+ * to "scenario" regardless of any year in the header.
+ *
+ * For quarterly and TTM headers, normalized_label and scope_context are derived
+ * via parsePeriodLabel() so that classifyTemporalScope() receives accurate signals.
  */
 function buildColumnMeta(
   columnHeaders: string[],
   currentYear: number,
-): Array<{ label: string; year: number | null; scenario: string | null; temporal_scope_context: string }> {
+): ColumnMeta[] {
   // extractScenarioLabels identifies which headers are scenario names
   const scenarioSet = new Set(extractScenarioLabels(columnHeaders));
 
   return columnHeaders.map((header) => {
-    const year = extractYearFromLabel(header);
     const isScenario = scenarioSet.has(header);
     const scenario = isScenario ? header : null;
 
-    // Build a context-text string that drives `classifyTemporalScope`.
-    // Scenario headers should get the "scenario" scope; others rely on year.
-    const context = isScenario
-      ? `${header} scenario`                      // triggers SCENARIO_KEYWORDS
-      : header.includes("E") && year !== null
-        ? `projected forecast ${year}`              // e.g. "2025E"
-        : "";
+    if (isScenario) {
+      return {
+        label: header,
+        normalized_label: header,
+        year: null,
+        quarter: null,
+        period_type: "unknown" as FinancialFactPeriodType,
+        scenario,
+        temporal_scope_context: `${header} scenario`,
+      };
+    }
 
-    return { label: header, year: isScenario ? null : year, scenario, temporal_scope_context: context };
+    const info = parsePeriodLabel(header);
+    return {
+      label: header,
+      normalized_label: info.normalized || header,
+      year: info.year,
+      quarter: info.quarter,
+      period_type: info.period_type,
+      scenario: null,
+      // scope_context from parsePeriodLabel covers projected and TTM signals.
+      // classifyTemporalScope() falls back to year-vs-currentYear when it is "".
+      temporal_scope_context: info.scope_context,
+    };
   });
 }
 
@@ -154,6 +196,13 @@ export function parseFinancialTable(
   const minConf = opts.minConfidence ?? 0.20;
   const metrics: TypedMetric[] = [];
 
+  // Unit scale factor: 1 = no scaling; 1000 = "in thousands"; 1_000_000 = "in millions".
+  // Comes from detectUnitScale() in table-detector; defaults to 1 when absent.
+  const unitScaleFactor = table.unit_scale_factor ?? 1;
+  const scaleAnnotation = unitScaleFactor > 1
+    ? `; unit_scale_factor=${unitScaleFactor} applied (source: "${table.unit_scale_source_text ?? "unknown"}")`
+    : "";
+
   const colMeta = buildColumnMeta(table.column_headers, currentYear);
 
   const evidence: EvidenceRef = {
@@ -177,6 +226,14 @@ export function parseFinancialTable(
 
       const col = colMeta[colIdx]!;
 
+      // Apply unit scale (e.g. ×1000 for "in thousands" workbooks).
+      // Raw cell value is preserved in value_raw with a scale annotation so
+      // source_pointer (and thus fact_id) remains distinct from unscaled facts.
+      const scaledValue = Number.isFinite(cellValue) ? cellValue * unitScaleFactor : null;
+      const value_raw = unitScaleFactor === 1
+        ? String(cellValue)
+        : `${String(cellValue)} [×${unitScaleFactor}]`;
+
       // Determine temporal scope.
       const temporal_scope = classifyTemporalScope(
         col.year,
@@ -187,29 +244,112 @@ export function parseFinancialTable(
 
       const projection_blocked = isProjectedScope(temporal_scope);
 
-      // Format raw value string
-      const value_raw = String(cellValue);
+      // Formula traceability: look up formula metadata for this (rowIdx, colIdx) pair.
+      // formula_map is present only when the source payload carried formula_grid.
+      const cellFormulaKey = `${rowIdx}:${colIdx}`;
+      const cellFormula = table.formula_map?.[cellFormulaKey] ?? null;
+      // value_kind is deterministic when formula_map is present; otherwise unknown.
+      const value_kind: TypedMetric["value_kind"] = table.formula_map
+        ? (cellFormula !== null ? "formula" : "literal")
+        : "unknown";
+
+      // Cross-tab reference detection: parse the formula string for SheetName!
+      // patterns. Pure regex — no formula evaluation or graph traversal.
+      // Empty array when formula is null (literal or unknown) or has no cross-tab refs.
+      const crossSheetRefs = cellFormula !== null ? extractCrossSheetRefs(cellFormula) : [];
+
+      // Named-range reference detection: parse the formula string for workbook-level
+      // named identifiers (e.g. Revenue_2024, ChurnRate). Excludes function names,
+      // cell addresses, and sheet references. Does NOT resolve named-range values.
+      const namedRangeRefs = cellFormula !== null ? extractNamedRangeRefs(cellFormula) : [];
+
+      // Cross-tab value resolution: look up direct single-cell cross-sheet refs
+      // (e.g. =Inputs!C5) against the workbook cell index when available.
+      // Always returns [] for range refs (SUM(Model!C3:C10)) or when the index
+      // is absent. Never throws — fails open with { value: null }.
+      const resolvedCrossSheetValues =
+        cellFormula !== null && table.cross_sheet_value_index
+          ? resolveDirectCrossSheetRefs(cellFormula, table.cross_sheet_value_index)
+          : [];
+
+      // Dependency graph: parse all direct single-cell dependencies from the formula
+      // (same-sheet + cross-sheet). Used to populate formula_dependencies,
+      // dependency_depth, and circular_reference_detected on TypedMetric.
+      const formulaDependencies =
+        cellFormula !== null
+          ? parseAllDirectCellDeps(cellFormula, table.sheet_name)
+          : [];
+
+      // Dependency depth and circular reference detection:
+      // Look up each direct dep in the workbook graph payload (built in excel.ts).
+      // If any dep key appears in circular_cells, flag circular reference risk.
+      // depth = 1 + max depth of direct deps (deps not in cell_depths are literals, depth 0).
+      let dependencyDepth: number | null = null;
+      let circularReferenceDetected = false;
+      if (formulaDependencies.length > 0 && table.workbook_graph) {
+        const { circular_cells, cell_depths } = table.workbook_graph;
+        const circularSet = new Set(circular_cells);
+        for (const dep of formulaDependencies) {
+          if (circularSet.has(`${dep.sheet}!${dep.cell}`)) {
+            circularReferenceDetected = true;
+            break;
+          }
+        }
+        if (!circularReferenceDetected) {
+          const depDepths = formulaDependencies.map((dep) => {
+            const key = `${dep.sheet}!${dep.cell}`;
+            // Dep in cell_depths means it's a formula cell; dep absent = literal (depth 0).
+            return cell_depths[key] ?? 0;
+          });
+          dependencyDepth = 1 + Math.max(...depDepths);
+        }
+      }
+
       const periodSuffix = col.scenario
         ? `[${col.scenario}]`
-        : col.year !== null
-          ? `(${col.year})`
-          : col.label !== ""
-            ? `(${col.label})`
-            : "";
+        : (col.period_type === "quarterly" || col.period_type === "ttm")
+          // Use the full normalized label so "Q1 2024" / "TTM" appear as
+          // the period_label in promoted facts rather than just the year.
+          ? `(${col.normalized_label})`
+          : col.year !== null
+            ? `(${col.year})`
+            : col.label !== ""
+              ? `(${col.label})`
+              : "";
       const label = `${rowLabel} ${periodSuffix}`.trim();
 
       metrics.push({
         field_type,
         temporal_scope,
         value_raw,
-        value: Number.isFinite(cellValue) ? cellValue : null,
+        value: scaledValue,
         label,
         confidence: typing_confidence,
         sources: [evidence],
-        typing_reason: `${typing_reason}; column="${col.label}"`,
+        typing_reason: `${typing_reason}; column="${col.label}"${scaleAnnotation}`,
         typing_confidence,
         projection_blocked,
         ...(col.scenario !== null ? { scenario: col.scenario } : {}),
+        // Formula traceability fields — omit entirely when source had no formula metadata.
+        ...(value_kind !== "unknown" ? { value_kind } : {}),
+        ...(cellFormula !== null ? { formula: cellFormula } : {}),
+        // Cross-tab refs — only set when formula references another worksheet.
+        ...(crossSheetRefs.length > 0 ? { cross_sheet_refs: crossSheetRefs } : {}),
+        // Named-range refs — only set when named workbook references are detected.
+        ...(namedRangeRefs.length > 0 ? { named_range_refs: namedRangeRefs } : {}),
+        // Resolved cross-sheet values — only set when direct refs were resolvable.
+        ...(resolvedCrossSheetValues.length > 0 ? { resolved_cross_sheet_values: resolvedCrossSheetValues } : {}),
+        // Dependency graph metadata — formula cell dependencies, depth, circular reference risk.
+        ...(formulaDependencies.length > 0 ? { formula_dependencies: formulaDependencies } : {}),
+        ...(dependencyDepth !== null ? { dependency_depth: dependencyDepth } : {}),
+        ...(circularReferenceDetected ? { circular_reference_detected: true } : {}),
+        // Extraction assumption metadata — unit scale and period normalization.
+        ...(unitScaleFactor > 1 ? { unit_scale_factor_applied: unitScaleFactor } : {}),
+        ...(unitScaleFactor > 1 && table.unit_scale_source_text != null
+          ? { unit_scale_source_text: table.unit_scale_source_text }
+          : {}),
+        ...(col.normalized_label ? { normalized_period_label: col.normalized_label } : {}),
+        ...(col.label ? { original_period_label: col.label } : {}),
       });
     }
   }

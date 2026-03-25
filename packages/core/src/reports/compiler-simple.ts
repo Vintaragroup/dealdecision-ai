@@ -10,6 +10,12 @@ import { buildTopSectionV1FromScoreExplanation, type TopSectionV1 } from './tops
 import { inferFundingStageModelV1, type FundingStageModelV1 } from '../models/funding-stage-model.js';
 import { inferFinancialCoverageProfileV1, type FinancialCoverageProfileV1 } from '../models/financial-coverage-profile.js';
 import type { FinancialFactV1 } from '../financial-facts/financial-fact-v1.js';
+import {
+  selectAuthoritativeFact,
+  filterCorruptedFacts,
+  isCorruptedFact,
+  isProjectedFact,
+} from '../financial-facts/select-authoritative-fact.js';
 import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
 import { inferStageExpectationsProfileV1, type StageExpectationsProfileV1 } from '../models/stage-expectations-profile.js';
 import { inferBusinessModelSignalProfileV1, type BusinessModelSignalProfileV1 } from '../models/business-model-signal-profile.js';
@@ -24,6 +30,7 @@ import {
   type FinancialBreakdownV1,
   type UnderwritingReadinessV1,
 } from '../models/financial-breakdown-v1.js';
+import type { FinancialIntegrityV1 } from '../types/financial-integrity-v1.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -43,6 +50,8 @@ type ReportDTO = {
   market_accessibility_signal_v1?: MarketAccessibilitySignalProfileV1;
   traction_signal_v1?: TractionSignalProfileV1;
   team_signal_v1?: TeamSignalProfileV1;
+  /** Financial integrity cross-source analysis (completeness, discrepancy, anomalies). Always non-null: falls back to empty baseline when analyzer did not run or DIO predates this field. */
+  financial_integrity_v1?: FinancialIntegrityV1;
   structured_summary?: {
     raise: {
       value: string | null;
@@ -1739,19 +1748,25 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
 /**
  * Inject XLSX-derived revenue facts into structured_summary.revenue.
  *
- * Only activates when financialFacts contains xlsx-sourced revenue/arr/mrr entries.
- * Prefers XLSX facts over deck-only candidates when confidence is >= current selection.
- * Deck-derived candidates are preserved in the candidates list for audit trails.
+ * Uses selectAuthoritativeFact to choose the single best fact, ensuring
+ * year-header corruption and projected overrides are rejected before
+ * the value is written into the structured summary.
+ *
+ * All other xlsx revenue candidates are preserved in the candidates list for
+ * audit trails. Deck-derived candidates keep their existing selected=false state.
  */
 function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financialFacts: FinancialFactV1[]): void {
-  const REVENUE_KEYS = new Set(['revenue', 'arr', 'mrr']);
-  const xlsxRevenue = financialFacts.filter(
+  const REVENUE_KEYS = ['revenue', 'arr', 'mrr'];
+
+  // Strip corrupted facts before any consideration.
+  const cleanFacts = filterCorruptedFacts(financialFacts);
+
+  // Collect all xlsx-sourced revenue facts with valid positive currency values.
+  const xlsxRevenue = cleanFacts.filter(
     (f) =>
-      REVENUE_KEYS.has(f.metric_key) &&
+      REVENUE_KEYS.includes(f.metric_key) &&
       f.source_kind === 'xlsx' &&
       f.unit === 'currency' &&
-      typeof f.value === 'number' &&
-      Number.isFinite(f.value) &&
       f.value > 0
   );
   if (xlsxRevenue.length === 0) return;
@@ -1759,32 +1774,11 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
   const confidenceNum = (c: FinancialFactV1['confidence']): number =>
     c === 'high' ? 0.85 : c === 'medium' ? 0.65 : 0.45;
 
-  const periodTypeScore = (pt: string): number =>
-    pt === 'annual' ? 1 : pt === 'ttm' ? 2 : pt === 'quarterly' ? 3 : 4;
+  // Authoritative selection: prefer realized over projected, then by rank.
+  const best = selectAuthoritativeFact(REVENUE_KEYS, xlsxRevenue, { requireNonProjected: true })
+    ?? selectAuthoritativeFact(REVENUE_KEYS, xlsxRevenue);
 
-  const isFactProjected = (f: FinancialFactV1): boolean => {
-    if (f.temporal_scope === 'projected' || f.temporal_scope === 'scenario' || f.temporal_scope === 'target') return true;
-    const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
-    if (yearMatch && Number(yearMatch[1]) > new Date().getFullYear()) return true;
-    return false;
-  };
-
-  const sorted = xlsxRevenue.slice().sort((a, b) => {
-    // Prefer realized over projected
-    const aProj = isFactProjected(a) ? 1 : 0;
-    const bProj = isFactProjected(b) ? 1 : 0;
-    if (aProj !== bProj) return aProj - bProj;
-    // Prefer annual
-    const aPS = periodTypeScore(a.period_type);
-    const bPS = periodTypeScore(b.period_type);
-    if (aPS !== bPS) return aPS - bPS;
-    // Prefer most recent period label (lexicographic on "FY2024" etc.)
-    const labelCmp = b.period_label.localeCompare(a.period_label);
-    if (labelCmp !== 0) return labelCmp;
-    return confidenceNum(b.confidence) - confidenceNum(a.confidence);
-  });
-
-  const best = sorted[0];
+  if (!best) return;
   const bestConf = confidenceNum(best.confidence);
 
   const buildXlsxCandidate = (f: FinancialFactV1, selected: boolean) => {
@@ -1793,7 +1787,7 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
       selected,
       score: confidenceNum(f.confidence),
       scope: 'company_financials_table',
-      subtype: isFactProjected(f) ? 'forecast' : 'annual',
+      subtype: isProjectedFact(f) ? 'forecast' : 'annual',
       year: yearMatch ? Number(yearMatch[1]) : null,
       value_raw: formatUsdShort(f.value),
       amount: f.value,
@@ -1803,7 +1797,8 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
     };
   };
 
-  const xlsxCandidates = sorted.map((f, i) => buildXlsxCandidate(f, i === 0));
+  // Mark the authoritative selection; all other xlsx candidates are shown as alternatives.
+  const xlsxCandidates = xlsxRevenue.map((f) => buildXlsxCandidate(f, f === best));
 
   const currentRevenue = structuredSummary?.revenue;
   const currentConf = typeof currentRevenue?.confidence === 'number' ? currentRevenue.confidence : 0;
@@ -1836,7 +1831,45 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
   }
 }
 
-export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedFacts?: PromotedFactInput[]; financialFacts?: FinancialFactV1[] | null }): ReportDTO {
+/**
+ * Returns a valid FinancialIntegrityV1 baseline used when the integrity
+ * analyzer did not run or the DIO predates the financial_integrity_v1 field.
+ *
+ * All critical and supplementary metrics are listed as missing, completeness_score
+ * is 0, and a single FAIL flag explains why the data is absent.
+ *
+ * This ensures the UI always receives a well-typed object rather than null.
+ */
+function buildEmptyFinancialIntegrityV1(): FinancialIntegrityV1 {
+  return {
+    computed_at: new Date().toISOString(),
+    completeness_score: 0,
+    missing_critical: [
+      'revenue', 'arr', 'mrr', 'burn_rate', 'cash',
+      'runway_months', 'raise_amount', 'pre_money_valuation',
+    ],
+    missing_supplementary: [
+      'gross_margin', 'opex', 'churn_pct', 'cac', 'ltv', 'arpu', 'net_income',
+    ],
+    flags: [
+      {
+        flag_key: 'completeness:no_facts',
+        status: 'FAIL',
+        severity: 'high',
+        note: 'No financial integrity data available. Re-run analysis with financial documents to populate integrity checks.',
+      },
+    ],
+    has_facts: false,
+  };
+}
+
+export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
+  promotedFacts?: PromotedFactInput[];
+  financialFacts?: FinancialFactV1[] | null;
+  /** Enriched document metadata from DB. When provided, takes precedence over DIO inputs.documents
+   *  so that filenames and MIME types are available for cap-table and XLSX detection. */
+  documents?: Array<{ document_id: string; kind?: string | null; mime_type?: string | null; filename?: string | null }> | null;
+}): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
   const structuredSummary = buildStructuredSummary(dio, scoreExplanation, opts?.promotedFacts ?? undefined);
@@ -1869,32 +1902,68 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
     structured_summary: structuredSummary,
     promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
     financial_facts: Array.isArray(opts?.financialFacts) ? opts!.financialFacts as FinancialFactV1[] : null,
-    documents: Array.isArray((dio as any)?.inputs?.documents)
-      ? (dio as any).inputs.documents.map((d: any) => ({
-          document_id: d?.document_id,
-          kind: d?.kind,
-          mime_type: d?.mime_type,
-          filename: d?.filename,
-        }))
-      : null,
+    documents: (() => {
+      // Prefer caller-supplied document metadata (with filenames) over bare DIO inputs.
+      if (Array.isArray(opts?.documents)) {
+        return opts!.documents!.map((d) => ({
+          document_id: d.document_id,
+          kind: d.kind ?? undefined,
+          mime_type: d.mime_type ?? undefined,
+          filename: d.filename ?? undefined,
+        }));
+      }
+      return Array.isArray((dio as any)?.inputs?.documents)
+        ? (dio as any).inputs.documents.map((d: any) => ({
+            document_id: d?.document_id,
+            kind: d?.kind,
+            mime_type: d?.mime_type,
+            filename: d?.filename,
+          }))
+        : null;
+    })(),
   });
 
   const financialBreakdown = buildFinancialBreakdownV1({
     financial_facts: Array.isArray(opts?.financialFacts) ? (opts!.financialFacts as FinancialFactV1[]) : [],
     financial_coverage_v1: financialCoverage,
     structured_summary: structuredSummary,
-    documents: Array.isArray((dio as any)?.inputs?.documents)
-      ? (dio as any).inputs.documents.map((d: any) => ({
-          document_id: d?.document_id,
-          kind: d?.kind,
-          filename: d?.filename,
-        }))
-      : null,
+    documents: (() => {
+      // Prefer caller-supplied document metadata (with filenames) over bare DIO inputs.
+      if (Array.isArray(opts?.documents)) {
+        return opts!.documents!.map((d) => ({
+          document_id: d.document_id,
+          kind: d.kind ?? undefined,
+          filename: d.filename ?? undefined,
+        }));
+      }
+      return Array.isArray((dio as any)?.inputs?.documents)
+        ? (dio as any).inputs.documents.map((d: any) => ({
+            document_id: d?.document_id,
+            kind: d?.kind,
+            filename: d?.filename,
+          }))
+        : null;
+    })(),
   });
+
+  // Extract financial integrity from DIO before computing readiness so it can
+  // be passed into buildUnderwritingReadinessV1. Fail-open: never fail compilation.
+  let financialIntegrityV1: FinancialIntegrityV1 = buildEmptyFinancialIntegrityV1();
+  try {
+    financialIntegrityV1 = (dio as any)?.dio?.financial_integrity_v1 ?? buildEmptyFinancialIntegrityV1();
+  } catch {
+    // Best-effort: never fail report compilation.
+  }
+  // Overlay has_facts from the actually-loaded financial_facts, so the compiler-level
+  // report always reflects DB reality regardless of whether the DIO was re-analyzed.
+  if (Array.isArray(opts?.financialFacts) && opts.financialFacts.length > 0) {
+    financialIntegrityV1 = { ...financialIntegrityV1, has_facts: true };
+  }
 
   const underwritingReadiness = buildUnderwritingReadinessV1({
     financial_breakdown_v1: financialBreakdown,
     financial_coverage_v1: financialCoverage,
+    financial_integrity_v1: financialIntegrityV1,
   });
 
   const capitalLogic = inferCapitalLogicProfileV1({
@@ -1947,6 +2016,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
   const scoreExplanationAugmented = existingExplanation && typeof existingExplanation === 'object'
     ? { ...existingExplanation, stage_weighted_v1: stageWeighted }
     : existingExplanation;
+
 	return {
 		...base,
     funding_stage_v1: fundingStage,
@@ -1961,6 +2031,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
     team_signal_v1: teamSignal,
     structured_summary: structuredSummary,
     sections,
+    financial_integrity_v1: financialIntegrityV1,
 
 		metadata: {
 			...(base as any).metadata,

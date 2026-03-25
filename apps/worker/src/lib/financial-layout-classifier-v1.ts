@@ -215,6 +215,8 @@ const LAYOUT_RULES: LayoutRule[] = [
 			/capitalization/i,
 			/ownership\s+schedule/i,
 			/equity\s+schedule/i,
+			/share\s+register/i,
+			/equity\s+ownership/i,
 		],
 		contentRegs: [
 			/shares?\s+(outstanding|issued|authorized)/i,

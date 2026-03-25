@@ -29,7 +29,7 @@ import {
   computeFactId,
   inferPeriodType,
 } from "@dealdecision/core";
-import type { FinancialFactSourceKind } from "@dealdecision/core";
+import type { FinancialFactSourceKind, TemporalScope } from "@dealdecision/core";
 import { normalizeMetricKey, isKnownMetricKey, FINANCIAL_SIGNAL_KEYWORDS_RE } from "./financial-metric-aliases";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -123,6 +123,10 @@ export function extractFinancialTableClaims(
 
     // Attempt to detect column headers (for period inference)
     const headerPeriods = extractColumnHeaders(lines);
+    // When source is an XLSX and all column headers are ordinal forecast markers
+    // (yearless Q1–Q4 or "Year N" series), mark extracted facts as projected.
+    const isOrdinalForecastXlsx =
+      opts.source_kind_override === "xlsx" && isOrdinalForecastSeries(headerPeriods);
 
     for (const line of lines) {
       if (claims.length >= MAX_CLAIMS_PER_PAGE) break;
@@ -186,6 +190,7 @@ export function extractFinancialTableClaims(
         excerpt: capFactExcerpt(excerpt ?? line),
         slide_type:  opts.slide_type,
         slide_title: opts.slide_title,
+        temporal_scope: isOrdinalForecastXlsx ? "projected" : undefined,
       };
 
       claims.push(fact);
@@ -207,6 +212,7 @@ interface ExtractedLineClaim {
   period_label: string;
   confidence: "high" | "medium" | "low";
   excerpt?: string;
+  temporal_scope?: TemporalScope;
 }
 
 /** Map a leading currency symbol to its ISO 4217 code. */
@@ -237,20 +243,20 @@ function tryExtractLineClaim(
   // ── 1. Pipe-separated ──────────────────────────────────────────────────────
   const pipeParts = line.split("|").map((p) => p.trim()).filter(Boolean);
   if (pipeParts.length >= 2) {
-    return extractFromParts(pipeParts, "high");
+    return extractFromParts(pipeParts, "high", headerPeriods);
   }
 
   // ── 2. Tab-separated ──────────────────────────────────────────────────────
   const tabParts = line.split("\t").map((p) => p.trim()).filter(Boolean);
   if (tabParts.length >= 2 && hasNumericPart(tabParts)) {
-    return extractFromParts(tabParts, "high");
+    return extractFromParts(tabParts, "high", headerPeriods);
   }
 
   // ── 3. Colon-separated ────────────────────────────────────────────────────
   const colonMatch = line.match(/^([A-Za-z][\w\s%/&()-]{0,60}):\s*(.+)$/);
   if (colonMatch) {
     const parts = [colonMatch[1].trim(), colonMatch[2].trim()];
-    const result = extractFromParts(parts, "medium");
+    const result = extractFromParts(parts, "medium", headerPeriods);
     if (result) return result;
   }
 
@@ -265,6 +271,7 @@ function tryExtractLineClaim(
 function extractFromParts(
   parts: string[],
   confidence: "high" | "medium" | "low",
+  headerPeriods: string[] = [],
 ): ExtractedLineClaim | null {
   if (parts.length < 2) return null;
 
@@ -316,15 +323,21 @@ function extractFromParts(
       ? (numericCandidates.filter((c) => c.value !== 0).at(-1) ?? numericCandidates[0]!)
       : numericCandidates[0]!;
 
-  // Look for an adjacent period label
-  const period_label = findPeriodLabel(parts, chosen.index);
+  // Look for an adjacent period label; fall back to column-header context when
+  // the row itself carries no period token (common in XLSX time-series tables).
+  const adjacentPeriod = findPeriodLabel(parts, chosen.index);
+  const headerFallback =
+    headerPeriods.length > 0
+      ? (headerPeriods[Math.min(chosen.index - 1, headerPeriods.length - 1)] ?? "current")
+      : "current";
+  const period_label = adjacentPeriod ?? headerFallback;
 
   return {
     rawLabel: cleanLabel || rawLabel,
     value: chosen.value,
     unit: chosen.unit as FinancialFactUnit,
     currency: chosen.currency,
-    period_label: period_label ?? "current",
+    period_label,
     confidence,
     excerpt: parts.join(" | "),
   };
@@ -458,12 +471,24 @@ export function extractPeriodFromText(text: string): string | null {
   return null;
 }
 
+/**
+ * Returns true when all detected header periods are yearless ordinal markers
+ * that indicate a forward-looking forecast series (Q1–Q4 or "Year N" labels).
+ * These appear in XLSX financial models as projected period column headers.
+ */
+function isOrdinalForecastSeries(periods: string[]): boolean {
+  if (periods.length < 2) return false;
+  if (periods.every(p => /^Q[1-4]$/i.test(p))) return true;
+  if (periods.every(p => /^Year \d+$/i.test(p))) return true;
+  return false;
+}
+
 /** Scan first ~5 lines for period column headers */
 function extractColumnHeaders(lines: string[]): string[] {
   const periods: string[] = [];
   const headerLines = lines.slice(0, Math.min(5, lines.length));
   for (const line of headerLines) {
-    // Look for FY patterns, Q patterns, year, TTM/LTM, YTD, H1/H2, estimate suffix
+    // Standard period markers: FY2024, Q1, year, TTM/LTM, YTD, H1/H2, estimate suffix
     const matches = line.match(
       /\b(?:FY\s*\d{4}|\d{4}E|H[12]\s+\d{4}|Q[1-4]\s+\d{4}|Q[1-4]|YTD|\d{4}|TTM|LTM)\b/gi
     );
@@ -471,6 +496,31 @@ function extractColumnHeaders(lines: string[]): string[] {
       for (const m of matches) {
         const period = extractPeriodFromText(m);
         if (period && !periods.includes(period)) periods.push(period);
+      }
+    }
+    // Ordinal year labels common in XLSX models: "Year 1", "Year 2", "Period 1"
+    for (const m of line.matchAll(/\b(?:Year|Period)\s+(\d+)\b/gi)) {
+      const label = `Year ${m[1]}`;
+      if (!periods.includes(label)) periods.push(label);
+    }
+  }
+  // Detect bare sequential integer series on a header line: "1  2  3  4"
+  // Only accepted when 3+ consecutive integers starting from 1 appear.
+  if (periods.length === 0) {
+    for (const line of headerLines) {
+      const tokens = line.split(/[\s\t,|]+/).filter(Boolean);
+      const ints = tokens
+        .map(t => (/^\d{1,2}$/.test(t) ? parseInt(t, 10) : NaN))
+        .filter(n => !isNaN(n) && n >= 1 && n <= 20);
+      const uniqueSorted = [...new Set(ints)].sort((a, b) => a - b);
+      // Require consecutive sequence starting from 1
+      if (
+        uniqueSorted.length >= 3 &&
+        uniqueSorted[0] === 1 &&
+        uniqueSorted.every((n, i) => i === 0 || n === uniqueSorted[i - 1]! + 1)
+      ) {
+        for (const n of uniqueSorted) periods.push(`Year ${n}`);
+        break;
       }
     }
   }

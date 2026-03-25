@@ -42,6 +42,7 @@ import {
   isFundabilityHardGatesEnabled,
 } from '../config/analysis-foundation.js';
 import { inferCompanyPhaseV1, evaluateFundabilityGatesV1, buildFundabilityDecisionV1 } from '../fundability/v1/index.js';
+import type { FinancialIntegrityV1 } from '../types/financial-integrity-v1.js';
 
 // ==================== Configuration ====================
 
@@ -110,6 +111,8 @@ export interface AnalyzerRegistry {
   narrativeArc: BaseAnalyzer<any, NarrativeArcResult>;
   financialHealth: BaseAnalyzer<any, FinancialHealthResult>;
   riskAssessment: BaseAnalyzer<any, RiskAssessmentResult>;
+  /** Optional: financial integrity cross-source analysis (Phase 1). Gracefully absent when not registered. */
+  financialIntegrity?: BaseAnalyzer<any, FinancialIntegrityV1>;
 }
 
 // ==================== Core Orchestrator ====================
@@ -213,7 +216,7 @@ export class DealOrchestrator {
       };
 
       // Aggregate into DIO
-      const dio = this.aggregateDIO(input, results);
+      const dio = await this.aggregateDIO(input, results);
 
       // Store DIO
       const storage_result = await this.storage.saveDIO(dio);
@@ -970,7 +973,7 @@ export class DealOrchestrator {
   /**
    * Aggregate analyzer results into complete DIO
    */
-  private aggregateDIO(
+  private async aggregateDIO(
     input: OrchestrationInput,
     results: {
       slideSequence: SlideSequenceResult | null;
@@ -980,7 +983,7 @@ export class DealOrchestrator {
       financialHealth: FinancialHealthResult | null;
       riskAssessment: RiskAssessmentResult | null;
     }
-  ): DealIntelligenceObject {
+  ): Promise<DealIntelligenceObject> {
     const now = new Date().toISOString();
     const analyzerVersion = process.env.DIO_ANALYSIS_ENGINE_VERSION || '1.0.0';
     
@@ -1422,6 +1425,24 @@ export class DealOrchestrator {
       this.log('Fundability shadow-mode failed (ignored)', { deal_id: input.deal_id, error: message });
     }
     
+    // Financial integrity analysis (additive; never fails orchestration).
+    // Runs when: (a) the financialIntegrity analyzer is registered, and (b) financial_facts are present in input_data.
+    try {
+      if (this.analyzers.financialIntegrity) {
+        const rawFacts = (input.input_data as any)?.financial_facts;
+        const facts = Array.isArray(rawFacts) ? rawFacts : [];
+        const integrityInput = { financial_facts: facts, evidence_ids: [] as string[] };
+        const integrityResult = await this.analyzers.financialIntegrity.analyze(integrityInput);
+        (dio as any).dio = {
+          ...((dio as any).dio ?? {}),
+          financial_integrity_v1: integrityResult,
+        };
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.log('Financial integrity analysis failed (ignored)', { deal_id: input.deal_id, error: message });
+    }
+
     return dio;
   }
 

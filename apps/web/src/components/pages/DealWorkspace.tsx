@@ -18,6 +18,7 @@ import { AnalysisTab } from '../workspace/AnalysisTab';
 import { DataTab } from '../workspace/DataTab';
 import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
 import { InvestorInsightsTab } from '../workspace/investor-insights/InvestorInsightsTab';
+import { FinancialAuditTab } from '../workspace/financial-audit/FinancialAuditTab';
 import { InvestmentQuestionsPanel } from '../workspace/InvestmentQuestionsPanel';
 import { adaptReportToInsightsData } from '../../types/investor-insights';
 import { ShareModal } from '../collaboration/ShareModal';
@@ -33,6 +34,8 @@ import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAu
 import { selectAuthoritativeProductSummaryV1 } from '../../lib/selectors/selectAuthoritativeProductSummaryV1';
 import { selectAuthoritativeMarketSummaryV1 } from '../../lib/selectors/selectAuthoritativeMarketSummaryV1';
 import { selectAuthoritativeFinancialCoverageV1 } from '../../lib/selectors/selectAuthoritativeFinancialCoverageV1';
+import { selectAuthoritativeFinancialIntegrityV1 } from '../../lib/selectors/selectAuthoritativeFinancialIntegrityV1';
+import { selectAuthoritativeFinancialBreakdownV1, selectAuthoritativeUnderwritingReadinessV1 } from '../../lib/selectors/selectAuthoritativeFinancialBreakdownV1';
 import { selectAuthoritativeBurnV1 } from '../../lib/selectors/selectAuthoritativeBurnV1';
 import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthoritativeRunwayV1';
 import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
@@ -2336,6 +2339,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     // financial_coverage_v1 is deterministic-only and lives on /report.
     return selectAuthoritativeFinancialCoverageV1((reportFromApi as any) ?? (reportEnvelope as any) ?? null);
   }, [reportFromApi, reportEnvelope]);
+
+  const authoritativeFinancialIntegrityV1 = useMemo(() => {
+    // financial_integrity_v1 lives on the compiled /report payload.
+    return selectAuthoritativeFinancialIntegrityV1((reportFromApi as any) ?? null);
+  }, [reportFromApi]);
+
+  const authoritativeFinancialBreakdownV1 = useMemo(() => {
+    return selectAuthoritativeFinancialBreakdownV1((reportFromApi as any) ?? null);
+  }, [reportFromApi]);
+
+  const authoritativeUnderwritingReadinessV1 = useMemo(() => {
+    return selectAuthoritativeUnderwritingReadinessV1((reportFromApi as any) ?? null);
+  }, [reportFromApi]);
+
+  // Live staleness flag: true when financial_facts_v1 rows are newer than the compiled report snapshot.
+  // Sourced from the envelope top-level (not from report), since it is computed fresh on every /report request.
+  const financialSnapshotStale = useMemo(() => {
+    return (reportEnvelope as any)?.financial_snapshot_stale === true;
+  }, [reportEnvelope]);
 
   const authoritativeProductTextV1 = authoritativeProductSummaryV1.value ?? '';
   const authoritativeMarketTextV1 = authoritativeMarketSummaryV1.value ?? '';
@@ -4648,6 +4670,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const primaryTabs = [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'investor-insights', label: 'Investor Insights', icon: <Lightbulb className="w-4 h-4" /> },
+    { id: 'financial-audit', label: 'Financial Audit', icon: <Clipboard className="w-4 h-4" /> },
     { id: 'analyst', label: 'Graph', icon: <Eye className="w-4 h-4" /> },
     { id: 'analysis', label: 'AI Analysis', icon: <Sparkles className="w-4 h-4" /> },
   ];
@@ -8491,6 +8514,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 darkMode={darkMode}
                 onRunAnalysis={runAIAnalysis}
                 isAnalyzing={analyzing}
+                financialIntegrityV1={authoritativeFinancialIntegrityV1.value ?? null}
+                financialBreakdownV1={authoritativeFinancialBreakdownV1.value ?? null}
+                underwritingReadinessV1={authoritativeUnderwritingReadinessV1.value ?? null}
+                financialSnapshotStale={financialSnapshotStale}
               />
             )}
 
@@ -8573,6 +8600,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Investor Insights Tab */}
             {activeTab === 'investor-insights' && (
               <InvestorInsightsTab dealId={dealId || 'demo'} dealName={displayName} darkMode={darkMode} />
+            )}
+
+            {/* Financial Audit Tab */}
+            {activeTab === 'financial-audit' && (
+              <FinancialAuditTab
+                financialBreakdownV1={authoritativeFinancialBreakdownV1.value ?? null}
+                underwritingReadinessV1={authoritativeUnderwritingReadinessV1.value ?? null}
+                financialIntegrityV1={authoritativeFinancialIntegrityV1.value ?? null}
+                financialSnapshotStale={financialSnapshotStale}
+                darkMode={darkMode}
+              />
             )}
 
             {/* Reports Generated Tab */}

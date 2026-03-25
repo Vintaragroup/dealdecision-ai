@@ -1365,6 +1365,29 @@ export function apiGetDealExtractionReport(dealId: string) {
   }>(`/api/v1/deals/${dealId}/documents/extraction-report`);
 }
 
+/**
+ * GET /api/v1/deals/:id/financial-facts
+ *
+ * Returns FinancialFactV1 rows from the financial_facts_v1 registry table.
+ * Includes provenance_metadata fields (value_kind, formula, cross_sheet_refs,
+ * formula_dependencies, dependency_depth, temporal_scope, etc.) when present.
+ *
+ * @param metricKey - optional filter by metric_key
+ * @param limit     - max rows, 1–100 (default 50)
+ */
+export function apiGetDealFinancialFacts(
+  dealId: string,
+  opts?: { metricKey?: string; limit?: number }
+) {
+  const params = new URLSearchParams();
+  if (opts?.metricKey) params.set("metric_key", opts.metricKey);
+  if (opts?.limit != null) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return request<{ facts: import("@dealdecision/core").FinancialFactV1[] }>(
+    `/api/v1/deals/${dealId}/financial-facts${qs ? `?${qs}` : ""}`
+  );
+}
+
 export type DocumentAnalysisResponse = {
   document_id: string;
   deal_id: string;
@@ -1445,6 +1468,22 @@ export function apiResolveEvidence(ids: string[]) {
   return request<{ results: EvidenceResolveResult[] }>(`/api/v1/evidence/resolve?ids=${qs}`);
 }
 
+export type DealReportIntegrityFlag = {
+  flag_key: string;
+  status: 'PASS' | 'WARN' | 'FAIL';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  fact_type?: string;
+  note: string;
+};
+
+export type DealReportFinancialIntegrityV1 = {
+  computed_at: string;
+  completeness_score: number | null;
+  missing_critical: string[];
+  missing_supplementary: string[];
+  flags: DealReportIntegrityFlag[];
+};
+
 export type DealReport = {
   dealId: string;
   generatedAt: string;
@@ -1458,6 +1497,12 @@ export type DealReport = {
   sections?: Array<{ id: string; title: string; content: string; evidence_ids?: string[] }>;
   completeness?: number;
   metadata?: Record<string, any>;
+  /** Financial integrity cross-source analysis. null = analyzer did not run. */
+  financial_integrity_v1?: DealReportFinancialIntegrityV1 | null;
+  /** Financial breakdown v1: current state, projections, burn/runway, cap table, risks. null when not computed. */
+  financial_breakdown_v1?: Record<string, unknown> | null;
+  /** Underwriting readiness v1: status, score (0-100), gaps, narrative. null when not computed. */
+  underwriting_readiness_v1?: Record<string, unknown> | null;
 };
 
 export type DealReportEnvelope =
@@ -1473,6 +1518,10 @@ export type DealReportEnvelope =
       version: number;
       artifact: unknown;
       report?: DealReport | null;
+      /** True when financial_facts_v1 rows are newer than the compiled report snapshot.
+       *  The compiled financial_breakdown_v1 / underwriting_readiness_v1 may not reflect
+       *  the latest extracted facts. Re-running analysis will refresh the snapshot. */
+      financial_snapshot_stale?: boolean;
       // Backward compat: API may also include report fields at top-level.
       [key: string]: unknown;
     }

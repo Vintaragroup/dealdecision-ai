@@ -18,6 +18,7 @@
 import { createHash } from "crypto";
 import type { FinancialFactV1, FinancialFactConfidence, FinancialFactUnit, FinancialFactSourceKind } from "@dealdecision/core";
 import type { TypedMetric, FieldTypeV1 } from "@dealdecision/core";
+import { inferPeriodType } from "@dealdecision/core";
 
 // ─── Field type mappings ──────────────────────────────────────────────────────
 
@@ -35,7 +36,10 @@ const FIELD_TYPE_TO_METRIC_KEY: Record<FieldTypeV1, string> = {
   sam_v1:                        "sam",
   som_v1:                        "som",
   raise_amount_v1:               "raise_amount",
-  valuation_v1:                  "valuation",
+  // valuation_v1 is resolved to pre_money_valuation by default (startup XLSX
+  // "Valuation" rows are pre-money). The caller disambiguates post-money via
+  // the metric label at promotion time — see promoteToFinancialFactV1.
+  valuation_v1:                  "pre_money_valuation",
   ebitda_v1:                     "ebitda",
   burn_rate_v1:                  "burn_rate",
   runway_months_v1:              "runway_months",
@@ -139,7 +143,13 @@ export function promoteToFinancialFactV1(
     // Drop low-confidence other_metric_v1 (noisy rows)
     if (metric.field_type === "other_metric_v1" && metric.typing_confidence < 0.30) continue;
 
-    const metricKey = FIELD_TYPE_TO_METRIC_KEY[metric.field_type] ?? "other_metric";
+    const rawMetricKey = FIELD_TYPE_TO_METRIC_KEY[metric.field_type] ?? "other_metric";
+    // For valuation rows, inspect the label to distinguish post-money from pre-money.
+    // Default is pre_money_valuation (the common case in startup financial models).
+    const metricKey =
+      rawMetricKey === "pre_money_valuation" && /post.?money/i.test(metric.label ?? "")
+        ? "post_money_valuation"
+        : rawMetricKey;
     const periodLabel = extractPeriodLabel(metric);
     const unit = inferUnit(metricKey);
 
@@ -163,7 +173,7 @@ export function promoteToFinancialFactV1(
       source_kind: sourceKind,
       metric_key: metricKey,
       metric_label: metric.label ?? undefined,
-      period_type: "unknown",
+      period_type: inferPeriodType(periodLabel),
       period_label: periodLabel,
       value: metric.value,
       unit,
@@ -174,6 +184,22 @@ export function promoteToFinancialFactV1(
       ...(metric.scenario !== undefined ? { scenario: metric.scenario } : {}),
       ...(opts.sheet_name ? { sheet_name: opts.sheet_name } : {}),
       source_pointer: sourcePointer,
+      // Formula traceability — carry value_kind, formula, and cross_sheet_refs when present.
+      ...(metric.value_kind !== undefined ? { value_kind: metric.value_kind } : {}),
+      ...(metric.formula !== undefined ? { formula: metric.formula } : {}),
+      ...(metric.cross_sheet_refs !== undefined ? { cross_sheet_refs: metric.cross_sheet_refs } : {}),
+      ...(metric.named_range_refs !== undefined ? { named_range_refs: metric.named_range_refs } : {}),
+      ...(metric.resolved_cross_sheet_values !== undefined ? { resolved_cross_sheet_values: metric.resolved_cross_sheet_values } : {}),
+      // Dependency graph metadata — carry through formula dependencies, depth, circular flag.
+      ...(metric.formula_dependencies !== undefined ? { formula_dependencies: metric.formula_dependencies } : {}),
+      ...(metric.dependency_depth !== undefined ? { dependency_depth: metric.dependency_depth } : {}),
+      ...(metric.circular_reference_detected !== undefined ? { circular_reference_detected: metric.circular_reference_detected } : {}),
+      // Extraction assumption metadata — scale factor, period normalization, typing reason.
+      ...(metric.unit_scale_factor_applied !== undefined ? { unit_scale_factor_applied: metric.unit_scale_factor_applied } : {}),
+      ...(metric.unit_scale_source_text !== undefined ? { unit_scale_source_text: metric.unit_scale_source_text } : {}),
+      ...(metric.normalized_period_label !== undefined ? { normalized_period_label: metric.normalized_period_label } : {}),
+      ...(metric.original_period_label !== undefined ? { original_period_label: metric.original_period_label } : {}),
+      ...(metric.typing_reason !== undefined ? { typing_reason: metric.typing_reason } : {}),
     };
 
     facts.push(fact);

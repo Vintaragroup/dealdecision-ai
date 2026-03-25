@@ -148,7 +148,7 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
 
   const buildNormalizedHeadersAndRows = (worksheet: XLSX.WorkSheet): { headers: string[]; rows: Record<string, unknown>[]; formula_grid: Record<string, string> } => {
     const ref = worksheet["!ref"] as string | undefined;
-    if (!ref) return { headers: [], rows: [] };
+    if (!ref) return { headers: [], rows: [], formula_grid: {} };
     const r = XLSX.utils.decode_range(ref);
 
     const merges = Array.isArray((worksheet as any)["!merges"]) ? ((worksheet as any)["!merges"] as any[]) : [];

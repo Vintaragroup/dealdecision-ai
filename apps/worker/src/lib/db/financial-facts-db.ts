@@ -218,6 +218,39 @@ export const FINANCIAL_FACTS_ANALYSIS_LIMIT = 500;
  * @param opts.metricKey - optional filter by metric_key
  * @param opts.limit - max rows (default 25, hard ceiling FINANCIAL_FACTS_ANALYSIS_LIMIT)
  */
+/**
+ * Fetch enriched document metadata for a deal to support financial coverage
+ * detection (cap-table, xlsx MIME type matching) in the report compiler.
+ *
+ * Mirrors the API-side `getDocumentsForReport` — kept in sync intentionally.
+ * Uses a LEFT JOIN against document_files so deals without file rows still
+ * return document records (filename will be null in that case).
+ *
+ * Fail-open: callers should catch and default to [] on error.
+ */
+export async function getDocumentsForReport(
+  pool: Pool,
+  dealId: string,
+): Promise<Array<{ document_id: string; filename: string | null; kind: string | null; mime_type: string | null }>> {
+  const { rows } = await pool.query<{
+    document_id: string;
+    filename: string | null;
+    kind: string | null;
+    mime_type: string | null;
+  }>(
+    `SELECT d.id AS document_id,
+            df.file_name AS filename,
+            d.type AS kind,
+            COALESCE(df.mime_type, d.mime_type) AS mime_type
+       FROM documents d
+       LEFT JOIN document_files df ON df.document_id = d.id
+      WHERE d.deal_id = $1::uuid
+        AND d.deleted_at IS NULL`,
+    [dealId],
+  );
+  return rows ?? [];
+}
+
 export async function getFinancialFactsForDeal(
   pool: Pool,
   dealId: string,

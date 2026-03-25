@@ -22,7 +22,7 @@ import { buildOverviewPrompt, degradeOverviewV1 } from '@dealdecision/core';
 import { buildInvestmentAnalysisOverviewPrompt, LlmOverviewV1CitationSchema, LlmOverviewV1Schema } from '@dealdecision/core';
 import { loadPromotedFactsForDeal } from '../lib/promoted-facts';
 import { derivePromotedFactsFromDpuForDeal } from '../lib/promoted-facts-from-dpu';
-import { getFinancialFactsForReport, getFinancialFactsMaxTimestamp } from './financial-facts';
+import { getFinancialFactsForReport, getFinancialFactsMaxTimestamp, getDocumentsForReport } from './financial-facts';
 import { detectFinancialSnapshotStaleness } from '@dealdecision/core';
 import { compileDealSummaryV1 } from '../lib/deal-summary-v1';
 import { getSegmentedNodesForDeal } from '../lib/segmented-nodes-for-deal';
@@ -103,7 +103,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 7; // bumped: financial_integrity_v1 now populated
+const REPORT_COMPILER_VERSION = 8; // bumped: has_facts overlay + documents enrichment for cap-table/xlsx detection
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -2505,7 +2505,8 @@ export async function registerReportRoutes(
 
             const compiled = await timer.stage('compile.report', async () => {
               const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
-              return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts });
+              const documents = await getDocumentsForReport(pool as any, deal_id);
+              return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents });
             });
             logStage('compile.report', compiled.ms, true);
             report = compiled.value;
@@ -3261,7 +3262,8 @@ export async function registerReportRoutes(
             promotedFacts = [];
           }
           const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
-          report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts });
+          const documents = await getDocumentsForReport(pool as any, deal_id);
+          report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents });
         }
 
         // Backward compatibility: normalize structured KPI shape (order matters).

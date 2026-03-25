@@ -191,6 +191,34 @@ export async function getFinancialFactsForReport(
 }
 
 /**
+ * Fetch document metadata (id, filename, kind, mime_type) for all non-deleted
+ * documents belonging to a deal. Used by the report compiler to enrich cap-table
+ * and XLSX detection when the DIO's inputs.documents lacks filenames.
+ */
+export async function getDocumentsForReport(
+  pool: PoolLike,
+  dealId: string
+): Promise<Array<{ document_id: string; filename: string | null; kind: string | null; mime_type: string | null }>> {
+  try {
+    const r = await pool.query<{ document_id: string; filename: string | null; kind: string | null; mime_type: string | null }>(
+      `SELECT d.id AS document_id,
+              df.file_name AS filename,
+              d.type AS kind,
+              COALESCE(df.mime_type, d.mime_type) AS mime_type
+         FROM documents d
+         LEFT JOIN document_files df ON df.document_id = d.id
+        WHERE d.deal_id = $1
+          AND d.deleted_at IS NULL`,
+      [dealId],
+    );
+    return r.rows ?? [];
+  } catch {
+    // Never crash /report if document metadata is unavailable.
+    return [];
+  }
+}
+
+/**
  * Returns the max created_at timestamp across all financial_facts_v1 rows for a deal.
  * Returns null when no facts exist or the table is absent.
  * Used by the staleness detector to determine if facts are newer than the compiled report.

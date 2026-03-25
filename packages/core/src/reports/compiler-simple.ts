@@ -1863,7 +1863,13 @@ function buildEmptyFinancialIntegrityV1(): FinancialIntegrityV1 {
   };
 }
 
-export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedFacts?: PromotedFactInput[]; financialFacts?: FinancialFactV1[] | null }): ReportDTO {
+export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
+  promotedFacts?: PromotedFactInput[];
+  financialFacts?: FinancialFactV1[] | null;
+  /** Enriched document metadata from DB. When provided, takes precedence over DIO inputs.documents
+   *  so that filenames and MIME types are available for cap-table and XLSX detection. */
+  documents?: Array<{ document_id: string; kind?: string | null; mime_type?: string | null; filename?: string | null }> | null;
+}): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
   const structuredSummary = buildStructuredSummary(dio, scoreExplanation, opts?.promotedFacts ?? undefined);
@@ -1896,27 +1902,48 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
     structured_summary: structuredSummary,
     promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
     financial_facts: Array.isArray(opts?.financialFacts) ? opts!.financialFacts as FinancialFactV1[] : null,
-    documents: Array.isArray((dio as any)?.inputs?.documents)
-      ? (dio as any).inputs.documents.map((d: any) => ({
-          document_id: d?.document_id,
-          kind: d?.kind,
-          mime_type: d?.mime_type,
-          filename: d?.filename,
-        }))
-      : null,
+    documents: (() => {
+      // Prefer caller-supplied document metadata (with filenames) over bare DIO inputs.
+      if (Array.isArray(opts?.documents)) {
+        return opts!.documents!.map((d) => ({
+          document_id: d.document_id,
+          kind: d.kind ?? undefined,
+          mime_type: d.mime_type ?? undefined,
+          filename: d.filename ?? undefined,
+        }));
+      }
+      return Array.isArray((dio as any)?.inputs?.documents)
+        ? (dio as any).inputs.documents.map((d: any) => ({
+            document_id: d?.document_id,
+            kind: d?.kind,
+            mime_type: d?.mime_type,
+            filename: d?.filename,
+          }))
+        : null;
+    })(),
   });
 
   const financialBreakdown = buildFinancialBreakdownV1({
     financial_facts: Array.isArray(opts?.financialFacts) ? (opts!.financialFacts as FinancialFactV1[]) : [],
     financial_coverage_v1: financialCoverage,
     structured_summary: structuredSummary,
-    documents: Array.isArray((dio as any)?.inputs?.documents)
-      ? (dio as any).inputs.documents.map((d: any) => ({
-          document_id: d?.document_id,
-          kind: d?.kind,
-          filename: d?.filename,
-        }))
-      : null,
+    documents: (() => {
+      // Prefer caller-supplied document metadata (with filenames) over bare DIO inputs.
+      if (Array.isArray(opts?.documents)) {
+        return opts!.documents!.map((d) => ({
+          document_id: d.document_id,
+          kind: d.kind ?? undefined,
+          filename: d.filename ?? undefined,
+        }));
+      }
+      return Array.isArray((dio as any)?.inputs?.documents)
+        ? (dio as any).inputs.documents.map((d: any) => ({
+            document_id: d?.document_id,
+            kind: d?.kind,
+            filename: d?.filename,
+          }))
+        : null;
+    })(),
   });
 
   // Extract financial integrity from DIO before computing readiness so it can
@@ -1926,6 +1953,11 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: { promotedF
     financialIntegrityV1 = (dio as any)?.dio?.financial_integrity_v1 ?? buildEmptyFinancialIntegrityV1();
   } catch {
     // Best-effort: never fail report compilation.
+  }
+  // Overlay has_facts from the actually-loaded financial_facts, so the compiler-level
+  // report always reflects DB reality regardless of whether the DIO was re-analyzed.
+  if (Array.isArray(opts?.financialFacts) && opts.financialFacts.length > 0) {
+    financialIntegrityV1 = { ...financialIntegrityV1, has_facts: true };
   }
 
   const underwritingReadiness = buildUnderwritingReadinessV1({

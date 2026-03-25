@@ -45,7 +45,7 @@ import { OpenAIGPT4oProvider } from "../../lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "../../lib/llm/types";
 import type { JobStatus } from "@dealdecision/contracts";
 import { applySlideUnderstandingV1Shadow } from "../../lib/pdf_v2/slide-understanding-v1";
-import { getFinancialFactsForDeal, FINANCIAL_FACTS_ANALYSIS_LIMIT } from "../../lib/db/financial-facts-db";
+import { getFinancialFactsForDeal, getDocumentsForReport, FINANCIAL_FACTS_ANALYSIS_LIMIT } from "../../lib/db/financial-facts-db";
 
 // -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
 function safeJsonParseObject(raw: string): Record<string, unknown> | null {
@@ -1480,9 +1480,26 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 					promotedFacts = [];
 				}
 
-				const compiledReport = promotedFacts.length > 0
-					? compileDIOToReportWithPromotedFacts(result.dio as any, { promotedFacts })
-					: compileDIOToReport(result.dio as any);
+				// Load enriched document metadata (filename + MIME) for the compiler so
+				// cap-table and XLSX detection work the same as the API recompile path.
+				// Fail-open: any error defaults to empty array, which degrades gracefully.
+				let documentsForCompile: Awaited<ReturnType<typeof getDocumentsForReport>> = [];
+				try {
+					documentsForCompile = await getDocumentsForReport(pool, dealId);
+				} catch {
+					// Non-blocking — compiler falls back to DIO inputs.documents
+				}
+
+				const compiledReport = (() => {
+					// Always use the WithPromotedFacts variant so financialFacts and documents
+					// can be supplied for consistent has_xlsx / has_cap_table / has_facts output
+					// regardless of whether any promoted facts were found this run.
+					return compileDIOToReportWithPromotedFacts(result.dio as any, {
+						promotedFacts,
+						financialFacts: financialFactsForOrchestrator,
+						documents: documentsForCompile,
+					});
+				})();
 
 				// Explicitly stamp updated_at so the staleness detector can use DIO.updated_at
 				// as the authoritative freshness anchor for the financial snapshot.

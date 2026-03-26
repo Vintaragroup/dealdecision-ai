@@ -916,3 +916,262 @@ describe('buildUnderwritingReadinessV1 — integrity FAIL propagation', () => {
     })).not.toThrow();
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2: Semantic surfacing — explicit vs derived vs projected
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Phase 2 — Scenario 1: weak explicit burn + derived workbook proxy', () => {
+  // Deck burn scores higher than derived (deck SRC_RANK=1 > unknown SRC_RANK=0)
+  // so deck is selected as primary; derived is the alternative.
+  function makeScenario1Facts(): FinancialFactV1[] {
+    return [
+      fact('burn_rate', 250_000, {
+        source_kind: 'deck',
+        confidence: 'low',
+        period_label: 'FY2024',
+      }),
+      fact('burn_rate', 400_000, {
+        source_kind: 'unknown',
+        confidence: 'medium',
+        is_derived: true,
+        derivation_rule: 'burn_rate_from_total_expenses_run_rate',
+        semantic_family: 'liquidity',
+        semantic_role: 'derived',
+        period_label: 'FY2024',
+      }),
+    ];
+  }
+
+  test('primary burn is the deck fact (deck outranks derived/unknown)', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.burn_runway.monthly_burn?.source_kind).toBe('deck');
+    expect(bd.burn_runway.monthly_burn?.value).toBe(250_000);
+  });
+
+  test('primary burn is_provisional = true (low-conf deck source)', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.burn_runway.monthly_burn?.is_provisional).toBe(true);
+  });
+
+  test('alternative_burn_fact surfaces the derived workbook proxy', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.burn_runway.alternative_burn_fact).toBeDefined();
+    expect(bd.burn_runway.alternative_burn_fact?.is_derived).toBe(true);
+    expect(bd.burn_runway.alternative_burn_fact?.derivation_rule).toBe('burn_rate_from_total_expenses_run_rate');
+    expect(bd.burn_runway.alternative_burn_fact?.value).toBe(400_000);
+  });
+
+  test('alternative_burn_fact.is_provisional = true (derived implies provisional)', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.burn_runway.alternative_burn_fact?.is_provisional).toBe(true);
+  });
+
+  test('alternative_burn_fact carries semantic_family and semantic_role from FinancialFactV1', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.burn_runway.alternative_burn_fact?.semantic_family).toBe('liquidity');
+    expect(bd.burn_runway.alternative_burn_fact?.semantic_role).toBe('derived');
+  });
+
+  test('primary burn selection_reason references the deck weakness and alternative', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.burn_runway.monthly_burn?.selection_reason).toBeTruthy();
+    expect(bd.burn_runway.monthly_burn?.selection_reason).toMatch(/deck|proxy|alternative/i);
+  });
+
+  test('current_state.burn_rate mirrors the deck primary fact', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.current_state.burn_rate?.source_kind).toBe('deck');
+    expect(bd.current_state.burn_rate?.is_provisional).toBe(true);
+  });
+});
+
+describe('Phase 2 — Scenario 2: current vs projected gross margin', () => {
+  // A historical FY2024 gross margin vs a projected FY2028 gross margin.
+  // The current (non-projected) wins primary; projected becomes alternative.
+  function makeScenario2Facts(): FinancialFactV1[] {
+    return [
+      fact('gross_margin', 9.5, {
+        source_kind: 'xlsx',
+        unit: 'percent',
+        confidence: 'high',
+        period_label: 'FY2024',
+        temporal_scope: 'historical',
+      }),
+      fact('gross_margin', 64.8, {
+        source_kind: 'xlsx',
+        unit: 'percent',
+        confidence: 'medium',
+        period_label: 'FY2028',
+        // FY2028 is detected as projected by isProjectedFact (year > current year)
+      }),
+    ];
+  }
+
+  function buildS2() {
+    return buildFinancialBreakdownV1({
+      financial_facts: makeScenario2Facts(),
+      financial_coverage_v1: xlsxCoverage({ income_statement_present: true }),
+    });
+  }
+
+  test('gross_margin_pct is the historical current-period value', () => {
+    const bd = buildS2();
+    expect(bd.current_state.gross_margin_pct?.value).toBeCloseTo(9.5, 1);
+    expect(bd.current_state.gross_margin_pct?.period_label).toBe('FY2024');
+  });
+
+  test('primary gross_margin_pct is NOT flagged as projected', () => {
+    const bd = buildS2();
+    expect(bd.current_state.gross_margin_pct?.is_projected).toBeFalsy();
+  });
+
+  test('alternative_gross_margin_fact surfaces the projected value', () => {
+    const bd = buildS2();
+    expect(bd.current_state.alternative_gross_margin_fact).toBeDefined();
+    expect(bd.current_state.alternative_gross_margin_fact?.value).toBeCloseTo(64.8, 1);
+    expect(bd.current_state.alternative_gross_margin_fact?.period_label).toBe('FY2028');
+  });
+
+  test('alternative_gross_margin_fact.is_projected = true', () => {
+    const bd = buildS2();
+    expect(bd.current_state.alternative_gross_margin_fact?.is_projected).toBe(true);
+  });
+
+  test('alternative_gross_margin_fact.is_provisional = true (projected implies provisional)', () => {
+    const bd = buildS2();
+    expect(bd.current_state.alternative_gross_margin_fact?.is_provisional).toBe(true);
+  });
+
+  test('alternative gross_margin selection_reason references temporal distinction', () => {
+    const bd = buildS2();
+    expect(bd.current_state.alternative_gross_margin_fact?.selection_reason).toBeTruthy();
+    expect(bd.current_state.alternative_gross_margin_fact?.selection_reason).toMatch(
+      /projected|period|comparable/i,
+    );
+  });
+
+  test('temporal_scope passes through on primary (historical)', () => {
+    const bd = buildS2();
+    expect(bd.current_state.gross_margin_pct?.temporal_scope).toBe('historical');
+  });
+});
+
+describe('Phase 2 — Scenario 3: strong explicit xlsx metric — no spurious alternative', () => {
+  test('revenue from xlsx is not marked is_provisional', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 5_000_000, { source_kind: 'xlsx', confidence: 'high' })],
+      financial_coverage_v1: xlsxCoverage({ historical_revenue_present: true }),
+    });
+    expect(bd.current_state.revenue?.source_kind).toBe('xlsx');
+    expect(bd.current_state.revenue?.is_provisional).toBeFalsy();
+    expect(bd.current_state.revenue?.is_derived).toBeFalsy();
+  });
+
+  test('no alternative_burn_fact when single strong xlsx burn exists', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('burn_rate', 300_000, { source_kind: 'xlsx', confidence: 'high' })],
+      financial_coverage_v1: xlsxCoverage({ burn_rate_present: true }),
+    });
+    expect(bd.burn_runway.alternative_burn_fact).toBeUndefined();
+  });
+
+  test('burn selection_reason is falsy when primary burn is strong', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('burn_rate', 300_000, { source_kind: 'xlsx', confidence: 'high' })],
+      financial_coverage_v1: xlsxCoverage({ burn_rate_present: true }),
+    });
+    expect(bd.burn_runway.monthly_burn?.selection_reason).toBeFalsy();
+  });
+
+  test('no alternative_gross_margin_fact when only one current-period GM exists', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [
+        fact('gross_margin', 55, { source_kind: 'xlsx', confidence: 'high', unit: 'percent', temporal_scope: 'historical', period_label: 'FY2024' }),
+      ],
+      financial_coverage_v1: xlsxCoverage({ income_statement_present: true }),
+    });
+    expect(bd.current_state.alternative_gross_margin_fact).toBeUndefined();
+  });
+
+  test('temporal_scope is preserved on the primary metric', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 5_000_000, { source_kind: 'xlsx', confidence: 'high', temporal_scope: 'historical' })],
+      financial_coverage_v1: xlsxCoverage({ historical_revenue_present: true }),
+    });
+    expect(bd.current_state.revenue?.temporal_scope).toBe('historical');
+  });
+});
+
+describe('Phase 2 — Scenario 4: derived-only gross margin (no explicit fact)', () => {
+  function makeScenario4Facts(): FinancialFactV1[] {
+    return [
+      fact('gross_margin', 60, {
+        source_kind: 'unknown',
+        unit: 'percent',
+        confidence: 'medium',
+        is_derived: true,
+        derivation_rule: 'gross_margin_from_gross_profit_and_revenue',
+        semantic_family: 'profitability',
+        semantic_role: 'derived',
+      }),
+    ];
+  }
+
+  test('surfaces the derived gross_margin_pct', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario4Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.current_state.gross_margin_pct).toBeDefined();
+    expect(bd.current_state.gross_margin_pct?.value).toBeCloseTo(60, 1);
+  });
+
+  test('derived gross_margin.is_derived = true', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario4Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.current_state.gross_margin_pct?.is_derived).toBe(true);
+  });
+
+  test('derived gross_margin.is_provisional = true', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario4Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.current_state.gross_margin_pct?.is_provisional).toBe(true);
+  });
+
+  test('derivation_rule is passed through correctly', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario4Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.current_state.gross_margin_pct?.derivation_rule).toBe('gross_margin_from_gross_profit_and_revenue');
+  });
+
+  test('semantic_family is passed through as profitability', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario4Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.current_state.gross_margin_pct?.semantic_family).toBe('profitability');
+  });
+
+  test('semantic_role is passed through as derived', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario4Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.current_state.gross_margin_pct?.semantic_role).toBe('derived');
+  });
+
+  test('source_kind is preserved as unknown (derived convention)', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario4Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.current_state.gross_margin_pct?.source_kind).toBe('unknown');
+  });
+
+  test('no alternative_gross_margin_fact when only one derived candidate exists', () => {
+    const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario4Facts(), financial_coverage_v1: makeCoverage() });
+    expect(bd.current_state.alternative_gross_margin_fact).toBeUndefined();
+  });
+});
+
+describe('Phase 2 — Backward compatibility: existing FinancialMetricPoint fields still present', () => {
+  test('all original FinancialMetricPoint fields remain on an xlsx fact', () => {
+    const bd = buildFinancialBreakdownV1({
+      financial_facts: [fact('revenue', 1_000_000, { source_kind: 'xlsx', confidence: 'high', unit: 'currency', currency: 'USD', period_label: 'FY2024' })],
+      financial_coverage_v1: xlsxCoverage(),
+    });
+    const rev = bd.current_state.revenue;
+    expect(rev).toBeDefined();
+    expect(typeof rev?.value).toBe('number');
+    expect(typeof rev?.unit).toBe('string');
+    expect(typeof rev?.period_label).toBe('string');
+    expect(typeof rev?.confidence).toBe('string');
+    expect(typeof rev?.source_kind).toBe('string');
+  });
+});

@@ -216,3 +216,88 @@ export function selectAuthoritativeFact(
 export function filterCorruptedFacts(facts: FinancialFactV1[]): FinancialFactV1[] {
   return facts.filter((f) => !isCorruptedFact(f).corrupted);
 }
+
+// ─── Alternative fact discovery ───────────────────────────────────────────────
+
+/**
+ * Selects the best "alternative" fact for a metric — the runner-up that provides
+ * materially different or contrasting information beyond the already-selected primary.
+ *
+ * Used by the report compiler (Phase 2) to surface:
+ * - A workbook-derived operating proxy when the primary is a weak deck claim.
+ * - A projected alternative when the primary is a current/historical value,
+ *   enabling the UI to distinguish "current 9.5%" from "projected 2028 64.8%".
+ *
+ * Selection strategy:
+ * - **Weak primary** (deck-sourced, low confidence, or derived): return the
+ *   strongest remaining candidate that differs in source_kind, derivation status,
+ *   or confidence level.
+ * - **Strong primary** (xlsx, high confidence, explicit, non-projected): only
+ *   return a temporally-distinct fact (projected vs non-projected), if one exists.
+ *
+ * Returns undefined when:
+ * - No alternative candidates exist.
+ * - The primary is already strong AND no meaningful temporal contrast exists.
+ * - The only alternative would duplicate information already conveyed by the primary.
+ *
+ * Design rules:
+ * - Pure function — no side effects, no DB, no LLM.
+ * - Never throws: returns undefined on any empty or degenerate input.
+ * - Deterministic: same inputs always produce the same output.
+ *
+ * @param metricKeys   Same set of metric keys as passed to selectAuthoritativeFact.
+ * @param facts        Full FinancialFactV1 list for the deal.
+ * @param primaryFact  The already-selected primary fact. If undefined, returns undefined.
+ */
+export function selectAlternativeFact(
+  metricKeys: string | string[],
+  facts: FinancialFactV1[],
+  primaryFact: FinancialFactV1 | undefined,
+): FinancialFactV1 | undefined {
+  if (!primaryFact) return undefined;
+
+  const keys = new Set(Array.isArray(metricKeys) ? metricKeys : [metricKeys]);
+
+  // Collect non-corrupted alternatives, excluding the primary itself.
+  const candidates = facts.filter((f) => {
+    if (!keys.has(f.metric_key)) return false;
+    if (isCorruptedFact(f).corrupted) return false;
+    if (f.fact_id === primaryFact.fact_id) return false;
+    return true;
+  });
+
+  if (candidates.length === 0) return undefined;
+
+  const primaryIsWeak =
+    primaryFact.source_kind === 'deck' ||
+    primaryFact.confidence === 'low' ||
+    primaryFact.is_derived === true;
+
+  const primaryIsProjected = isProjectedFact(primaryFact);
+
+  // Strategy A: Primary is weak — find the strongest alternative that provides
+  // additional value beyond what the deck-only / low-confidence primary offers.
+  if (primaryIsWeak) {
+    const ranked = candidates
+      .map((f) => ({ f, score: rankScore(f, {}) }))
+      .sort((a, b) => b.score - a.score);
+
+    const best = ranked[0]?.f;
+    if (!best) return undefined;
+
+    // Only surface the alternative when it provides meaningfully different provenance.
+    const isMeaningful =
+      best.source_kind !== primaryFact.source_kind ||
+      !!best.is_derived !== !!primaryFact.is_derived ||
+      best.confidence !== primaryFact.confidence;
+
+    return isMeaningful ? best : undefined;
+  }
+
+  // Strategy B: Primary is strong — surface a temporally-distinct fact only,
+  // so the UI can present current vs projected context without merging them.
+  const temporalAlternative = candidates.find(
+    (c) => isProjectedFact(c) !== primaryIsProjected,
+  );
+  return temporalAlternative;
+}

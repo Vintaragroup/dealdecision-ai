@@ -21,6 +21,7 @@ import type { FinancialCoverageProfileV1 } from './financial-coverage-profile.js
 import type { FinancialIntegrityV1 } from '../types/financial-integrity-v1.js';
 import {
   selectAuthoritativeFact,
+  selectAlternativeFact,
   filterCorruptedFacts,
   isProjectedFact,
   isCorruptedFact,
@@ -28,7 +29,7 @@ import {
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
-/** A single financial metric with source and confidence context. */
+/** A single financial metric with source, confidence, and semantic context. */
 export type FinancialMetricPoint = {
   value: number;
   unit: 'currency' | 'percent' | 'number' | string;
@@ -36,6 +37,33 @@ export type FinancialMetricPoint = {
   period_label: string;
   confidence: 'high' | 'medium' | 'low';
   source_kind: string;
+
+  // ── Phase 2: Semantic enrichment ─────────────────────────────────────────
+  // All optional for backward compatibility. Omitted (not false) when not applicable.
+
+  /** True when this value is the result of a mathematical derivation, not direct extraction. */
+  is_derived?: boolean;
+  /** Identifies the derivation rule, e.g. 'gross_margin_from_gross_profit_and_revenue'. */
+  derivation_rule?: string | null;
+  /** Semantic family: 'revenue' | 'profitability' | 'liquidity' | 'expense' | etc. */
+  semantic_family?: string | null;
+  /** Semantic role: 'explicit' | 'derived' | 'inferred' | 'supporting' | 'unknown'. */
+  semantic_role?: string | null;
+  /** Temporal scope from the source fact: 'historical' | 'projected' | 'scenario' | etc. */
+  temporal_scope?: string | null;
+  /** True when this fact represents a forward-looking projection or scenario value. */
+  is_projected?: boolean;
+  /**
+   * True when the value is provisional: derived proxy, projected-only, or a
+   * low-confidence deck claim. The UI should distinguish provisional metrics
+   * from directly measured actuals.
+   */
+  is_provisional?: boolean;
+  /**
+   * Human-readable explanation of why this fact was selected, or a signal that
+   * a limitation exists (e.g. "Deck-sourced; workbook-derived proxy available").
+   */
+  selection_reason?: string | null;
 };
 
 /** Revenue + expense snapshot for one projected period. */
@@ -75,6 +103,12 @@ export type FinancialBreakdownV1 = {
     runway_months?: FinancialMetricPoint;
     cash?: FinancialMetricPoint;
     gross_margin_pct?: FinancialMetricPoint;
+    /**
+     * Phase 2: Projected or alternative gross margin for temporal contrast.
+     * Populated when a projected-period gross margin exists alongside a current value,
+     * enabling the UI to present "Current 9.5%" vs "Projected 2028: 64.8%" separately.
+     */
+    alternative_gross_margin_fact?: FinancialMetricPoint;
     /** Plain-English summary of the company's current financial state. */
     summary: string;
     data_quality: 'complete' | 'partial' | 'missing';
@@ -114,6 +148,12 @@ export type FinancialBreakdownV1 = {
   // ── Section 5: Burn / Runway ──────────────────────────────────────────────
   burn_runway: {
     monthly_burn?: FinancialMetricPoint;
+    /**
+     * Phase 2: Alternative burn rate when the primary is weak (deck-only / low-confidence).
+     * Populated when a workbook-derived or higher-quality burn proxy is also available.
+     * The UI can present this as: "Deck: $250K/mo (low confidence) — Workbook proxy: $400K/mo (derived)".
+     */
+    alternative_burn_fact?: FinancialMetricPoint;
     runway_months?: FinancialMetricPoint;
     cash?: FinancialMetricPoint;
     /** Plain-English summary of burn and runway. */
@@ -189,7 +229,10 @@ const PROJECTION_EBITDA_KEYS = ['ebitda', 'net_income', 'operating_income'];
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-function toMetricPoint(f: FinancialFactV1): FinancialMetricPoint {
+function toMetricPoint(f: FinancialFactV1, selection_reason?: string | null): FinancialMetricPoint {
+  const projected = isProjectedFact(f);
+  const isDerived = f.is_derived === true;
+  const isDeckLowConf = f.source_kind === 'deck' && f.confidence === 'low';
   return {
     value: f.value,
     unit: f.unit,
@@ -197,6 +240,16 @@ function toMetricPoint(f: FinancialFactV1): FinancialMetricPoint {
     period_label: f.period_label,
     confidence: f.confidence,
     source_kind: f.source_kind,
+    // Phase 2: semantic pass-through — omit fields that are falsy to keep JSON lean
+    ...(isDerived ? { is_derived: true } : {}),
+    ...(f.derivation_rule != null ? { derivation_rule: f.derivation_rule } : {}),
+    ...(f.semantic_family != null ? { semantic_family: f.semantic_family } : {}),
+    ...(f.semantic_role != null ? { semantic_role: f.semantic_role } : {}),
+    ...(f.temporal_scope != null ? { temporal_scope: f.temporal_scope } : {}),
+    ...(projected ? { is_projected: true } : {}),
+    // is_provisional: true when derived, projected, or a low-confidence deck claim
+    ...((isDerived || projected || isDeckLowConf) ? { is_provisional: true } : {}),
+    ...(selection_reason != null ? { selection_reason } : {}),
   };
 }
 
@@ -342,6 +395,34 @@ function _build(input: {
   const cashFact = selectAuthoritativeFact(['cash', 'cash_on_hand', 'cash_and_equivalents'], facts);
   const grossMarginFact = selectAuthoritativeFact(['gross_margin', 'gross_margin_pct', 'gross_margin_percent'], facts, { requireNonProjected: true });
 
+  // ── Phase 2: Alternative fact discovery ────────────────────────────────────
+
+  // Alternative burn: surface workbook-derived proxy when primary is deck/low-conf.
+  const alternativeBurnFact = selectAlternativeFact(
+    ['burn_rate', 'monthly_burn', 'net_burn'],
+    facts,
+    burnFact,
+  );
+  // True when burn primary is too weak to rely on alone.
+  const burnIsWeak =
+    burnFact != null &&
+    (burnFact.source_kind === 'deck' || burnFact.confidence === 'low' || burnFact.is_derived === true);
+  const burnPrimarySelectionReason =
+    burnIsWeak && alternativeBurnFact != null
+      ? 'Deck-sourced burn rate (low confidence). Workbook-derived operating proxy available — see alternative_burn_fact.'
+      : null;
+  const burnAltSelectionReason =
+    alternativeBurnFact != null
+      ? 'Workbook-derived operating burn proxy. See derivation_rule for calculation details.'
+      : null;
+
+  // Alternative gross margin: show projected alternative alongside current for temporal context.
+  const projectedGrossMarginFact = selectAlternativeFact(
+    ['gross_margin', 'gross_margin_pct', 'gross_margin_percent'],
+    facts,
+    grossMarginFact,
+  );
+
   const has_current_state = revFact != null || burnFact != null || cashFact != null;
   // Actual projected fact-periods take precedence over the coverage flag (which can be set by deck language)
   const has_projections = projPeriods.length > 0;
@@ -353,7 +434,10 @@ function _build(input: {
 
   const csParts: string[] = [];
   if (revFact) csParts.push(`Revenue: ${fmtC(revFact.value, revFact.currency)} (${revFact.period_label}, ${revFact.confidence} confidence, source: ${revFact.source_kind})`);
-  if (burnFact) csParts.push(`Monthly burn: ${fmtC(burnFact.value, burnFact.currency)}`);
+  if (burnFact) {
+    const burnSuffix = burnIsWeak && alternativeBurnFact ? ' [deck-sourced; workbook proxy available]' : '';
+    csParts.push(`Monthly burn: ${fmtC(burnFact.value, burnFact.currency)}${burnSuffix}`);
+  }
   if (runwayFact) csParts.push(`Runway: ${runwayFact.value} months`);
   if (cashFact) csParts.push(`Cash on hand: ${fmtC(cashFact.value, cashFact.currency)}`);
 
@@ -616,10 +700,14 @@ function _build(input: {
     has_cap_table,
     current_state: {
       revenue: revFact ? toMetricPoint(revFact) : undefined,
-      burn_rate: burnFact ? toMetricPoint(burnFact) : undefined,
+      burn_rate: burnFact ? toMetricPoint(burnFact, burnPrimarySelectionReason) : undefined,
       runway_months: runwayFact ? toMetricPoint(runwayFact) : undefined,
       cash: cashFact ? toMetricPoint(cashFact) : undefined,
       gross_margin_pct: grossMarginFact ? toMetricPoint(grossMarginFact) : undefined,
+      // Phase 2: projected gross margin for temporal contrast (current vs projected).
+      alternative_gross_margin_fact: projectedGrossMarginFact
+        ? toMetricPoint(projectedGrossMarginFact, 'Projected gross margin — different period from current state. Not directly comparable.')
+        : undefined,
       summary: csSummary,
       data_quality: csQuality,
     },
@@ -645,7 +733,11 @@ function _build(input: {
       summary: expenseSummary,
     },
     burn_runway: {
-      monthly_burn: burnFact ? toMetricPoint(burnFact) : undefined,
+      monthly_burn: burnFact ? toMetricPoint(burnFact, burnPrimarySelectionReason) : undefined,
+      // Phase 2: alternative burn when primary is weak (deck-only / low-confidence).
+      alternative_burn_fact: alternativeBurnFact
+        ? toMetricPoint(alternativeBurnFact, burnAltSelectionReason)
+        : undefined,
       runway_months: runwayFact ? toMetricPoint(runwayFact) : undefined,
       cash: cashFact ? toMetricPoint(cashFact) : undefined,
       summary: burnRunwaySummary,

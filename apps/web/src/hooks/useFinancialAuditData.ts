@@ -113,6 +113,62 @@ function getSupportStatusFromFlags(
   return 'Supported';
 }
 
+// ─── Phase 2: semantic display helpers ───────────────────────────────────────
+
+/**
+ * Converts a snake_case derivation_rule like 'burn_rate_from_total_expenses_run_rate'
+ * into a readable phrase like 'From total expenses run rate'.
+ */
+function formatDerivationRule(rule: string): string {
+  const fromIdx = rule.indexOf('_from_');
+  const desc = fromIdx >= 0 ? rule.slice(fromIdx + 6) : rule;
+  return 'From ' + desc.replace(/_/g, ' ');
+}
+
+/**
+ * Builds a concise sublabel for a metric based on its Phase 2 semantic fields.
+ * Shown below the metric name in the Source of Truth table.
+ */
+function buildMetricSublabel(m: FinancialMetricPointLike): string | null {
+  if (m.is_derived && m.derivation_rule) {
+    return formatDerivationRule(m.derivation_rule);
+  }
+  if (m.is_derived) return 'Workbook-derived estimate';
+  if (m.selection_reason) {
+    // Truncate long reasons for the table
+    return m.selection_reason.length > 90
+      ? m.selection_reason.slice(0, 87) + '…'
+      : m.selection_reason;
+  }
+  return null;
+}
+
+/**
+ * Converts an alternative FinancialMetricPointLike into a compact display object
+ * for rendering as a secondary row in the Source of Truth table.
+ */
+function buildAlternativeFactDisplay(
+  alt: FinancialMetricPointLike,
+): { label: string; value: string; sublabel: string } {
+  const isProjected = alt.is_projected === true;
+  const isDerived = alt.is_derived === true;
+  const period = alt.period_label;
+
+  const label = isProjected
+    ? `Projected${period ? ` (${period})` : ' estimate'}`
+    : isDerived
+    ? 'Workbook-derived proxy'
+    : 'Alternative metric';
+
+  const parts: string[] = [];
+  if (isDerived && alt.derivation_rule) parts.push(formatDerivationRule(alt.derivation_rule));
+  if (isProjected) parts.push('Provisional / forward-looking');
+  else if (isDerived) parts.push('Derived / provisional');
+  if (alt.source_kind) parts.push(formatSourceKind(alt.source_kind));
+
+  return { label, value: formatMetricValue(alt), sublabel: parts.join(' · ') };
+}
+
 // ─── Canonical state-derivation helpers ──────────────────────────────────────
 //
 // These functions form the single source of truth for the visible audit state.
@@ -519,13 +575,29 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const currentState = bd?.current_state ?? null;
     const burnRunway = bd?.burn_runway ?? null;
 
-    type MetricDef = { label: string; factType: string; metric: FinancialMetricPointLike | null | undefined };
+    type MetricDef = {
+      label: string;
+      factType: string;
+      metric: FinancialMetricPointLike | null | undefined;
+      // Phase 2: alternative fact for this metric (burn proxy, projected GM, etc.)
+      alternativeMetric?: FinancialMetricPointLike | null;
+    };
     const metricDefs: MetricDef[] = [
       { label: 'Revenue', factType: 'revenue', metric: currentState?.revenue },
-      { label: 'Burn Rate', factType: 'burn_rate', metric: currentState?.burn_rate ?? burnRunway?.monthly_burn },
+      {
+        label: 'Burn Rate',
+        factType: 'burn_rate',
+        metric: currentState?.burn_rate ?? burnRunway?.monthly_burn,
+        alternativeMetric: burnRunway?.alternative_burn_fact,
+      },
       { label: 'Cash', factType: 'cash', metric: currentState?.cash ?? burnRunway?.cash },
       { label: 'Runway', factType: 'runway', metric: currentState?.runway_months ?? burnRunway?.runway_months },
-      { label: 'Gross Margin', factType: 'gross_margin_pct', metric: currentState?.gross_margin_pct },
+      {
+        label: 'Gross Margin',
+        factType: 'gross_margin_pct',
+        metric: currentState?.gross_margin_pct,
+        alternativeMetric: currentState?.alternative_gross_margin_fact,
+      },
     ];
 
     const sotRows: SourceOfTruthRow[] = metricDefs
@@ -545,6 +617,15 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
           ? `${formatSourceKind(m.source_kind ?? 'unknown')} — single or partial source`
           : 'Low confidence — deck-only or unverified';
 
+        // Phase 2: semantic enrichment
+        const isDerived = m.is_derived === true;
+        const isProvisional = m.is_provisional === true;
+        const sublabel = buildMetricSublabel(m);
+        const alternativeFact =
+          d.alternativeMetric?.value != null
+            ? buildAlternativeFactDisplay(d.alternativeMetric)
+            : null;
+
         return {
           metric: d.label,
           value: formatMetricValue(m),
@@ -554,6 +635,10 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
           confidenceExplanation,
           status: supportStatus as SupportStatus,
           sourceWeight: mapConfidenceToSourceWeight(m.confidence),
+          sublabel,
+          isDerived,
+          isProvisional,
+          alternativeFact,
         };
       });
 
@@ -624,6 +709,21 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
         const conflictFlag = flags.find(
           (f) => f.flag_key.startsWith('cross_source') && f.fact_type?.includes(d.label.toLowerCase().replace(' ', '_')),
         );
+
+        // Phase 2: populate `change` with a semantic qualifier for provisional/derived facts.
+        // The FinancialSnapshot component renders this in amber when it doesn't start with +/-.
+        let change: string | undefined;
+        if (m.is_derived && m.derivation_rule) {
+          const desc = m.derivation_rule.split('_from_')[1]?.replace(/_/g, ' ') ?? 'workbook model';
+          change = `Derived from ${desc}`;
+        } else if (m.is_derived) {
+          change = 'Workbook-derived estimate';
+        } else if (m.is_provisional && m.source_kind === 'deck') {
+          change = 'Pitch Deck — verify independently';
+        } else if (m.is_projected) {
+          change = `Projected estimate${m.period_label ? ` (${m.period_label})` : ''}`;
+        }
+
         return {
           label: d.label,
           value: formatMetricValue(m),
@@ -635,6 +735,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
             : conf === 'Medium'
             ? 'Single source or partial validation'
             : 'Low confidence — verify independently',
+          ...(change != null ? { change } : {}),
         };
       });
 

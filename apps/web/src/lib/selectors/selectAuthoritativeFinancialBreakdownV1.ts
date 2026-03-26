@@ -8,6 +8,15 @@ export type FinancialMetricPointLike = {
   period_label?: string | null;
   confidence?: string | null;
   source_kind?: string | null;
+  // Phase 2: semantic enrichment (mirrors FinancialMetricPoint in @dealdecision/core)
+  is_derived?: boolean | null;
+  derivation_rule?: string | null;
+  semantic_family?: string | null;
+  semantic_role?: string | null;
+  temporal_scope?: string | null;
+  is_projected?: boolean | null;
+  is_provisional?: boolean | null;
+  selection_reason?: string | null;
 };
 
 export type FinancialRiskFlagLike = {
@@ -24,6 +33,8 @@ export type FinancialCurrentStateLike = {
   gross_margin_pct?: FinancialMetricPointLike | null;
   summary?: string | null;
   data_quality?: string | null;
+  // Phase 2: projected vs current temporal contrast
+  alternative_gross_margin_fact?: FinancialMetricPointLike | null;
 };
 
 export type FinancialBurnRunwayLike = {
@@ -32,6 +43,8 @@ export type FinancialBurnRunwayLike = {
   cash?: FinancialMetricPointLike | null;
   summary?: string | null;
   confidence?: string | null;
+  // Phase 2: workbook-derived proxy when primary burn is weak (deck / low-conf)
+  alternative_burn_fact?: FinancialMetricPointLike | null;
 };
 
 export type FinancialPeriodSnapshotLike = {

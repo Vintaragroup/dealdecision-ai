@@ -80,6 +80,15 @@ export interface SourceOfTruthRow {
   confidenceExplanation: string;
   status: SupportStatus;
   sourceWeight: number;
+  // Phase 2: semantic enrichment for display
+  /** Human-readable sublabel shown below the metric name — e.g. "Derived from gross profit & revenue" */
+  sublabel?: string | null;
+  /** True when the metric was computed/inferred rather than directly observed */
+  isDerived?: boolean;
+  /** True when the metric is provisional (derived, projected, or low-conf deck claim) */
+  isProvisional?: boolean;
+  /** Secondary metric row shown when a meaningful alternative exists (e.g. workbook burn proxy) */
+  alternativeFact?: { label: string; value: string; sublabel: string } | null;
 }
 
 export interface SourceOfTruthTableProps {

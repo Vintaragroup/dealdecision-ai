@@ -31,6 +31,7 @@ import {
   type UnderwritingReadinessV1,
 } from '../models/financial-breakdown-v1.js';
 import type { FinancialIntegrityV1 } from '../types/financial-integrity-v1.js';
+import { computeFinancialIntegrityV1 } from '../analyzers/financial-integrity-analyzer-v1.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -1948,14 +1949,23 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 
   // Extract financial integrity from DIO before computing readiness so it can
   // be passed into buildUnderwritingReadinessV1. Fail-open: never fail compilation.
+  //
+  // When the DIO predates financial_integrity_v1 (stale DIO), compute it live
+  // from the available financial_facts so temporal-alignment and other flags are
+  // always present regardless of when the DIO was last analyzed.
   let financialIntegrityV1: FinancialIntegrityV1 = buildEmptyFinancialIntegrityV1();
   try {
-    financialIntegrityV1 = (dio as any)?.dio?.financial_integrity_v1 ?? buildEmptyFinancialIntegrityV1();
+    const storedIntegrity = (dio as any)?.dio?.financial_integrity_v1;
+    if (storedIntegrity && typeof storedIntegrity === 'object') {
+      financialIntegrityV1 = storedIntegrity;
+    } else if (Array.isArray(opts?.financialFacts) && opts.financialFacts.length > 0) {
+      // DIO predates financial_integrity_v1 — compute live from the loaded facts.
+      financialIntegrityV1 = computeFinancialIntegrityV1(opts.financialFacts as FinancialFactV1[]);
+    }
   } catch {
     // Best-effort: never fail report compilation.
   }
-  // Overlay has_facts from the actually-loaded financial_facts, so the compiler-level
-  // report always reflects DB reality regardless of whether the DIO was re-analyzed.
+  // Safety overlay: ensure has_facts always reflects DB reality regardless of path.
   if (Array.isArray(opts?.financialFacts) && opts.financialFacts.length > 0) {
     financialIntegrityV1 = { ...financialIntegrityV1, has_facts: true };
   }

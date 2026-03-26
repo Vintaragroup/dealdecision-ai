@@ -25,6 +25,10 @@ import {
   type IntegrityFlagSeverity,
   type IntegrityFlagSourceRef,
 } from "../types/financial-integrity-v1.js";
+import {
+  canCompareFactsTemporally,
+  buildGroupedTemporalMismatchFlag,
+} from "../temporal/temporal-alignment.js";
 
 // ─── Input type ────────────────────────────────────────────────────────────────
 // Loosely typed to accept anything from input_data while being safe.
@@ -209,6 +213,12 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
       if (workbookFacts.length === 0 || deckFacts.length === 0) continue;
 
       // Representative values: median of each group (or single value)
+      // Gate: skip divergence check when the representative facts are not temporally comparable.
+      // Projected vs historical divergence is expected — not a real conflict.
+      // The temporal mismatch will be surfaced by Phase 4d's grouped flag.
+      const temporalCheck = canCompareFactsTemporally(workbookFacts[0]!, deckFacts[0]!);
+      if (!temporalCheck.comparable) continue;
+
       const wbValue = medianValue(workbookFacts.map((f) => f.value));
       const deckValue = medianValue(deckFacts.map((f) => f.value));
 
@@ -485,23 +495,26 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
     }
 
     // 4d: Temporal scope mismatch — projected vs historical for same metric.
-    // Mixing projected and historical facts in cross-source comparisons produces
-    // misleading signals: a projected 2026 ARR vs actual 2024 ARR diverging is
-    // expected, not an integrity problem. Flag so consumers can suppress invalid
-    // comparisons rather than acting on spurious discrepancy flags.
-    for (const [metric_key, mFacts] of byMetric) {
-      const hasHistorical = mFacts.some((f) => !alertIsProjectedFact(f));
-      const hasProjected = mFacts.some((f) => alertIsProjectedFact(f));
-      if (hasHistorical && hasProjected) {
-        flags.push(
-          makeFlag(
-            `period_alignment:temporal_scope_mismatch:${metric_key}`,
-            "FAIL",
-            "high",
-            `${metric_key} mixes projected and historical facts. Cross-source comparisons between projected and realized values are invalid and may produce misleading integrity signals.`,
-            { fact_type: metric_key },
-          ),
-        );
+    // Instead of emitting N individual flags (one per metric), collect all affected
+    // metrics and emit a single grouped flag. This prevents temporal noise from
+    // inflating the conflict count and makes the output more readable.
+    {
+      const temporalMismatchMetrics: string[] = [];
+      const temporalMismatchReasons: string[] = [];
+
+      for (const [metric_key, mFacts] of byMetric) {
+        const hasHistorical = mFacts.some((f) => !alertIsProjectedFact(f));
+        const hasProjected = mFacts.some((f) => alertIsProjectedFact(f));
+        if (hasHistorical && hasProjected) {
+          temporalMismatchMetrics.push(metric_key);
+          temporalMismatchReasons.push(
+            `${metric_key}: projected and historical facts cannot be compared directly`,
+          );
+        }
+      }
+
+      if (temporalMismatchMetrics.length > 0) {
+        flags.push(buildGroupedTemporalMismatchFlag(temporalMismatchMetrics, temporalMismatchReasons));
       }
     }
 

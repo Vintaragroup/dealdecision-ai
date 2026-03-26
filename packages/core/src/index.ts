@@ -411,6 +411,21 @@ export {
   temporalScopeLabel,
 } from "./temporal/temporal-scope";
 
+// ── Temporal Alignment Engine (Phase 3) ──────────────────────────────────────
+// Deterministic fact-level temporal comparison: TemporalReferenceClass,
+// canCompareFactsTemporally, MetricDefinitionFamily, grouped mismatch flags.
+export type {
+  TemporalReferenceClass,
+  MetricDefinitionFamily,
+  TemporalComparisonReason,
+} from "./temporal/temporal-alignment";
+export {
+  classifyFactTemporally,
+  getMetricDefinitionFamily,
+  canCompareFactsTemporally,
+  buildGroupedTemporalMismatchFlag,
+} from "./temporal/temporal-alignment";
+
 // ============================================================================
 // Field Typing Rules / TypedMetric (Phase 1 — now wired)
 // ============================================================================

@@ -851,9 +851,22 @@ function _buildReadiness(input: {
   } else {
     if (hasIntegrityFail) {
       const failFlags = fi!.flags.filter(f => f.status === 'FAIL' && (f.severity === 'critical' || f.severity === 'high'));
-      const flagSummary = failFlags.map(f => f.flag_key).slice(0, 3).join(', ');
-      reasons.push(`Financial integrity check detected critical discrepancies: ${flagSummary}.`);
-      gaps.push('conflicting_revenue');
+      // Separate temporal alignment issues from quantitative data conflicts.
+      // period_alignment:* flags represent projected vs historical period mismatches,
+      // not numeric conflicts — they are surfaced in the dedicated temporal alignment panel.
+      const quantitativeFails = failFlags.filter(f => !f.flag_key.startsWith('period_alignment:'));
+      const hasTemporalAlignmentFails = failFlags.some(f => f.flag_key.startsWith('period_alignment:'));
+      if (quantitativeFails.length > 0) {
+        // Use fact_type label where available; fall back to the terminal segment of flag_key.
+        const labels = quantitativeFails.slice(0, 3).map(f =>
+          f.fact_type ? f.fact_type.replace(/_/g, ' ') : (f.flag_key.split(':').pop() ?? f.flag_key).replace(/_/g, ' ')
+        );
+        reasons.push(`Financial integrity issues detected: ${labels.join(', ')}.`);
+        gaps.push('conflicting_revenue');
+      }
+      if (hasTemporalAlignmentFails) {
+        reasons.push('Data comparability is limited for some metrics due to projected vs. historical period differences.');
+      }
     }
     if (bd.risks.some(r => r.code === 'projection_only')) gaps.push('projection_only');
     if (!hasIntegrityFail && bd.risks.some(r => r.code === 'conflicting_revenue')) gaps.push('conflicting_revenue');

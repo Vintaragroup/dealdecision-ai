@@ -103,7 +103,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 9; // bumped: Phase 2 semantic fields (is_derived, is_provisional, selection_reason, alternative_burn_fact, alternative_gross_margin_fact)
+const REPORT_COMPILER_VERSION = 10; // bumped: suppress raw period_alignment flag keys from ur.reasons; human-readable temporal alignment language in _buildReadiness
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {

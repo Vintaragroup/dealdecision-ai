@@ -567,20 +567,21 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     // Extract the grouped temporal mismatch flag (Phase 3) into a structured block.
     // This prevents the raw flag note from appearing in criticalActions/riskFlags
     // and surfaces it as a dedicated amber panel instead.
+    // All period_alignment:* flags are suppressed from raw render paths below.
     const temporalAlignment = extractTemporalAlignmentBlock(flags);
-    // The GROUPED_TEMPORAL_FLAG key — used to exclude it from raw message rendering below.
-    const TEMPORAL_GROUPED_KEY = 'period_alignment:grouped_temporal_mismatch';
 
     // ── Investor Action Panel ───────────────────────────────────────────────
     const criticalActions = [
-      // High/critical integrity failures — exclude the grouped temporal mismatch flag
-      // (it is surfaced in the dedicated temporal alignment panel, not as a raw action item)
+      // High/critical integrity failures — exclude all period_alignment:* flags.
+      // These are surfaced in the dedicated temporal alignment panel, not as individual action items.
+      // This covers both the current grouped key and any legacy per-metric temporal_scope_mismatch keys
+      // that may be stored in older deal DIOs.
       ...flags
         .filter(
           (f) =>
             (f.severity === 'critical' || f.severity === 'high') &&
             f.status === 'FAIL' &&
-            f.flag_key !== TEMPORAL_GROUPED_KEY,
+            !f.flag_key.startsWith('period_alignment:'),
         )
         .map((f) => ({ text: f.note, severity: 'critical' as const })),
       // Missing critical underwriting metrics
@@ -595,9 +596,9 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
       ...(hasAnyFinancialData && isIntegrityIncomplete
         ? [{ text: 'Financial data has been extracted, but integrity validation is incomplete. Review source-linked values carefully before relying on them in an investment decision.', severity: 'warning' as const }]
         : []),
-      // Medium severity warnings
+      // Medium severity warnings — exclude period_alignment:* flags (surfaced in temporal panel)
       ...flags
-        .filter((f) => f.severity === 'medium' && f.status === 'WARN')
+        .filter((f) => f.severity === 'medium' && f.status === 'WARN' && !f.flag_key.startsWith('period_alignment:'))
         .map((f) => ({ text: f.note, severity: 'warning' as const })),
       // Supplementary missing fields
       ...missing_supplementary.map((m: string) => ({
@@ -791,10 +792,12 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
 
     // ── Risk Flags Panel ────────────────────────────────────────────────────
     const riskFlagsFromBreakdown = (bd?.risks ?? []) as Array<{ severity: string; message: string }>;
-    // Exclude the grouped temporal mismatch flag from raw risk messages — it is
-    // surfaced as a dedicated amber temporal alignment panel, not a raw critical flag.
+    // Exclude all period_alignment:* flags from raw risk messages — they are surfaced
+    // as a dedicated amber temporal alignment panel, not individual critical flags.
+    // This covers both the current grouped key and legacy per-metric temporal_scope_mismatch
+    // keys that may still be present in older deal DIOs.
     const riskFlagsFromIntegrity = flags.filter(
-      (f) => (f.status === 'FAIL' || f.status === 'WARN') && f.flag_key !== TEMPORAL_GROUPED_KEY,
+      (f) => (f.status === 'FAIL' || f.status === 'WARN') && !f.flag_key.startsWith('period_alignment:'),
     );
 
     const allRiskMessages = [

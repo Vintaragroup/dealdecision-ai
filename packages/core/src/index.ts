@@ -103,6 +103,9 @@ export * from "./analyzers/risk-assessment";
 export * from "./analyzers/financial-integrity-analyzer-v1";
 export * from "./types/financial-integrity-v1";
 
+// Financial Semantics Layer (Phase 0)
+export * from "./financial-semantics/index";
+
 // Storage + services
 export * from "./services/dio-storage";
 export {

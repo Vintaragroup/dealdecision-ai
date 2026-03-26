@@ -17,6 +17,7 @@
 
 import { BaseAnalyzer, type AnalyzerMetadata } from "./base.js";
 import type { FinancialFactV1, FinancialFactSourceKind } from "../financial-facts/financial-fact-v1.js";
+import { interpretFinancialSemantics } from "../financial-semantics/index.js";
 import {
   type FinancialIntegrityV1,
   type IntegrityFlag,
@@ -528,6 +529,16 @@ export class FinancialIntegrityAnalyzerV1 extends BaseAnalyzer<
           ),
         );
       }
+    }
+
+    // Phase 0 — Financial semantics debug observability (non-blocking, zero side effects)
+    try {
+      const semantics = interpretFinancialSemantics({ facts });
+      if (process.env["DEBUG_FINANCIAL_SEMANTICS"] === "1") {
+        console.log("[financial-semantics]", JSON.stringify(semantics, null, 2));
+      }
+    } catch {
+      // Never allow semantics errors to affect the analyzer output
     }
 
     return {

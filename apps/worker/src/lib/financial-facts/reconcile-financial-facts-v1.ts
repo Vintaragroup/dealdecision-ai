@@ -3,19 +3,37 @@
  *
  * Deterministic derivation of implied financial facts.
  *
- * Rules:
+ * Rules (Phase 1):
  * - Rule 1: If `cash` + `burn_rate` exist for overlapping periods AND no
- *   `runway_months` exists → add computed runway_months = cash / burn_rate.
+ *   `runway_months` exists → derive runway_months = cash / burn_rate.
+ * - Rule 2: If `revenue` + `gross_profit` exist for overlapping periods AND no
+ *   `gross_margin` exists → derive gross_margin = gross_profit / revenue × 100.
+ *   Semantics-gated: only when the semantics layer confirms canDeriveGrossMargin.
+ * - Rule 3: If `total_expenses` exist AND no `burn_rate` exists AND semantics
+ *   layer confirms hasOperatingModel → derive burn_rate from total_expenses run-rate
+ *   (monthly direct; annual ÷ 12; quarterly ÷ 3).
+ *   Semantics-gated: requires interpretFinancialSemantics().hasOperatingModel.
+ *
+ * Design rules:
  * - Never mutates input facts.
  * - Never overrides extracted values.
  * - Never hallucinated: only mathematical derivations with clear provenance.
  * - Returns original facts PLUS derived entries.
+ * - All derived facts tagged with is_derived, derivation_rule, semantic_family,
+ *   semantic_role for downstream auditability.
+ * - Debug logging behind DEBUG_FINANCIAL_DERIVATION=1.
  */
 
-import type { FinancialFactV1 } from "@dealdecision/core";
+import type { FinancialFactV1, FinancialFactConfidence } from "@dealdecision/core";
 import { computeFactId } from "@dealdecision/core";
+import { interpretFinancialSemantics } from "@dealdecision/core";
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
+
+const DEBUG = process.env["DEBUG_FINANCIAL_DERIVATION"] === "1";
+function dbg(msg: string, data?: unknown): void {
+  if (DEBUG) console.log(`[reconcile-v1] ${msg}`, data ?? "");
+}
 
 /**
  * Returns true when a fact represents a projected / estimated / scenario value.
@@ -51,9 +69,19 @@ export function reconcileFinancialFactsV1(
     // Group by metric_key + period_label for fast lookup
     const byKey = groupByMetricPeriod(existing);
 
-    // ── Rule 1: Derive runway_months from cash + burn_rate ──────────────────
-    const cashFacts  = factsForMetric(byKey, "cash");
-    const burnFacts  = factsForMetric(byKey, "burn_rate");
+    // ── Semantic gating — run ONCE, gates Rules 2 and 3 ───────────────────
+    // interpretFinancialSemantics is pure/deterministic, zero side effects.
+    const semantics = interpretFinancialSemantics({ facts: existing });
+    dbg("semantics", {
+      hasOperatingModel: semantics.hasOperatingModel,
+      canDeriveGrossMargin: semantics.canDeriveGrossMargin,
+      canDeriveBurnRate: semantics.canDeriveBurnRate,
+    });
+
+    // ── Rule 1: Derive runway_months from cash + burn_rate ─────────────────
+    // This rule predates the semantics layer and is intentionally kept simple.
+    const cashFacts   = factsForMetric(byKey, "cash");
+    const burnFacts   = factsForMetric(byKey, "burn_rate");
     const runwayFacts = factsForMetric(byKey, "runway_months");
 
     for (const cashFact of cashFacts) {
@@ -65,10 +93,10 @@ export function reconcileFinancialFactsV1(
       if (burnFact.value <= 0) continue;
 
       // Projection guard: do NOT derive runway from projected inputs.
-      // Both cash AND burn_rate must be realized (historical or current)
-      // to produce a trustworthy runway figure.
-      // If either is projected/scenario/target, the derivation is skipped.
-      if (isProjectedFact(cashFact) || isProjectedFact(burnFact)) continue;
+      if (isProjectedFact(cashFact) || isProjectedFact(burnFact)) {
+        dbg("Rule 1 skipped — projected input", cashFact.period_label);
+        continue;
+      }
 
       // Don't derive if runway already present for this period
       const alreadyHasRunway = runwayFacts.some(
@@ -106,9 +134,198 @@ export function reconcileFinancialFactsV1(
         reconciliation_status: "ok",
         source_pointer,
         excerpt: `Derived: cash $${cashFact.value.toLocaleString()} / burn $${burnFact.value.toLocaleString()}/mo`,
+        is_derived: true,
+        derivation_rule: "runway_months_from_cash_and_burn_rate",
+        semantic_family: "liquidity",
+        semantic_role: "derived",
       };
 
       derived.push(derivedFact);
+      dbg("Rule 1 derived runway_months", derivedFact.period_label);
+    }
+
+    // ── Rule 2: Derive gross_margin from revenue + gross_profit ────────────
+    // Semantics-gated: only proceed if the semantics layer confirms it is safe.
+    if (semantics.canDeriveGrossMargin) {
+      const revFacts  = factsForMetric(byKey, "revenue");
+      const gpFacts   = factsForMetric(byKey, "gross_profit");
+      const gmFacts   = factsForMetric(byKey, "gross_margin");
+
+      for (const revFact of revFacts) {
+        if (isProjectedFact(revFact)) {
+          dbg("Rule 2 skipped — projected revenue", revFact.period_label);
+          continue;
+        }
+        if (revFact.value === 0) {
+          dbg("Rule 2 skipped — zero revenue", revFact.period_label);
+          continue;
+        }
+        if (revFact.confidence === "low") {
+          dbg("Rule 2 skipped — low confidence revenue", revFact.period_label);
+          continue;
+        }
+
+        const gpFact = gpFacts.find(
+          (gp) => gp.period_label === revFact.period_label,
+        );
+        if (!gpFact) continue;
+        if (isProjectedFact(gpFact)) {
+          dbg("Rule 2 skipped — projected gross_profit", gpFact.period_label);
+          continue;
+        }
+        if (gpFact.confidence === "low") {
+          dbg("Rule 2 skipped — low confidence gross_profit", gpFact.period_label);
+          continue;
+        }
+
+        // Don't derive if gross_margin already present for this period
+        const alreadyHasGrossMargin = gmFacts.some(
+          (gm) => gm.period_label === revFact.period_label,
+        );
+        if (alreadyHasGrossMargin) {
+          dbg("Rule 2 skipped — explicit gross_margin exists", revFact.period_label);
+          continue;
+        }
+
+        const gmPct = (gpFact.value / revFact.value) * 100;
+        if (!Number.isFinite(gmPct)) continue;
+        const gmRounded = Math.round(gmPct * 10) / 10; // 1 decimal place
+
+        const source_pointer = `derived:gross_margin rev=${revFact.fact_id} gp=${gpFact.fact_id}`;
+        const fact_id = computeFactId({
+          deal_id: dealId,
+          metric_key: "gross_margin",
+          period_type: revFact.period_type,
+          period_label: revFact.period_label,
+          source_pointer,
+        });
+
+        if (existing.some((f) => f.fact_id === fact_id)) continue;
+
+        // Derived facts are always medium confidence — derivation adds uncertainty
+        // even when both inputs are high quality.
+        const derivedConfidence: FinancialFactConfidence = "medium";
+
+        const derivedFact: FinancialFactV1 = {
+          fact_id,
+          deal_id: dealId,
+          document_id: revFact.document_id,
+          source_kind: "unknown",
+          metric_key: "gross_margin",
+          metric_label: "Gross Margin (derived)",
+          period_type: revFact.period_type,
+          period_label: revFact.period_label,
+          value: gmRounded,
+          unit: "percent",
+          confidence: derivedConfidence,
+          reconciliation_status: "ok",
+          source_pointer,
+          excerpt: `Derived: gross_profit ${gpFact.value.toLocaleString()} / revenue ${revFact.value.toLocaleString()} = ${gmRounded}%`,
+          is_derived: true,
+          derivation_rule: "gross_margin_from_gross_profit_and_revenue",
+          semantic_family: "profitability",
+          semantic_role: "derived",
+        };
+
+        derived.push(derivedFact);
+        dbg("Rule 2 derived gross_margin", { period: derivedFact.period_label, value: gmRounded });
+      }
+    } else {
+      dbg("Rule 2 skipped — semantics gate: canDeriveGrossMargin=false");
+    }
+
+    // ── Rule 3: Derive burn_rate from total_expenses run-rate ─────────────
+    // Only when semantics confirm hasOperatingModel is true.
+    // Conservative: monthly direct, annual ÷ 12, quarterly ÷ 3.
+    // Do NOT derive if an explicit burn_rate already exists for the period.
+    if (semantics.hasOperatingModel) {
+      const expFacts  = factsForMetric(byKey, "total_expenses");
+      const existingBurnFacts = factsForMetric(byKey, "burn_rate");
+
+      for (const expFact of expFacts) {
+        if (isProjectedFact(expFact)) {
+          dbg("Rule 3 skipped — projected total_expenses", expFact.period_label);
+          continue;
+        }
+        if (expFact.confidence === "low") {
+          dbg("Rule 3 skipped — low confidence total_expenses", expFact.period_label);
+          continue;
+        }
+        if (expFact.value <= 0) continue;
+
+        // Don't derive if burn_rate already present for this period
+        const alreadyHasBurn = existingBurnFacts.some(
+          (b) => b.period_label === expFact.period_label,
+        );
+        if (alreadyHasBurn) {
+          dbg("Rule 3 skipped — explicit burn_rate exists", expFact.period_label);
+          continue;
+        }
+
+        // Monthly → use directly
+        // Annual  → ÷ 12
+        // Quarterly → ÷ 3
+        const period_type = expFact.period_type;
+        let monthlyBurn: number;
+        let ruleNote: string;
+
+        if (period_type === "monthly") {
+          monthlyBurn = expFact.value;
+          ruleNote = "monthly direct";
+        } else if (period_type === "annual") {
+          monthlyBurn = expFact.value / 12;
+          ruleNote = "annual ÷ 12";
+        } else if (period_type === "quarterly") {
+          monthlyBurn = expFact.value / 3;
+          ruleNote = "quarterly ÷ 3";
+        } else {
+          // TTM or unknown — cannot safely normalize, skip
+          dbg("Rule 3 skipped — cannot normalize period_type for burn proxy", period_type);
+          continue;
+        }
+
+        if (!Number.isFinite(monthlyBurn) || monthlyBurn <= 0) continue;
+
+        const burnRounded = Math.round(monthlyBurn);
+
+        const source_pointer = `derived:burn_rate expenses=${expFact.fact_id} rule=${ruleNote}`;
+        const fact_id = computeFactId({
+          deal_id: dealId,
+          metric_key: "burn_rate",
+          period_type: "monthly",
+          period_label: expFact.period_label,
+          source_pointer,
+        });
+
+        if (existing.some((f) => f.fact_id === fact_id)) continue;
+
+        const derivedFact: FinancialFactV1 = {
+          fact_id,
+          deal_id: dealId,
+          document_id: expFact.document_id,
+          source_kind: "unknown",
+          metric_key: "burn_rate",
+          metric_label: "Burn Rate (derived)",
+          period_type: "monthly",
+          period_label: expFact.period_label,
+          value: burnRounded,
+          unit: "currency",
+          currency: expFact.currency ?? "USD",
+          confidence: "medium",
+          reconciliation_status: "ok",
+          source_pointer,
+          excerpt: `Derived burn_rate from total_expenses (${ruleNote}): $${burnRounded.toLocaleString()}/mo`,
+          is_derived: true,
+          derivation_rule: "burn_rate_from_total_expenses_run_rate",
+          semantic_family: "liquidity",
+          semantic_role: "derived",
+        };
+
+        derived.push(derivedFact);
+        dbg("Rule 3 derived burn_rate", { period: derivedFact.period_label, value: burnRounded, ruleNote });
+      }
+    } else {
+      dbg("Rule 3 skipped — semantics gate: hasOperatingModel=false");
     }
 
     return derived.length > 0 ? [...existing, ...derived] : existing;
@@ -147,3 +364,4 @@ function factsForMetric(
   }
   return result;
 }
+

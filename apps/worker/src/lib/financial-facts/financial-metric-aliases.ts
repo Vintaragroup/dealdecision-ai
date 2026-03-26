@@ -56,6 +56,8 @@ export const METRIC_ALIAS_MAP: Record<string, string> = {
   "gm%":                     "gross_margin",
   gm:                        "gross_margin",
   "gross margin percentage": "gross_margin",
+  "margin %":                "gross_margin",   // StackFactor P&L: "Margin %"
+  "margin pct":              "gross_margin",
   // ── Operating Expenses ───────────────────────────────────────────────────
   "operating expense":       "opex",
   "operating expenses":      "opex",
@@ -63,6 +65,8 @@ export const METRIC_ALIAS_MAP: Record<string, string> = {
   opex:                      "opex",
   "op ex":                   "opex",
   "total opex":              "opex",
+  "total cost of operations":"opex",           // StackFactor P&L: "Total Cost of Operations ($000)"
+  "costs of operations":     "opex",
   // ── EBITDA ───────────────────────────────────────────────────────────────
   ebitda:                    "ebitda",
   "adjusted ebitda":         "ebitda",

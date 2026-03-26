@@ -125,7 +125,7 @@ export function extractExcelContent(buffer: Buffer): ExcelContent {
     return { v, w, t, f, s };
   };
 
-  const buildGridPreview = (worksheet: XLSX.WorkSheet, maxRows = 35, maxCols = 12): ExcelContent["sheets"][number]["gridPreview"] => {
+  const buildGridPreview = (worksheet: XLSX.WorkSheet, maxRows = 60, maxCols = 13): ExcelContent["sheets"][number]["gridPreview"] => {
     const ref = worksheet["!ref"] as string | undefined;
     if (!ref) return { maxRows, maxCols, cells: [] };
     const r = XLSX.utils.decode_range(ref);

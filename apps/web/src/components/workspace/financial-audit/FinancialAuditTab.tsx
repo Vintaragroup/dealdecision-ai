@@ -6,6 +6,7 @@ import { InvestorActionPanel } from './InvestorActionPanel';
 import { SummaryMetricsBar } from './SummaryMetricsBar';
 import { SourceOfTruthTable } from './SourceOfTruthTable';
 import { CrossSourceReconciliation } from './CrossSourceReconciliation';
+import { TemporalAlignmentPanel } from './TemporalAlignmentPanel';
 import { TimeProjectionAudit } from './TimeProjectionAudit';
 import { FinancialSnapshot } from './FinancialSnapshot';
 import { RiskFlagsPanel } from './RiskFlagsPanel';
@@ -20,6 +21,7 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     sourceOfTruth: true,
     conflicts: true,
+    temporalAlignment: true,
     timeAudit: true,
     snapshot: true,
     readiness: true,
@@ -175,7 +177,32 @@ export function FinancialAuditTab(props: FinancialAuditTabProps) {
         )}
       </section>
 
-      {/* 5 & 6. Time Audit and Financial Snapshot (Side by Side) */}
+      {/* 5. Temporal Alignment Issues */}
+      {auditData.temporalAlignment.hasIssue && (
+        <section>
+          <div
+            className="flex items-center justify-between mb-4 cursor-pointer"
+            onClick={() => toggleSection('temporalAlignment')}
+          >
+            <h2 className={`text-sm uppercase tracking-wide flex items-center gap-2 font-medium ${
+              darkMode ? 'text-amber-400' : 'text-amber-600'
+            }`}>
+              {expandedSections.temporalAlignment ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+              Temporal Alignment
+              <span className={`ml-2 px-2 py-0.5 rounded text-xs ${
+                darkMode ? 'bg-amber-500/20 text-amber-400' : 'bg-amber-100 text-amber-700'
+              }`}>
+                {auditData.temporalAlignment.affectedMetrics.length} metric{auditData.temporalAlignment.affectedMetrics.length !== 1 ? 's' : ''}
+              </span>
+            </h2>
+          </div>
+          {expandedSections.temporalAlignment && (
+            <TemporalAlignmentPanel block={auditData.temporalAlignment} darkMode={darkMode} />
+          )}
+        </section>
+      )}
+
+      {/* 6 & 7. Time Audit and Financial Snapshot (Side by Side) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         
         {/* 5. Time & Projection Audit */}

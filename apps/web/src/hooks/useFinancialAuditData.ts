@@ -13,6 +13,7 @@ import {
   ReconciliationStatus,
   VisibleStatusTone,
   VisibleAuditState,
+  TemporalAlignmentBlock,
 } from '../types/financialAudit';
 import type {
   FinancialMetricPointLike,
@@ -321,6 +322,41 @@ function deriveVisibleStatusTone(label: string): VisibleStatusTone {
   return 'warning'; // Not Ready → warning
 }
 
+/**
+ * Parses the `period_alignment:grouped_temporal_mismatch` integrity flag (if present)
+ * into a structured TemporalAlignmentBlock for dedicated UI rendering.
+ *
+ * The grouped flag replaces noisy per-metric temporal scope mismatch flags since Phase 3.
+ * By surfacing it as a structured block instead of a raw risk-flag message, we can:
+ *   - Show it amber (not red) — it is not a numeric conflict
+ *   - List affected metrics cleanly
+ *   - Exclude it from criticalActions and raw riskFlags lists
+ */
+function extractTemporalAlignmentBlock(flags: IntegrityFlag[]): TemporalAlignmentBlock {
+  const flag = flags.find((f) => f.flag_key === 'period_alignment:grouped_temporal_mismatch');
+  if (!flag) {
+    return { hasIssue: false, affectedMetrics: [], explanation: '' };
+  }
+
+  // Note format (from buildGroupedTemporalMismatchFlag):
+  // "N metric(s) mix projected and historical facts — cross-source comparison excluded
+  //  from numeric conflict count: metric1, metric2, metric3. Reason(s): ..."
+  const metricsMatch = flag.note.match(/conflict count:\s*([^.]+)/);
+  const affectedMetrics = metricsMatch
+    ? metricsMatch[1].split(',').map((m) => m.trim()).filter(Boolean)
+    : [];
+
+  // Investor-readable explanation — concise, not the raw technical note
+  const n = affectedMetrics.length;
+  const metricWord = n === 1 ? 'metric mixes' : 'metrics mix';
+  const explanation =
+    n > 0
+      ? `${n} ${metricWord} projected and historical values. Cross-source comparisons were limited to comparable periods — projected vs. realized divergence is expected, not a numeric conflict.`
+      : 'Some metrics mix projected and historical values. Projected vs. realized comparisons have been excluded from the numeric conflict count.';
+
+  return { hasIssue: true, affectedMetrics, explanation };
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -527,11 +563,25 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     // factsAnalyzed: single number for summary bar (use extracted count, fall back to 1 when data present)
     const factsAnalyzed = extractedFactsCount ?? (hasAnyFinancialData ? 1 : 0);
 
+    // ── Temporal Alignment Block ────────────────────────────────────────────
+    // Extract the grouped temporal mismatch flag (Phase 3) into a structured block.
+    // This prevents the raw flag note from appearing in criticalActions/riskFlags
+    // and surfaces it as a dedicated amber panel instead.
+    const temporalAlignment = extractTemporalAlignmentBlock(flags);
+    // The GROUPED_TEMPORAL_FLAG key — used to exclude it from raw message rendering below.
+    const TEMPORAL_GROUPED_KEY = 'period_alignment:grouped_temporal_mismatch';
+
     // ── Investor Action Panel ───────────────────────────────────────────────
     const criticalActions = [
-      // High/critical integrity failures
+      // High/critical integrity failures — exclude the grouped temporal mismatch flag
+      // (it is surfaced in the dedicated temporal alignment panel, not as a raw action item)
       ...flags
-        .filter((f) => (f.severity === 'critical' || f.severity === 'high') && f.status === 'FAIL')
+        .filter(
+          (f) =>
+            (f.severity === 'critical' || f.severity === 'high') &&
+            f.status === 'FAIL' &&
+            f.flag_key !== TEMPORAL_GROUPED_KEY,
+        )
         .map((f) => ({ text: f.note, severity: 'critical' as const })),
       // Missing critical underwriting metrics
       ...(ur?.missing ?? []).map((m: string) => ({
@@ -741,7 +791,11 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
 
     // ── Risk Flags Panel ────────────────────────────────────────────────────
     const riskFlagsFromBreakdown = (bd?.risks ?? []) as Array<{ severity: string; message: string }>;
-    const riskFlagsFromIntegrity = flags.filter((f) => f.status === 'FAIL' || f.status === 'WARN');
+    // Exclude the grouped temporal mismatch flag from raw risk messages — it is
+    // surfaced as a dedicated amber temporal alignment panel, not a raw critical flag.
+    const riskFlagsFromIntegrity = flags.filter(
+      (f) => (f.status === 'FAIL' || f.status === 'WARN') && f.flag_key !== TEMPORAL_GROUPED_KEY,
+    );
 
     const allRiskMessages = [
       ...riskFlagsFromBreakdown.map((r) => ({ severity: r.severity, message: r.message })),
@@ -874,6 +928,8 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
       sourceOfTruth: { rows: sotRows },
 
       conflicts: { conflicts, reconciliationStatus, reconciliationMessage },
+
+      temporalAlignment,
 
       timeAudit: { items: timeItems },
 

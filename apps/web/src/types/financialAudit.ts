@@ -155,6 +155,24 @@ export interface RiskFlagsPanelProps {
   dataQuality: RiskFlag[];
 }
 
+// Temporal Alignment Panel Types
+/**
+ * Structured representation of the grouped_temporal_mismatch integrity flag.
+ * Surfaced as a single amber block rather than N per-metric raw messages.
+ */
+export interface TemporalAlignmentBlock {
+  /** True when at least one metric mixes projected and historical facts. */
+  hasIssue: boolean;
+  /** Metric keys affected by temporal mismatch — empty when hasIssue=false. */
+  affectedMetrics: string[];
+  /** Investor-readable, single-sentence summary explanation. */
+  explanation: string;
+}
+
+export interface TemporalAlignmentPanelProps {
+  block: TemporalAlignmentBlock;
+}
+
 // Underwriting Readiness Types
 export interface UnderwritingReadinessProps {
   score: number;
@@ -273,6 +291,7 @@ export interface ProcessedAuditData {
   summaryMetrics: SummaryMetricsBarProps;
   sourceOfTruth: SourceOfTruthTableProps;
   conflicts: CrossSourceReconciliationProps;
+  temporalAlignment: TemporalAlignmentBlock;
   timeAudit: TimeProjectionAuditProps;
   snapshot: FinancialSnapshotProps;
   riskFlags: RiskFlagsPanelProps;

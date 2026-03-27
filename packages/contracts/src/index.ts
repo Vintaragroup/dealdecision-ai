@@ -58,6 +58,8 @@ export interface Deal {
 	name: string;
 	stage: DealStage;
 	priority: DealPriority;
+	lifecycle_status?: 'draft' | 'active' | 'archived';
+	views?: number;
 	llm_phase_mode: LLMPhaseMode;
 	trend?: DealTrend;
 	score?: number;

@@ -31,6 +31,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { ApiAuthBridge } from './components/auth/ApiAuthBridge';
 import { ApiMutationsPanel } from './components/debug/ApiMutationsPanel';
 import { DealsListDebugBadge } from './components/debug/DealsListDebugBadge';
+import { apiTrackDealView } from './lib/apiClient';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useUser } from '@clerk/clerk-react';
 import { clearLocalOnboardingComplete, getPostLoginRoute, markOnboardingComplete, maybeBackfillOnboardingComplete } from './lib/postLoginRouting';
@@ -159,6 +160,11 @@ export default function AppShell() {
   }, [currentPage, isRyanAdmin, navigate, userLoaded]);
 
   const handleDealClick = (dealId: string) => {
+    void apiTrackDealView(dealId).catch((err) => {
+      if (import.meta.env.DEV) {
+        console.debug('[deal-view-track-failed]', { dealId, err });
+      }
+    });
     setSelectedDealId(dealId);
     setSelectedDealData(null); // Clear any new deal data when clicking existing deal
     setCurrentPage('dealWorkspace');

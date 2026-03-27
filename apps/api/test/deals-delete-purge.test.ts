@@ -10,12 +10,18 @@ test.after(async () => {
   await closeQueues();
 });
 
-test('DELETE /api/v1/deals/:deal_id returns 400 without purge=true', async () => {
+test('DELETE /api/v1/deals/:deal_id performs soft delete by default', async () => {
+  const dealId = 'deal-soft-1';
   const app = Fastify();
 
   const mockPool = {
-    query: async () => {
-      throw new Error('DB should not be called');
+    query: async (sql: string, params?: unknown[]) => {
+      const q = String(sql);
+      if (q.includes('UPDATE deals') && q.includes('SET deleted_at = now()')) {
+        assert.equal(params?.[0], dealId);
+        return { rows: [{ id: dealId }], rowCount: 1 };
+      }
+      return { rows: [] };
     },
     connect: async () => {
       throw new Error('DB should not be called');
@@ -27,12 +33,68 @@ test('DELETE /api/v1/deals/:deal_id returns 400 without purge=true', async () =>
 
     const response = await app.inject({
       method: 'DELETE',
-      url: '/api/v1/deals/deal-1',
+      url: `/api/v1/deals/${dealId}`,
     });
 
-    assert.equal(response.statusCode, 400);
+    assert.equal(response.statusCode, 200);
     const body = response.json() as any;
-    assert.ok(String(body.error).includes('purge=true'));
+    assert.equal(body.ok, true);
+    assert.equal(body.deal_id, dealId);
+    assert.equal(body.delete_mode, 'soft');
+  } finally {
+    await app.close();
+  }
+});
+
+test('PATCH /api/v1/deals/:deal_id/restore restores soft-deleted deal', async () => {
+  const dealId = 'deal-restore-1';
+  process.env.NODE_ENV = 'development';
+  const now = new Date().toISOString();
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      const q = String(sql);
+      if (q.includes('UPDATE deals') && q.includes('SET deleted_at = NULL')) {
+        assert.equal(params?.[0], dealId);
+        return {
+          rows: [
+            {
+              id: dealId,
+              name: 'Restored Deal',
+              stage: 'intake',
+              priority: 'medium',
+              lifecycle_status: 'active',
+              llm_phase_mode: 'exploratory',
+              trend: 'stable',
+              score: null,
+              owner: null,
+              created_at: now,
+              updated_at: now,
+              deleted_at: null,
+            },
+          ],
+        };
+      }
+      return { rows: [] };
+    },
+    connect: async () => {
+      throw new Error('DB should not be called');
+    },
+  } as any;
+
+  const app = Fastify();
+  try {
+    await registerDealRoutes(app, mockPool);
+
+    const response = await app.inject({
+      method: 'PATCH',
+      url: `/api/v1/deals/${dealId}/restore`,
+    });
+
+    assert.equal(response.statusCode, 200);
+    const body = response.json() as any;
+    assert.equal(body.id, dealId);
+    assert.equal(body.lifecycle_status, 'active');
   } finally {
     await app.close();
   }

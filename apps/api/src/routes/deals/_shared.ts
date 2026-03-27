@@ -1080,6 +1080,8 @@ export type DealRow = {
   name: string;
   stage: Deal["stage"];
   priority: Deal["priority"];
+  lifecycle_status?: "draft" | "active" | "archived" | null;
+  views?: number | string | null;
   llm_phase_mode?: Deal["llm_phase_mode"] | null;
   trend: Deal["trend"] | null;
   score: number | null;
@@ -2391,6 +2393,7 @@ export function mapDeal(
     name: row.name,
     stage: row.stage,
     priority: row.priority,
+		lifecycle_status: (row.lifecycle_status ?? "active"),
 		llm_phase_mode: row.llm_phase_mode ?? "exploratory",
 		trend: String(row.trend ?? "") === "flat" ? "stable" : row.trend ?? undefined,
     owner: row.owner ?? undefined,
@@ -2400,6 +2403,11 @@ export function mapDeal(
     dioRunCount: typeof dio?.run_count === 'number' ? dio.run_count : undefined,
     dioAnalysisVersion: typeof dio?.analysis_version === 'number' ? dio.analysis_version : undefined,
 	};
+
+  const views = parseNullableNumber(row.views);
+  if (views != null) {
+    out.views = Math.max(0, Math.floor(views));
+  }
 
   const hasFundability =
     (analysisFoundationSpecVersion && typeof analysisFoundationSpecVersion === "string") ||

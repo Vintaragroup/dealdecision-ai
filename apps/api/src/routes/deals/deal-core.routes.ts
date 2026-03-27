@@ -157,14 +157,43 @@ export async function registerDealCoreRoutes(
     investorInsightsQueue?: { add: (name: string, data: unknown, opts?: unknown) => Promise<unknown> };
   }
 ): Promise<void> {
-  app.get("/api/v1/deals", async (request) => {
+  app.get("/api/v1/deals", async (request, reply) => {
     const mode = parseDealApiMode(request);
-    // Accept optional filters but ignore for now (TODO)
+    const lifecycleRaw = typeof (request.query as any)?.lifecycle === "string"
+      ? String((request.query as any).lifecycle).trim().toLowerCase()
+      : "active";
+    const lifecycleFilter = lifecycleRaw === "all" || lifecycleRaw === "archived" || lifecycleRaw === "active"
+      ? lifecycleRaw
+      : null;
+    if (!lifecycleFilter) {
+      return reply.status(400).send({ error: "Invalid lifecycle filter. Expected one of: active, archived, all" });
+    }
+
+    const hasLifecycleStatus = await hasColumn(pool, "deals", "lifecycle_status");
+    if (!hasLifecycleStatus && lifecycleFilter === "archived") {
+      return [];
+    }
+
     const userId = (request as any)?.auth?.userId;
     const bypassAuthEnvRaw = typeof process.env.DISABLE_CLERK_AUTH === "string" ? process.env.DISABLE_CLERK_AUTH : "";
     const bypassAuthEnv = ["1", "true", "yes", "on"].includes(bypassAuthEnvRaw.trim().toLowerCase());
     const bypassAuth = Boolean((request as any)?.auth?.claims?.bypass_auth) || bypassAuthEnv;
     const hasUserId = !bypassAuth && typeof userId === "string" && userId.trim().length > 0;
+    const whereClauses = ["d.deleted_at IS NULL"];
+    const params: any[] = [];
+
+    if (hasUserId) {
+      params.push(userId);
+      const i = params.length;
+      whereClauses.push(`(d.created_by_user_id = $${i} OR d.created_by_user_id IS NULL)`);
+    }
+
+    if (hasLifecycleStatus && lifecycleFilter !== "all") {
+      params.push(lifecycleFilter);
+      const i = params.length;
+      whereClauses.push(`COALESCE(d.lifecycle_status, 'active') = $${i}`);
+    }
+
     const { rows } = await pool.query<DealRow & {
       dio_id: string | null;
       analysis_version: number | null;
@@ -286,10 +315,9 @@ export async function registerDealCoreRoutes(
              FROM deal_intelligence_objects
             WHERE deal_id = d.id
          ) stats ON TRUE
-        WHERE d.deleted_at IS NULL
-          ${hasUserId ? "AND (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)" : ""}
+        WHERE ${whereClauses.join(" AND ")}
         ORDER BY d.created_at DESC`,
-      hasUserId ? [userId] : []
+      params
     );
     return rows.map((row) => mapDeal(row, {
       dio_id: row.dio_id,
@@ -931,6 +959,109 @@ export async function registerDealCoreRoutes(
     });
   });
 
+  app.patch("/api/v1/deals/:deal_id/archive", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    const hasLifecycle = await hasColumn(pool, "deals", "lifecycle_status");
+    if (!hasLifecycle) {
+      return reply.status(501).send({ error: "archive_not_supported", message: "lifecycle_status column is missing" });
+    }
+
+    const { rows } = await pool.query<DealRow>(
+      `UPDATE deals
+          SET lifecycle_status = 'archived',
+              updated_at = now()
+        WHERE id = $1
+          AND deleted_at IS NULL
+        RETURNING *`,
+      [dealId]
+    );
+
+    if (!rows.length) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    return mapDeal(rows[0], null, "full");
+  });
+
+  app.patch("/api/v1/deals/:deal_id/unarchive", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    const hasLifecycle = await hasColumn(pool, "deals", "lifecycle_status");
+    if (!hasLifecycle) {
+      return reply.status(501).send({ error: "archive_not_supported", message: "lifecycle_status column is missing" });
+    }
+
+    const { rows } = await pool.query<DealRow>(
+      `UPDATE deals
+          SET lifecycle_status = 'active',
+              updated_at = now()
+        WHERE id = $1
+          AND deleted_at IS NULL
+        RETURNING *`,
+      [dealId]
+    );
+
+    if (!rows.length) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    return mapDeal(rows[0], null, "full");
+  });
+
+  app.patch("/api/v1/deals/:deal_id/restore", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    const auth = requireDestructiveAuth(request);
+    if (!auth.ok) {
+      return reply.status(auth.status).send({ error: auth.error });
+    }
+
+    const { rows } = await pool.query<DealRow>(
+      `UPDATE deals
+          SET deleted_at = NULL,
+              lifecycle_status = CASE
+                WHEN lifecycle_status = 'archived' THEN lifecycle_status
+                ELSE 'active'
+              END,
+              updated_at = now()
+        WHERE id = $1
+          AND deleted_at IS NOT NULL
+        RETURNING *`,
+      [dealId]
+    );
+
+    if (!rows.length) {
+      return reply.status(404).send({ error: "Deleted deal not found" });
+    }
+
+    return mapDeal(rows[0], null, "full");
+  });
+
+  app.post("/api/v1/deals/:deal_id/view", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    const hasViews = await hasColumn(pool, "deals", "views");
+    if (!hasViews) {
+      return reply.status(501).send({ error: "views_not_supported", message: "views column is missing" });
+    }
+
+    const { rows } = await pool.query<DealRow>(
+      `UPDATE deals
+          SET views = COALESCE(views, 0) + 1
+        WHERE id = $1
+          AND deleted_at IS NULL
+        RETURNING *`,
+      [dealId]
+    );
+
+    if (!rows.length) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    return reply.status(200).send({
+      ok: true,
+      deal_id: dealId,
+      views: parseNullableNumber((rows[0] as any).views) ?? 0,
+    });
+  });
+
   app.delete("/api/v1/deals/:deal_id", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
 
@@ -940,8 +1071,23 @@ export async function registerDealCoreRoutes(
       rawPurge === true ||
       rawPurge === "true" ||
       (Array.isArray(rawPurge) && String(rawPurge[0]).toLowerCase() === "true");
+
     if (!purge) {
-      return reply.status(400).send({ error: "purge=true is required for hard delete" });
+      const { rows } = await pool.query<DealRow>(
+        `UPDATE deals
+            SET deleted_at = now(),
+                updated_at = now()
+          WHERE id = $1
+            AND deleted_at IS NULL
+          RETURNING *`,
+        [dealId]
+      );
+
+      if (!rows.length) {
+        return reply.status(404).send({ error: "Deal not found" });
+      }
+
+      return reply.send({ ok: true, deal_id: dealId, delete_mode: "soft" });
     }
 
     const auth = requireDestructiveAuth(request);

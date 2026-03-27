@@ -604,8 +604,12 @@ export function isLiveBackend() {
   return BACKEND_MODE === 'live';
 }
 
-export function apiGetDeals() {
-  return request<Deal[]>(`/api/v1/deals`).then((deals) => deals.map((d) => normalizeDeal(d)));
+export function apiGetDeals(opts?: { lifecycle?: 'active' | 'archived' | 'all' }) {
+  const lifecycle = opts?.lifecycle ?? 'active';
+  const qs = new URLSearchParams();
+  if (lifecycle) qs.set('lifecycle', lifecycle);
+  const suffix = qs.toString().length > 0 ? `?${qs.toString()}` : '';
+  return request<Deal[]>(`/api/v1/deals${suffix}`).then((deals) => deals.map((d) => normalizeDeal(d)));
 }
 
 export function apiClaimLegacyDeals() {
@@ -655,12 +659,46 @@ export function apiUpdateDeal(
 }
 
 export function apiDeleteDeal(dealId: string, opts?: { purge?: boolean }) {
-  const purge = opts?.purge !== false;
+  const purge = opts?.purge === true;
   const qs = purge ? '?purge=true' : '';
   const adminToken = getDevAdminToken();
   return request<{ ok: boolean; deal_id: string; purge?: unknown }>(`/api/v1/deals/${dealId}${qs}`, {
     method: 'DELETE',
     headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+  });
+}
+
+export function apiRestoreDeal(dealId: string) {
+  const adminToken = getDevAdminToken();
+  return request<Deal>(`/api/v1/deals/${dealId}/restore`, {
+    method: 'PATCH',
+    headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+  }).then((deal) => normalizeDeal(deal));
+}
+
+export function apiPurgeDeal(dealId: string) {
+  const adminToken = getDevAdminToken();
+  return request<{ ok: boolean; deal_id: string; purge?: unknown }>(`/api/v1/deals/${dealId}?purge=true`, {
+    method: 'DELETE',
+    headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+  });
+}
+
+export function apiArchiveDeal(dealId: string) {
+  return request<Deal>(`/api/v1/deals/${dealId}/archive`, {
+    method: 'PATCH',
+  }).then((deal) => normalizeDeal(deal));
+}
+
+export function apiUnarchiveDeal(dealId: string) {
+  return request<Deal>(`/api/v1/deals/${dealId}/unarchive`, {
+    method: 'PATCH',
+  }).then((deal) => normalizeDeal(deal));
+}
+
+export function apiTrackDealView(dealId: string) {
+  return request<{ ok: boolean; deal_id: string; views: number }>(`/api/v1/deals/${dealId}/view`, {
+    method: 'POST',
   });
 }
 

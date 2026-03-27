@@ -11,7 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { ExportDealsModal } from '../ExportDealsModal';
-import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal } from '../../lib/apiClient';
+import { apiGetDeals, apiGetDocuments, apiAutoProgressDeal, apiDeleteDeal, apiArchiveDeal, apiUnarchiveDeal } from '../../lib/apiClient';
 import { Modal } from '../ui/Modal';
 import { useScoreSource } from '../../contexts/ScoreSourceContext';
 import { getDisplayScoreForDeal } from '../../lib/dealScore';
@@ -44,6 +44,7 @@ import {
 interface DealData {
   id: string;
   name: string;
+  lifecycleStatus: 'draft' | 'active' | 'archived';
   stage: DealStage;
   score: number | null;
   scoreSourceUsed?: 'legacy' | 'fundability_v1';
@@ -81,6 +82,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   }, []);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
   const [searchQuery, setSearchQuery] = useState('');
+  const [lifecycleFilter, setLifecycleFilter] = useState<'active' | 'archived' | 'all'>('active');
   const [stageFilter, setStageFilter] = useState('all');
   const [priorityFilter, setPriorityFilter] = useState('all');
   const [sortBy, setSortBy] = useState('updated');
@@ -96,6 +98,8 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const [deletingDealId, setDeletingDealId] = useState<string | null>(null);
+  const [archivingDealId, setArchivingDealId] = useState<string | null>(null);
+  const [bulkArchiving, setBulkArchiving] = useState(false);
 
   const authStateRef = useRef<{ authLoaded: boolean; isSignedIn: boolean | undefined; orgId: string | null | undefined }>({
     authLoaded,
@@ -134,7 +138,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     setError(null);
 
     try {
-      const deals = await apiGetDeals();
+      const deals = await apiGetDeals({ lifecycle: lifecycleFilter });
       if (!isMountedRef.current) return;
 
       if (debugDealsList) {
@@ -180,7 +184,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       if (!isMountedRef.current) return;
       setLoading(false);
     }
-  }, []);
+  }, [lifecycleFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -226,7 +230,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     setDeletingDealId(deleteTarget.id);
     setError(null);
     try {
-      await apiDeleteDeal(deleteTarget.id, { purge: true });
+      await apiDeleteDeal(deleteTarget.id, { purge: false });
       setLiveDeals((prev) => prev.filter((d) => d.id !== deleteTarget.id));
       setSelectedDeals((prev) => prev.filter((id) => id !== deleteTarget.id));
       setDeleteModalOpen(false);
@@ -236,6 +240,49 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       setError(err instanceof Error ? err.message : 'Failed to delete deal');
     } finally {
       setDeletingDealId(null);
+    }
+  };
+
+  const handleArchiveDeal = async (dealId: string, shouldArchive: boolean) => {
+    setArchivingDealId(dealId);
+    setError(null);
+    try {
+      if (shouldArchive) {
+        await apiArchiveDeal(dealId);
+      } else {
+        await apiUnarchiveDeal(dealId);
+      }
+
+      if (lifecycleFilter !== 'all') {
+        setLiveDeals((prev) => prev.filter((d) => d.id !== dealId));
+      } else {
+        await fetchDealsAndDocuments();
+      }
+      setSelectedDeals((prev) => prev.filter((id) => id !== dealId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update deal archive state');
+    } finally {
+      setArchivingDealId(null);
+    }
+  };
+
+  const handleArchiveSelected = async () => {
+    if (selectedDeals.length === 0) return;
+    setBulkArchiving(true);
+    setError(null);
+    try {
+      const selectedSet = new Set(selectedDeals);
+      const selectedRows = deals.filter((d) => selectedSet.has(d.id));
+      const shouldArchive = lifecycleFilter !== 'archived';
+      await Promise.all(
+        selectedRows.map((d) => shouldArchive ? apiArchiveDeal(d.id) : apiUnarchiveDeal(d.id))
+      );
+      await fetchDealsAndDocuments();
+      setSelectedDeals([]);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update selected deals');
+    } finally {
+      setBulkArchiving(false);
     }
   };
 
@@ -307,6 +354,9 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       return ({
       id: deal.id,
       name: deal.name,
+      lifecycleStatus: ((deal as any).lifecycle_status === 'archived' || (deal as any).lifecycle_status === 'draft')
+        ? (deal as any).lifecycle_status
+        : 'active',
       stage: deal.stage,
       score: normalized.score,
       scoreSourceUsed: normalized.sourceUsed,
@@ -332,10 +382,12 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
   }, [createdDeal]);
 
   const filteredDeals = deals.filter(deal => {
-    const matchesSearch = deal.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = deal.name.toLowerCase().includes(q) || (deal.owner ?? '').toLowerCase().includes(q) || deal.stage.toLowerCase().includes(q);
     const matchesStage = stageFilter === 'all' || deal.stage === stageFilter;
     const matchesPriority = priorityFilter === 'all' || deal.priority === priorityFilter;
-    return matchesSearch && matchesStage && matchesPriority;
+    const matchesLifecycle = lifecycleFilter === 'all' || deal.lifecycleStatus === lifecycleFilter;
+    return matchesSearch && matchesStage && matchesPriority && matchesLifecycle;
   });
 
   useEffect(() => {
@@ -351,6 +403,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
           searchQuery,
           stageFilter,
           priorityFilter,
+          lifecycleFilter,
         };
       }
     } catch {
@@ -363,8 +416,9 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       searchQuery,
       stageFilter,
       priorityFilter,
+      lifecycleFilter,
     });
-  }, [debugDealsList, orgId, liveDeals.length, deals.length, filteredDeals.length, searchQuery, stageFilter, priorityFilter]);
+  }, [debugDealsList, orgId, liveDeals.length, deals.length, filteredDeals.length, searchQuery, stageFilter, priorityFilter, lifecycleFilter]);
 
   if (loading) {
     return (
@@ -633,6 +687,17 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
               {/* Filters */}
               <Select
                 darkMode={darkMode}
+                value={lifecycleFilter}
+                onChange={(e) => setLifecycleFilter(e.target.value as 'active' | 'archived' | 'all')}
+                options={[
+                  { value: 'active', label: 'Active Deals' },
+                  { value: 'archived', label: 'Archived Deals' },
+                  { value: 'all', label: 'All Deals' }
+                ]}
+              />
+
+              <Select
+                darkMode={darkMode}
                 value={stageFilter}
                 onChange={(e) => setStageFilter(e.target.value)}
                 options={[
@@ -708,8 +773,8 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                   <Button variant="ghost" size="sm" darkMode={darkMode}>
                     Export Selected
                   </Button>
-                  <Button variant="ghost" size="sm" darkMode={darkMode}>
-                    Archive
+                  <Button variant="ghost" size="sm" darkMode={darkMode} onClick={handleArchiveSelected} disabled={bulkArchiving}>
+                    {bulkArchiving ? 'Updating…' : lifecycleFilter === 'archived' ? 'Unarchive' : 'Archive'}
                   </Button>
                   <Button variant="ghost" size="sm" darkMode={darkMode}>
                     Delete
@@ -915,6 +980,24 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                               <DropdownMenuSeparator />
 
                               <DropdownMenuItem
+                                onSelect={(e) => {
+                                  e.preventDefault();
+                                  const shouldArchive = deal.lifecycleStatus !== 'archived';
+                                  handleArchiveDeal(deal.id, shouldArchive);
+                                }}
+                                disabled={archivingDealId === deal.id}
+                              >
+                                <FileText />
+                                {archivingDealId === deal.id
+                                  ? 'Updating…'
+                                  : deal.lifecycleStatus === 'archived'
+                                    ? 'Unarchive'
+                                    : 'Archive'}
+                              </DropdownMenuItem>
+
+                              <DropdownMenuSeparator />
+
+                              <DropdownMenuItem
                                 variant="destructive"
                                 onSelect={(e) => {
                                   e.preventDefault();
@@ -1075,7 +1158,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
           <div>
             <h2 className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Delete Deal</h2>
             <p className={`text-sm mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              This permanently deletes the deal and all related data. This action is irreversible.
+              This removes the deal from active views. An admin can restore it or complete permanent purge later.
             </p>
           </div>
 
@@ -1108,7 +1191,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
               disabled={!isDeleteConfirmed || Boolean(deletingDealId)}
               loading={Boolean(deletingDealId)}
             >
-              Delete permanently
+              Delete deal
             </Button>
           </div>
         </div>

@@ -13,6 +13,7 @@ export type DbPoolLike = {
 export type PurgeDealCascadeArgs = {
   deal_id: string;
   actor_user_id?: string | null;
+  reason?: string | null;
   db: DbPoolLike;
   logger?: {
     info: (msg: string, meta?: any) => void;
@@ -25,6 +26,7 @@ export type PurgeDealCascadeResult = {
   ok: true;
   deal_id: string;
   actor_user_id: string | null;
+  reason: string | null;
   expected_deleted: {
     documents: number;
     evidence: number;
@@ -120,6 +122,7 @@ async function deleteUnreferencedBlobsBySha256(client: TxClient, sha256s: string
 export async function purgeDealCascade(args: PurgeDealCascadeArgs): Promise<PurgeDealCascadeResult> {
   const logger = args.logger;
   const actor_user_id = args.actor_user_id ?? null;
+  const reason = args.reason ?? null;
   const dealId = args.deal_id;
 
   const client = await args.db.connect();
@@ -164,6 +167,7 @@ export async function purgeDealCascade(args: PurgeDealCascadeArgs): Promise<Purg
     logger?.info?.('deal.purge.completed', {
       deal_id: dealId,
       actor_user_id,
+      reason,
       expected_deleted,
       deleted: { ingestion_reports, deal_evidence, deal_row },
       blobs: { attempted: attempted_sha256.length, deleted_unreferenced_blobs: gc.deleted },
@@ -173,6 +177,7 @@ export async function purgeDealCascade(args: PurgeDealCascadeArgs): Promise<Purg
       ok: true,
       deal_id: dealId,
       actor_user_id,
+      reason,
       expected_deleted,
       deleted: {
         ingestion_reports,
@@ -199,6 +204,7 @@ export async function purgeDealCascade(args: PurgeDealCascadeArgs): Promise<Purg
     logger?.error?.('deal.purge.failed', {
       deal_id: dealId,
       actor_user_id,
+      reason,
       error: err instanceof Error ? err.message : String(err),
     });
 

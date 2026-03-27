@@ -230,7 +230,10 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     setDeletingDealId(deleteTarget.id);
     setError(null);
     try {
-      await apiDeleteDeal(deleteTarget.id, { purge: false });
+      await apiDeleteDeal(deleteTarget.id, {
+        purge: false,
+        reason: `Deal soft-deleted by user from deals list (${deleteTarget.name})`,
+      });
       setLiveDeals((prev) => prev.filter((d) => d.id !== deleteTarget.id));
       setSelectedDeals((prev) => prev.filter((id) => id !== deleteTarget.id));
       setDeleteModalOpen(false);
@@ -248,9 +251,9 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     setError(null);
     try {
       if (shouldArchive) {
-        await apiArchiveDeal(dealId);
+        await apiArchiveDeal(dealId, 'Deal archived by user from deals list');
       } else {
-        await apiUnarchiveDeal(dealId);
+        await apiUnarchiveDeal(dealId, 'Deal unarchived by user from deals list');
       }
 
       if (lifecycleFilter !== 'all') {
@@ -275,7 +278,11 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       const selectedRows = deals.filter((d) => selectedSet.has(d.id));
       const shouldArchive = lifecycleFilter !== 'archived';
       await Promise.all(
-        selectedRows.map((d) => shouldArchive ? apiArchiveDeal(d.id) : apiUnarchiveDeal(d.id))
+        selectedRows.map((d) =>
+          shouldArchive
+            ? apiArchiveDeal(d.id, 'Deal archived in bulk from deals list')
+            : apiUnarchiveDeal(d.id, 'Deal unarchived in bulk from deals list')
+        )
       );
       await fetchDealsAndDocuments();
       setSelectedDeals([]);
@@ -1156,9 +1163,9 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
       <Modal isOpen={deleteModalOpen} onClose={closeDeleteModal} size="md" darkMode={darkMode}>
         <div className="space-y-4">
           <div>
-            <h2 className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Delete Deal</h2>
+            <h2 className={`text-lg ${darkMode ? 'text-white' : 'text-gray-900'}`}>Move Deal To Trash</h2>
             <p className={`text-sm mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              This removes the deal from active views. An admin can restore it or complete permanent purge later.
+              This is a soft delete. The deal leaves active views and can be restored later by an admin.
             </p>
           </div>
 
@@ -1191,7 +1198,7 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
               disabled={!isDeleteConfirmed || Boolean(deletingDealId)}
               loading={Boolean(deletingDealId)}
             >
-              Delete deal
+              Move to trash
             </Button>
           </div>
         </div>

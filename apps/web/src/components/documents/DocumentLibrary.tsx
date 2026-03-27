@@ -193,13 +193,13 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
     setDeleting(true);
     try {
       for (const documentId of deleteTargets) {
-        await apiDeleteDocument(dealId, documentId);
+        await apiDeleteDocument(dealId, documentId, 'Document soft-deleted by user from document library');
       }
       setDeleteTargets(null);
       setSelectedDocumentIds([]);
       setShowPreview(false);
       setSelectedDocument(null);
-      addToast('success', 'Document deleted');
+      addToast('success', 'Document moved to trash');
       onDeleted?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete document(s)';
@@ -318,11 +318,11 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
               className={`px-3 py-2 rounded-lg text-sm transition-colors text-red-500 ${
                 darkMode ? 'bg-red-500/10 hover:bg-red-500/20' : 'bg-red-50 hover:bg-red-100'
               }`}
-              title={`Delete ${selectedDocumentIds.length} document${selectedDocumentIds.length === 1 ? '' : 's'}`}
+              title={`Move ${selectedDocumentIds.length} document${selectedDocumentIds.length === 1 ? '' : 's'} to trash`}
             >
               <div className="flex items-center gap-2">
                 <Trash2 className="w-4 h-4" />
-                Delete ({selectedDocumentIds.length})
+                Move to trash ({selectedDocumentIds.length})
               </div>
             </button>
           )}
@@ -474,8 +474,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                     <Download className="w-4 h-4" />
                   </button>
                   <button
-                    aria-label={`Delete document ${doc.name}`}
-                    title="Delete document"
+                    aria-label={`Move document ${doc.name} to trash`}
+                    title="Move to trash"
                     className={`p-1.5 rounded-lg transition-colors text-red-500 ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}
@@ -604,8 +604,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                     <Download className="w-4 h-4" />
                   </button>
                   <button
-                    aria-label={`Delete document ${doc.name}`}
-                    title="Delete document"
+                    aria-label={`Move document ${doc.name} to trash`}
+                    title="Move to trash"
                     className={`p-2 rounded-lg transition-colors text-red-500 ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}
@@ -665,10 +665,10 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
               onMouseDown={(e) => e.stopPropagation()}
             >
               <div className={`text-base mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                Delete {deleteTargets.length === 1 ? 'document' : 'documents'}?
+                Move {deleteTargets.length === 1 ? 'document' : 'documents'} to trash?
               </div>
               <div className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                This will permanently remove {deleteTargets.length === 1 ? 'this document' : `these ${deleteTargets.length} documents`}.
+                This is a soft delete and can be restored by an admin from recovery tools.
               </div>
               <div className="flex items-center justify-end gap-2">
                 <Button
@@ -686,7 +686,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                     deleting ? 'opacity-60' : ''
                   } bg-red-600`}
                 >
-                  {deleting ? 'Deleting…' : 'Delete'}
+                  {deleting ? 'Moving…' : 'Move to trash'}
                 </button>
               </div>
             </div>

@@ -27,6 +27,7 @@ import { normalizeDealName } from "../../lib/normalize-deal-name";
 import { buildDocumentsDigest } from "../../lib/documents-digest";
 import type { DocumentsDigestV1 } from "../../lib/documents-digest";
 import { objectExistsInR2 } from "../../lib/r2";
+import { writePlatformAuditLog, getAuditActorContext, extractAuditReason } from "../../lib/platform-audit-log";
 import {
   purgeDealCascade,
   isPurgeDealNotFoundError,
@@ -99,6 +100,9 @@ import {
   extractStructuredWordTextForCue,
   inferStructuredWordCueSegment,
   requireDestructiveAuth,
+  requirePurgeAuth,
+  buildPurgeConfirmationToken,
+  requirePurgeConfirmation,
   dealStageEnum,
   dealPriorityEnum,
   normalizeDealTrend,
@@ -961,10 +965,23 @@ export async function registerDealCoreRoutes(
 
   app.patch("/api/v1/deals/:deal_id/archive", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
+    const reason = extractAuditReason((request as any).body, {
+      query: (request as any).query,
+      headers: (request as any).headers,
+    });
+    if (!reason) {
+      return reply.status(400).send({ error: "reason is required for this privileged mutation", code: "MISSING_AUDIT_REASON" });
+    }
+    const actor = getAuditActorContext(request as any);
     const hasLifecycle = await hasColumn(pool, "deals", "lifecycle_status");
     if (!hasLifecycle) {
       return reply.status(501).send({ error: "archive_not_supported", message: "lifecycle_status column is missing" });
     }
+
+    const { rows: beforeRows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 LIMIT 1`,
+      [dealId]
+    );
 
     const { rows } = await pool.query<DealRow>(
       `UPDATE deals
@@ -980,15 +997,38 @@ export async function registerDealCoreRoutes(
       return reply.status(404).send({ error: "Deal not found" });
     }
 
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: "deal.archive",
+      entity_type: "deal",
+      entity_id: dealId,
+      before_state: beforeRows[0] ?? {},
+      after_state: rows[0] ?? {},
+      reason,
+    });
+
     return mapDeal(rows[0], null, "full");
   });
 
   app.patch("/api/v1/deals/:deal_id/unarchive", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
+    const reason = extractAuditReason((request as any).body, {
+      query: (request as any).query,
+      headers: (request as any).headers,
+    });
+    if (!reason) {
+      return reply.status(400).send({ error: "reason is required for this privileged mutation", code: "MISSING_AUDIT_REASON" });
+    }
+    const actor = getAuditActorContext(request as any);
     const hasLifecycle = await hasColumn(pool, "deals", "lifecycle_status");
     if (!hasLifecycle) {
       return reply.status(501).send({ error: "archive_not_supported", message: "lifecycle_status column is missing" });
     }
+
+    const { rows: beforeRows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 LIMIT 1`,
+      [dealId]
+    );
 
     const { rows } = await pool.query<DealRow>(
       `UPDATE deals
@@ -1004,15 +1044,38 @@ export async function registerDealCoreRoutes(
       return reply.status(404).send({ error: "Deal not found" });
     }
 
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: "deal.unarchive",
+      entity_type: "deal",
+      entity_id: dealId,
+      before_state: beforeRows[0] ?? {},
+      after_state: rows[0] ?? {},
+      reason,
+    });
+
     return mapDeal(rows[0], null, "full");
   });
 
   app.patch("/api/v1/deals/:deal_id/restore", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
+    const reason = extractAuditReason((request as any).body, {
+      query: (request as any).query,
+      headers: (request as any).headers,
+    });
+    if (!reason) {
+      return reply.status(400).send({ error: "reason is required for this privileged mutation", code: "MISSING_AUDIT_REASON" });
+    }
+    const actor = getAuditActorContext(request as any);
     const auth = requireDestructiveAuth(request);
     if (!auth.ok) {
       return reply.status(auth.status).send({ error: auth.error });
     }
+
+    const { rows: beforeRows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 LIMIT 1`,
+      [dealId]
+    );
 
     const { rows } = await pool.query<DealRow>(
       `UPDATE deals
@@ -1031,6 +1094,16 @@ export async function registerDealCoreRoutes(
     if (!rows.length) {
       return reply.status(404).send({ error: "Deleted deal not found" });
     }
+
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: "deal.restore",
+      entity_type: "deal",
+      entity_id: dealId,
+      before_state: beforeRows[0] ?? {},
+      after_state: rows[0] ?? {},
+      reason,
+    });
 
     return mapDeal(rows[0], null, "full");
   });
@@ -1064,6 +1137,14 @@ export async function registerDealCoreRoutes(
 
   app.delete("/api/v1/deals/:deal_id", async (request, reply) => {
     const dealId = (request.params as { deal_id: string }).deal_id;
+    const reason = extractAuditReason((request as any).body, {
+      query: (request as any).query,
+      headers: (request as any).headers,
+    });
+    if (!reason) {
+      return reply.status(400).send({ error: "reason is required for this privileged mutation", code: "MISSING_AUDIT_REASON" });
+    }
+    const actor = getAuditActorContext(request as any);
 
     const q = (request.query ?? {}) as any;
     const rawPurge = q?.purge;
@@ -1073,6 +1154,10 @@ export async function registerDealCoreRoutes(
       (Array.isArray(rawPurge) && String(rawPurge[0]).toLowerCase() === "true");
 
     if (!purge) {
+      const { rows: beforeRows } = await pool.query<DealRow>(
+        `SELECT * FROM deals WHERE id = $1 LIMIT 1`,
+        [dealId]
+      );
       const { rows } = await pool.query<DealRow>(
         `UPDATE deals
             SET deleted_at = now(),
@@ -1087,25 +1172,56 @@ export async function registerDealCoreRoutes(
         return reply.status(404).send({ error: "Deal not found" });
       }
 
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "deal.soft_delete",
+        entity_type: "deal",
+        entity_id: dealId,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
+
       return reply.send({ ok: true, deal_id: dealId, delete_mode: "soft" });
     }
 
-    const auth = requireDestructiveAuth(request);
+    const auth = await requirePurgeAuth(request, reply);
     if (!auth.ok) {
       return reply.status(auth.status).send({ error: auth.error });
     }
 
-    const actor_user_id =
-      typeof (request.headers as any)?.["x-actor-user-id"] === "string"
-        ? String((request.headers as any)["x-actor-user-id"]).trim()
-        : null;
+    const confirm = requirePurgeConfirmation(
+      request,
+      buildPurgeConfirmationToken({ entityType: "deal", entityId: dealId })
+    );
+    if (!confirm.ok) {
+      return reply.status(confirm.status).send({ error: confirm.error, code: "PURGE_CONFIRMATION_REQUIRED" });
+    }
+
+    const { rows: beforeRows } = await pool.query<DealRow>(
+      `SELECT * FROM deals WHERE id = $1 LIMIT 1`,
+      [dealId]
+    );
+
+    const actor_user_id = actor.actor_user_id;
 
     try {
       const result = await purgeDealCascade({
         deal_id: dealId,
         actor_user_id,
+        reason,
         db: pool as any,
         logger: console as any,
+      });
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "deal.purge",
+        entity_type: "deal",
+        entity_id: dealId,
+        before_state: beforeRows[0] ?? {},
+        after_state: result as unknown as Record<string, unknown>,
+        reason,
       });
 
       return reply.send({ ok: true, deal_id: dealId, purge: result });

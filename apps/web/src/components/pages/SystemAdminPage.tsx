@@ -9,24 +9,24 @@ import {
   Search, 
   Filter, 
   Plus, 
-  Copy, 
-  MoreHorizontal,
-  Clock,
   Shield,
   ShieldCheck,
-  UserX,
-  UserPlus,
-  CalendarClock,
   CheckCircle2,
   XCircle,
-  AlertCircle
+  AlertCircle,
+  AlertTriangle,
+  ScrollText,
+  Building2
 } from 'lucide-react';
 import { MetricCard } from '../admin/MetricCard';
 import { UsersTable } from '../admin/UsersTable';
 import { InvitesTable } from '../admin/InvitesTable';
 import { InviteCreationPanel } from '../admin/InviteCreationPanel';
+import { RecoveryCenter } from '../admin/RecoveryCenter';
+import { AuditLogsPanel } from '../admin/AuditLogsPanel';
+import { OrgManagementPanel } from '../admin/OrgManagementPanel';
 
-type TabType = 'overview' | 'users' | 'invites';
+type TabType = 'overview' | 'users' | 'invites' | 'orgs' | 'audit' | 'recovery';
 type AdminStatus = 'loading' | 'allowed' | 'denied';
 
 export default function AdminControlPanel() {
@@ -119,12 +119,48 @@ export default function AdminControlPanel() {
             <Mail className="w-4 h-4" strokeWidth={1.5} />
             Invites
           </button>
+          <button
+            onClick={() => setActiveTab('recovery')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'recovery'
+                ? 'bg-zinc-700/50 text-white shadow-lg'
+                : 'text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/30'
+            }`}
+          >
+            <AlertTriangle className="w-4 h-4" strokeWidth={1.5} />
+            Recovery Center
+          </button>
+          <button
+            onClick={() => setActiveTab('orgs')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'orgs'
+                ? 'bg-zinc-700/50 text-white shadow-lg'
+                : 'text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/30'
+            }`}
+          >
+            <Building2 className="w-4 h-4" strokeWidth={1.5} />
+            Org Management
+          </button>
+          <button
+            onClick={() => setActiveTab('audit')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'audit'
+                ? 'bg-zinc-700/50 text-white shadow-lg'
+                : 'text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/30'
+            }`}
+          >
+            <ScrollText className="w-4 h-4" strokeWidth={1.5} />
+            Audit Logs
+          </button>
         </div>
 
         {/* Tab Content */}
         {activeTab === 'overview' && <OverviewSection />}
         {activeTab === 'users' && <UsersSection />}
         {activeTab === 'invites' && <InvitesSection />}
+        {activeTab === 'orgs' && <OrgManagementPanel />}
+        {activeTab === 'audit' && <AuditLogsPanel />}
+        {activeTab === 'recovery' && <RecoveryCenter adminRole={adminRole} />}
       </div>
     </div>
   );
@@ -173,10 +209,11 @@ function OverviewSection() {
 
       {/* Activity placeholder — no live event log yet */}
       <div className="rounded-[14px] bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] p-6">
-        <h3 className="text-lg font-semibold text-white mb-4">Recent Activity</h3>
-        <div className="flex items-center justify-center py-8 text-zinc-500 text-sm">
-          {loading ? 'Loading...' : 'Live event log coming soon — no audit events stored yet.'}
-        </div>
+        {loading ? (
+          <div className="flex items-center justify-center py-8 text-zinc-500 text-sm">Loading...</div>
+        ) : (
+          <AuditLogsPanel compact />
+        )}
       </div>
     </div>
   );

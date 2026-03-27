@@ -20,6 +20,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { randomBytes } from "node:crypto";
 import { getPool } from "../lib/db";
+import { writePlatformAuditLog, getAuditActorContext, extractAuditReason } from "../lib/platform-audit-log";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -30,6 +31,19 @@ type AllowedDuration = (typeof ALLOWED_DURATIONS)[number];
 
 function isAllowedDuration(n: unknown): n is AllowedDuration {
   return ALLOWED_DURATIONS.includes(n as any);
+}
+
+function requireMutationReason(request: FastifyRequest, reply: FastifyReply, defaultReason?: string): string | null {
+  const reason = extractAuditReason((request as any).body, {
+    query: (request as any).query,
+    headers: request.headers,
+    defaultReason,
+  });
+  if (!reason) {
+    reply.status(400).send({ error: 'reason is required for this privileged mutation', code: 'MISSING_AUDIT_REASON' });
+    return null;
+  }
+  return reason;
 }
 
 // ---------------------------------------------------------------------------
@@ -200,10 +214,14 @@ export async function registerInviteRoutes(app: FastifyInstance) {
       org_id?: string | null;
       expires_at?: string | null;
       notes?: string | null;
+      reason?: string | null;
     };
   }>("/api/v1/admin/invite-codes", async (request, reply) => {
     const { access_duration_days, email = null, org_id = null, expires_at = null, notes = null } =
       request.body ?? {};
+    const reason = requireMutationReason(request, reply);
+    if (!reason) return;
+    const actor = getAuditActorContext(request);
 
     if (!isAllowedDuration(access_duration_days)) {
       return reply.status(400).send({
@@ -238,6 +256,22 @@ export async function registerInviteRoutes(app: FastifyInstance) {
 
     const record = rows[0];
     const inviteUrl = buildInviteUrl(request, record.code);
+
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: "invite.create",
+      entity_type: "invite_code",
+      entity_id: record.code,
+      before_state: {},
+      after_state: {
+        code: record.code,
+        status: record.status,
+        email: record.email,
+        org_id: record.org_id,
+        access_duration_days: record.access_duration_days,
+      },
+      reason,
+    });
 
     return reply.status(201).send({
       ok: true,
@@ -553,6 +587,27 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         // ─────────────────────────────────────────────────────────────────────
 
         await client.query("COMMIT");
+
+        await writePlatformAuditLog({
+          ...getAuditActorContext(request),
+          action_type: "invite.redeem",
+          entity_type: "invite_code",
+          entity_id: invite.code,
+          before_state: {
+            invite_id: invite.id,
+            status: invite.status,
+            redeemed_by_clerk_user_id: invite.redeemed_by_clerk_user_id ?? null,
+            org_id: invite.org_id ?? null,
+          },
+          after_state: {
+            status: 'redeemed',
+            redeemed_by_clerk_user_id: clerkUserId,
+            redeemed_email: clerkEmail,
+            org_id: orgId,
+            access_expires_at: accessExpiresAt.toISOString(),
+          },
+          reason: 'invite_redeem_flow',
+        });
 
         return reply.send({
           ok: true,

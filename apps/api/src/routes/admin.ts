@@ -12,6 +12,8 @@ import {
   getFeaturePercentage,
 } from "../lib/feature-flags";
 import { getPool } from "../lib/db";
+import { writePlatformAuditLog, getAuditActorContext, extractAuditReason } from "../lib/platform-audit-log";
+import { purgeDealCascade, isPurgeDealNotFoundError } from "@dealdecision/core";
 
 // ---------------------------------------------------------------------------
 // DB-backed admin check
@@ -43,6 +45,61 @@ async function isDbSuperAdmin(userId: string): Promise<boolean> {
   return rows.length > 0 && rows[0].account_role === 'super_admin';
 }
 
+async function hasTable(tableName: string): Promise<boolean> {
+  const pool = getPool();
+  const { rows } = await pool.query<{ oid: string }>(
+    `SELECT to_regclass($1) as oid`,
+    [tableName]
+  );
+  return rows[0]?.oid != null;
+}
+
+function requireMutationReason(request: FastifyRequest, reply: FastifyReply, defaultReason?: string): string | null {
+  const reason = extractAuditReason((request as any).body, {
+    query: (request as any).query,
+    headers: request.headers,
+    defaultReason,
+  });
+  if (!reason) {
+    reply.status(400).send({
+      error: "reason is required for this privileged mutation",
+      code: "MISSING_AUDIT_REASON",
+    });
+    return null;
+  }
+  return reason;
+}
+
+function buildPurgeConfirmationToken(args: { entityType: "deal" | "document"; entityId: string }): string {
+  return `PURGE ${args.entityType.toUpperCase()} ${args.entityId}`;
+}
+
+function requirePurgeConfirmation(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  expectedToken: string
+): boolean {
+  const body = ((request as any)?.body ?? {}) as Record<string, unknown>;
+  const provided = typeof body.confirm_text === "string" ? body.confirm_text.trim() : "";
+  if (!provided) {
+    reply.status(400).send({
+      error: `confirm_text is required and must match '${expectedToken}'`,
+      code: "PURGE_CONFIRMATION_REQUIRED",
+    });
+    return false;
+  }
+
+  if (provided !== expectedToken) {
+    reply.status(400).send({
+      error: `confirm_text mismatch. Expected '${expectedToken}'`,
+      code: "PURGE_CONFIRMATION_MISMATCH",
+    });
+    return false;
+  }
+
+  return true;
+}
+
 /**
  * Admin auth middleware — DB-backed.
  *
@@ -59,7 +116,7 @@ async function requireAdminAuth(
   reply: FastifyReply
 ): Promise<boolean> {
   // Path 1: dev auth bypass — skip DB check entirely.
-  const bypassedAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+  const bypassedAuth = Boolean((request as any).auth?.claims?.['bypass_auth']);
   if (bypassedAuth) return true;
 
   // Path 2: explicit ADMIN_TOKEN header — bootstrap/script helper only.
@@ -74,7 +131,7 @@ async function requireAdminAuth(
   }
 
   // Path 3: DB-backed admin check (normal production path).
-  const userId = request.auth?.userId;
+  const userId = (request as any).auth?.userId;
   if (!userId) {
     reply.status(401).send({ error: 'Unauthorized' });
     return false;
@@ -112,7 +169,7 @@ async function requireSuperAdminAuth(
   reply: FastifyReply
 ): Promise<boolean> {
   // Dev auth bypass — treated as super_admin locally.
-  if (Boolean(request.auth?.claims?.['bypass_auth'])) return true;
+  if (Boolean((request as any).auth?.claims?.['bypass_auth'])) return true;
 
   // ADMIN_TOKEN escape hatch (bootstrap / CLI scripts).
   const adminToken = process.env.ADMIN_TOKEN?.trim();
@@ -123,7 +180,7 @@ async function requireSuperAdminAuth(
     if (typeof provided === 'string' && provided.trim() === adminToken) return true;
   }
 
-  const userId = request.auth?.userId;
+  const userId = (request as any).auth?.userId;
   if (!userId) {
     reply.status(401).send({ error: 'Unauthorized' });
     return false;
@@ -335,6 +392,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       org_id?: string | null;
       notes?: string | null;
       grant_source?: string;
+      reason?: string | null;
     };
   }>("/api/v1/admin/platform-access", async (request, reply) => {
     const {
@@ -345,6 +403,10 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       notes = null,
       grant_source = "admin",
     } = request.body ?? {};
+
+    const reason = requireMutationReason(request, reply);
+    if (!reason) return;
+    const actor = getAuditActorContext(request);
 
     if (!clerk_user_id || typeof clerk_user_id !== "string" || clerk_user_id.trim().length === 0) {
       return reply.status(400).send({ error: "clerk_user_id is required" });
@@ -369,6 +431,13 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     const grantedBy = (request as any)?.auth?.userId ?? null;
 
     const pool = getPool();
+    const { rows: beforeRows } = await pool.query(
+      `SELECT id, clerk_user_id, org_id, access_status, access_expires_at, grant_source, notes, is_admin, account_role
+         FROM platform_access
+        WHERE clerk_user_id = $1
+        LIMIT 1`,
+      [clerk_user_id.trim()]
+    );
     const { rows } = await pool.query(
       `INSERT INTO platform_access (
          clerk_user_id, org_id, access_status, access_expires_at,
@@ -393,6 +462,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         notes ?? null,
       ]
     );
+
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: "platform_access.upsert",
+      entity_type: "platform_access",
+      entity_id: clerk_user_id.trim(),
+      before_state: beforeRows[0] ?? {},
+      after_state: rows[0] ?? {},
+      reason,
+    });
 
     return reply.status(200).send({ ok: true, record: rows[0] });
   });
@@ -445,6 +524,103 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return reply.send({ records: rows, limit, offset });
     }
   );
+
+  /**
+   * GET /api/v1/admin/audit-logs
+   * Browse canonical platform audit events with optional filters.
+   */
+  app.get<{
+    Querystring: {
+      limit?: string;
+      offset?: string;
+      actor_user_id?: string;
+      action_type?: string;
+      entity_type?: string;
+      entity_id?: string;
+      source?: string;
+      from?: string;
+      to?: string;
+    };
+  }>("/api/v1/admin/audit-logs", async (request, reply) => {
+    const tableOk = await hasTable("platform_audit_log");
+    if (!tableOk) {
+      return reply.status(404).send({ error: "platform_audit_log_not_found" });
+    }
+
+    const limitRaw = Number(request.query.limit ?? 50);
+    const offsetRaw = Number(request.query.offset ?? 0);
+
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 50;
+    const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0;
+
+    const source = typeof request.query.source === "string" ? request.query.source.trim() : "";
+    const allowedSources = new Set(["ui", "api", "job", "system", "script"]);
+    if (source && !allowedSources.has(source)) {
+      return reply.status(400).send({ error: "source must be one of: ui, api, job, system, script" });
+    }
+
+    const from = typeof request.query.from === "string" && request.query.from.trim().length > 0
+      ? new Date(request.query.from)
+      : null;
+    const to = typeof request.query.to === "string" && request.query.to.trim().length > 0
+      ? new Date(request.query.to)
+      : null;
+
+    if (from && Number.isNaN(from.getTime())) {
+      return reply.status(400).send({ error: "from must be a valid ISO-8601 timestamp" });
+    }
+    if (to && Number.isNaN(to.getTime())) {
+      return reply.status(400).send({ error: "to must be a valid ISO-8601 timestamp" });
+    }
+
+    const where: string[] = [];
+    const params: unknown[] = [];
+    let i = 1;
+
+    const pushEq = (column: string, value: unknown) => {
+      if (typeof value === "string" && value.trim().length > 0) {
+        where.push(`${column} = $${i++}`);
+        params.push(value.trim());
+      }
+    };
+
+    pushEq("actor_user_id", request.query.actor_user_id);
+    pushEq("action_type", request.query.action_type);
+    pushEq("entity_type", request.query.entity_type);
+    pushEq("entity_id", request.query.entity_id);
+    if (source) pushEq("source", source);
+
+    if (from) {
+      where.push(`created_at >= $${i++}`);
+      params.push(from.toISOString());
+    }
+    if (to) {
+      where.push(`created_at <= $${i++}`);
+      params.push(to.toISOString());
+    }
+
+    const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const pool = getPool();
+
+    const countParams = [...params];
+    const { rows: countRows } = await pool.query<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM platform_audit_log ${whereSql}`,
+      countParams
+    );
+    const total = Number(countRows[0]?.total ?? "0");
+
+    const { rows } = await pool.query(
+      `SELECT id, actor_user_id, actor_role, action_type, entity_type, entity_id,
+              before_state, after_state, reason, source, created_at
+         FROM platform_audit_log
+         ${whereSql}
+        ORDER BY created_at DESC
+        LIMIT $${i++} OFFSET $${i++}`,
+      [...params, limit, offset]
+    );
+
+    return reply.send({ records: rows, limit, offset, total: Number.isFinite(total) ? total : 0 });
+  });
 
   /**
    * GET /api/v1/admin/users
@@ -633,7 +809,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
    */
   app.patch<{
     Params: { clerkUserId: string };
-    Body: { is_admin: boolean };
+    Body: { is_admin: boolean; reason?: string | null };
   }>(
     "/api/v1/admin/platform-access/:clerkUserId/admin-status",
     async (request, reply) => {
@@ -645,12 +821,15 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
       const { clerkUserId } = request.params;
       const { is_admin } = request.body ?? {};
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
 
       if (typeof is_admin !== "boolean") {
         return reply.status(400).send({ error: "is_admin must be a boolean" });
       }
 
-      const actorId = request.auth?.userId;
+      const actorId = (request as any).auth?.userId;
 
       // Prevent self-demotion. An admin can only remove their own admin status
       // through a deliberate separate step — block it here for safety.
@@ -665,7 +844,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
       // Verify the target user has a platform_access row.
       const check = await pool.query(
-        `SELECT id FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
+        `SELECT id, clerk_user_id, access_status, is_admin, account_role FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
         [clerkUserId]
       );
       if (check.rows.length === 0) {
@@ -680,6 +859,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         [is_admin, clerkUserId]
       );
 
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "platform_access.set_admin_status",
+        entity_type: "platform_access",
+        entity_id: clerkUserId,
+        before_state: check.rows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
+
       return reply.send({ ok: true, record: rows[0] });
     }
   );
@@ -692,12 +881,22 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     "/api/v1/admin/platform-access/:clerkUserId/revoke",
     async (request, reply) => {
       const { clerkUserId } = request.params;
-      const actorId = request.auth?.userId;
+      const actorId = (request as any).auth?.userId;
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
 
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT clerk_user_id, access_status, is_admin, account_role, access_expires_at
+           FROM platform_access
+          WHERE clerk_user_id = $1
+          LIMIT 1`,
+        [clerkUserId]
+      );
 
       // Prevent non-super_admin from revoking a super_admin's access.
-      const bypassedAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+      const bypassedAuth = Boolean((request as any).auth?.claims?.['bypass_auth']);
       if (!bypassedAuth) {
         const { rows: targetRows } = await pool.query(
           `SELECT account_role FROM platform_access WHERE clerk_user_id = $1 LIMIT 1`,
@@ -727,6 +926,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "No platform_access record found for this user" });
       }
 
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "platform_access.revoke",
+        entity_type: "platform_access",
+        entity_id: clerkUserId,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
+
       return reply.send({ ok: true, record: rows[0] });
     }
   );
@@ -740,12 +949,15 @@ export async function registerAdminRoutes(app: FastifyInstance) {
    */
   app.patch<{
     Params: { clerkUserId: string };
-    Body: { access_duration_days: number };
+    Body: { access_duration_days: number; reason?: string | null };
   }>(
     "/api/v1/admin/platform-access/:clerkUserId/extend",
     async (request, reply) => {
       const { clerkUserId } = request.params;
       const { access_duration_days } = request.body ?? {};
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
 
       if (
         typeof access_duration_days !== "number" ||
@@ -763,6 +975,13 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       ).toISOString();
 
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT clerk_user_id, access_status, access_expires_at
+           FROM platform_access
+          WHERE clerk_user_id = $1
+          LIMIT 1`,
+        [clerkUserId]
+      );
       const { rows } = await pool.query(
         `UPDATE platform_access
             SET access_status = 'active',
@@ -777,6 +996,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         return reply.status(404).send({ error: "No platform_access record found for this user" });
       }
 
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "platform_access.extend",
+        entity_type: "platform_access",
+        entity_id: clerkUserId,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
+
       return reply.send({ ok: true, record: rows[0] });
     }
   );
@@ -789,12 +1018,15 @@ export async function registerAdminRoutes(app: FastifyInstance) {
    */
   app.patch<{
     Params: { clerkUserId: string };
-    Body: { account_role: string };
+    Body: { account_role: string; reason?: string | null };
   }>(
     "/api/v1/admin/platform-access/:clerkUserId/account-role",
     async (request, reply) => {
       const { clerkUserId } = request.params;
       const { account_role } = request.body ?? {};
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
 
       const valid = ['super_admin', 'admin', 'account_executive', 'analyst', 'client'];
       if (!valid.includes(account_role)) {
@@ -805,8 +1037,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
       // Only a super_admin may assign super_admin to anyone (including themselves).
       if (account_role === 'super_admin') {
-        const callerId = request.auth?.userId;
-        const bypassedAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+        const callerId = (request as any).auth?.userId;
+        const bypassedAuth = Boolean((request as any).auth?.claims?.['bypass_auth']);
         if (!bypassedAuth) {
           if (!callerId || !(await isDbSuperAdmin(callerId))) {
             return reply.status(403).send({
@@ -818,6 +1050,13 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       }
 
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT clerk_user_id, access_status, is_admin, account_role
+           FROM platform_access
+          WHERE clerk_user_id = $1
+          LIMIT 1`,
+        [clerkUserId]
+      );
       const { rows } = await pool.query(
         `UPDATE platform_access
             SET account_role = $1, updated_at = now()
@@ -829,6 +1068,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       if (rows.length === 0) {
         return reply.status(404).send({ error: "No platform_access record found for this user" });
       }
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "platform_access.set_account_role",
+        entity_type: "platform_access",
+        entity_id: clerkUserId,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
 
       return reply.send({ ok: true, record: rows[0] });
     }
@@ -849,9 +1098,13 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       account_role?: string;
       access_duration_days?: number;
       notes?: string;
+      reason?: string | null;
     };
   }>("/api/v1/admin/provision-user", async (request, reply) => {
     const { clerk_user_id, account_role = "client", access_duration_days, notes } = request.body ?? {};
+    const reason = requireMutationReason(request, reply);
+    if (!reason) return;
+    const actor = getAuditActorContext(request);
 
     if (!clerk_user_id || typeof clerk_user_id !== "string") {
       return reply.status(400).send({ error: "clerk_user_id is required", code: "MISSING_CLERK_USER_ID" });
@@ -864,8 +1117,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
     // Only a super_admin may provision another user as super_admin.
     if (account_role === 'super_admin') {
-      const callerId = request.auth?.userId;
-      const bypassedAuth = Boolean(request.auth?.claims?.['bypass_auth']);
+      const callerId = (request as any).auth?.userId;
+      const bypassedAuth = Boolean((request as any).auth?.claims?.['bypass_auth']);
       if (!bypassedAuth) {
         if (!callerId || !(await isDbSuperAdmin(callerId))) {
           return reply.status(403).send({
@@ -901,6 +1154,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       [clerk_user_id, orgId, account_role, notes ?? null, expiresAt]
     );
 
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: "platform_access.provision_user",
+      entity_type: "platform_access",
+      entity_id: clerk_user_id,
+      before_state: {},
+      after_state: rows[0] ?? {},
+      reason,
+    });
+
     return reply.status(201).send({ ok: true, record: rows[0] });
   });
 
@@ -919,12 +1182,12 @@ export async function registerAdminRoutes(app: FastifyInstance) {
    * go through the DB-backed requireAdminAuth path and this endpoint's purpose
    * is fulfilled. It can remain as a recovery mechanism.
    */
-  app.post<{ Body: { clerk_user_id: string } }>(
+  app.post<{ Body: { clerk_user_id: string; reason?: string | null } }>(
     "/api/v1/admin/bootstrap-first-admin",
     {
       preHandler: async (request, reply) => {
         // Require ADMIN_TOKEN (or dev bypass). No is_admin check — that's the point.
-        const bypassedAuth = Boolean(request.auth?.claims?.["bypass_auth"]);
+        const bypassedAuth = Boolean((request as any).auth?.claims?.["bypass_auth"]);
         if (bypassedAuth) return;
 
         const adminToken = process.env.ADMIN_TOKEN?.trim();
@@ -948,6 +1211,9 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     },
     async (request, reply) => {
       const { clerk_user_id } = request.body ?? {};
+      const reason = requireMutationReason(request, reply, "bootstrap_first_admin");
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
 
       if (
         !clerk_user_id ||
@@ -958,6 +1224,13 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       }
 
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT clerk_user_id, access_status, is_admin, account_role
+           FROM platform_access
+          WHERE clerk_user_id = $1
+          LIMIT 1`,
+        [clerk_user_id.trim()]
+      );
 
       // Upsert: if the row doesn't exist yet, create it as active+super_admin.
       // If it already exists, update is_admin and account_role.
@@ -969,6 +1242,16 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           RETURNING clerk_user_id, access_status, is_admin, account_role, updated_at`,
         [clerk_user_id.trim()]
       );
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "platform_access.bootstrap_first_admin",
+        entity_type: "platform_access",
+        entity_id: clerk_user_id.trim(),
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
 
       return reply.send({ ok: true, record: rows[0] });
     }
@@ -982,7 +1265,14 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     "/api/v1/admin/invite-codes/:code/revoke",
     async (request, reply) => {
       const { code } = request.params;
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT code, status, redeemed_by_clerk_user_id, redeemed_at FROM invite_codes WHERE code = $1 LIMIT 1`,
+        [code]
+      );
       const { rows } = await pool.query(
         `UPDATE invite_codes SET status = 'revoked', updated_at = now()
           WHERE code = $1 AND status = 'active'
@@ -994,7 +1284,315 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           error: "Invite code not found or not in active state",
         });
       }
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "invite.revoke",
+        entity_type: "invite_code",
+        entity_id: code,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
       return reply.send({ ok: true, record: rows[0] });
+    }
+  );
+
+  app.get<{
+    Querystring: { limit?: string; offset?: string; query?: string };
+  }>("/api/v1/admin/recovery/deals", async (request, reply) => {
+    const limitRaw = Number(request.query.limit ?? 50);
+    const offsetRaw = Number(request.query.offset ?? 0);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 50;
+    const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0;
+    const query = typeof request.query.query === "string" ? request.query.query.trim() : "";
+
+    const params: unknown[] = [];
+    const where: string[] = ["d.deleted_at IS NOT NULL"];
+    if (query.length > 0) {
+      params.push(`%${query}%`);
+      const i = params.length;
+      where.push(`(d.id::text ILIKE $${i} OR d.name ILIKE $${i} OR COALESCE(d.owner, '') ILIKE $${i})`);
+    }
+
+    const whereSql = `WHERE ${where.join(" AND ")}`;
+    const pool = getPool();
+
+    const { rows: countRows } = await pool.query<{ total: string }>(
+      `SELECT COUNT(*)::text AS total FROM deals d ${whereSql}`,
+      params
+    );
+
+    const { rows } = await pool.query(
+      `SELECT d.id, d.name, d.stage, d.priority, d.lifecycle_status, d.owner, d.deleted_at, d.updated_at
+         FROM deals d
+         ${whereSql}
+        ORDER BY d.deleted_at DESC
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
+    );
+
+    return reply.send({
+      records: rows,
+      limit,
+      offset,
+      total: Number(countRows[0]?.total ?? "0"),
+    });
+  });
+
+  app.get<{
+    Querystring: { limit?: string; offset?: string; query?: string; deal_id?: string };
+  }>("/api/v1/admin/recovery/documents", async (request, reply) => {
+    const limitRaw = Number(request.query.limit ?? 50);
+    const offsetRaw = Number(request.query.offset ?? 0);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 50;
+    const offset = Number.isFinite(offsetRaw) ? Math.max(0, Math.floor(offsetRaw)) : 0;
+    const query = typeof request.query.query === "string" ? request.query.query.trim() : "";
+    const dealId = typeof request.query.deal_id === "string" ? request.query.deal_id.trim() : "";
+
+    const params: unknown[] = [];
+    const where: string[] = ["doc.deleted_at IS NOT NULL"];
+
+    if (dealId.length > 0) {
+      params.push(dealId);
+      where.push(`doc.deal_id = $${params.length}`);
+    }
+
+    if (query.length > 0) {
+      params.push(`%${query}%`);
+      const i = params.length;
+      where.push(`(
+        doc.id::text ILIKE $${i}
+        OR COALESCE(doc.title, '') ILIKE $${i}
+        OR doc.deal_id::text ILIKE $${i}
+        OR COALESCE(d.name, '') ILIKE $${i}
+      )`);
+    }
+
+    const whereSql = `WHERE ${where.join(" AND ")}`;
+    const pool = getPool();
+
+    const { rows: countRows } = await pool.query<{ total: string }>(
+      `SELECT COUNT(*)::text AS total
+         FROM documents doc
+         LEFT JOIN deals d ON d.id = doc.deal_id
+         ${whereSql}`,
+      params
+    );
+
+    const { rows } = await pool.query(
+      `SELECT
+         doc.id AS document_id,
+         doc.deal_id,
+         d.name AS deal_name,
+         doc.title,
+         doc.type,
+         doc.status,
+         doc.deleted_at,
+         doc.updated_at,
+         d.deleted_at AS deal_deleted_at
+       FROM documents doc
+       LEFT JOIN deals d ON d.id = doc.deal_id
+       ${whereSql}
+       ORDER BY doc.deleted_at DESC
+       LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+      [...params, limit, offset]
+    );
+
+    return reply.send({
+      records: rows,
+      limit,
+      offset,
+      total: Number(countRows[0]?.total ?? "0"),
+    });
+  });
+
+  app.post<{ Params: { dealId: string }; Body: { reason?: string | null } }>(
+    "/api/v1/admin/recovery/deals/:dealId/restore",
+    async (request, reply) => {
+      const dealId = request.params.dealId;
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request as any);
+      const pool = getPool();
+
+      const { rows: beforeRows } = await pool.query(
+        `SELECT * FROM deals WHERE id = $1 LIMIT 1`,
+        [dealId]
+      );
+
+      const { rows } = await pool.query(
+        `UPDATE deals
+            SET deleted_at = NULL,
+                lifecycle_status = CASE
+                  WHEN lifecycle_status = 'archived' THEN lifecycle_status
+                  ELSE 'active'
+                END,
+                updated_at = now()
+          WHERE id = $1
+            AND deleted_at IS NOT NULL
+          RETURNING *`,
+        [dealId]
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: "Deleted deal not found" });
+      }
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "deal.restore",
+        entity_type: "deal",
+        entity_id: dealId,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
+
+      return reply.send({ ok: true, deal_id: dealId });
+    }
+  );
+
+  app.post<{ Params: { documentId: string }; Body: { reason?: string | null } }>(
+    "/api/v1/admin/recovery/documents/:documentId/restore",
+    async (request, reply) => {
+      const documentId = request.params.documentId;
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request as any);
+      const pool = getPool();
+
+      const { rows: beforeRows } = await pool.query(
+        `SELECT id, deal_id, title, status, deleted_at
+           FROM documents
+          WHERE id = $1
+          LIMIT 1`,
+        [documentId]
+      );
+
+      const { rows } = await pool.query<{ id: string; deal_id: string }>(
+        `UPDATE documents
+            SET deleted_at = NULL,
+                updated_at = now()
+          WHERE id = $1
+            AND deleted_at IS NOT NULL
+          RETURNING id, deal_id`,
+        [documentId]
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: "Deleted document not found" });
+      }
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "document.restore",
+        entity_type: "document",
+        entity_id: documentId,
+        before_state: beforeRows[0] ?? {},
+        after_state: { id: rows[0].id, deal_id: rows[0].deal_id, deleted_at: null },
+        reason,
+      });
+
+      return reply.send({ ok: true, document_id: documentId, deal_id: rows[0].deal_id });
+    }
+  );
+
+  app.post<{ Params: { dealId: string }; Body: { reason?: string | null; confirm_text?: string | null } }>(
+    "/api/v1/admin/recovery/deals/:dealId/purge",
+    async (request, reply) => {
+      const allowed = await requireSuperAdminAuth(request, reply);
+      if (!allowed) return;
+
+      const dealId = request.params.dealId;
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const expectedToken = buildPurgeConfirmationToken({ entityType: "deal", entityId: dealId });
+      if (!requirePurgeConfirmation(request, reply, expectedToken)) return;
+
+      const actor = getAuditActorContext(request as any);
+      const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT * FROM deals WHERE id = $1 LIMIT 1`,
+        [dealId]
+      );
+
+      try {
+        const purge = await purgeDealCascade({
+          deal_id: dealId,
+          actor_user_id: actor.actor_user_id,
+          reason,
+          db: pool as any,
+          logger: console as any,
+        });
+
+        await writePlatformAuditLog({
+          ...actor,
+          action_type: "deal.purge",
+          entity_type: "deal",
+          entity_id: dealId,
+          before_state: beforeRows[0] ?? {},
+          after_state: purge as unknown as Record<string, unknown>,
+          reason,
+        });
+
+        return reply.send({ ok: true, deal_id: dealId, purge });
+      } catch (err) {
+        if (isPurgeDealNotFoundError(err)) {
+          return reply.status(404).send({ error: "Deal not found" });
+        }
+        const message = err instanceof Error ? err.message : "Purge failed";
+        return reply.status(500).send({ error: message });
+      }
+    }
+  );
+
+  app.post<{ Params: { documentId: string }; Body: { reason?: string | null; confirm_text?: string | null } }>(
+    "/api/v1/admin/recovery/documents/:documentId/purge",
+    async (request, reply) => {
+      const allowed = await requireSuperAdminAuth(request, reply);
+      if (!allowed) return;
+
+      const documentId = request.params.documentId;
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const expectedToken = buildPurgeConfirmationToken({ entityType: "document", entityId: documentId });
+      if (!requirePurgeConfirmation(request, reply, expectedToken)) return;
+
+      const actor = getAuditActorContext(request as any);
+      const pool = getPool();
+
+      const { rows: beforeRows } = await pool.query(
+        `SELECT id, deal_id, title, status, deleted_at
+           FROM documents
+          WHERE id = $1
+          LIMIT 1`,
+        [documentId]
+      );
+
+      const { rows } = await pool.query<{ id: string; deal_id: string }>(
+        `DELETE FROM documents
+          WHERE id = $1
+            AND deleted_at IS NOT NULL
+          RETURNING id, deal_id`,
+        [documentId]
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: "Deleted document not found" });
+      }
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: "document.hard_delete",
+        entity_type: "document",
+        entity_id: documentId,
+        before_state: beforeRows[0] ?? {},
+        after_state: { id: rows[0].id, deal_id: rows[0].deal_id, delete_mode: "hard" },
+        reason,
+      });
+
+      return reply.send({ ok: true, document_id: documentId, deal_id: rows[0].deal_id });
     }
   );
 }

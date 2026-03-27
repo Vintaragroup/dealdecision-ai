@@ -41,7 +41,7 @@ describe('DocumentLibrary document actions', () => {
     expect(screen.getByLabelText('View document Pitch Deck.pdf')).toHaveAttribute('title', 'View document');
     expect(screen.getByLabelText('Re-run extraction for Pitch Deck.pdf')).toHaveAttribute('title', 'Re-run extraction');
     expect(screen.getByLabelText('Download document Pitch Deck.pdf')).toHaveAttribute('title', 'Download document');
-    expect(screen.getByLabelText('Delete document Pitch Deck.pdf')).toHaveAttribute('title', 'Delete document');
+    expect(screen.getByLabelText('Move document Pitch Deck.pdf to trash')).toHaveAttribute('title', 'Move to trash');
     expect(screen.getByText('Analysis Completed')).toBeInTheDocument();
   });
 

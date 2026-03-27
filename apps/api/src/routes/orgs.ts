@@ -17,6 +17,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { getPool } from "../lib/db";
 import { randomBytes } from "node:crypto";
+import { writePlatformAuditLog, getAuditActorContext, extractAuditReason } from "../lib/platform-audit-log";
 
 function generateInviteCode(): string {
   return randomBytes(16).toString("hex");
@@ -28,6 +29,19 @@ function buildInviteUrl(request: FastifyRequest, code: string): string {
     process.env.FRONTEND_URL?.trim() ||
     `${request.protocol}://${request.hostname}`;
   return `${baseUrl}/invite?code=${encodeURIComponent(code)}`;
+}
+
+function requireMutationReason(request: FastifyRequest, reply: FastifyReply, defaultReason?: string): string | null {
+  const reason = extractAuditReason((request as any).body, {
+    query: (request as any).query,
+    headers: request.headers,
+    defaultReason,
+  });
+  if (!reason) {
+    reply.status(400).send({ error: 'reason is required for this privileged mutation', code: 'MISSING_AUDIT_REASON' });
+    return null;
+  }
+  return reason;
 }
 
 /**
@@ -216,6 +230,7 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       seat_limit?: number;
       billing_status?: string;
       notes?: string | null;
+      reason?: string | null;
     };
   }>(
     "/api/v1/admin/orgs/:orgId",
@@ -223,6 +238,9 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       const { orgId } = request.params;
       const { organization_name, included_seats, seat_limit, billing_status, notes } =
         request.body ?? {};
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
 
       const validBillingStatuses = ['trial', 'active', 'past_due', 'cancelled'];
       if (billing_status !== undefined && !validBillingStatuses.includes(billing_status)) {
@@ -236,6 +254,10 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       }
 
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT * FROM organization_settings WHERE clerk_org_id = $1 LIMIT 1`,
+        [orgId]
+      );
       const { rows } = await pool.query(
         `INSERT INTO organization_settings
            (clerk_org_id, organization_name, included_seats, seat_limit, billing_status, notes, created_at, updated_at)
@@ -257,6 +279,16 @@ export async function registerOrgRoutes(app: FastifyInstance) {
           notes ?? null,
         ]
       );
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: 'organization_settings.upsert',
+        entity_type: 'organization',
+        entity_id: orgId,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
 
       return reply.send({ ok: true, org: rows[0] });
     }
@@ -301,12 +333,15 @@ export async function registerOrgRoutes(app: FastifyInstance) {
    */
   app.patch<{
     Params: { orgId: string; userId: string };
-    Body: { org_role: string };
+    Body: { org_role: string; reason?: string | null };
   }>(
     "/api/v1/admin/orgs/:orgId/members/:userId/role",
     async (request, reply) => {
       const { orgId, userId } = request.params;
       const { org_role } = request.body ?? {};
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
 
       const validRoles = ['org_owner', 'org_manager', 'org_member'];
       if (!validRoles.includes(org_role)) {
@@ -316,6 +351,10 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       }
 
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT * FROM organization_memberships WHERE clerk_org_id = $1 AND clerk_user_id = $2 LIMIT 1`,
+        [orgId, userId]
+      );
       const { rows } = await pool.query(
         `UPDATE organization_memberships
             SET org_role = $1, updated_at = now()
@@ -327,6 +366,16 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       if (rows.length === 0) {
         return reply.status(404).send({ error: "Membership not found" });
       }
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: 'organization_membership.set_role',
+        entity_type: 'organization_membership',
+        entity_id: `${orgId}:${userId}`,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
 
       return reply.send({ ok: true, member: rows[0] });
     }
@@ -340,7 +389,14 @@ export async function registerOrgRoutes(app: FastifyInstance) {
     "/api/v1/admin/orgs/:orgId/members/:userId",
     async (request, reply) => {
       const { orgId, userId } = request.params;
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT * FROM organization_memberships WHERE clerk_org_id = $1 AND clerk_user_id = $2 LIMIT 1`,
+        [orgId, userId]
+      );
 
       const { rows } = await pool.query(
         `UPDATE organization_memberships
@@ -353,6 +409,16 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       if (rows.length === 0) {
         return reply.status(404).send({ error: "Membership not found" });
       }
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: 'organization_membership.revoke',
+        entity_type: 'organization_membership',
+        entity_id: `${orgId}:${userId}`,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
 
       return reply.send({ ok: true, member: rows[0] });
     }
@@ -462,7 +528,7 @@ export async function registerOrgRoutes(app: FastifyInstance) {
    * Body: { email?, access_duration_days?: 3|5|7|14, notes? }
    */
   app.post<{
-    Body: { email?: string | null; access_duration_days?: number; notes?: string | null };
+    Body: { email?: string | null; access_duration_days?: number; notes?: string | null; reason?: string | null };
   }>("/api/v1/team/invite", async (request, reply) => {
     const auth = await requireOrgManagerOrAdmin(request, reply);
     if (!auth.ok) return;
@@ -473,6 +539,9 @@ export async function registerOrgRoutes(app: FastifyInstance) {
     }
 
     const { email = null, access_duration_days = 7, notes = null } = request.body ?? {};
+  const reason = requireMutationReason(request, reply);
+  if (!reason) return;
+  const actor = getAuditActorContext(request);
 
     const validDurations = [3, 5, 7, 14];
     if (!validDurations.includes(Number(access_duration_days))) {
@@ -513,6 +582,16 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       [code, email ?? null, orgId, userId, access_duration_days, notes ?? null]
     );
 
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: 'invite.create',
+      entity_type: 'invite_code',
+      entity_id: code,
+      before_state: {},
+      after_state: { code, org_id: orgId, email: email ?? null, access_duration_days },
+      reason,
+    });
+
     return reply.send({ ok: true, invite_url: inviteUrl, code });
   });
 
@@ -527,7 +606,7 @@ export async function registerOrgRoutes(app: FastifyInstance) {
    */
   app.patch<{
     Params: { userId: string };
-    Body: { org_role: string };
+    Body: { org_role: string; reason?: string | null };
   }>("/api/v1/team/members/:userId/role", async (request, reply) => {
     const auth = await requireOrgManagerOrAdmin(request, reply);
     if (!auth.ok) return;
@@ -539,6 +618,9 @@ export async function registerOrgRoutes(app: FastifyInstance) {
 
     const { userId: targetUserId } = request.params;
     const { org_role } = request.body ?? {};
+    const reason = requireMutationReason(request, reply);
+    if (!reason) return;
+    const actor = getAuditActorContext(request);
 
     const validRoles = ['org_owner', 'org_manager', 'org_member'];
     if (!validRoles.includes(org_role)) {
@@ -546,6 +628,10 @@ export async function registerOrgRoutes(app: FastifyInstance) {
     }
 
     const pool = getPool();
+    const { rows: beforeRows } = await pool.query(
+      `SELECT * FROM organization_memberships WHERE clerk_org_id = $1 AND clerk_user_id = $2 LIMIT 1`,
+      [orgId, targetUserId]
+    );
     const { rows } = await pool.query(
       `UPDATE organization_memberships
           SET org_role = $1, updated_at = now()
@@ -557,6 +643,16 @@ export async function registerOrgRoutes(app: FastifyInstance) {
     if (rows.length === 0) {
       return reply.status(404).send({ error: 'Membership not found in your organization' });
     }
+
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: 'organization_membership.set_role',
+      entity_type: 'organization_membership',
+      entity_id: `${orgId}:${targetUserId}`,
+      before_state: beforeRows[0] ?? {},
+      after_state: rows[0] ?? {},
+      reason,
+    });
 
     return reply.send({ ok: true, member: rows[0] });
   });
@@ -574,6 +670,10 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       const auth = await requireOrgManagerOrAdmin(request, reply);
       if (!auth.ok) return;
 
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
+
       const { orgId, userId: callerId } = auth;
       if (!orgId) {
         return reply.status(403).send({ error: 'No organization found in token' });
@@ -585,6 +685,10 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       }
 
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT * FROM organization_memberships WHERE clerk_org_id = $1 AND clerk_user_id = $2 LIMIT 1`,
+        [orgId, targetUserId]
+      );
       const { rows } = await pool.query(
         `UPDATE organization_memberships
             SET membership_status = 'revoked', updated_at = now()
@@ -596,6 +700,16 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       if (rows.length === 0) {
         return reply.status(404).send({ error: 'Membership not found in your organization' });
       }
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: 'organization_membership.revoke',
+        entity_type: 'organization_membership',
+        entity_id: `${orgId}:${targetUserId}`,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
 
       return reply.send({ ok: true, member: rows[0] });
     }
@@ -654,6 +768,10 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       const auth = await requireOrgManagerOrAdmin(request, reply);
       if (!auth.ok) return;
 
+      const reason = requireMutationReason(request, reply);
+      if (!reason) return;
+      const actor = getAuditActorContext(request);
+
       const { orgId } = auth;
       if (!orgId) {
         return reply.status(403).send({ error: 'No organization found in token' });
@@ -661,6 +779,10 @@ export async function registerOrgRoutes(app: FastifyInstance) {
 
       const { code } = request.params;
       const pool = getPool();
+      const { rows: beforeRows } = await pool.query(
+        `SELECT id, code, org_id, status, email, access_duration_days FROM invite_codes WHERE code = $1 LIMIT 1`,
+        [code]
+      );
 
       const { rows } = await pool.query(
         `UPDATE invite_codes
@@ -673,6 +795,16 @@ export async function registerOrgRoutes(app: FastifyInstance) {
       if (rows.length === 0) {
         return reply.status(404).send({ error: 'Invite not found or already used/revoked' });
       }
+
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: 'invite.revoke',
+        entity_type: 'invite_code',
+        entity_id: code,
+        before_state: beforeRows[0] ?? {},
+        after_state: rows[0] ?? {},
+        reason,
+      });
 
       return reply.send({ ok: true, invite: rows[0] });
     }

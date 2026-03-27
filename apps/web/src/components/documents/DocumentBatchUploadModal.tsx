@@ -4,6 +4,22 @@ import { apiAnalyzeDocumentsBatch, apiBulkAssignDocuments, apiUploadDocument } f
 import { ToastContainer } from '../ui/Toast';
 import { useLocalToasts } from '../../lib/useLocalToasts';
 
+type DuplicatePolicy = 'skip' | 'replace' | 'keep_both';
+
+type UploadFailure = {
+  filename: string;
+  reason: string;
+  dealId: string;
+  documentType: string;
+};
+
+type UploadTask = {
+  filename: string;
+  file: File;
+  dealId: string;
+  documentType: string;
+};
+
 interface DocumentBatchUploadProps {
   onClose: () => void;
   onSuccess?: (results: any) => void;
@@ -12,15 +28,20 @@ interface DocumentBatchUploadProps {
 export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUploadProps) {
   const ACCEPTED_EXTENSIONS = ['.pdf', '.xlsx', '.xls', '.pptx', '.ppt', '.docx', '.doc', '.png', '.jpg', '.jpeg'];
   const MAX_FILE_SIZE_MB = 25;
+  const BATCH_CONCURRENCY = 3;
+  const MAX_UPLOAD_ATTEMPTS = 3;
 
   const { toasts, addToast, removeToast } = useLocalToasts();
 
-  const [step, setStep] = useState<'select' | 'review' | 'confirm'>('select');
+  const [step, setStep] = useState<'select' | 'review'>('select');
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [analysisResult, setAnalysisResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [userConfirmation, setUserConfirmation] = useState<Record<string, 'confirm' | 'skip' | 'newdeal'>>({});
+  const [duplicatePolicy, setDuplicatePolicy] = useState<DuplicatePolicy>('skip');
+  const [uploadProgress, setUploadProgress] = useState({ total: 0, completed: 0, succeeded: 0, failed: 0 });
+  const [failedUploads, setFailedUploads] = useState<UploadFailure[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -62,6 +83,8 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
       setUserConfirmation(confirmations);
 
       setStep('review');
+      setFailedUploads([]);
+      setUploadProgress({ total: 0, completed: 0, succeeded: 0, failed: 0 });
     } catch (error) {
       addToast('error', 'Analyze failed', error instanceof Error ? error.message : 'Unknown error');
     } finally {
@@ -83,12 +106,112 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
     setUserConfirmation({ ...userConfirmation, [company]: action });
   };
 
+  const isAllowedFile = (file: File) => {
+    const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
+    const sizeMb = file.size / (1024 * 1024);
+    return ACCEPTED_EXTENSIONS.includes(ext) && sizeMb <= MAX_FILE_SIZE_MB;
+  };
+
+  const uploadDocumentToDeal = async (file: File, dealId: string, documentType?: string) => {
+    await apiUploadDocument(dealId, file, documentType || 'other', file.name, { duplicatePolicy });
+  };
+
+  const uploadWithRetry = async (task: UploadTask): Promise<{ ok: true } | { ok: false; reason: string }> => {
+    let attempt = 0;
+    while (attempt < MAX_UPLOAD_ATTEMPTS) {
+      attempt += 1;
+      try {
+        await uploadDocumentToDeal(task.file, task.dealId, task.documentType);
+        return { ok: true };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'upload failed';
+        if (attempt >= MAX_UPLOAD_ATTEMPTS) {
+          return { ok: false, reason: message };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+      }
+    }
+    return { ok: false, reason: 'upload failed' };
+  };
+
+  const uploadTasksWithConcurrency = async (tasks: UploadTask[]) => {
+    const failures: UploadFailure[] = [];
+    let cursor = 0;
+
+    setUploadProgress({ total: tasks.length, completed: 0, succeeded: 0, failed: 0 });
+
+    const worker = async () => {
+      while (cursor < tasks.length) {
+        const task = tasks[cursor++];
+        const result = await uploadWithRetry(task);
+        setUploadProgress((prev) => ({
+          ...prev,
+          completed: prev.completed + 1,
+          succeeded: prev.succeeded + (result.ok ? 1 : 0),
+          failed: prev.failed + (result.ok ? 0 : 1),
+        }));
+        if (!result.ok) {
+          failures.push({
+            filename: task.filename,
+            reason: result.reason,
+            dealId: task.dealId,
+            documentType: task.documentType,
+          });
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, tasks.length) }, () => worker()));
+    return failures;
+  };
+
+  const buildUploadTasks = (args: {
+    groups: any[];
+    selected: File[];
+    createdDealIdsByName: Map<string, string>;
+    onlyFailures?: UploadFailure[];
+  }) => {
+    const fileByName = new Map<string, File>();
+    for (const f of args.selected) fileByName.set(f.name, f);
+
+    const tasks: UploadTask[] = [];
+
+    for (const group of args.groups) {
+      const action = userConfirmation[group.company];
+      if (action === 'skip') continue;
+
+      const targetDealId = action === 'confirm'
+        ? group.dealId
+        : args.createdDealIdsByName.get(group.company);
+
+      if (!targetDealId) {
+        continue;
+      }
+
+      for (const filename of group.files || []) {
+        const file = fileByName.get(filename);
+        if (!file || !isAllowedFile(file)) continue;
+
+        if (args.onlyFailures) {
+          const failed = args.onlyFailures.some((f) => f.filename === filename && f.dealId === targetDealId);
+          if (!failed) continue;
+        }
+
+        tasks.push({
+          filename,
+          file,
+          dealId: targetDealId,
+          documentType: group.documentType || 'other',
+        });
+      }
+    }
+
+    return tasks;
+  };
+
   const handleUpload = async () => {
     setLoading(true);
     try {
-      // Build assignments based on user confirmations
-      // NOTE: We only send one "newDeals" entry per company to avoid duplicate deal creation.
-      // We still upload all files in the group after we resolve the target deal id.
       const assignments = analysisResult.groups
         .filter((group: any) => userConfirmation[group.company] === 'confirm' && group.dealId)
         .flatMap((group: any) =>
@@ -102,7 +225,6 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
       const newDeals = analysisResult.groups
         .filter((group: any) => userConfirmation[group.company] === 'newdeal' && !group.dealId)
         .map((group: any) => ({
-          // Keep a representative filename so the backend can echo back a row for this group
           filename: (group.files || [])[0],
           dealName: group.company,
           type: group.documentType,
@@ -111,8 +233,6 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
 
       const result = await apiBulkAssignDocuments({ assignments, newDeals });
 
-      // Resolve deal ids for any newly created/reused deals from the bulk-assign response.
-      // The backend returns { assignments: [{ filename, dealId, dealName, status, ... }, ...] }
       const createdDealIdsByName = new Map<string, string>();
       const responseAssignments: any[] = Array.isArray(result?.assignments) ? result.assignments : [];
       for (const row of responseAssignments) {
@@ -121,60 +241,30 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
         }
       }
 
-      // Index selected files by filename for quick lookup
-      const fileByName = new Map<string, File>();
-      for (const f of selectedFiles) fileByName.set(f.name, f);
+      const tasks = buildUploadTasks({
+        groups: analysisResult.groups,
+        selected: selectedFiles,
+        createdDealIdsByName,
+      });
 
-      const failures: string[] = [];
-      let successCount = 0;
-
-      // Upload every file in each group to its resolved deal
-      for (const group of analysisResult.groups) {
-        const action = userConfirmation[group.company];
-        if (action === 'skip') continue;
-
-        const targetDealId = action === 'confirm'
-          ? group.dealId
-          : createdDealIdsByName.get(group.company);
-
-        if (!targetDealId) {
-          failures.push(`Group ${group.company}: no deal id resolved`);
-          continue;
-        }
-
-        for (const filename of group.files || []) {
-          const file = fileByName.get(filename);
-          if (!file) continue;
-          try {
-            const ext = '.' + (file.name.split('.').pop() || '').toLowerCase();
-            const sizeMb = file.size / (1024 * 1024);
-            if (!ACCEPTED_EXTENSIONS.includes(ext) || sizeMb > MAX_FILE_SIZE_MB) {
-              failures.push(`${filename}: type/size rejected`);
-              continue;
-            }
-            await uploadDocumentToDeal(file, targetDealId, group.documentType);
-            successCount += 1;
-          } catch (err) {
-            failures.push(`${filename}: ${err instanceof Error ? err.message : 'upload failed'}`);
-          }
-        }
+      if (!tasks.length) {
+        addToast('warning', 'Nothing uploaded', 'No files were eligible for upload.');
+        return;
       }
 
-      if (failures.length) {
+      const failures = await uploadTasksWithConcurrency(tasks);
+      setFailedUploads(failures);
+
+      if (failures.length > 0) {
         addToast(
           'error',
           'Upload incomplete',
-          `Uploaded ${successCount} file(s). Failures: ${failures.length}. First few: ${failures.slice(0, 5).join('; ')}`
+          `Uploaded ${tasks.length - failures.length} file(s). Failures: ${failures.length}. You can retry failed files.`
         );
         return;
       }
 
-      if (successCount === 0) {
-        addToast('warning', 'Nothing uploaded', 'No files were uploaded.');
-        return;
-      }
-
-      addToast('success', 'Upload complete', `Uploaded ${successCount} file(s).`);
+      addToast('success', 'Upload complete', `Uploaded ${tasks.length} file(s).`);
       onSuccess?.(result);
       onClose();
     } catch (error) {
@@ -184,8 +274,48 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
     }
   };
 
-  const uploadDocumentToDeal = async (file: File, dealId: string, documentType?: string) => {
-    await apiUploadDocument(dealId, file, documentType || 'other', file.name);
+  const handleRetryFailed = async () => {
+    if (!analysisResult || failedUploads.length === 0) return;
+
+    setLoading(true);
+    try {
+      const fileByName = new Map<string, File>();
+      for (const file of selectedFiles) {
+        fileByName.set(file.name, file);
+      }
+
+      const retryTasks: UploadTask[] = failedUploads
+        .map((failed) => {
+          const file = fileByName.get(failed.filename);
+          if (!file || !isAllowedFile(file)) return null;
+          return {
+            filename: failed.filename,
+            file,
+            dealId: failed.dealId,
+            documentType: failed.documentType || 'other',
+          };
+        })
+        .filter((task): task is UploadTask => task !== null);
+
+      const failures = await uploadTasksWithConcurrency(retryTasks);
+      setFailedUploads(failures);
+
+      if (failures.length > 0) {
+        addToast(
+          'error',
+          'Retry incomplete',
+          `${failures.length} file(s) still failing. First few: ${failures.slice(0, 5).map((f) => `${f.filename}: ${f.reason}`).join('; ')}`
+        );
+        return;
+      }
+
+      addToast('success', 'Retry complete', 'All failed files uploaded successfully.');
+      onClose();
+    } catch (error) {
+      addToast('error', 'Retry failed', error instanceof Error ? error.message : 'Unknown error');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const confirmedCount = analysisResult?.groups.filter((g: any) => userConfirmation[g.company] === 'confirm').length || 0;
@@ -379,6 +509,54 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
                   <p className="text-sm text-yellow-300 mt-2">Expand groups above to review and choose versions to keep.</p>
                 </div>
               )}
+
+              <div className="bg-slate-800 rounded-lg p-4">
+                <p className="text-white font-medium mb-2">Duplicate Handling Policy</p>
+                <select
+                  value={duplicatePolicy}
+                  onChange={(e) => setDuplicatePolicy(e.target.value as DuplicatePolicy)}
+                  className="w-full rounded border border-slate-600 bg-slate-900 px-3 py-2 text-sm text-slate-100"
+                  aria-label="Duplicate handling policy"
+                >
+                  <option value="skip">Skip duplicate files (safe default)</option>
+                  <option value="replace">Replace existing duplicate files</option>
+                  <option value="keep_both">Keep both versions</option>
+                </select>
+                <p className="mt-2 text-xs text-slate-400">
+                  Duplicate detection uses deal and file content hash, with filename as secondary context.
+                </p>
+              </div>
+
+              {uploadProgress.total > 0 && (
+                <div className="rounded-lg border border-slate-700 bg-slate-800 p-4">
+                  <div className="mb-2 flex items-center justify-between text-sm text-slate-300">
+                    <span>Upload progress</span>
+                    <span>{uploadProgress.completed}/{uploadProgress.total}</span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded bg-slate-700">
+                    <div
+                      className="h-full bg-green-500 transition-all"
+                      style={{ width: `${uploadProgress.total ? (uploadProgress.completed / uploadProgress.total) * 100 : 0}%` }}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-slate-400">
+                    Success: {uploadProgress.succeeded} | Failed: {uploadProgress.failed} | Concurrency: {BATCH_CONCURRENCY} | Retries: {MAX_UPLOAD_ATTEMPTS - 1}
+                  </p>
+                </div>
+              )}
+
+              {failedUploads.length > 0 && (
+                <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-4">
+                  <p className="mb-2 text-sm font-medium text-red-200">Failed uploads ({failedUploads.length})</p>
+                  <ul className="max-h-32 space-y-1 overflow-y-auto text-xs text-red-100">
+                    {failedUploads.map((f, idx) => (
+                      <li key={`${f.filename}-${idx}`}>
+                        {f.filename}: {f.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -415,6 +593,15 @@ export function DocumentBatchUploadModal({ onClose, onSuccess }: DocumentBatchUp
               <span className="text-sm text-slate-400">
                 {confirmedCount} confirmed, {newDealCount} new deals
               </span>
+              {failedUploads.length > 0 && (
+                <button
+                  onClick={handleRetryFailed}
+                  disabled={loading}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 disabled:bg-slate-600 disabled:cursor-not-allowed text-white rounded-lg font-medium transition"
+                >
+                  {loading ? 'Retrying...' : `Retry Failed (${failedUploads.length})`}
+                </button>
+              )}
               <button
                 onClick={handleUpload}
                 disabled={confirmedCount + newDealCount === 0 || loading}

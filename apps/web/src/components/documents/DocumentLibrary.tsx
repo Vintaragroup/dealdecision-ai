@@ -22,7 +22,12 @@ import {
 } from 'lucide-react';
 import { ToastContainer, ToastType } from '../ui/Toast';
 import type { Document as ApiDocument } from '@dealdecision/contracts';
-import { apiDeleteDocument } from '../../lib/apiClient';
+import { apiDeleteDocument, apiGetDocumentDownloadUrl } from '../../lib/apiClient';
+import {
+  getDocumentStatusView,
+  summarizeDocumentStatuses,
+  type DocumentStatusView,
+} from '../../lib/documentStatusView';
 
 interface DocumentLibraryProps {
   darkMode: boolean;
@@ -43,6 +48,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
   const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
   const [deleteTargets, setDeleteTargets] = useState<string[] | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [downloadingDocumentId, setDownloadingDocumentId] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Array<{ id: string; type: ToastType; title: string; message?: string }>>([]);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -65,7 +71,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
     name: string;
     type: string;
     category: string;
-    size: number;
+    size: number | null;
     uploadedAt: Date;
     uploadedBy: string;
     tags: string[];
@@ -73,26 +79,46 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
     aiExtracted: boolean;
     extractedData?: any;
     status?: string;
+    statusView: DocumentStatusView;
   };
 
   const documents: LibraryDoc[] = useMemo(() => {
     if (initialDocuments && initialDocuments.length > 0) {
-      return initialDocuments.map((doc) => ({
-        id: doc.document_id,
-        name: doc.title || 'Document',
-        type: doc.type,
-        category: doc.type,
-        size: 0,
-        uploadedAt: doc.uploaded_at ? new Date(doc.uploaded_at) : new Date(),
-        uploadedBy: 'System',
-        tags: [],
-        url: '',
-        aiExtracted: doc.status === 'completed',
-        status: doc.status,
-      }));
+      return initialDocuments.map((doc) => {
+        const statusView = getDocumentStatusView(doc.status);
+        return {
+          statusView,
+          id: doc.document_id,
+          name: doc.title || 'Document',
+          type: doc.type,
+          category: doc.type,
+          size: typeof doc.size_bytes === 'number' && Number.isFinite(doc.size_bytes) && doc.size_bytes >= 0
+            ? doc.size_bytes
+            : null,
+          uploadedAt: doc.uploaded_at ? new Date(doc.uploaded_at) : new Date(),
+          uploadedBy: 'System',
+          tags: [],
+          url: '',
+          aiExtracted: statusView.isAnalysisCompleted,
+          status: doc.status,
+        };
+      });
     }
     return []; // Return empty instead of mock data
   }, [initialDocuments]);
+
+  const getStatusBadgeClass = (statusView: DocumentStatusView) => {
+    if (statusView.tone === 'success') {
+      return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30';
+    }
+    if (statusView.tone === 'warning') {
+      return 'bg-amber-500/10 text-amber-300 border-amber-500/30';
+    }
+    if (statusView.tone === 'danger') {
+      return 'bg-red-500/10 text-red-300 border-red-500/30';
+    }
+    return 'bg-gray-500/10 text-gray-300 border-gray-500/30';
+  };
 
   const categories = useMemo(() => {
     const unique = new Set<string>();
@@ -116,7 +142,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
     return <File className="w-6 h-6 text-gray-500" />;
   };
 
-  const formatFileSize = (bytes: number) => {
+  const formatFileSize = (bytes: number | null) => {
+    if (bytes === null) return 'Unknown size';
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];
@@ -172,6 +199,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
       setSelectedDocumentIds([]);
       setShowPreview(false);
       setSelectedDocument(null);
+      addToast('success', 'Document deleted');
       onDeleted?.();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to delete document(s)';
@@ -182,11 +210,26 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
     }
   };
 
-  const stats = {
-    total: documents.length,
-    completed: documents.filter((d) => d.status === 'completed').length,
-    inProgress: documents.filter((d) => d.status === 'processing' || d.status === 'pending').length,
+  const handleDownload = async (documentId: string) => {
+    if (!dealId) {
+      addToast('error', 'Download unavailable', 'Select a deal before downloading documents.');
+      return;
+    }
+
+    setDownloadingDocumentId(documentId);
+    try {
+      const response = await apiGetDocumentDownloadUrl(dealId, documentId);
+      window.open(response.signed_url, '_blank', 'noopener,noreferrer');
+      addToast('success', 'Download started');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to start document download';
+      addToast('error', 'Download failed', message);
+    } finally {
+      setDownloadingDocumentId(null);
+    }
   };
+
+  const stats = summarizeDocumentStatuses(documents);
 
   return (
     <div className="space-y-6">
@@ -362,14 +405,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                 </div>
 
                 {doc.status && (
-                  <div className={`px-2 py-1 rounded-full text-xs mb-2 border ${
-                    doc.status === 'completed'
-                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                      : doc.status === 'processing' || doc.status === 'pending'
-                        ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                        : 'bg-red-500/10 text-red-300 border-red-500/30'
-                  }`}>
-                    {doc.status}
+                  <div className={`px-2 py-1 rounded-full text-xs mb-2 border ${getStatusBadgeClass(doc.statusView)}`}>
+                    {doc.statusView.label}
                   </div>
                 )}
 
@@ -392,6 +429,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                       e.stopPropagation();
                       handlePreview(doc);
                     }}
+                    aria-label={`View document ${doc.name}`}
+                    title="View document"
                     className={`p-1.5 rounded-lg transition-colors ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}
@@ -404,6 +443,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                       onRetry?.(doc.id);
                     }}
                     disabled={!onRetry}
+                    aria-label={`Re-run extraction for ${doc.name}`}
+                    title={onRetry ? 'Re-run extraction' : 'Re-run extraction unavailable'}
                     className={`p-1.5 rounded-lg transition-colors ${
                       !onRetry
                         ? 'opacity-50 cursor-not-allowed'
@@ -415,13 +456,26 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                     <Sparkles className="w-4 h-4" />
                   </button>
                   <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleDownload(doc.id);
+                    }}
+                    disabled={downloadingDocumentId === doc.id || !dealId}
+                    aria-label={`Download document ${doc.name}`}
+                    title={!dealId ? 'Select a deal to download this document' : 'Download document'}
                     className={`p-1.5 rounded-lg transition-colors ${
-                      darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                      downloadingDocumentId === doc.id || !dealId
+                        ? 'opacity-50 cursor-not-allowed'
+                        : darkMode
+                          ? 'hover:bg-white/10'
+                          : 'hover:bg-gray-100'
                     }`}
                   >
                     <Download className="w-4 h-4" />
                   </button>
                   <button
+                    aria-label={`Delete document ${doc.name}`}
+                    title="Delete document"
                     className={`p-1.5 rounded-lg transition-colors text-red-500 ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}
@@ -463,14 +517,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                     {doc.name}
                   </div>
                   {doc.status && (
-                    <div className={`px-2 py-0.5 inline-flex items-center rounded-full text-xs mb-1 border ${
-                      doc.status === 'completed'
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                        : doc.status === 'processing' || doc.status === 'pending'
-                          ? 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                          : 'bg-red-500/10 text-red-300 border-red-500/30'
-                    }`}>
-                      {doc.status}
+                    <div className={`px-2 py-0.5 inline-flex items-center rounded-full text-xs mb-1 border ${getStatusBadgeClass(doc.statusView)}`}>
+                      {doc.statusView.label}
                     </div>
                   )}
                   <div className="flex items-center gap-3 text-xs">
@@ -511,6 +559,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                       e.stopPropagation();
                       handlePreview(doc);
                     }}
+                    aria-label={`View document ${doc.name}`}
+                    title="View document"
                     className={`p-2 rounded-lg transition-colors ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}
@@ -523,6 +573,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                       onRetry?.(doc.id);
                     }}
                     disabled={!onRetry}
+                    aria-label={`Re-run extraction for ${doc.name}`}
+                    title={onRetry ? 'Re-run extraction' : 'Re-run extraction unavailable'}
                     className={`p-2 rounded-lg transition-colors ${
                       !onRetry
                         ? 'opacity-50 cursor-not-allowed'
@@ -534,13 +586,26 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
                     <Sparkles className="w-4 h-4" />
                   </button>
                   <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void handleDownload(doc.id);
+                    }}
+                    disabled={downloadingDocumentId === doc.id || !dealId}
+                    aria-label={`Download document ${doc.name}`}
+                    title={!dealId ? 'Select a deal to download this document' : 'Download document'}
                     className={`p-2 rounded-lg transition-colors ${
-                      darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
+                      downloadingDocumentId === doc.id || !dealId
+                        ? 'opacity-50 cursor-not-allowed'
+                        : darkMode
+                          ? 'hover:bg-white/10'
+                          : 'hover:bg-gray-100'
                     }`}
                   >
                     <Download className="w-4 h-4" />
                   </button>
                   <button
+                    aria-label={`Delete document ${doc.name}`}
+                    title="Delete document"
                     className={`p-2 rounded-lg transition-colors text-red-500 ${
                       darkMode ? 'hover:bg-white/10' : 'hover:bg-gray-100'
                     }`}

@@ -158,6 +158,7 @@ export interface Document {
 	status: DocumentStatus;
 	title: string;
 	uploaded_at?: string;
+	size_bytes?: number;
 	evidence_ids?: string[];
 }
 

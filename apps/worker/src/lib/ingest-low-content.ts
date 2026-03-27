@@ -9,7 +9,7 @@ export type LowContentDecisionInput = {
 export type LowContentDecision =
 	| {
 		kind: "retry";
-		docStatus: "pending" | "completed";
+		docStatus: "pending" | "ready_for_analysis";
 		jobStatus: JobStatus;
 		message: string;
 		nextAttempt: number;
@@ -46,7 +46,7 @@ export function decideLowContentOutcome(input: LowContentDecisionInput): LowCont
 			kind: "retry",
 			// Treat the doc as ingested (with warnings) so downstream pipeline steps can proceed.
 			// A follow-up ingest attempt is enqueued to try to improve extraction quality.
-			docStatus: "completed",
+			docStatus: "ready_for_analysis",
 			// Important: we enqueue a follow-up ingest job, but this job must reach a terminal status.
 			// Leaving the original job in `retrying` causes API clients (and our e2e harness)
 			// to block forever because the follow-up has a different job_id.

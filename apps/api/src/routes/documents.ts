@@ -16,6 +16,7 @@ import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { normalizeDealName } from "../lib/normalize-deal-name";
 import { reconcileIngest } from "../lib/ingest-reconcile";
+import { requireDestructiveAuth } from "./deals/_shared";
 
 function isUuid(value: string): boolean {
   return z.string().uuid().safeParse(value).success;
@@ -51,6 +52,7 @@ let hasDocumentsSizeBytesColumn: boolean | null = null;
 let hasDocumentsStorageProviderColumn: boolean | null = null;
 let hasDocumentsStorageBucketColumn: boolean | null = null;
 let hasDocumentsStorageKeyColumn: boolean | null = null;
+let hasDealsCreatedByUserIdColumn: boolean | null = null;
 
 async function hasColumn(pool: ReturnType<typeof getPool>, table: string, column: string): Promise<boolean> {
   try {
@@ -269,24 +271,144 @@ const documentTypeSchema = z
   ])
   .optional();
 
+const duplicatePolicySchema = z.enum(["skip", "replace", "keep_both"]);
+type DuplicatePolicy = z.infer<typeof duplicatePolicySchema>;
+
+type DuplicateDocumentRow = {
+  id: string;
+  title: string;
+  status: string;
+  uploaded_at: string;
+};
+
+async function findDuplicateDocumentsByHash(pool: ReturnType<typeof getPool>, args: {
+  dealId: string;
+  sha256: string | null | undefined;
+}): Promise<DuplicateDocumentRow[]> {
+  const sha = typeof args.sha256 === "string" ? args.sha256.trim() : "";
+  if (!sha) return [];
+
+  const { rows } = await pool.query<DuplicateDocumentRow>(
+    `SELECT id, title, status, uploaded_at
+       FROM documents
+      WHERE deal_id = $1
+        AND deleted_at IS NULL
+        AND (
+          extraction_metadata->>'original_bytes_sha256' = $2
+          OR extraction_metadata->'upload'->>'sha256' = $2
+          OR extraction_metadata->>'sha256' = $2
+        )
+      ORDER BY uploaded_at DESC`,
+    [args.dealId, sha]
+  );
+
+  return rows;
+}
+
+async function applyDuplicatePolicy(pool: ReturnType<typeof getPool>, args: {
+  dealId: string;
+  sha256: string | null | undefined;
+  policy: DuplicatePolicy;
+}) {
+  const duplicates = await findDuplicateDocumentsByHash(pool, {
+    dealId: args.dealId,
+    sha256: args.sha256,
+  });
+
+  if (!duplicates.length) {
+    return { duplicates, replacedCount: 0 };
+  }
+
+  if (args.policy !== "replace") {
+    return { duplicates, replacedCount: 0 };
+  }
+
+  const duplicateIds = duplicates.map((d) => d.id);
+  const replaced = await pool.query<{ id: string }>(
+    `UPDATE documents
+        SET deleted_at = now(),
+            updated_at = now()
+      WHERE deal_id = $1
+        AND id = ANY($2::uuid[])
+        AND deleted_at IS NULL
+      RETURNING id`,
+    [args.dealId, duplicateIds]
+  );
+
+  return {
+    duplicates,
+    replacedCount: replaced.rows.length,
+  };
+}
+
 type DocumentRow = {
   id: string;
   deal_id: string | null;
   title: string;
   type: Document["type"] | null;
-  status: Document["status"];
+  status: string;
   uploaded_at: string;
+  size_bytes?: number | null;
+  extraction_metadata?: any | null;
 };
 
+const CANONICAL_DOCUMENT_STATUSES = new Set<Document["status"]>([
+  "pending",
+  "processing",
+  "ready_for_analysis",
+  "needs_ocr",
+  "failed",
+  "rejected",
+  "needs_review",
+]);
+
+function normalizeDocumentStatusForApi(rawStatus: string | null | undefined): Document["status"] {
+  const status = typeof rawStatus === "string" ? rawStatus.trim().toLowerCase() : "";
+  // Legacy compatibility: older rows may still store completed.
+  if (status === "completed") return "ready_for_analysis";
+  if (CANONICAL_DOCUMENT_STATUSES.has(status as Document["status"])) {
+    return status as Document["status"];
+  }
+  return "needs_review";
+}
+
 function mapDocument(row: DocumentRow): Document {
+  const metadataSize = Number((row.extraction_metadata as any)?.fileSizeBytes);
+  const metadataSizeValid = Number.isFinite(metadataSize) && metadataSize >= 0;
+  const rowSizeValid = typeof row.size_bytes === "number" && Number.isFinite(row.size_bytes) && row.size_bytes >= 0;
+
   return {
     document_id: row.id,
     deal_id: row.deal_id ?? "",
     title: row.title,
     type: row.type ?? "other",
-    status: row.status,
+    status: normalizeDocumentStatusForApi(row.status),
     uploaded_at: new Date(row.uploaded_at).toISOString(),
+    size_bytes: rowSizeValid ? row.size_bytes! : metadataSizeValid ? metadataSize : undefined,
   } as Document;
+}
+
+function summarizeStatusDistribution(rows: ReadonlyArray<DocumentRow>) {
+  const raw: Record<string, number> = {};
+  const canonical: Record<string, number> = {};
+  let legacyCompletedAliasCount = 0;
+
+  for (const row of rows) {
+    const rawStatus = typeof row.status === "string" && row.status.trim().length > 0 ? row.status.trim() : "unknown";
+    raw[rawStatus] = (raw[rawStatus] ?? 0) + 1;
+    if (rawStatus === "completed") {
+      legacyCompletedAliasCount += 1;
+    }
+
+    const normalized = normalizeDocumentStatusForApi(row.status);
+    canonical[normalized] = (canonical[normalized] ?? 0) + 1;
+  }
+
+  return {
+    raw,
+    canonical,
+    legacy_completed_alias_count: legacyCompletedAliasCount,
+  };
 }
 
 async function dealExists(pool: ReturnType<typeof getPool>, dealId: string): Promise<boolean> {
@@ -298,6 +420,72 @@ async function dealExists(pool: ReturnType<typeof getPool>, dealId: string): Pro
   } catch {
     return false;
   }
+}
+
+async function ensureDealAccess(args: {
+  pool: ReturnType<typeof getPool>;
+  request: any;
+  reply: any;
+  dealId: string;
+}): Promise<boolean> {
+  const dealId = sanitizeText(args.dealId);
+  if (!dealId) {
+    args.reply.status(400).send({ error: "deal_id is required" });
+    return false;
+  }
+
+  if (hasDealsCreatedByUserIdColumn === null) {
+    hasDealsCreatedByUserIdColumn = await hasColumn(args.pool, "deals", "created_by_user_id");
+  }
+
+  const { rows } = await args.pool.query<{ id: string; created_by_user_id: string | null }>(
+    `SELECT id
+            ${hasDealsCreatedByUserIdColumn ? ", created_by_user_id" : ", NULL::text AS created_by_user_id"}
+       FROM deals
+      WHERE id = $1
+        AND deleted_at IS NULL
+      LIMIT 1`,
+    [dealId]
+  );
+
+  if (!rows.length) {
+    args.reply.status(404).send({ error: "Deal not found" });
+    return false;
+  }
+
+  const userIdRaw = (args.request as any)?.auth?.userId;
+  const userId = typeof userIdRaw === "string" && userIdRaw.trim().length > 0 ? userIdRaw.trim() : null;
+  const orgIdRaw = (args.request as any)?.auth?.orgId;
+  const orgId = typeof orgIdRaw === "string" && orgIdRaw.trim().length > 0 ? orgIdRaw.trim() : null;
+  const orgRoleRaw = (args.request as any)?.auth?.orgRole;
+  const orgRole = typeof orgRoleRaw === "string" ? orgRoleRaw.toLowerCase() : "";
+  const bypassedAuth = Boolean((args.request as any)?.auth?.claims?.bypass_auth);
+  const isOrgAdmin = orgRole.includes("admin");
+  const ownerId = rows[0]?.created_by_user_id;
+
+  if (!userId) {
+    if (process.env.NODE_ENV === "production") {
+      args.reply.status(401).send({ error: "Unauthorized" });
+      return false;
+    }
+    return true;
+  }
+
+  if (!orgId && process.env.NODE_ENV === "production" && !bypassedAuth) {
+    args.reply.status(403).send({ error: "Forbidden: no organization found in token" });
+    return false;
+  }
+
+  if (isOrgAdmin || bypassedAuth) {
+    return true;
+  }
+
+  if (hasDealsCreatedByUserIdColumn && ownerId && ownerId !== userId) {
+    args.reply.status(403).send({ error: "Forbidden: deal access denied" });
+    return false;
+  }
+
+  return true;
 }
 
 type ExtractionRecommendedAction = "proceed" | "remediate" | "re_extract" | "wait";
@@ -555,6 +743,11 @@ export async function registerDocumentRoutes(
     if (!dealId) {
       return reply.status(400).send({ error: "deal_id is required" });
     }
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
+
     if (!documentId) {
       return reply.status(400).send({ error: "document_id is required" });
     }
@@ -779,14 +972,15 @@ export async function registerDocumentRoutes(
       type?: string;
       title?: string;
       mime_type?: string;
+      duplicate_policy?: DuplicatePolicy;
     };
 
     if (!dealId) {
       return reply.status(400).send({ error: "deal_id is required" });
     }
 
-    if (!(await dealExists(pool, dealId))) {
-      return reply.status(404).send({ error: "Deal not found" });
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
     }
 
     if (!payload?.file_buffer) {
@@ -795,8 +989,13 @@ export async function registerDocumentRoutes(
 
     try {
       const fileBufferB64 = payload.file_buffer;
+      const decodedBuffer = Buffer.from(fileBufferB64, "base64");
+      const contentHash = createHash("sha256").update(decodedBuffer).digest("hex");
       const fileName = payload.file_name ?? "document";
       const titleValue = payload.title ?? fileName;
+      const duplicatePolicy = duplicatePolicySchema.safeParse(payload.duplicate_policy).success
+        ? (payload.duplicate_policy as DuplicatePolicy)
+        : "skip";
       request.log.info({
         event: "upload_json_start",
         deal_id: dealId,
@@ -816,20 +1015,18 @@ export async function registerDocumentRoutes(
       const finalType: Document["type"] =
         parsedExplicit.success && parsedExplicit.data ? parsedExplicit.data : inferredType;
 
-      // Check if document with this title already exists in this deal
-      const { rows: existingDocs } = await pool.query<DocumentRow>(
-        `SELECT id, deal_id, title, type, status, uploaded_at FROM documents
-         WHERE deal_id = $1 AND LOWER(title) = LOWER($2)
-         LIMIT 1`,
-        [dealId, titleValue]
-      );
+      const duplicateOutcome = await applyDuplicatePolicy(pool, {
+        dealId,
+        sha256: contentHash,
+        policy: duplicatePolicy,
+      });
 
-      if (existingDocs.length > 0) {
-        // Document already exists
+      if (duplicateOutcome.duplicates.length > 0 && duplicatePolicy === "skip") {
         return reply.status(409).send({
-          error: "Document with this title already exists in this deal",
-          existing_document_id: existingDocs[0].id,
-          document: mapDocument(existingDocs[0]),
+          error: "Duplicate document detected for this deal",
+          duplicate_policy: duplicatePolicy,
+          content_hash: contentHash,
+          duplicates: duplicateOutcome.duplicates,
         });
       }
 
@@ -856,6 +1053,8 @@ export async function registerDocumentRoutes(
 		  fileName,
 		  mimeType: payload.mime_type ?? null,
 		  title: titleValue,
+      sizeBytes: decodedBuffer.length,
+      sha256: contentHash,
 		  warnings,
 	  });
 
@@ -908,6 +1107,12 @@ export async function registerDocumentRoutes(
         job_status: "queued",
         job_id: job.job_id,
         warnings,
+        duplicate_policy: duplicatePolicy,
+        duplicate_resolution: {
+          content_hash: contentHash,
+          duplicates_found: duplicateOutcome.duplicates.length,
+          duplicates_replaced: duplicateOutcome.replacedCount,
+        },
         stage_progression: progressionResult.progressed
           ? { progressed: true, newStage: progressionResult.newStage }
           : { progressed: false },
@@ -937,13 +1142,14 @@ export async function registerDocumentRoutes(
     let mimeType: string | null = null;
     let docType: any = "other";
     let titleValue = "document";
+    let duplicatePolicy: DuplicatePolicy = "skip";
 
     if (!dealId) {
       return reply.status(400).send({ error: "deal_id is required" });
     }
 
-    if (!(await dealExists(pool, dealId))) {
-      return reply.status(404).send({ error: "Deal not found" });
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
     }
 
     try {
@@ -1044,6 +1250,11 @@ export async function registerDocumentRoutes(
             docType = fieldValue;
           } else if (part.fieldname === "title") {
             titleValue = fieldValue;
+          } else if (part.fieldname === "duplicate_policy") {
+            const parsedPolicy = duplicatePolicySchema.safeParse(fieldValue);
+            if (parsedPolicy.success) {
+              duplicatePolicy = parsedPolicy.data;
+            }
           }
         }
       }
@@ -1075,7 +1286,31 @@ export async function registerDocumentRoutes(
         size_bytes: uploadedSizeBytes,
         doc_type: docType,
         title: titleValue,
+        duplicate_policy: duplicatePolicy,
       });
+
+      const duplicateOutcome = await applyDuplicatePolicy(pool, {
+        dealId,
+        sha256: uploadedSha256,
+        policy: duplicatePolicy,
+      });
+
+      if (duplicateOutcome.duplicates.length > 0 && duplicatePolicy === "skip") {
+        if (useR2 && uploadedKey) {
+          try {
+            await r2.deleteFromR2({ key: uploadedKey });
+          } catch {
+            // best-effort cleanup for skipped duplicates
+          }
+        }
+
+        return reply.status(409).send({
+          error: "Duplicate document detected for this deal",
+          duplicate_policy: duplicatePolicy,
+          content_hash: uploadedSha256,
+          duplicates: duplicateOutcome.duplicates,
+        });
+      }
 
       // Generate a signed download URL for the worker to fetch immediately.
       const signedUrlTtl = useR2 ? r2.getR2Config().signedUrlTtlSeconds : null;
@@ -1228,6 +1463,12 @@ export async function registerDocumentRoutes(
         job_status: "queued",
         job_id: job.job_id,
         warnings,
+        duplicate_policy: duplicatePolicy,
+        duplicate_resolution: {
+          content_hash: uploadedSha256,
+          duplicates_found: duplicateOutcome.duplicates.length,
+          duplicates_replaced: duplicateOutcome.replacedCount,
+        },
         stage_progression: progressionResult.progressed
           ? {
               progressed: true,
@@ -1248,21 +1489,39 @@ export async function registerDocumentRoutes(
 
   app.get("/api/v1/deals/:deal_id/documents", async (request, reply) => {
     const startTs = Date.now();
-    const dealId = (request.params as { deal_id: string }).deal_id;
+    const dealId = sanitizeText((request.params as { deal_id: string }).deal_id);
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
+
     request.log.info({ msg: "deal.documents.start", deal_id: dealId, start_ts: new Date(startTs).toISOString() });
+
+    if (hasDocumentsSizeBytesColumn === null) {
+      hasDocumentsSizeBytesColumn = await hasColumn(pool, "documents", "size_bytes");
+    }
+    if (hasDocumentsExtractionMetadataColumn === null) {
+      hasDocumentsExtractionMetadataColumn = await hasColumn(pool, "documents", "extraction_metadata");
+    }
+
     const { rows } = await pool.query<DocumentRow>(
       `SELECT id, deal_id, title, type, status, uploaded_at
+              ${hasDocumentsSizeBytesColumn ? ", size_bytes" : ", NULL::bigint AS size_bytes"}
+              ${hasDocumentsExtractionMetadataColumn ? ", extraction_metadata" : ", NULL::jsonb AS extraction_metadata"}
        FROM documents
        WHERE deal_id = $1
+         AND deleted_at IS NULL
        ORDER BY uploaded_at DESC`,
       [dealId]
     );
 
     const endTs = Date.now();
+    const statusDistribution = summarizeStatusDistribution(rows);
     request.log.info({
       msg: "deal.documents.done",
       deal_id: dealId,
       count: rows.length,
+      status_distribution: statusDistribution,
       start_ts: new Date(startTs).toISOString(),
       end_ts: new Date(endTs).toISOString(),
       duration_ms: endTs - startTs,
@@ -1320,6 +1579,9 @@ export async function registerDocumentRoutes(
       );
 
       if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+      if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+        return;
+      }
       if (!q || q.length < 2) return reply.status(400).send({ error: "q is required (min 2 chars)" });
 
       // NOTE: This relies on the expression GIN index created for to_tsvector('english', full_text).
@@ -1366,7 +1628,9 @@ export async function registerDocumentRoutes(
     const dealId = sanitizeText((request.params as any)?.deal_id);
     const documentId = sanitizeText((request.params as any)?.document_id);
 
-    if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
     if (!documentId) return reply.status(400).send({ error: "document_id is required" });
 
     const hasStorageBucket = await hasColumn(pool, "documents", "storage_bucket");
@@ -1386,6 +1650,7 @@ export async function registerDocumentRoutes(
          FROM documents
         WHERE deal_id = $1
           AND id = $2
+         AND deleted_at IS NULL
         LIMIT 1`,
       [dealId, documentId]
     );
@@ -1432,7 +1697,9 @@ export async function registerDocumentRoutes(
     const documentId = sanitizeText((request.params as any)?.document_id);
     const pageIndexRaw = (request.params as any)?.page_index;
 
-    if (!dealId) return reply.status(400).send({ error: "deal_id is required" });
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
     if (!documentId) return reply.status(400).send({ error: "document_id is required" });
 
     const pageIndex = Number.parseInt(String(pageIndexRaw ?? ""), 10);
@@ -1449,6 +1716,7 @@ export async function registerDocumentRoutes(
          FROM documents
         WHERE deal_id = $1
           AND id = $2
+          AND deleted_at IS NULL
         LIMIT 1`,
       [dealId, documentId]
     );
@@ -1543,13 +1811,27 @@ export async function registerDocumentRoutes(
 
   app.delete("/api/v1/deals/:deal_id/documents/:document_id", async (request, reply) => {
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+    const dealId = sanitizeText(deal_id);
+    const purge = parseBoolQ((request.query as any)?.purge, false);
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
+
+    if (purge) {
+      const authz = requireDestructiveAuth(request as any);
+      if (!authz.ok) {
+        return reply.status(authz.status).send({ error: authz.error });
+      }
+    }
 
     const existing = await pool.query<{ id: string }>(
       `SELECT id
          FROM documents
         WHERE deal_id = $1 AND id = $2
+          AND deleted_at IS NULL
         LIMIT 1`,
-      [deal_id, document_id]
+      [dealId, document_id]
     );
 
     if (!existing.rows.length) {
@@ -1559,20 +1841,23 @@ export async function registerDocumentRoutes(
     try {
       await pool.query("BEGIN");
 
-      // Evidence rows don't FK to documents; clean up best-effort by document id.
-      await pool.query(
-        `DELETE FROM evidence
-          WHERE deal_id = $1
-            AND document_id = $2`,
-        [deal_id, document_id]
-      );
-
-      const deleted = await pool.query<{ id: string }>(
-        `DELETE FROM documents
-          WHERE deal_id = $1 AND id = $2
-          RETURNING id`,
-        [deal_id, document_id]
-      );
+      const deleted = purge
+        ? await pool.query<{ id: string }>(
+            `DELETE FROM documents
+              WHERE deal_id = $1 AND id = $2
+              RETURNING id`,
+            [dealId, document_id]
+          )
+        : await pool.query<{ id: string }>(
+            `UPDATE documents
+                SET deleted_at = now(),
+                    updated_at = now()
+              WHERE deal_id = $1
+                AND id = $2
+                AND deleted_at IS NULL
+              RETURNING id`,
+            [dealId, document_id]
+          );
 
       await pool.query("COMMIT");
 
@@ -1580,7 +1865,7 @@ export async function registerDocumentRoutes(
         return reply.status(404).send({ error: "Document not found" });
       }
 
-      return reply.send({ ok: true, deal_id, document_id: deleted.rows[0].id });
+      return reply.send({ ok: true, deal_id: dealId, document_id: deleted.rows[0].id, delete_mode: purge ? "hard" : "soft" });
     } catch (error: any) {
       try {
         await pool.query("ROLLBACK");
@@ -1592,9 +1877,45 @@ export async function registerDocumentRoutes(
     }
   });
 
+  app.post("/api/v1/deals/:deal_id/documents/:document_id/restore", async (request, reply) => {
+    const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+    const dealId = sanitizeText(deal_id);
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
+
+    const authz = requireDestructiveAuth(request as any);
+    if (!authz.ok) {
+      return reply.status(authz.status).send({ error: authz.error });
+    }
+
+    const restored = await pool.query<{ id: string }>(
+      `UPDATE documents
+          SET deleted_at = NULL,
+              updated_at = now()
+        WHERE deal_id = $1
+          AND id = $2
+          AND deleted_at IS NOT NULL
+        RETURNING id`,
+      [dealId, document_id]
+    );
+
+    if (!restored.rows.length) {
+      return reply.status(404).send({ error: "Deleted document not found" });
+    }
+
+    return reply.send({ ok: true, deal_id: dealId, document_id: restored.rows[0].id });
+  });
+
   // Fetch stored analysis/structured data for a document
   app.get("/api/v1/deals/:deal_id/documents/:document_id/analysis", async (request, reply) => {
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+    const dealId = sanitizeText(deal_id);
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
 
     const { rows } = await pool.query(
       `SELECT d.id,
@@ -1614,8 +1935,9 @@ export async function registerDocumentRoutes(
             LIMIT 1
          ) j ON TRUE
         WHERE d.deal_id = $1 AND d.id = $2
+          AND d.deleted_at IS NULL
         LIMIT 1`,
-      [deal_id, document_id]
+      [dealId, document_id]
     );
 
     if (rows.length === 0) {
@@ -1637,21 +1959,32 @@ export async function registerDocumentRoutes(
 
   app.post("/api/v1/deals/:deal_id/documents/:document_id/retry", async (request, reply) => {
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+    const dealId = sanitizeText(deal_id);
 
-    await pool.query(
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
+
+    const retriable = await pool.query<{ id: string }>(
       `UPDATE documents
        SET status = 'pending', uploaded_at = uploaded_at
-       WHERE deal_id = $1 AND id = $2`,
-      [deal_id, document_id]
+       WHERE deal_id = $1 AND id = $2
+         AND deleted_at IS NULL
+       RETURNING id`,
+      [dealId, document_id]
     );
+
+    if (!retriable.rows.length) {
+      return reply.status(404).send({ error: "Document not found" });
+    }
 
     // Retry now uses persisted original bytes (stored during initial ingestion).
     const job = await enqueue(
       {
-        deal_id,
+        deal_id: dealId,
         document_id,
         type: "reextract_documents",
-        payload: { deal_id, document_ids: [document_id] },
+        payload: { deal_id: dealId, document_ids: [document_id] },
       },
       { dedupe: { by: "document" } }
     );
@@ -1663,12 +1996,18 @@ export async function registerDocumentRoutes(
   // Optional: force_resegment recomputes segment_key for existing structured synthetic assets.
   app.post("/api/v1/deals/:deal_id/documents/:document_id/extract-visuals", async (request, reply) => {
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+    const dealId = sanitizeText(deal_id);
     if (!isUuid(deal_id)) {
       return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
     }
     if (!isUuid(document_id)) {
       return reply.status(400).send({ error: "invalid_document_id", message: "document_id must be a UUID" });
     }
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
+
     const forceResegment = Boolean((request.body as any)?.force_resegment);
 
     const hasMimeType = await hasColumn(pool as any, "documents", "mime_type");
@@ -1681,14 +2020,16 @@ export async function registerDocumentRoutes(
              FROM documents d
              LEFT JOIN document_files df ON df.document_id = d.id
             WHERE d.id = $1 AND d.deal_id = $2
+              AND d.deleted_at IS NULL
             LIMIT 1`
         : `SELECT extraction_metadata,
                   NULL::text AS file_name
                   ${hasMimeType ? ", mime_type" : ", NULL::text AS mime_type"}
              FROM documents
             WHERE id = $1 AND deal_id = $2
+              AND deleted_at IS NULL
             LIMIT 1`,
-      [document_id, deal_id]
+      [document_id, dealId]
     );
     if (rows.length === 0) {
       return reply.status(404).send({ ok: false, error: "Document not found" });
@@ -1804,7 +2145,7 @@ export async function registerDocumentRoutes(
         try {
           const job = await enqueue(
             {
-              deal_id,
+              deal_id: dealId,
               document_id,
               type: "render_document_pages",
               payload: { page_start: pageStart, page_end: pageEnd },
@@ -1842,7 +2183,7 @@ export async function registerDocumentRoutes(
 
     const job = await enqueue(
       {
-        deal_id,
+        deal_id: dealId,
         document_id,
         type: "extract_visuals",
 			page_start: 0,
@@ -1868,7 +2209,7 @@ export async function registerDocumentRoutes(
    * If document_ids omitted, re-extracts only failed/low-confidence documents.
    */
   app.post("/api/v1/deals/:deal_id/documents/re-extract", async (request, reply) => {
-    const dealId = (request.params as { deal_id: string }).deal_id;
+    const dealId = sanitizeText((request.params as { deal_id: string }).deal_id);
     const body = (request.body ?? {}) as {
       document_ids?: string[];
       threshold_low?: number;
@@ -1876,6 +2217,10 @@ export async function registerDocumentRoutes(
 		force?: boolean;
 		mode?: string;
     };
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
 
 		const mode = typeof body.mode === "string" ? body.mode : undefined;
 		const force = Boolean(body.force) || String(mode ?? "").toLowerCase() === "manual";
@@ -1913,8 +2258,8 @@ export async function registerDocumentRoutes(
       return reply.status(400).send({ error: "deal_id is required" });
     }
 
-    if (!(await dealExists(pool, dealId))) {
-      return reply.status(404).send({ error: "Deal not found" });
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
     }
 
     try {
@@ -1937,7 +2282,11 @@ export async function registerDocumentRoutes(
     }
 
     // This endpoint is JSON-only. Reject multipart to avoid FST_INVALID_MULTIPART_CONTENT_TYPE crashes.
-    if (request.isMultipart()) {
+    const isMultipart = typeof (request as any)?.isMultipart === "function"
+      ? Boolean((request as any).isMultipart())
+      : false;
+
+    if (isMultipart) {
       request.log.warn(
         { contentType: request.headers["content-type"] },
         "analyze-batch: received multipart request — expected application/json"
@@ -2097,7 +2446,11 @@ export async function registerDocumentRoutes(
    * Returns the latest ingestion summary status
    */
   app.get("/api/v1/deals/:deal_id/documents/ingestion-status", async (request, reply) => {
-    const dealId = (request.params as { deal_id: string }).deal_id;
+    const dealId = sanitizeText((request.params as { deal_id: string }).deal_id);
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
 
     try {
       // Get all documents for this deal
@@ -2106,6 +2459,7 @@ export async function registerDocumentRoutes(
                 page_count, extraction_metadata, ingestion_summary
            FROM documents
            WHERE deal_id = $1
+             AND deleted_at IS NULL
            ORDER BY uploaded_at DESC`,
         [dealId]
       );
@@ -2173,7 +2527,11 @@ export async function registerDocumentRoutes(
    * This is a pure read endpoint built from stored verification results.
    */
   app.get("/api/v1/deals/:deal_id/documents/extraction-report", async (request, reply) => {
-    const dealId = (request.params as { deal_id: string }).deal_id;
+    const dealId = sanitizeText((request.params as { deal_id: string }).deal_id);
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
 
     try {
       const { rows: documents } = await pool.query(
@@ -2181,6 +2539,7 @@ export async function registerDocumentRoutes(
                 page_count, extraction_metadata
            FROM documents
            WHERE deal_id = $1
+             AND deleted_at IS NULL
            ORDER BY uploaded_at DESC`,
         [dealId]
       );
@@ -2214,8 +2573,12 @@ export async function registerDocumentRoutes(
    * If document_ids omitted, verifies up to the most recent 200 documents in the deal.
    */
   app.post("/api/v1/deals/:deal_id/documents/verify", async (request, reply) => {
-    const dealId = (request.params as { deal_id: string }).deal_id;
+    const dealId = sanitizeText((request.params as { deal_id: string }).deal_id);
     const body = (request.body ?? {}) as { document_ids?: string[] };
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
 
     try {
       const requestedIds = Array.isArray(body.document_ids) ? body.document_ids.filter(Boolean) : null;
@@ -2228,6 +2591,7 @@ export async function registerDocumentRoutes(
              FROM documents
             WHERE deal_id = $1
               AND id = ANY($2::uuid[])
+              AND deleted_at IS NULL
             ORDER BY uploaded_at DESC`,
           [dealId, requestedIds]
         );
@@ -2246,6 +2610,7 @@ export async function registerDocumentRoutes(
           `SELECT id
              FROM documents
             WHERE deal_id = $1
+              AND deleted_at IS NULL
             ORDER BY uploaded_at DESC
             LIMIT 200`,
           [dealId]
@@ -2284,14 +2649,20 @@ export async function registerDocumentRoutes(
    */
   app.get("/api/v1/deals/:deal_id/documents/:document_id/verification", async (request, reply) => {
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
+    const dealId = sanitizeText(deal_id);
+
+    if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
+      return;
+    }
 
     try {
       const { rows } = await pool.query(
         `SELECT id, title, type, status, verification_status, verification_result,
                 structured_data, extraction_metadata, page_count
            FROM documents
-           WHERE deal_id = $1 AND id = $2`,
-        [deal_id, document_id]
+           WHERE deal_id = $1 AND id = $2
+             AND deleted_at IS NULL`,
+        [dealId, document_id]
       );
 
       if (rows.length === 0) {

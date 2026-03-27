@@ -9,6 +9,7 @@ vi.mock('../lib/apiClient', () => {
   return {
     isLiveBackend: () => true,
     apiDeleteDocument: vi.fn(),
+    apiGetDocumentDownloadUrl: vi.fn(),
   };
 });
 
@@ -21,10 +22,13 @@ describe('DocumentLibrary delete document', () => {
     >;
     apiDeleteDocument.mockResolvedValue({ ok: true } as any);
 
+    const onDeleted = vi.fn();
+
     render(
       <DocumentLibrary
         darkMode={true}
         dealId="deal-1"
+        onDeleted={onDeleted}
         documents={[
           {
             document_id: 'doc-1',
@@ -52,6 +56,7 @@ describe('DocumentLibrary delete document', () => {
     await waitFor(() => {
       expect(apiDeleteDocument).toHaveBeenCalledTimes(1);
       expect(apiDeleteDocument).toHaveBeenCalledWith('deal-1', 'doc-1');
+      expect(onDeleted).toHaveBeenCalledTimes(1);
     });
   });
 });

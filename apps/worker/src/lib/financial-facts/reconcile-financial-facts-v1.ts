@@ -234,21 +234,26 @@ export function reconcileFinancialFactsV1(
       dbg("Rule 2 skipped — semantics gate: canDeriveGrossMargin=false");
     }
 
-    // ── Rule 3: Derive burn_rate from total_expenses run-rate ─────────────
+    // ── Rule 3: Derive burn_rate from total_expenses (or opex fallback) ────
     // Only when semantics confirm hasOperatingModel is true.
     // Conservative: monthly direct, annual ÷ 12, quarterly ÷ 3.
     // Do NOT derive if an explicit burn_rate already exists for the period.
+    // Do NOT derive from projected facts (expense-based derivation is less direct).
     if (semantics.hasOperatingModel) {
-      const expFacts  = factsForMetric(byKey, "total_expenses");
+      // Try total_expenses first; fall back to opex (same economic concept).
+      const totalExpFacts = factsForMetric(byKey, "total_expenses");
+      const opexFacts = totalExpFacts.length === 0 ? factsForMetric(byKey, "opex") : [];
+      const expFacts = totalExpFacts.length > 0 ? totalExpFacts : opexFacts;
+      const rule3MetricKey = totalExpFacts.length > 0 ? "total_expenses" : "opex";
       const existingBurnFacts = factsForMetric(byKey, "burn_rate");
 
       for (const expFact of expFacts) {
         if (isProjectedFact(expFact)) {
-          dbg("Rule 3 skipped — projected total_expenses", expFact.period_label);
+          dbg("Rule 3 skipped — projected expense fact", expFact.period_label);
           continue;
         }
         if (expFact.confidence === "low") {
-          dbg("Rule 3 skipped — low confidence total_expenses", expFact.period_label);
+          dbg("Rule 3 skipped — low confidence expense fact", expFact.period_label);
           continue;
         }
         if (expFact.value <= 0) continue;
@@ -287,8 +292,11 @@ export function reconcileFinancialFactsV1(
         if (!Number.isFinite(monthlyBurn) || monthlyBurn <= 0) continue;
 
         const burnRounded = Math.round(monthlyBurn);
+        const derivationRule = rule3MetricKey === "opex"
+          ? "burn_rate_from_opex_run_rate"
+          : "burn_rate_from_total_expenses_run_rate";
 
-        const source_pointer = `derived:burn_rate expenses=${expFact.fact_id} rule=${ruleNote}`;
+        const source_pointer = `derived:burn_rate ${rule3MetricKey}=${expFact.fact_id} rule=${ruleNote}`;
         const fact_id = computeFactId({
           deal_id: dealId,
           metric_key: "burn_rate",
@@ -314,18 +322,170 @@ export function reconcileFinancialFactsV1(
           confidence: "medium",
           reconciliation_status: "ok",
           source_pointer,
-          excerpt: `Derived burn_rate from total_expenses (${ruleNote}): $${burnRounded.toLocaleString()}/mo`,
+          excerpt: `Derived burn_rate from ${rule3MetricKey} (${ruleNote}): $${burnRounded.toLocaleString()}/mo`,
           is_derived: true,
-          derivation_rule: "burn_rate_from_total_expenses_run_rate",
+          derivation_rule: derivationRule,
           semantic_family: "liquidity",
           semantic_role: "derived",
         };
 
         derived.push(derivedFact);
-        dbg("Rule 3 derived burn_rate", { period: derivedFact.period_label, value: burnRounded, ruleNote });
+        dbg("Rule 3 derived burn_rate", { period: derivedFact.period_label, value: burnRounded, ruleNote, source: rule3MetricKey });
       }
     } else {
       dbg("Rule 3 skipped — semantics gate: hasOperatingModel=false");
+    }
+
+    // ── Rule 4: Derive burn_rate from cash_outflow_operating ──────────────
+    // Cash outflow IS the actual spend — derived from a direct measurement,
+    // not a behavioral estimate. Therefore we do NOT skip projected facts here
+    // (unlike Rules 1+3). Confidence is set to "low" to signal the derivation.
+    //
+    // Period normalization:
+    //   monthly → ÷1, quarterly → ÷3, annual → ÷12
+    //   unknown + label matches /^Year\s+\d+$/i → treat as quarterly ÷3
+    //     (ordinal fiscal quarters common in XLSX projection models)
+    //   all other unknown → skip
+    //
+    // Rule 1 (cash + burn_rate → runway_months) then auto-chains off the derived fact.
+    {
+      const cashOutFacts = factsForMetric(byKey, "cash_outflow_operating");
+      const existingBurnFacts = factsForMetric(byKey, "burn_rate");
+
+      for (const coFact of cashOutFacts) {
+        if (coFact.confidence === "low") {
+          dbg("Rule 4 skipped — low confidence cash_outflow_operating", coFact.period_label);
+          continue;
+        }
+        if (coFact.value <= 0) continue;
+
+        // Don't derive if burn_rate already present for this period
+        const alreadyHasBurn = existingBurnFacts.some(
+          (b) => b.period_label === coFact.period_label,
+        );
+        if (alreadyHasBurn) {
+          dbg("Rule 4 skipped — explicit burn_rate exists", coFact.period_label);
+          continue;
+        }
+
+        const period_type = coFact.period_type;
+        let monthlyBurn: number;
+        let ruleNote: string;
+
+        if (period_type === "monthly") {
+          monthlyBurn = coFact.value;
+          ruleNote = "monthly direct";
+        } else if (period_type === "quarterly") {
+          monthlyBurn = coFact.value / 3;
+          ruleNote = "quarterly ÷ 3";
+        } else if (period_type === "annual") {
+          monthlyBurn = coFact.value / 12;
+          ruleNote = "annual ÷ 12";
+        } else if (/^Year\s+\d+$/i.test(coFact.period_label.trim())) {
+          // Ordinal fiscal quarter label ("Year N") common in XLSX models — treat as quarterly.
+          monthlyBurn = coFact.value / 3;
+          ruleNote = "ordinal-quarter ÷ 3";
+        } else {
+          dbg("Rule 4 skipped — cannot normalize period_type for cash outflow", { period_type, period_label: coFact.period_label });
+          continue;
+        }
+
+        if (!Number.isFinite(monthlyBurn) || monthlyBurn <= 0) continue;
+
+        const burnRounded = Math.round(monthlyBurn);
+
+        const source_pointer = `derived:burn_rate cash_outflow=${coFact.fact_id} rule=${ruleNote}`;
+        const fact_id = computeFactId({
+          deal_id: dealId,
+          metric_key: "burn_rate",
+          period_type: "monthly",
+          period_label: coFact.period_label,
+          source_pointer,
+        });
+
+        if (existing.some((f) => f.fact_id === fact_id) || derived.some((f) => f.fact_id === fact_id)) continue;
+
+        const derivedFact: FinancialFactV1 = {
+          fact_id,
+          deal_id: dealId,
+          document_id: coFact.document_id,
+          source_kind: "unknown",
+          metric_key: "burn_rate",
+          metric_label: "Burn Rate (derived from cash outflow)",
+          period_type: "monthly",
+          period_label: coFact.period_label,
+          value: burnRounded,
+          unit: "currency",
+          currency: coFact.currency ?? "USD",
+          confidence: "low",
+          reconciliation_status: "ok",
+          source_pointer,
+          excerpt: `Derived burn_rate from cash_outflow_operating (${ruleNote}): $${burnRounded.toLocaleString()}/mo`,
+          is_derived: true,
+          derivation_rule: "burn_rate_from_cash_outflow_operating",
+          semantic_family: "liquidity",
+          semantic_role: "derived",
+        };
+
+        derived.push(derivedFact);
+        // Re-index derived facts so downstream rules can query burn_rate in byKey.
+        const burnKey = `burn_rate:${derivedFact.period_label}`;
+        const burnArr = byKey.get(burnKey);
+        if (burnArr) burnArr.push(derivedFact); else byKey.set(burnKey, [derivedFact]);
+        dbg("Rule 4 derived burn_rate", { period: derivedFact.period_label, value: burnRounded, ruleNote });
+
+        // ── Rule 4b: also derive runway_months if cash exists for same period ──
+        // Rule 1 runs before Rule 4 and carries a projection guard, so we must chain
+        // runway derivation here where projected inputs are permitted.
+        const cashForPeriod = factsForMetric(byKey, "cash").filter(
+          (c) => c.period_label === coFact.period_label && c.value > 0,
+        );
+        const runwayAlreadyPresent = factsForMetric(byKey, "runway_months").some(
+          (r) => r.period_label === coFact.period_label,
+        ) || derived.some(
+          (d) => d.metric_key === "runway_months" && d.period_label === coFact.period_label,
+        );
+
+        if (!runwayAlreadyPresent && cashForPeriod.length > 0) {
+          const cashFact = cashForPeriod[0];
+          const runwayValue = cashFact.value / burnRounded;
+          if (Number.isFinite(runwayValue) && runwayValue > 0) {
+            const runway_source_pointer = `derived:runway cash=${cashFact.fact_id} burn=${derivedFact.fact_id}`;
+            const runway_fact_id = computeFactId({
+              deal_id: dealId,
+              metric_key: "runway_months",
+              period_type: derivedFact.period_type,
+              period_label: coFact.period_label,
+              source_pointer: runway_source_pointer,
+            });
+
+            if (!existing.some((f) => f.fact_id === runway_fact_id) && !derived.some((f) => f.fact_id === runway_fact_id)) {
+              const runwayFact: FinancialFactV1 = {
+                fact_id: runway_fact_id,
+                deal_id: dealId,
+                document_id: cashFact.document_id,
+                source_kind: "unknown",
+                metric_key: "runway_months",
+                metric_label: "Runway (derived from cash outflow)",
+                period_type: derivedFact.period_type,
+                period_label: coFact.period_label,
+                value: Math.round(runwayValue * 10) / 10,
+                unit: "number",
+                confidence: "low",
+                reconciliation_status: "ok",
+                source_pointer: runway_source_pointer,
+                excerpt: `Derived: cash $${cashFact.value.toLocaleString()} / burn $${burnRounded.toLocaleString()}/mo`,
+                is_derived: true,
+                derivation_rule: "runway_months_from_cash_and_outflow",
+                semantic_family: "liquidity",
+                semantic_role: "derived",
+              };
+              derived.push(runwayFact);
+              dbg("Rule 4b derived runway_months", { period: coFact.period_label, value: runwayFact.value });
+            }
+          }
+        }
+      }
     }
 
     return derived.length > 0 ? [...existing, ...derived] : existing;

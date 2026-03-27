@@ -273,3 +273,67 @@ describe('inferFinancialCoverageProfileV1', () => {
     });
   });
 });
+
+// ─── Cash outflow → burn_rate_present coverage ───────────────────────────────
+
+describe('inferFinancialCoverageProfileV1 — cash_outflow_operating as burn signal', () => {
+  test('cash_outflow_operating fact → burn_rate_present=true', () => {
+    const res = inferFinancialCoverageProfileV1({
+      structured_summary: {},
+      promoted_facts: null,
+      financial_facts: [makeXlsxFact('cash_outflow_operating', 1_453_000, { unit: 'currency' })],
+      documents: null,
+    });
+
+    expect(res.coverage.burn_rate_present).toBe(true);
+  });
+
+  test('cash_outflow fact → burn_rate_present=true', () => {
+    const res = inferFinancialCoverageProfileV1({
+      structured_summary: {},
+      promoted_facts: null,
+      financial_facts: [makeXlsxFact('cash_outflow', 800_000, { unit: 'currency' })],
+      documents: null,
+    });
+
+    expect(res.coverage.burn_rate_present).toBe(true);
+  });
+
+  test('cash_outflow_operating evidence appears in coverage.evidence.burn_rate_present', () => {
+    const fact = makeXlsxFact('cash_outflow_operating', 1_453_000, {
+      unit: 'currency',
+      source_pointer: 'sheet=CashFlow row=42',
+      excerpt: 'Cash outflow from operations: $1.45M',
+    });
+    const res = inferFinancialCoverageProfileV1({
+      structured_summary: {},
+      promoted_facts: null,
+      financial_facts: [fact],
+      documents: null,
+    });
+
+    expect(res.coverage.burn_rate_present).toBe(true);
+    expect(res.evidence.burn_rate_present).toBeDefined();
+    expect(res.evidence.burn_rate_present!.snippet).toContain('$1.45M');
+  });
+
+  test('cash_outflow_operating + cash → burn_rate_present true, runway derivable', () => {
+    // A cash fact alone does not set cash_flow_present (that requires cash_flow / OCF / FCF).
+    // But cash_outflow_operating does set burn_rate_present, and together they enable
+    // runway derivation in the reconcile pipeline.
+    const res = inferFinancialCoverageProfileV1({
+      structured_summary: {},
+      promoted_facts: null,
+      financial_facts: [
+        makeXlsxFact('cash_outflow_operating', 1_453_000, { unit: 'currency' }),
+        makeXlsxFact('cash', 7_812_000, { unit: 'currency' }),
+      ],
+      documents: null,
+    });
+
+    expect(res.coverage.burn_rate_present).toBe(true);
+    // cash alone does not trigger cash_flow_present (requires cash_flow / OCF / FCF facts)
+    expect(res.coverage.cash_flow_present).toBe(false);
+  });
+});
+

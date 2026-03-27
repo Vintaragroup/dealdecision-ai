@@ -328,6 +328,10 @@ export function inferFinancialCoverageProfileV1(input: {
         flag(out, 'income_statement_present', ev);
       } else if (mk === 'burn_rate') {
         flag(out, 'burn_rate_present', ev);
+      } else if (mk === 'cash_outflow_operating' || mk === 'cash_outflow') {
+        // Cash outflow is the direct spend signal — treat as burn visibility even
+        // before burn_rate is formally derived from it.
+        flag(out, 'burn_rate_present', ev);
       } else if (mk === 'runway_months') {
         flag(out, 'runway_present', ev);
       } else if (UNIT_ECON_KEYS.has(mk)) {

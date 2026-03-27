@@ -228,27 +228,28 @@ describe("FinancialIntegrityAnalyzerV1 — Phase 4: Period Alignment", () => {
 
   // ── 4d: Temporal scope mismatch (projected vs historical) ───────────────────────
 
-  test("projected vs historical same metric → FAIL temporal_scope_mismatch", async () => {
+  test("projected vs historical same metric → FAIL grouped_temporal_mismatch", async () => {
     const facts: FinancialFactV1[] = [
       makeFact({ metric_key: "revenue", period_type: "annual", period_label: "2024", value: 5_000_000, temporal_scope: "historical" }),
       makeFact({ metric_key: "revenue", period_type: "annual", period_label: "2026", value: 12_000_000, temporal_scope: "projected" }),
     ];
     const result = await analyzer.analyze({ financial_facts: facts });
     const paFlags = periodAlignmentFlags(result.flags);
-    const scopeMismatch = paFlags.find((f) => f.flag_key === "period_alignment:temporal_scope_mismatch:revenue");
-    expect(scopeMismatch).toBeDefined();
-    expect(scopeMismatch!.status).toBe("FAIL");
-    expect(scopeMismatch!.severity).toBe("high");
+    const groupedFlag = paFlags.find((f) => f.flag_key === "period_alignment:grouped_temporal_mismatch");
+    expect(groupedFlag).toBeDefined();
+    expect(groupedFlag!.status).toBe("FAIL");
+    expect(groupedFlag!.severity).toBe("high");
+    expect(groupedFlag!.note).toContain("revenue");
   });
 
-  test("both projected same metric → no temporal_scope_mismatch flag", async () => {
+  test("both projected same metric → no grouped_temporal_mismatch flag", async () => {
     const facts: FinancialFactV1[] = [
       makeFact({ metric_key: "revenue", period_type: "annual", period_label: "2026", value: 12_000_000, temporal_scope: "projected", source_kind: "xlsx" }),
       makeFact({ metric_key: "revenue", period_type: "annual", period_label: "2026", value: 11_500_000, temporal_scope: "projected", source_kind: "deck" }),
     ];
     const result = await analyzer.analyze({ financial_facts: facts });
-    const scopeFlags = periodAlignmentFlags(result.flags).filter((f) => f.flag_key.includes("temporal_scope_mismatch"));
-    expect(scopeFlags).toHaveLength(0);
+    const groupedFlags = periodAlignmentFlags(result.flags).filter((f) => f.flag_key === "period_alignment:grouped_temporal_mismatch");
+    expect(groupedFlags).toHaveLength(0);
   });
 
   // ── 4e: Quarterly label mismatch (Q1 vs Q2) ──────────────────────────────

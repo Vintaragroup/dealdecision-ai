@@ -29,7 +29,7 @@ export const UNIT_ECONOMICS_METRICS: string[] = [
 ];
 
 export const CASH_FLOW_METRICS: string[] = [
-  "cash", "burn_rate", "runway_months",
+  "cash", "burn_rate", "runway_months", "cash_outflow_operating", "cash_outflow", "cash_inflow",
 ];
 
 // ─── Conflict type ────────────────────────────────────────────────────────────

@@ -73,16 +73,16 @@ describe("computeFinancialCoveragePct", () => {
 		expect(computeFinancialCoveragePct(undefined)).toBe(0);
 	});
 
-	it("3. returns 100 when all 17 tracked metrics are present", () => {
+	it("3. returns 100 when all 20 tracked metrics are present", () => {
 		const coverage = buildFinancialCoverageV1(DEAL_ID, ALL_TRACKED_FACTS);
 		expect(computeFinancialCoveragePct(coverage)).toBe(100);
 	});
 
-	it("4. returns correct % when 2 of 17 tracked metrics are present", () => {
+	it("4. returns correct % when 2 of 20 tracked metrics are present", () => {
 		const facts = [makeFact("revenue", 1_000_000), makeFact("arr", 800_000)];
 		const coverage = buildFinancialCoverageV1(DEAL_ID, facts);
-		// 2 / 17 ≈ 11.76% → rounds to 12
-		expect(computeFinancialCoveragePct(coverage)).toBe(Math.round((2 / 17) * 100));
+		// 2 / 20 = 10%
+		expect(computeFinancialCoveragePct(coverage)).toBe(Math.round((2 / 20) * 100));
 	});
 });
 
@@ -207,8 +207,8 @@ describe("buildFinancialCoverageV1", () => {
 // ─── ALL_TRACKED_METRICS ──────────────────────────────────────────────────────
 
 describe("ALL_TRACKED_METRICS", () => {
-	it("17. exports exactly 17 canonical metrics", () => {
-		expect(ALL_TRACKED_METRICS).toHaveLength(17);
+	it("17. exports exactly 20 canonical metrics", () => {
+		expect(ALL_TRACKED_METRICS).toHaveLength(20);
 	});
 
 	it("18. contains revenue, arr, and runway_months", () => {

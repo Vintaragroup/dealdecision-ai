@@ -35,6 +35,7 @@ import type { FinancialBenchmark } from "@dealdecision/core";
 import type { DeckFinancialSignalsV1, DeckFinancialMention } from "./deck-financial-signals-v1.js";
 import type { FinancialReconciliationV1 } from "./financial-reconciliation-v1.js";
 import { reconcileFinancialFacts } from "./cross-source-reconciliation.js";
+import { reconcileFinancialFactsV1 } from "./financial-facts/reconcile-financial-facts-v1.js";
 
 // ─── Inputs ───────────────────────────────────────────────────────────────────
 
@@ -492,7 +493,13 @@ export function buildFinancialFactRegistryV1(
   // realized (historical|current) facts across sources.  Projected / scenario
   // facts produce "projected_only" or scenario-matched status and are NEVER
   // promoted to "supported" for current-company performance claims.
-  return reconcileFinancialFacts(Array.from(map.values()));
+  const crossSourceResult = reconcileFinancialFacts(Array.from(map.values()));
+
+  // ── 9. Derivation rules ────────────────────────────────────────────────────
+  // Run deterministic derivation (burn_rate from total_expenses, runway from
+  // cash + burn, gross_margin from revenue + gross_profit) on the reconciled
+  // facts.  This ensures XLSX-origin expense data produces derived burn_rate.
+  return reconcileFinancialFactsV1(crossSourceResult, dealId);
 }
 
 /** Returns true for temporal_scope values that represent realized/reported data. */

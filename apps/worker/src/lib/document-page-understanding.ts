@@ -76,11 +76,11 @@ export function formatExcelRowValueAsCurrency(rawValue: string): string {
  * for database writes. Both must produce identical output for object-style rows.
  *
  * @param rowsPreview  The rows_preview array from structured_json.
- * @param maxRows      Max rows to include (default 12, mirroring SQL rn <= 12).
+ * @param maxRows      Max rows to include (default 60, mirroring SQL rn <= 60).
  */
 export function buildExcelRangePageText(
 	rowsPreview: unknown[],
-	maxRows = 12,
+	maxRows = 60,
 ): string {
 	const lines: string[] = [];
 	for (let i = 0; i < Math.min(rowsPreview.length, maxRows); i++) {
@@ -354,7 +354,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 							''
 						) AS row_line
 						  FROM jsonb_array_elements(structured_json->'rows_preview') WITH ORDINALITY AS r(row_val, rn)
-						 WHERE r.rn <= 12
+						 WHERE r.rn <= 60
 					  ) row_lines
 				)
 				ELSE NULL
@@ -377,7 +377,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 						 WHERE row_num IS NOT NULL
 						 GROUP BY row_num
 						 ORDER BY row_num
-						 LIMIT 12
+						 LIMIT 60
 					  ) rows
 				)
 				ELSE NULL
@@ -744,7 +744,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 							''
 						) AS row_line
 						  FROM jsonb_array_elements(structured_json->'rows_preview') WITH ORDINALITY AS r(row_val, rn)
-						 WHERE r.rn <= 12
+						 WHERE r.rn <= 60
 					  ) row_lines
 				)
 				ELSE NULL
@@ -767,7 +767,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 						 WHERE row_num IS NOT NULL
 						 GROUP BY row_num
 						 ORDER BY row_num
-						 LIMIT 12
+						 LIMIT 60
 					  ) rows
 				)
 				ELSE NULL

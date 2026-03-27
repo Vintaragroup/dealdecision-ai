@@ -8608,6 +8608,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 financialBreakdownV1={authoritativeFinancialBreakdownV1.value ?? null}
                 underwritingReadinessV1={authoritativeUnderwritingReadinessV1.value ?? null}
                 financialIntegrityV1={authoritativeFinancialIntegrityV1.value ?? null}
+                financialCoverageV1={authoritativeFinancialCoverageV1.value ?? null}
                 financialSnapshotStale={financialSnapshotStale}
                 darkMode={darkMode}
               />

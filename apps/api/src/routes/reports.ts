@@ -103,7 +103,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 8; // bumped: has_facts overlay + documents enrichment for cap-table/xlsx detection
+const REPORT_COMPILER_VERSION = 11; // bumped: cash_outflow_operating recognized as burn_rate signal; Rule 4 derives burn from cash outflow; Rule 3 extended with opex fallback
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -2300,7 +2300,14 @@ export async function registerReportRoutes(
               upsertIngestionReportSummaryByDealAndVersion({ pool, dealId: deal_id, analysisVersion: version, summary: cached.value, documentIds: [] })
             );
             logStage('db.ingestion_reports.upsert', touch.ms, true, { cache: 'hit' });
-            return reply.status(200).send(cached.value);
+            // Inject live staleness flag — same pattern as the versioned route.
+            // Never persisted; always computed fresh on cache-hit.
+            let financial_snapshot_stale = false;
+            try {
+              const _sr = await computeReportFinancialSnapshotStale(pool, deal_id, version, { dioUpdatedAt: row.updated_at });
+              financial_snapshot_stale = _sr.stale;
+            } catch { /* fail-open */ }
+            return reply.status(200).send({ ...cached.value, financial_snapshot_stale });
           }
         }
 

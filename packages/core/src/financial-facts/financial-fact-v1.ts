@@ -372,6 +372,57 @@ export interface FinancialFactV1 {
   original_period_label?: string;
 
   /**
+   * When true, this fact was mathematically derived from other facts rather
+   * than directly extracted from a source document.
+   *
+   * Always false (or absent) for extraction-sourced facts.
+   * Always true for any fact produced by reconcileFinancialFactsV1().
+   *
+   * Used by audit views, downstream consumers, and the financial integrity
+   * analyzer to distinguish derived signal from primary evidence.
+   */
+  is_derived?: boolean;
+
+  /**
+   * Stable machine-readable key identifying the derivation rule used to
+   * produce this fact.
+   *
+   * Only present when is_derived = true.
+   * Values are defined and documented in reconcile-financial-facts-v1.ts.
+   *
+   * Examples:
+   *   "runway_months_from_cash_and_burn_rate"
+   *   "gross_margin_from_gross_profit_and_revenue"
+   *   "burn_rate_from_total_expenses_run_rate"
+   */
+  derivation_rule?: string | null;
+
+  /**
+   * Semantic family of this metric, from the financial semantics ontology.
+   *
+   * Populated for derived facts; optionally set for explicit extracted facts
+   * when the extraction pipeline has access to the semantics layer.
+   *
+   * Values correspond to FinancialSemanticFamily in
+   * packages/core/src/financial-semantics/semantic-types.ts.
+   */
+  semantic_family?: string | null;
+
+  /**
+   * Semantic role of this fact's value in the financial model.
+   *
+   * "explicit"   — directly stated in a source document
+   * "derived"    — computed from other facts via a deterministic rule
+   * "inferred"   — estimated from context (lower confidence)
+   * "supporting" — metadata/label field, not a primary financial signal
+   * "unknown"    — provenance could not be determined
+   *
+   * Only present when set explicitly by the derivation pipeline or extraction
+   * with access to the semantics layer.
+   */
+  semantic_role?: "explicit" | "derived" | "inferred" | "supporting" | "unknown";
+
+  /**
    * Deterministic explanation of why this metric_key was assigned.
    * Carried from TypedMetric.typing_reason through metric-promoter.
    * Includes the row label match, column context, and any scale-factor
@@ -463,8 +514,13 @@ export function inferPeriodType(label: string): FinancialFactPeriodType {
   // Standalone quarter ("Q1", "Q2", ...)
   if (/^Q[1-4]$/i.test(s)) return "quarterly";
   if (/^\d{4}-\d{2}$/.test(s)) return "monthly";
+  // Month names ("January", "Feb", "Mar") and ordinal months ("Month 1", "Month 12")
+  if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*$/i.test(s)) return "monthly";
+  if (/^month\s+\d{1,2}$/i.test(s)) return "monthly";
   if (/^(FY)?\d{4}$/.test(s)) return "annual";
   // Half-year and YTD: year-scoped aggregations → annual
   if (/^(YTD|H[12]\s+\d{4}|\d{4}\s+H[12])$/i.test(s)) return "annual";
+  // "Year N Total" or "Year N" → annual
+  if (/^year\s+\d+(?:\s+total)?$/i.test(s)) return "annual";
   return "unknown";
 }

@@ -401,6 +401,75 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
 
 // ─── excel_sheet (normalization format) handler ───────────────────────────────
 
+// ─── grid_preview → rows bridge ──────────────────────────────────────────────
+
+/**
+ * Convert a grid_preview cells array into a rows array compatible with fromExcelSheet.
+ *
+ * grid_preview format (from structured_native_v1 extractor):
+ *   { cells: [{ a: "A1", t: "s"|"n", v: string|number, w?: string }, ...] }
+ *
+ * Each cell's address is parsed to (col_letter, row_number). Cells are grouped
+ * by row and mapped to header keys using column letter → header index mapping.
+ *
+ * Column mapping: header[0] ("col_A") → column A, header[1] → column B or
+ * next seen column, etc. Missing columns are auto-skipped.
+ */
+function buildRowsFromGridPreview(gridPreview: unknown, headers: string[]): unknown[] {
+  if (!gridPreview || typeof gridPreview !== "object") return [];
+  const gp = gridPreview as Record<string, unknown>;
+  const cells = Array.isArray(gp["cells"]) ? gp["cells"] as unknown[] : [];
+  if (cells.length === 0 || headers.length === 0) return [];
+
+  // Parse cells into a row→col map
+  const rowMap = new Map<number, Map<string, unknown>>();
+  const seenCols = new Set<string>();
+  for (const cell of cells) {
+    if (!cell || typeof cell !== "object") continue;
+    const c = cell as Record<string, unknown>;
+    const addr = typeof c["a"] === "string" ? c["a"] : null;
+    if (!addr) continue;
+    const m = /^([A-Z]+)(\d+)$/.exec(addr);
+    if (!m) continue;
+    const colLetter = m[1]!;
+    const rowNum = parseInt(m[2]!, 10);
+    seenCols.add(colLetter);
+    let row = rowMap.get(rowNum);
+    if (!row) { row = new Map(); rowMap.set(rowNum, row); }
+    row.set(colLetter, c["t"] === "n" ? c["v"] : (typeof c["v"] === "string" ? c["v"] : null));
+  }
+
+  // Build column letter → header index mapping.
+  // headers[0] is typically "col_A" → column "A". Remaining headers map to
+  // remaining columns in alphabetical order, skipping any that weren't seen.
+  const sortedCols = Array.from(seenCols).sort();
+  const colToHeader = new Map<string, string>();
+  // First header always maps to the first column letter seen
+  if (sortedCols.length > 0 && headers.length > 0) {
+    colToHeader.set(sortedCols[0]!, headers[0]!);
+    let hi = 1;
+    for (let ci = 1; ci < sortedCols.length && hi < headers.length; ci++, hi++) {
+      colToHeader.set(sortedCols[ci]!, headers[hi]!);
+    }
+  }
+
+  // Build rows as objects keyed by header names (same as normalization.ts output)
+  const rowNums = Array.from(rowMap.keys()).sort((a, b) => a - b);
+  const result: unknown[] = [];
+  for (const rowNum of rowNums) {
+    const cellMap = rowMap.get(rowNum)!;
+    const obj: Record<string, unknown> = {};
+    for (const [colLetter, value] of cellMap) {
+      const header = colToHeader.get(colLetter);
+      if (header) obj[header] = value;
+    }
+    if (Object.keys(obj).length > 0) result.push(obj);
+  }
+  return result;
+}
+
+// ─── excel_sheet handler ─────────────────────────────────────────────────────
+
 /**
  * Parses DPU `excel_sheet` pages.
  *
@@ -412,9 +481,16 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
   if (!structured || typeof structured !== "object") return null;
   const s = structured as Record<string, unknown>;
 
-  const sheetTitle = typeof s["sheet_title"] === "string" ? s["sheet_title"] : "unknown";
+  const sheetTitle = typeof s["sheet_title"] === "string" ? s["sheet_title"]
+    : typeof s["sheet_name"] === "string" ? s["sheet_name"] : "unknown";
   const headers: string[] = Array.isArray(s["headers"]) ? (s["headers"] as string[]).filter((h) => typeof h === "string") : [];
-  const rows: unknown[] = Array.isArray(s["rows"]) ? (s["rows"] as unknown[]) : [];
+  let rows: unknown[] = Array.isArray(s["rows"]) ? (s["rows"] as unknown[]) : [];
+
+  // Fallback: build rows from grid_preview cells when rows is absent.
+  // grid_preview is a sparse cells array: [{a:"A1",t:"s",v:"Revenue"},{a:"C1",t:"n",v:1000}, ...]
+  if (rows.length === 0 && headers.length > 0) {
+    rows = buildRowsFromGridPreview(s["grid_preview"], headers);
+  }
 
   // Also check for table-nested format used by vision worker
   const tables: unknown[] = Array.isArray(s["tables"]) ? (s["tables"] as unknown[]) : [];

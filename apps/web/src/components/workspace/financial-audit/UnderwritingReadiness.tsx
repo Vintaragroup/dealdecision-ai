@@ -8,6 +8,8 @@ interface Props extends UnderwritingReadinessProps {
 export function UnderwritingReadiness({
   score,
   status,
+  visibleStatusLabel,
+  isProvisional,
   missingMetrics,
   weakAreas,
   summary,
@@ -29,15 +31,21 @@ export function UnderwritingReadiness({
               {score}
             </div>
           </div>
-          <div className={`mt-3 text-sm font-medium ${
-            status === 'READY'
+          {/* Visible status label — uses canonical label, never raw status enum */}
+          <div className={`mt-3 text-sm font-medium leading-tight ${
+            status === 'READY' && !isProvisional
               ? (darkMode ? 'text-emerald-400' : 'text-emerald-600')
               : status === 'PARTIAL'
               ? (darkMode ? 'text-amber-400' : 'text-amber-600')
               : (darkMode ? 'text-red-400' : 'text-red-600')
           }`}>
-            {status}
+            {visibleStatusLabel}
           </div>
+          {isProvisional && (
+            <div className={`mt-1 text-xs leading-tight ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+              Score provisional until validation completes
+            </div>
+          )}
         </div>
 
         {/* Details */}

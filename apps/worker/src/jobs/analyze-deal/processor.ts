@@ -46,6 +46,9 @@ import type { ProviderConfig } from "../../lib/llm/types";
 import type { JobStatus } from "@dealdecision/contracts";
 import { applySlideUnderstandingV1Shadow } from "../../lib/pdf_v2/slide-understanding-v1";
 import { getFinancialFactsForDeal, getDocumentsForReport, FINANCIAL_FACTS_ANALYSIS_LIMIT } from "../../lib/db/financial-facts-db";
+import { populatePageRegistryV1 } from "../../lib/page-registry/populate-page-registry-v1";
+import { populateDealFactRegistryV1 } from "../../lib/deal-facts/populate-deal-fact-registry-v1";
+import { populateFinancialFactRegistryV1 } from "../../lib/financial-facts/populate-financial-fact-registry-v1";
 
 // -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
 function safeJsonParseObject(raw: string): Record<string, unknown> | null {
@@ -1253,6 +1256,73 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 			);
 		}
 
+		// Self-heal: if financial_facts_v1 is empty for this deal but DPU coverage exists,
+		// run the full population pipeline inline before the orchestrator reads facts.
+		// All three steps are idempotent and best-effort — never block orchestration.
+		//
+		// Implementation mirrors audit-populate-registries.ts exactly:
+		//   • queries DPU docs via dpu.deal_id (not documents.deal_id) with LEFT JOIN
+		//   • detects XLSX via title regex matching /\.xlsx?$/i (same as audit script)
+		//   • calls populatePageRegistryV1 → populateDealFactRegistryV1 → populateFinancialFactRegistryV1 per doc
+		try {
+			const { rows: factCountRows } = await getPool().query<{ c: string }>(
+				`SELECT COUNT(*)::text AS c FROM financial_facts_v1 WHERE deal_id = $1`,
+				[sanitizeText(dealId)]
+			);
+			const existingFactCount = Number.parseInt(factCountRows[0]?.c ?? "0", 10);
+			if (existingFactCount === 0) {
+				// Mirror the audit script query: filter on dpu.deal_id, LEFT JOIN documents,
+				// select title (for xlsx detection) and mime_type + extraction_metadata.
+				const { rows: dpuDocs } = await getPool().query<{
+					document_id: string;
+					doc_title: string | null;
+					mime_type: string | null;
+					extraction_metadata: unknown;
+				}>(
+					`SELECT DISTINCT
+					        dpu.document_id,
+					        COALESCE(d.title, dpu.document_id::text) AS doc_title,
+					        d.mime_type,
+					        d.extraction_metadata
+					   FROM document_page_understanding dpu
+					   LEFT JOIN documents d ON d.id = dpu.document_id
+					  WHERE dpu.deal_id = $1
+					    AND (d.deleted_at IS NULL OR d.id IS NULL)`,
+					[sanitizeText(dealId)]
+				);
+				if (dpuDocs.length > 0) {
+					job.log(`[analyze-deal] financial_facts_v1 empty — self-heal population for ${dpuDocs.length} doc(s)`);
+					for (const doc of dpuDocs) {
+						// Detect XLSX using the same heuristics as audit-populate-registries.ts:
+						//   1. Title/filename ends with .xlsx or .xls (primary — title always set)
+						//   2. MIME type contains spreadsheet/excel (robust fallback)
+						//   3. extraction_metadata.doc_kind === 'excel' (structured signal)
+						const docTitle = typeof doc.doc_title === "string" ? doc.doc_title : "";
+						const mimeType = typeof doc.mime_type === "string" ? doc.mime_type : "";
+						const meta = doc.extraction_metadata && typeof doc.extraction_metadata === "object"
+							? (doc.extraction_metadata as Record<string, unknown>)
+							: {};
+						const isXlsxDoc =
+							/\.xlsx?$/i.test(docTitle) ||
+							mimeType.includes("spreadsheetml") ||
+							mimeType.includes("excel") ||
+							(meta as any)?.doc_kind === "excel";
+						await populatePageRegistryV1(getPool(), { dealId, documentId: doc.document_id });
+						await populateDealFactRegistryV1(getPool(), { dealId, documentId: doc.document_id });
+						await populateFinancialFactRegistryV1(getPool(), {
+							deal_id: dealId,
+							document_id: doc.document_id,
+							xlsx_doc: isXlsxDoc,
+						});
+					}
+				}
+			}
+		} catch (selfHealErr) {
+			// Best-effort — never block orchestration
+			const selfHealMsg = selfHealErr instanceof Error ? selfHealErr.message : String(selfHealErr);
+			job.log(`[analyze-deal] financial_facts_v1 self-heal failed (non-blocking): ${selfHealMsg}`);
+		}
+
 		// Load financial facts for the financial integrity analyzer (fail-open: empty array is safe).
 		// Uses FINANCIAL_FACTS_ANALYSIS_LIMIT to ensure dense multi-period models are not silently truncated.
 		let financialFactsForOrchestrator: Awaited<ReturnType<typeof getFinancialFactsForDeal>> = [];
@@ -1541,6 +1611,35 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						ts: new Date().toISOString(),
 					})
 				);
+
+				// Invalidate the ingestion_reports cache for this deal so the next /report
+				// call compiles fresh from the updated DIO and live financial_facts_v1.
+				// Best-effort: never block the job on failure.
+				try {
+					const del = await pool.query(
+						`DELETE FROM ingestion_reports WHERE deal_id = $1::uuid`,
+						[dealId]
+					);
+					console.log(
+						JSON.stringify({
+							event: "ingestion_reports_cache_invalidated",
+							deal_id: dealId,
+							job_id: job.id ? String(job.id) : null,
+							rows_deleted: del.rowCount ?? 0,
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch (cacheErr) {
+					console.warn(
+						JSON.stringify({
+							event: "ingestion_reports_cache_invalidate_failed",
+							deal_id: dealId,
+							job_id: job.id ? String(job.id) : null,
+							reason: cacheErr instanceof Error ? cacheErr.message : String(cacheErr),
+							ts: new Date().toISOString(),
+						})
+					);
+				}
 			}
 		} catch (err) {
 			console.warn(

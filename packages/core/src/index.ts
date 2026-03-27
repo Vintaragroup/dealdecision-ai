@@ -103,6 +103,9 @@ export * from "./analyzers/risk-assessment";
 export * from "./analyzers/financial-integrity-analyzer-v1";
 export * from "./types/financial-integrity-v1";
 
+// Financial Semantics Layer (Phase 0)
+export * from "./financial-semantics/index";
+
 // Storage + services
 export * from "./services/dio-storage";
 export {
@@ -407,6 +410,21 @@ export {
   isProjectedScope,
   temporalScopeLabel,
 } from "./temporal/temporal-scope";
+
+// ── Temporal Alignment Engine (Phase 3) ──────────────────────────────────────
+// Deterministic fact-level temporal comparison: TemporalReferenceClass,
+// canCompareFactsTemporally, MetricDefinitionFamily, grouped mismatch flags.
+export type {
+  TemporalReferenceClass,
+  MetricDefinitionFamily,
+  TemporalComparisonReason,
+} from "./temporal/temporal-alignment";
+export {
+  classifyFactTemporally,
+  getMetricDefinitionFamily,
+  canCompareFactsTemporally,
+  buildGroupedTemporalMismatchFlag,
+} from "./temporal/temporal-alignment";
 
 // ============================================================================
 // Field Typing Rules / TypedMetric (Phase 1 — now wired)

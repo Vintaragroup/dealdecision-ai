@@ -51,6 +51,13 @@ export type FieldTypeV1 =
   | "raise_amount_v1"
   /** Company valuation (pre- or post-money determined by context). */
   | "valuation_v1"
+  // ── Expense subtypes ─────────────────────────────────────────────────────
+  /** Total expenses / total costs. */
+  | "total_expenses_v1"
+  /** Operating expenses (opex), including fixed/variable expense line items. */
+  | "opex_v1"
+  /** Cost of goods sold / cost of revenue. */
+  | "cogs_v1"
   // ── P&L / unit economics ────────────────────────────────────────────────
   /** EBITDA or net income. */
   | "ebitda_v1"

@@ -7,6 +7,13 @@ import {
   SupportStatus,
   ImpactSeverity,
   SourceOfTruthRow,
+  ValidationState,
+  IntegrityState,
+  ReadinessState,
+  ReconciliationStatus,
+  VisibleStatusTone,
+  VisibleAuditState,
+  TemporalAlignmentBlock,
 } from '../types/financialAudit';
 import type {
   FinancialMetricPointLike,
@@ -107,6 +114,249 @@ function getSupportStatusFromFlags(
   return 'Supported';
 }
 
+// ─── Phase 2: semantic display helpers ───────────────────────────────────────
+
+/**
+ * Converts a snake_case derivation_rule like 'burn_rate_from_total_expenses_run_rate'
+ * into a readable phrase like 'From total expenses run rate'.
+ */
+function formatDerivationRule(rule: string): string {
+  const fromIdx = rule.indexOf('_from_');
+  const desc = fromIdx >= 0 ? rule.slice(fromIdx + 6) : rule;
+  return 'From ' + desc.replace(/_/g, ' ');
+}
+
+/**
+ * Builds a concise sublabel for a metric based on its Phase 2 semantic fields.
+ * Shown below the metric name in the Source of Truth table.
+ */
+function buildMetricSublabel(m: FinancialMetricPointLike): string | null {
+  if (m.is_derived && m.derivation_rule) {
+    return formatDerivationRule(m.derivation_rule);
+  }
+  if (m.is_derived) return 'Workbook-derived estimate';
+  if (m.selection_reason) {
+    // Truncate long reasons for the table
+    return m.selection_reason.length > 90
+      ? m.selection_reason.slice(0, 87) + '…'
+      : m.selection_reason;
+  }
+  return null;
+}
+
+/**
+ * Converts an alternative FinancialMetricPointLike into a compact display object
+ * for rendering as a secondary row in the Source of Truth table.
+ */
+function buildAlternativeFactDisplay(
+  alt: FinancialMetricPointLike,
+): { label: string; value: string; sublabel: string } {
+  const isProjected = alt.is_projected === true;
+  const isDerived = alt.is_derived === true;
+  const period = alt.period_label;
+
+  const label = isProjected
+    ? `Projected${period ? ` (${period})` : ' estimate'}`
+    : isDerived
+    ? 'Workbook-derived proxy'
+    : 'Alternative metric';
+
+  const parts: string[] = [];
+  if (isDerived && alt.derivation_rule) parts.push(formatDerivationRule(alt.derivation_rule));
+  if (isProjected) parts.push('Provisional / forward-looking');
+  else if (isDerived) parts.push('Derived / provisional');
+  if (alt.source_kind) parts.push(formatSourceKind(alt.source_kind));
+
+  return { label, value: formatMetricValue(alt), sublabel: parts.join(' · ') };
+}
+
+// ─── Canonical state-derivation helpers ──────────────────────────────────────
+//
+// These functions form the single source of truth for the visible audit state.
+// All UI sections (status badge, conflict count, reconciliation panel, readiness)
+// MUST derive their display from the output of these functions — never from
+// independent readings of individual payload fields.
+//
+// Rule: addding a new visible contradiction → add a check here, not in a component.
+
+/**
+ * Determines how many and which flags count as "discrepancies/conflicts" for
+ * the purpose of the canonical conflict count.
+ *
+ * Broader than the structured reconciliation set (which requires source_a/source_b).
+ * Any cross-source, discrepancy, mismatch, or conflict-pattern flag is a conflict.
+ */
+function deriveConflictState(flags: IntegrityFlag[]): {
+  discrepancyFlags: IntegrityFlag[];
+  structuredConflictFlags: IntegrityFlag[];
+  conflictCount: number;
+  hasConflicts: boolean;
+} {
+  // Canonical conflict set: any flag that signals a data disagreement
+  const discrepancyFlags = flags.filter(
+    (f) =>
+      f.flag_key.startsWith('cross_source') ||
+      f.flag_key.startsWith('discrepancy:') ||
+      f.flag_key.startsWith('mismatch:') ||
+      f.flag_key.startsWith('conflict:'),
+  );
+  // Structured subset: has source_a/source_b → renderable in the reconciliation panel
+  const structuredConflictFlags = discrepancyFlags.filter(
+    (f) => f.source_a != null && f.source_b != null,
+  );
+  const conflictCount = discrepancyFlags.length;
+  return { discrepancyFlags, structuredConflictFlags, conflictCount, hasConflicts: conflictCount > 0 };
+}
+
+/**
+ * Derives the validation state — describes whether integrity validation has
+ * run and produced meaningful results, independently of readiness score.
+ */
+function deriveValidationState(
+  hasAnyFinancialData: boolean,
+  isIntegrityIncomplete: boolean,
+  flags: IntegrityFlag[],
+): ValidationState {
+  if (!hasAnyFinancialData) return 'not_applicable';
+  if (isIntegrityIncomplete) return 'unvalidated';
+  if (flags.some((f) => f.status === 'FAIL')) return 'partially_validated';
+  if (flags.some((f) => f.status === 'PASS')) return 'validated';
+  return 'unvalidated'; // no PASS/FAIL flags despite integrity supposedly running
+}
+
+/**
+ * Derives the integrity state — summary of the severity of integrity flags.
+ * 'unknown' when validation has not completed.
+ */
+function deriveIntegrityState(
+  flags: IntegrityFlag[],
+  isIntegrityIncomplete: boolean,
+): IntegrityState {
+  if (isIntegrityIncomplete) return 'unknown';
+  if (flags.some((f) => (f.severity === 'critical' || f.severity === 'high') && f.status === 'FAIL')) return 'critical';
+  if (flags.some((f) => f.status === 'WARN' || (f.status === 'FAIL' && f.severity === 'medium'))) return 'warning';
+  return 'clean';
+}
+
+/**
+ * Derives the readiness state — gated by validation and integrity state.
+ * A deal can ONLY be 'ready' if validation has completed and no critical conflicts exist.
+ */
+function deriveReadinessState(
+  ur: any,
+  validationState: ValidationState,
+  integrityState: IntegrityState,
+  hasConflicts: boolean,
+): ReadinessState {
+  // Cannot be ready if validation hasn't run
+  if (validationState === 'not_applicable' || validationState === 'unvalidated') return 'not_ready';
+  // Cannot be ready if critical integrity issues exist
+  if (integrityState === 'critical') return 'not_ready';
+  // Conflicts or warnings downgrade to partially_ready
+  if (hasConflicts || integrityState === 'warning') return 'partially_ready';
+  // Now gate on the raw readiness score
+  const rawStatus = ur?.status;
+  if (rawStatus === 'sufficient') return 'ready';
+  if (rawStatus === 'partially_sufficient') return 'partially_ready';
+  return 'not_ready';
+}
+
+/**
+ * Derives the canonical reconciliation state from the conflict set.
+ * This drives the CrossSourceReconciliation panel's empty-state text — never hardcoded.
+ */
+function deriveReconciliationState(
+  discrepancyFlags: IntegrityFlag[],
+  structuredConflictFlags: IntegrityFlag[],
+  isIntegrityIncomplete: boolean,
+): { status: ReconciliationStatus; message: string } {
+  if (isIntegrityIncomplete) {
+    return {
+      status: 'unknown',
+      message: 'Cross-source reconciliation requires completed integrity validation. Re-run analysis to generate reconciliation results.',
+    };
+  }
+  if (discrepancyFlags.length === 0) {
+    return { status: 'clean', message: 'No cross-source discrepancies detected.' };
+  }
+  const n = discrepancyFlags.length;
+  const noun = n === 1 ? 'discrepancy' : 'discrepancies';
+  if (structuredConflictFlags.length > 0) {
+    return { status: 'conflicted', message: `${n} cross-source ${noun} detected.` };
+  }
+  // Discrepancy flags exist but lack source_a/source_b (not renderable as structured cards)
+  return {
+    status: 'conflicted',
+    message: `${n} discrepancy ${n === 1 ? 'flag' : 'flags'} detected — see Risk Flags panel for details.`,
+  };
+}
+
+/**
+ * Derives the investor-safe visible status label from the full union of state layers.
+ *
+ * INVARIANT: 'Ready for Investment Review' is ONLY returned when:
+ *   - data exists
+ *   - validation has completed (validated or partially_validated)
+ *   - no critical integrity issues
+ *   - no conflicts
+ *   - readiness state is 'ready'
+ */
+function deriveVisibleStatus(
+  hasAnyFinancialData: boolean,
+  validationState: ValidationState,
+  integrityState: IntegrityState,
+  readinessState: ReadinessState,
+  conflictCount: number,
+): string {
+  if (!hasAnyFinancialData) return 'No Financial Data';
+  if (validationState === 'unvalidated') return 'Data Extracted — Validation Incomplete';
+  if (integrityState === 'critical' || conflictCount > 0 || readinessState === 'partially_ready') return 'Partially Ready';
+  if (readinessState === 'not_ready') return 'Not Ready for Investment Review';
+  return 'Ready for Investment Review';
+}
+
+function deriveVisibleStatusTone(label: string): VisibleStatusTone {
+  if (label === 'Ready for Investment Review') return 'success';
+  if (label === 'No Financial Data') return 'neutral';
+  if (label === 'Partially Ready' || label === 'Data Extracted — Validation Incomplete') return 'warning';
+  return 'warning'; // Not Ready → warning
+}
+
+/**
+ * Parses the `period_alignment:grouped_temporal_mismatch` integrity flag (if present)
+ * into a structured TemporalAlignmentBlock for dedicated UI rendering.
+ *
+ * The grouped flag replaces noisy per-metric temporal scope mismatch flags since Phase 3.
+ * By surfacing it as a structured block instead of a raw risk-flag message, we can:
+ *   - Show it amber (not red) — it is not a numeric conflict
+ *   - List affected metrics cleanly
+ *   - Exclude it from criticalActions and raw riskFlags lists
+ */
+function extractTemporalAlignmentBlock(flags: IntegrityFlag[]): TemporalAlignmentBlock {
+  const flag = flags.find((f) => f.flag_key === 'period_alignment:grouped_temporal_mismatch');
+  if (!flag) {
+    return { hasIssue: false, affectedMetrics: [], explanation: '' };
+  }
+
+  // Note format (from buildGroupedTemporalMismatchFlag):
+  // "N metric(s) mix projected and historical facts — cross-source comparison excluded
+  //  from numeric conflict count: metric1, metric2, metric3. Reason(s): ..."
+  const metricsMatch = flag.note.match(/conflict count:\s*([^.]+)/);
+  const affectedMetrics = metricsMatch
+    ? metricsMatch[1].split(',').map((m) => m.trim()).filter(Boolean)
+    : [];
+
+  // Investor-readable explanation — concise, not the raw technical note
+  const n = affectedMetrics.length;
+  const metricWord = n === 1 ? 'metric mixes' : 'metrics mix';
+  const explanation =
+    n > 0
+      ? `${n} ${metricWord} projected and historical values. Cross-source comparisons were limited to comparable periods — projected vs. realized divergence is expected, not a numeric conflict.`
+      : 'Some metrics mix projected and historical values. Projected vs. realized comparisons have been excluded from the numeric conflict count.';
+
+  return { hasIssue: true, affectedMetrics, explanation };
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -115,6 +365,7 @@ function getSupportStatusFromFlags(
  *   - financialBreakdownV1  (FinancialBreakdownV1Like)
  *   - underwritingReadinessV1 (UnderwritingReadinessV1Like)
  *   - financialIntegrityV1  (FinancialIntegrityV1Like)
+ *   - financialCoverageV1   (FinancialCoverageProfileV1Like) — optional
  *   - financialSnapshotStale (boolean envelope flag)
  *
  * No API calls are made here. Fails open: missing fields render as '—'.
@@ -124,6 +375,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     financialBreakdownV1,
     underwritingReadinessV1,
     financialIntegrityV1,
+    financialCoverageV1,
     financialSnapshotStale = false,
   } = props;
 
@@ -131,6 +383,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const bd = financialBreakdownV1 as any ?? null;
     const ur = underwritingReadinessV1 as any ?? null;
     const fi = financialIntegrityV1 as any ?? null;
+    const cov = financialCoverageV1 as any ?? null;
 
     const flags: IntegrityFlag[] = fi?.flags ?? [];
     const missing_critical: string[] = fi?.missing_critical ?? [];
@@ -156,81 +409,185 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const hasProjections =
       bd?.has_projections === true ||
       (bd?.projections?.periods?.length ?? 0) > 0;
-    const underwritingInsufficient = !ur || ur.status === 'insufficient';
+    const hasCapTable = bd?.cap_table != null || bd?.has_cap_table === true;
 
-    // ── Structured vs deck-only finance ────────────────────────────────────
-    // Only XLSX-backed data is underwriting-grade. Deck-extracted current_state /
-    // projections are NOT sufficient to unlock the full audit surface.
-    const hasStructuredFinancials = hasXlsx;
-    const hasRealCurrentState = hasStructuredFinancials && hasCurrentState;
-    const hasRealProjections = hasStructuredFinancials && hasProjections;
-
-    // hasMeaningfulIntegrity: fi is present with real flags or a non-zero completeness score.
-    // Replaces the old isBaselineIntegrity inversion — read positively for clarity.
+    // hasMeaningfulIntegrity: fi is present with real (non-synthetic) data.
     const hasMeaningfulIntegrity =
       !!fi &&
-      ((fi.flags?.length ?? 0) > 0 || typeof fi.completeness_score === 'number');
+      !isBaselineIntegrity &&
+      ((fi.flags?.length ?? 0) > 0 || (fi.completeness_score ?? 0) > 0);
 
-    // deck_only: financial objects present but none are spreadsheet-backed
-    const hasDeckOnlyFinancialSignals = !hasStructuredFinancials && (hasCurrentState || hasProjections);
+    // ── Broad presence check — gates the tab on any financial signal ────────
+    // Data presence is not the same as data quality. Show the tab whenever ANY
+    // financial evidence exists, regardless of source.
+    const hasAnyFinancialData =
+      hasCurrentState ||
+      hasProjections ||
+      hasCapTable ||
+      hasMeaningfulIntegrity ||
+      (ur != null && (ur.score ?? 0) > 0);
 
-    // valid: XLSX backed + at least one real signal (current state, projections, or meaningful integrity)
-    const isValid =
-      hasStructuredFinancials &&
-      (hasRealCurrentState || hasRealProjections || hasMeaningfulIntegrity) &&
-      !financialSnapshotStale;
+    // ── Structural classification ───────────────────────────────────────────
+    const hasStructuredFinancials = hasXlsx;
+    const hasNonXlsxFinancialData = hasAnyFinancialData && !hasXlsx;
 
-    const isDeckOnly = !hasStructuredFinancials && hasDeckOnlyFinancialSignals;
+    // Presence-based (no longer XLSX-gated) — source quality is shown via labels/warnings
+    const hasRealCurrentState = hasCurrentState;
+    const hasRealProjections = hasProjections;
 
-    // no_data: nothing useful present at all
-    const isNoData =
-      !hasStructuredFinancials &&
-      !hasCurrentState &&
-      !hasProjections &&
-      !hasMeaningfulIntegrity;
+    // ── Data state ─────────────────────────────────────────────────────────
+    // Precedence: stale > no_data > structured_data > limited_data
+    const isNoData = !hasAnyFinancialData;
+    const isStructuredData = hasXlsx && hasAnyFinancialData;
 
-    // Precedence: stale > valid > deck_only > no_data
-    const dataState: 'no_data' | 'deck_only' | 'stale' | 'valid' =
+    const dataState: 'no_data' | 'limited_data' | 'stale' | 'structured_data' =
       financialSnapshotStale
         ? 'stale'
-        : isValid
-        ? 'valid'
-        : isDeckOnly
-        ? 'deck_only'
-        : 'no_data';
+        : isNoData
+        ? 'no_data'
+        : isStructuredData
+        ? 'structured_data'
+        : 'limited_data';
 
-    // View-model gates — only valid state unlocks the full audit surface
-    const showSummaryMetrics = dataState === 'valid';
-    const showDetailedPanels = dataState === 'valid';
-
-    // Temporary debug log — remove after confirming classification is correct
-    console.log('[FinancialAudit] state', {
-      hasStructuredFinancials,
-      hasCurrentState,
-      hasProjections,
-      hasMeaningfulIntegrity,
-      financialSnapshotStale,
-      dataState,
+    // ── Source mix (inferred from metric source_kind fields) ────────────────
+    const _allSourceKinds = new Set<string>();
+    if (hasXlsx) _allSourceKinds.add('xlsx');
+    const _csObj = bd?.current_state ?? null;
+    if (_csObj) {
+      [_csObj.revenue, _csObj.burn_rate, _csObj.cash, _csObj.runway_months, _csObj.gross_margin_pct]
+        .filter(Boolean)
+        .forEach((m: any) => { if (m?.source_kind) _allSourceKinds.add(m.source_kind); });
+    }
+    (bd?.projections?.periods ?? []).forEach((p: any) => {
+      if (p?.source_kind) _allSourceKinds.add(p.source_kind);
     });
+    // If non-xlsx data exists but no explicit source_kind annotations, infer 'deck'
+    if (hasNonXlsxFinancialData && _allSourceKinds.size === 0) _allSourceKinds.add('deck');
+    const sourceMix = {
+      xlsx: _allSourceKinds.has('xlsx'),
+      pdf: _allSourceKinds.has('pdf'),
+      deck: _allSourceKinds.has('deck'),
+      pptx: _allSourceKinds.has('pptx'),
+      docx: _allSourceKinds.has('docx'),
+    };
+
+    // ── View-model gates ────────────────────────────────────────────────────
+    const showTabContent = dataState !== 'no_data';
+    const showCoveragePanels = hasAnyFinancialData;
+    const showMetrics = hasAnyFinancialData;
+    const showLimitedDataWarning = dataState === 'limited_data';
+    const showStructuredBadge = dataState === 'structured_data';
+    const showStaleWarning = dataState === 'stale';
+    // Backward-compat aliases consumed by the component
+    const showSummaryMetrics = showMetrics;
+    const showDetailedPanels = showCoveragePanels;
 
     // ── Overall status ──────────────────────────────────────────────────────
-    const status: AuditStatus = mapReadinessStatus(ur?.status);
+    // Block READY/PARTIAL when integrity has not run or has no facts to analyse.
+    // This prevents the tab showing READY while completeness_score = 0 or has_facts = false.
+    const _rawStatus: AuditStatus = mapReadinessStatus(ur?.status);
+    const hasFacts = fi?.has_facts === true || (fi?.completeness_score != null && fi.completeness_score > 0);
+    // Only flag integrity-incomplete when data IS present but validation hasn't run.
+    // No-data case is handled separately — it should not trigger this flag.
+    const isIntegrityIncomplete = hasAnyFinancialData && (isBaselineIntegrity || !hasFacts);
+    const status: AuditStatus =
+      !hasAnyFinancialData
+        ? 'WARNING'
+        : isIntegrityIncomplete && _rawStatus !== 'WARNING'
+        ? 'PARTIAL'  // downgrade READY → PARTIAL when integrity hasn't run
+        : _rawStatus;
+
+    // ── Canonical visible-state model (single source of truth for all UI sections) ─
+    const { discrepancyFlags, structuredConflictFlags, conflictCount, hasConflicts } =
+      deriveConflictState(flags);
+    const validationState = deriveValidationState(hasAnyFinancialData, isIntegrityIncomplete, flags);
+    const integrityState = deriveIntegrityState(flags, isIntegrityIncomplete);
+    const readinessState = deriveReadinessState(ur, validationState, integrityState, hasConflicts);
+    const visibleStatusLabel = deriveVisibleStatus(
+      hasAnyFinancialData,
+      validationState,
+      integrityState,
+      readinessState,
+      conflictCount,
+    );
+    const visibleStatusTone = deriveVisibleStatusTone(visibleStatusLabel);
+    const { status: reconciliationStatus, message: reconciliationMessage } =
+      deriveReconciliationState(discrepancyFlags, structuredConflictFlags, isIntegrityIncomplete);
+
+    // isProvisional: readiness score should not be taken at face value
+    const isProvisional = validationState === 'unvalidated' || integrityState === 'critical' || hasConflicts;
+
+    // dataPresenceState: presence-only (excludes the stale envelope flag)
+    const dataPresenceState =
+      isNoData ? 'no_data' : isStructuredData ? 'structured_data' : 'limited_data';
+
+    const visibleAuditState: VisibleAuditState = {
+      dataPresenceState,
+      validationState,
+      integrityState,
+      readinessState,
+      visibleStatusLabel,
+      visibleStatusTone,
+      conflictCount,
+      hasConflicts,
+      reconciliationStatus,
+      reconciliationMessage,
+      isProvisional,
+    };
 
     // ── Summary Metrics ─────────────────────────────────────────────────────
-    const conflictFlags = flags.filter(
-      (f) => f.flag_key.startsWith('cross_source') && f.source_a && f.source_b,
-    );
+    // NOTE: conflictFlags below is kept as a local alias for the structured set (for
+    // backward-compat path used to build conflict detail rows). The canonical COUNT
+    // comes from visibleAuditState.conflictCount (discrepancyFlags.length).
+    const conflictFlags = structuredConflictFlags;
     const missingCount = missing_critical.length + (ur?.missing?.length ?? 0);
     const criticalMetricsTotal = missingCount + (ur?.reasons?.length ?? 0) + 5; // denominator estimate
     const criticalPresent = Math.max(0, criticalMetricsTotal - missingCount);
-    // factsAnalyzed: zero for no_data and deck_only — non-XLSX signals are not auditable facts
-    const factsAnalyzed = (isBaselineIntegrity || isDeckOnly) ? 0 : (flags.length > 0 ? flags.length : (bd ? 1 : 0));
+
+    // extractedFactsCount: surfaced financial signals in the payload
+    // (current-state metrics with values + projection periods).
+    // This is NOT the total rows in financial_facts_v1; it is the count of
+    // distinct financial signals the report surfaces to the investor.
+    const _sotCandidates = [
+      bd?.current_state?.revenue,
+      bd?.current_state?.burn_rate,
+      bd?.current_state?.cash,
+      bd?.current_state?.runway_months,
+      bd?.current_state?.gross_margin_pct,
+    ].filter((m: any) => m?.value != null).length;
+    const _projPeriods = (bd?.projections?.periods ?? []).length;
+    const extractedFactsCount: number | null = isNoData
+      ? null
+      : Math.max(_sotCandidates + _projPeriods, flags.length > 0 ? flags.length : 0) || null;
+
+    // validatedFactsCount: facts with integrity PASS status
+    const validatedFactsCount: number | null = !hasAnyFinancialData || isIntegrityIncomplete
+      ? null
+      : flags.filter((f) => f.status === 'PASS').length || null;
+
+    // factsAnalyzed: single number for summary bar (use extracted count, fall back to 1 when data present)
+    const factsAnalyzed = extractedFactsCount ?? (hasAnyFinancialData ? 1 : 0);
+
+    // ── Temporal Alignment Block ────────────────────────────────────────────
+    // Extract the grouped temporal mismatch flag (Phase 3) into a structured block.
+    // This prevents the raw flag note from appearing in criticalActions/riskFlags
+    // and surfaces it as a dedicated amber panel instead.
+    // All period_alignment:* flags are suppressed from raw render paths below.
+    const temporalAlignment = extractTemporalAlignmentBlock(flags);
 
     // ── Investor Action Panel ───────────────────────────────────────────────
     const criticalActions = [
-      // High/critical integrity failures
+      // High/critical integrity failures — exclude all period_alignment:* flags.
+      // These are surfaced in the dedicated temporal alignment panel, not as individual action items.
+      // This covers both the current grouped key and any legacy per-metric temporal_scope_mismatch keys
+      // that may be stored in older deal DIOs.
       ...flags
-        .filter((f) => (f.severity === 'critical' || f.severity === 'high') && f.status === 'FAIL')
+        .filter(
+          (f) =>
+            (f.severity === 'critical' || f.severity === 'high') &&
+            f.status === 'FAIL' &&
+            !f.flag_key.startsWith('period_alignment:'),
+        )
         .map((f) => ({ text: f.note, severity: 'critical' as const })),
       // Missing critical underwriting metrics
       ...(ur?.missing ?? []).map((m: string) => ({
@@ -240,9 +597,13 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     ];
 
     const validationActions = [
-      // Medium severity warnings
+      // Integrity-incomplete warning: data detected but validation has not run
+      ...(hasAnyFinancialData && isIntegrityIncomplete
+        ? [{ text: 'Financial data has been extracted, but integrity validation is incomplete. Review source-linked values carefully before relying on them in an investment decision.', severity: 'warning' as const }]
+        : []),
+      // Medium severity warnings — exclude period_alignment:* flags (surfaced in temporal panel)
       ...flags
-        .filter((f) => f.severity === 'medium' && f.status === 'WARN')
+        .filter((f) => f.severity === 'medium' && f.status === 'WARN' && !f.flag_key.startsWith('period_alignment:'))
         .map((f) => ({ text: f.note, severity: 'warning' as const })),
       // Supplementary missing fields
       ...missing_supplementary.map((m: string) => ({
@@ -270,13 +631,29 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const currentState = bd?.current_state ?? null;
     const burnRunway = bd?.burn_runway ?? null;
 
-    type MetricDef = { label: string; factType: string; metric: FinancialMetricPointLike | null | undefined };
+    type MetricDef = {
+      label: string;
+      factType: string;
+      metric: FinancialMetricPointLike | null | undefined;
+      // Phase 2: alternative fact for this metric (burn proxy, projected GM, etc.)
+      alternativeMetric?: FinancialMetricPointLike | null;
+    };
     const metricDefs: MetricDef[] = [
       { label: 'Revenue', factType: 'revenue', metric: currentState?.revenue },
-      { label: 'Burn Rate', factType: 'burn_rate', metric: currentState?.burn_rate ?? burnRunway?.monthly_burn },
+      {
+        label: 'Burn Rate',
+        factType: 'burn_rate',
+        metric: currentState?.burn_rate ?? burnRunway?.monthly_burn,
+        alternativeMetric: burnRunway?.alternative_burn_fact,
+      },
       { label: 'Cash', factType: 'cash', metric: currentState?.cash ?? burnRunway?.cash },
       { label: 'Runway', factType: 'runway', metric: currentState?.runway_months ?? burnRunway?.runway_months },
-      { label: 'Gross Margin', factType: 'gross_margin_pct', metric: currentState?.gross_margin_pct },
+      {
+        label: 'Gross Margin',
+        factType: 'gross_margin_pct',
+        metric: currentState?.gross_margin_pct,
+        alternativeMetric: currentState?.alternative_gross_margin_fact,
+      },
     ];
 
     const sotRows: SourceOfTruthRow[] = metricDefs
@@ -296,6 +673,15 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
           ? `${formatSourceKind(m.source_kind ?? 'unknown')} — single or partial source`
           : 'Low confidence — deck-only or unverified';
 
+        // Phase 2: semantic enrichment
+        const isDerived = m.is_derived === true;
+        const isProvisional = m.is_provisional === true;
+        const sublabel = buildMetricSublabel(m);
+        const alternativeFact =
+          d.alternativeMetric?.value != null
+            ? buildAlternativeFactDisplay(d.alternativeMetric)
+            : null;
+
         return {
           metric: d.label,
           value: formatMetricValue(m),
@@ -305,8 +691,50 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
           confidenceExplanation,
           status: supportStatus as SupportStatus,
           sourceWeight: mapConfidenceToSourceWeight(m.confidence),
+          sublabel,
+          isDerived,
+          isProvisional,
+          alternativeFact,
         };
       });
+
+    // Projection-only revenue row: when revenue was extracted as projection-only
+    // (forecast_revenue_present && !historical_revenue_present), add a clearly labeled
+    // read-only row so the investor can see that revenue WAS extracted, just not as
+    // current/historical evidence. This is informational only — it does not affect
+    // underwriting scoring.
+    const hasForecastRevenue = cov?.coverage?.forecast_revenue_present === true;
+    const hasHistoricalRevenue = cov?.coverage?.historical_revenue_present === true;
+    const projectionPeriodRevenues = (bd?.projections?.periods ?? []).filter((p: any) => p.revenue != null);
+    if (
+      hasForecastRevenue &&
+      !hasHistoricalRevenue &&
+      projectionPeriodRevenues.length > 0 &&
+      !sotRows.some((r) => r.metric === 'Revenue')
+    ) {
+      // Build a summary of the best projected revenue value for the row display
+      const bestProjPeriod: any = projectionPeriodRevenues.reduce((best: any, p: any) =>
+        p.revenue > (best?.revenue ?? -Infinity) ? p : best, projectionPeriodRevenues[0]);
+      const projRevLabel = bestProjPeriod.period_label ? `${bestProjPeriod.period_label}` : 'Projected';
+      const projRevValue = bestProjPeriod.revenue_currency
+        ? `${bestProjPeriod.revenue_currency} ${Number(bestProjPeriod.revenue).toLocaleString()}`
+        : `${Number(bestProjPeriod.revenue).toLocaleString()}`;
+      sotRows.push({
+        metric: 'Revenue',
+        value: projRevValue,
+        source: 'XLSX',
+        sources: 1,
+        confidence: 'Low',
+        confidenceExplanation: `Projection-only — no current/historical actuals available. Best period: ${projRevLabel}.`,
+        status: 'Single Source',
+        sourceWeight: 1,
+        sublabel: `Projected (${projRevLabel}) — no actuals`,
+        isDerived: false,
+        isProvisional: true,
+        alternativeFact: null,
+        isProjectionOnly: true,
+      } as SourceOfTruthRow);
+    }
 
     // ── Cross Source Reconciliation ─────────────────────────────────────────
     const conflicts = conflictFlags.map((f) => {
@@ -334,10 +762,13 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const projectionPeriods = bd?.projections?.periods ?? [];
     const timeItems = projectionPeriods.map((p: any) => {
       const label: string = p.period_label ?? 'Unknown period';
-      // Heuristic: labels containing future years or 'Proj' are projected
+      // Projected when: the period is flagged is_projected, label contains 'proj'/'forecast'/'estimate',
+      // label matches ordinal 'Year N' pattern, or contains a future 4-digit year.
       const currentYear = new Date().getFullYear();
       const looksProjected =
+        p.is_projected === true ||
         /proj|forecast|estimate/i.test(label) ||
+        /^(?:Year|Yr)\s+\d+/i.test(label) ||
         (Number(label.match(/\d{4}/)?.[0]) > currentYear);
       const hasMissingData = p.revenue == null && p.net_income == null;
 
@@ -375,6 +806,21 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
         const conflictFlag = flags.find(
           (f) => f.flag_key.startsWith('cross_source') && f.fact_type?.includes(d.label.toLowerCase().replace(' ', '_')),
         );
+
+        // Phase 2: populate `change` with a semantic qualifier for provisional/derived facts.
+        // The FinancialSnapshot component renders this in amber when it doesn't start with +/-.
+        let change: string | undefined;
+        if (m.is_derived && m.derivation_rule) {
+          const desc = m.derivation_rule.split('_from_')[1]?.replace(/_/g, ' ') ?? 'workbook model';
+          change = `Derived from ${desc}`;
+        } else if (m.is_derived) {
+          change = 'Workbook-derived estimate';
+        } else if (m.is_provisional && m.source_kind === 'deck') {
+          change = 'Pitch Deck — verify independently';
+        } else if (m.is_projected) {
+          change = `Projected estimate${m.period_label ? ` (${m.period_label})` : ''}`;
+        }
+
         return {
           label: d.label,
           value: formatMetricValue(m),
@@ -386,12 +832,19 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
             : conf === 'Medium'
             ? 'Single source or partial validation'
             : 'Low confidence — verify independently',
+          ...(change != null ? { change } : {}),
         };
       });
 
     // ── Risk Flags Panel ────────────────────────────────────────────────────
     const riskFlagsFromBreakdown = (bd?.risks ?? []) as Array<{ severity: string; message: string }>;
-    const riskFlagsFromIntegrity = flags.filter((f) => f.status === 'FAIL' || f.status === 'WARN');
+    // Exclude all period_alignment:* flags from raw risk messages — they are surfaced
+    // as a dedicated amber temporal alignment panel, not individual critical flags.
+    // This covers both the current grouped key and legacy per-metric temporal_scope_mismatch
+    // keys that may still be present in older deal DIOs.
+    const riskFlagsFromIntegrity = flags.filter(
+      (f) => (f.status === 'FAIL' || f.status === 'WARN') && !f.flag_key.startsWith('period_alignment:'),
+    );
 
     const allRiskMessages = [
       ...riskFlagsFromBreakdown.map((r) => ({ severity: r.severity, message: r.message })),
@@ -420,6 +873,8 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const readiness = {
       score: ur?.score ?? 0,
       status,
+      visibleStatusLabel,
+      isProvisional,
       missingMetrics: ur?.missing ?? missing_critical.map((m: string) => m.replace(/_/g, ' ')),
       weakAreas: ur?.reasons ?? [],
       summary: ur?.narrative ?? bd?.narrative ?? 'No readiness narrative available.',
@@ -470,11 +925,25 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     return {
       status,
       dataState,
+      hasAnyFinancialData,
       hasStructuredFinancials,
+      hasNonXlsxFinancialData,
       hasRealCurrentState,
       hasRealProjections,
+      sourceMix,
+      showTabContent,
+      showCoveragePanels,
+      showMetrics,
+      showLimitedDataWarning,
+      showStructuredBadge,
+      showStaleWarning,
       showSummaryMetrics,
       showDetailedPanels,
+      isIntegrityIncomplete,
+      extractedFactsCount,
+      validatedFactsCount,
+      visibleStatusLabel,
+      visibleAuditState,
       isStale: financialSnapshotStale,
       isReportEmpty,
       lastUpdated: fi?.computed_at
@@ -483,6 +952,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
 
       actionPanel: {
         status,
+        visibleStatusLabel,
         criticalActions,
         validationActions,
         strengths,
@@ -492,18 +962,23 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
         completeness,
         criticalMetrics: isNoData
           ? 'No data'
-          : isDeckOnly
-          ? 'Deck only'
+          : isIntegrityIncomplete
+          ? 'Validation incomplete'
           : missingCount === 0
           ? 'All present'
           : `${missingCount} missing`,
-        conflicts: conflictFlags.length,
+        // Use the canonical conflict count from visibleAuditState — not just structured cross_source flags.
+        conflicts: conflictCount,
         factsAnalyzed,
+        extractedFactsCount,
+        validatedFactsCount,
       },
 
-      sourceOfTruth: { rows: sotRows },
+      sourceOfTruth: { rows: sotRows, scopeNote: 'Primary underwriting metrics — projection-only signals shown with ‘Projected’ label' },
 
-      conflicts: { conflicts },
+      conflicts: { conflicts, reconciliationStatus, reconciliationMessage },
+
+      temporalAlignment,
 
       timeAudit: { items: timeItems },
 
@@ -521,5 +996,5 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
 
       rawFacts: { facts: rawFactRows },
     };
-  }, [financialBreakdownV1, underwritingReadinessV1, financialIntegrityV1, financialSnapshotStale]);
+  }, [financialBreakdownV1, underwritingReadinessV1, financialIntegrityV1, financialCoverageV1, financialSnapshotStale]);
 }

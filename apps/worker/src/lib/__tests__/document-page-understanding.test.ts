@@ -390,7 +390,7 @@ describe("populateDocumentPageUnderstandingFromVisualExtractions — excel_sheet
 		expect(dealSql).toContain("value->>'a'");
 		expect(dealSql).toContain("CROSS JOIN LATERAL");
 		expect(dealSql).toContain("WHERE row_num IS NOT NULL");
-		expect(dealSql).toContain("LIMIT 12");
+		expect(dealSql).toContain("LIMIT 60");
 
 		// computed passthrough
 		expect(dealSql).toContain("excel_sheet_name,");
@@ -502,10 +502,10 @@ describe("populateDocumentPageUnderstandingFromVisualExtractions — excel_sheet
 		// Safe CROSS JOIN LATERAL pattern with NULL guard
 		expect(dealSql).toContain("CROSS JOIN LATERAL");
 		expect(dealSql).toContain("WHERE row_num IS NOT NULL");
-		// GROUP BY and ORDER BY row_num with LIMIT 12
+		// GROUP BY and ORDER BY row_num with LIMIT 60
 		expect(dealSql).toContain("GROUP BY row_num");
 		expect(dealSql).toContain("ORDER BY row_num");
-		expect(dealSql).toContain("LIMIT 12");
+		expect(dealSql).toContain("LIMIT 60");
 	});
 });
 
@@ -536,7 +536,7 @@ describe("populateDocumentPageUnderstandingFromVisualExtractions — excel_range
 		expect(dealSql).toContain("END AS excel_headers_text");
 		expect(dealSql).toContain("jsonb_array_elements(structured_json->'rows_preview')");
 		expect(dealSql).toContain("END AS excel_rows_text");
-		expect(dealSql).toContain("r.rn <= 12");
+		expect(dealSql).toContain("r.rn <= 60");
 		expect(dealSql).toContain("c.value #>> '{}'");
 
 		// New passthrough columns in computed SELECT

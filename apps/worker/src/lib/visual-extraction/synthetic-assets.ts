@@ -2099,7 +2099,7 @@ function buildSyntheticAssets(params: {
 				sheet_name: sheetName,
 				headers,
 				row_count: rowCount,
-				grid_preview: { maxRows: sheet?.gridPreview?.maxRows, maxCols: sheet?.gridPreview?.maxCols, cells: gridCells.slice(0, 200) },
+				grid_preview: { maxRows: sheet?.gridPreview?.maxRows, maxCols: sheet?.gridPreview?.maxCols, cells: gridCells.slice(0, 800) },
 				summary: sheet?.summary ?? {},
 				understanding_v1: summary.understanding,
 				summary_text_investor: summary.investor_summary,

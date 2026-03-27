@@ -19,6 +19,8 @@ const AUDIT_DEALS: Record<string, string> = {
 	Palm:         "c4f10092-1c94-4116-b4f0-78874868f92b",
 	Qredible:     "b21b894e-4020-46bd-b753-93b2d2d5fa8f",
 	StackFactor:  "adb2a1cf-bbb1-4f3b-8735-e2249415124f",
+	StackOP:      "9796a792-aa2f-44bb-837d-cb5fc965de89",
+	StackonFactor:"2b9b0645-5a92-4cd4-b0e9-6957c5d9f680",
 	WebMax:       "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
 };
 

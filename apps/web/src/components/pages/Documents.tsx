@@ -7,6 +7,7 @@ import { DealExtractionReportModal } from '../documents/DealExtractionReportModa
 import { NewDealModal } from '../newDeal_Modal';
 import type { Document as ApiDocument } from '@dealdecision/contracts';
 import { apiGetDeals, apiGetDocuments, apiRetryDocument, isLiveBackend } from '../../lib/apiClient';
+import { summarizeDocumentStatuses } from '../../lib/documentStatusView';
 import { useAuth } from '@clerk/clerk-react';
 import { 
   Upload, 
@@ -111,10 +112,12 @@ export function Documents({ darkMode }: DocumentsProps) {
   }, [availableDeals, selectedDealId]);
 
   const docsSummary = useMemo(() => {
-    const total = documents.length;
-    const completed = documents.filter((d) => d.status === 'completed').length;
-    const pending = documents.filter((d) => d.status === 'pending' || d.status === 'processing').length;
-    return { total, completed, pending };
+    const summary = summarizeDocumentStatuses(documents);
+    return {
+      total: summary.total,
+      completed: summary.completed,
+      pending: summary.inProgress,
+    };
   }, [documents]);
 
   return (

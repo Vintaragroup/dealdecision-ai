@@ -1892,6 +1892,18 @@ export async function apiDeleteDocument(dealId: string, documentId: string) {
   );
 }
 
+export async function apiGetDocumentDownloadUrl(dealId: string, documentId: string) {
+  return request<{
+    deal_id: string;
+    document_id: string;
+    provider: 'r2';
+    bucket: string;
+    key: string;
+    signed_url: string;
+    expires_in_seconds: number;
+  }>(`/api/v1/deals/${dealId}/documents/${documentId}/download-url`);
+}
+
 export async function apiAnalyzeDocumentsBatch(filenames: string[]) {
   return request<{
     analysis: any;

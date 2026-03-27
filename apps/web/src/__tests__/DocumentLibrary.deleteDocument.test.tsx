@@ -9,6 +9,7 @@ vi.mock('../lib/apiClient', () => {
   return {
     isLiveBackend: () => true,
     apiDeleteDocument: vi.fn(),
+    apiGetDocumentDownloadUrl: vi.fn(),
   };
 });
 

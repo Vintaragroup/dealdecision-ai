@@ -365,6 +365,7 @@ function extractTemporalAlignmentBlock(flags: IntegrityFlag[]): TemporalAlignmen
  *   - financialBreakdownV1  (FinancialBreakdownV1Like)
  *   - underwritingReadinessV1 (UnderwritingReadinessV1Like)
  *   - financialIntegrityV1  (FinancialIntegrityV1Like)
+ *   - financialCoverageV1   (FinancialCoverageProfileV1Like) — optional
  *   - financialSnapshotStale (boolean envelope flag)
  *
  * No API calls are made here. Fails open: missing fields render as '—'.
@@ -374,6 +375,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     financialBreakdownV1,
     underwritingReadinessV1,
     financialIntegrityV1,
+    financialCoverageV1,
     financialSnapshotStale = false,
   } = props;
 
@@ -381,6 +383,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const bd = financialBreakdownV1 as any ?? null;
     const ur = underwritingReadinessV1 as any ?? null;
     const fi = financialIntegrityV1 as any ?? null;
+    const cov = financialCoverageV1 as any ?? null;
 
     const flags: IntegrityFlag[] = fi?.flags ?? [];
     const missing_critical: string[] = fi?.missing_critical ?? [];
@@ -541,8 +544,10 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const criticalMetricsTotal = missingCount + (ur?.reasons?.length ?? 0) + 5; // denominator estimate
     const criticalPresent = Math.max(0, criticalMetricsTotal - missingCount);
 
-    // extractedFactsCount: how many distinct financial signals exist in the payload
-    // Counts: SoT row candidates + projection periods as a proxy for raw extracted facts.
+    // extractedFactsCount: surfaced financial signals in the payload
+    // (current-state metrics with values + projection periods).
+    // This is NOT the total rows in financial_facts_v1; it is the count of
+    // distinct financial signals the report surfaces to the investor.
     const _sotCandidates = [
       bd?.current_state?.revenue,
       bd?.current_state?.burn_rate,
@@ -693,6 +698,44 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
         };
       });
 
+    // Projection-only revenue row: when revenue was extracted as projection-only
+    // (forecast_revenue_present && !historical_revenue_present), add a clearly labeled
+    // read-only row so the investor can see that revenue WAS extracted, just not as
+    // current/historical evidence. This is informational only — it does not affect
+    // underwriting scoring.
+    const hasForecastRevenue = cov?.coverage?.forecast_revenue_present === true;
+    const hasHistoricalRevenue = cov?.coverage?.historical_revenue_present === true;
+    const projectionPeriodRevenues = (bd?.projections?.periods ?? []).filter((p: any) => p.revenue != null);
+    if (
+      hasForecastRevenue &&
+      !hasHistoricalRevenue &&
+      projectionPeriodRevenues.length > 0 &&
+      !sotRows.some((r) => r.metric === 'Revenue')
+    ) {
+      // Build a summary of the best projected revenue value for the row display
+      const bestProjPeriod: any = projectionPeriodRevenues.reduce((best: any, p: any) =>
+        p.revenue > (best?.revenue ?? -Infinity) ? p : best, projectionPeriodRevenues[0]);
+      const projRevLabel = bestProjPeriod.period_label ? `${bestProjPeriod.period_label}` : 'Projected';
+      const projRevValue = bestProjPeriod.revenue_currency
+        ? `${bestProjPeriod.revenue_currency} ${Number(bestProjPeriod.revenue).toLocaleString()}`
+        : `${Number(bestProjPeriod.revenue).toLocaleString()}`;
+      sotRows.push({
+        metric: 'Revenue',
+        value: projRevValue,
+        source: 'XLSX',
+        sources: 1,
+        confidence: 'Low',
+        confidenceExplanation: `Projection-only — no current/historical actuals available. Best period: ${projRevLabel}.`,
+        status: 'Single Source',
+        sourceWeight: 1,
+        sublabel: `Projected (${projRevLabel}) — no actuals`,
+        isDerived: false,
+        isProvisional: true,
+        alternativeFact: null,
+        isProjectionOnly: true,
+      } as SourceOfTruthRow);
+    }
+
     // ── Cross Source Reconciliation ─────────────────────────────────────────
     const conflicts = conflictFlags.map((f) => {
       const aVal = f.source_a!.value;
@@ -719,10 +762,13 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
     const projectionPeriods = bd?.projections?.periods ?? [];
     const timeItems = projectionPeriods.map((p: any) => {
       const label: string = p.period_label ?? 'Unknown period';
-      // Heuristic: labels containing future years or 'Proj' are projected
+      // Projected when: the period is flagged is_projected, label contains 'proj'/'forecast'/'estimate',
+      // label matches ordinal 'Year N' pattern, or contains a future 4-digit year.
       const currentYear = new Date().getFullYear();
       const looksProjected =
+        p.is_projected === true ||
         /proj|forecast|estimate/i.test(label) ||
+        /^(?:Year|Yr)\s+\d+/i.test(label) ||
         (Number(label.match(/\d{4}/)?.[0]) > currentYear);
       const hasMissingData = p.revenue == null && p.net_income == null;
 
@@ -928,7 +974,7 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
         validatedFactsCount,
       },
 
-      sourceOfTruth: { rows: sotRows },
+      sourceOfTruth: { rows: sotRows, scopeNote: 'Primary underwriting metrics — projection-only signals shown with ‘Projected’ label' },
 
       conflicts: { conflicts, reconciliationStatus, reconciliationMessage },
 
@@ -950,5 +996,5 @@ export function useFinancialAuditData(props: FinancialAuditTabProps): ProcessedA
 
       rawFacts: { facts: rawFactRows },
     };
-  }, [financialBreakdownV1, underwritingReadinessV1, financialIntegrityV1, financialSnapshotStale]);
+  }, [financialBreakdownV1, underwritingReadinessV1, financialIntegrityV1, financialCoverageV1, financialSnapshotStale]);
 }

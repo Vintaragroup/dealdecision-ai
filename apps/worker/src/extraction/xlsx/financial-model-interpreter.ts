@@ -59,6 +59,12 @@ const ROW_LABEL_RULES: Array<{ pattern: RegExp; field_type: FieldTypeV1 }> = [
   { pattern: /\bvaluation\b/i,                                     field_type: "valuation_v1" },
   // Pipeline
   { pattern: /\bpipeline\b|\bleads\b|\bopportunities\b/i,        field_type: "pipeline_metric_v1" },
+  // Expenses (must come after EBITDA/burn to avoid false matches)
+  { pattern: /\btotal\s+(?:expenses?|costs?)\b/i,                 field_type: "total_expenses_v1" },
+  { pattern: /\bcogs\b|\bcost\s+of\s+(?:goods|revenue|sales)\b/i, field_type: "cogs_v1" },
+  { pattern: /\bop(?:erating)?\s+exp(?:enses?)?\b|\bopex\b/i,     field_type: "opex_v1" },
+  { pattern: /\bexpenses?\s+(?:fixed|variable)\b/i,               field_type: "opex_v1" },
+  { pattern: /\bpayroll\b|\bsalaries\b|\bwages\b/i,               field_type: "opex_v1" },
   // Catch-all
   { pattern: /.*/,                                                  field_type: "other_metric_v1" },
 ];

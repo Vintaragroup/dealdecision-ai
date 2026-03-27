@@ -65,10 +65,10 @@ export function SummaryMetricsBar({
 
         <div className={`w-px h-12 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
 
-        {/* Extracted Facts */}
+        {/* Surfaced Facts */}
         <div>
           <div className={`text-xs mb-1.5 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-            Extracted Facts
+            Surfaced Facts
           </div>
           <div className={`text-sm font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
             {extractedFactsCount != null

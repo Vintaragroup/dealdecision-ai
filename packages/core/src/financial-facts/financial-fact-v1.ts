@@ -514,8 +514,13 @@ export function inferPeriodType(label: string): FinancialFactPeriodType {
   // Standalone quarter ("Q1", "Q2", ...)
   if (/^Q[1-4]$/i.test(s)) return "quarterly";
   if (/^\d{4}-\d{2}$/.test(s)) return "monthly";
+  // Month names ("January", "Feb", "Mar") and ordinal months ("Month 1", "Month 12")
+  if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*$/i.test(s)) return "monthly";
+  if (/^month\s+\d{1,2}$/i.test(s)) return "monthly";
   if (/^(FY)?\d{4}$/.test(s)) return "annual";
   // Half-year and YTD: year-scoped aggregations → annual
   if (/^(YTD|H[12]\s+\d{4}|\d{4}\s+H[12])$/i.test(s)) return "annual";
+  // "Year N Total" or "Year N" → annual
+  if (/^year\s+\d+(?:\s+total)?$/i.test(s)) return "annual";
   return "unknown";
 }

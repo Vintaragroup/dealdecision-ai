@@ -64,7 +64,7 @@ export interface SummaryMetricsBarProps {
   criticalMetrics: string;
   conflicts: number;
   factsAnalyzed: number;
-  /** Extracted facts count (distinct financial signals in the payload) */
+  /** Surfaced facts count — current-state metrics + projection periods surfaced in this report */
   extractedFactsCount?: number | null;
   /** Optional validated/extracted split for richer display */
   validatedFactsCount?: number | null;
@@ -89,10 +89,17 @@ export interface SourceOfTruthRow {
   isProvisional?: boolean;
   /** Secondary metric row shown when a meaningful alternative exists (e.g. workbook burn proxy) */
   alternativeFact?: { label: string; value: string; sublabel: string } | null;
+  /**
+   * True when this row represents a projection-only metric — extracted but not usable as
+   * current/historical evidence. Rendered differently to preserve investor clarity.
+   */
+  isProjectionOnly?: boolean;
 }
 
 export interface SourceOfTruthTableProps {
   rows: SourceOfTruthRow[];
+  /** Optional scope note rendered in the table header to explain the filter applied. */
+  scopeNote?: string | null;
 }
 
 // Cross-Source Reconciliation Types
@@ -221,6 +228,7 @@ export interface FinancialAuditTabProps {
   financialBreakdownV1?: any;
   underwritingReadinessV1?: any;
   financialIntegrityV1?: any;
+  financialCoverageV1?: any;
   financialSnapshotStale?: boolean;
   darkMode?: boolean;
 }

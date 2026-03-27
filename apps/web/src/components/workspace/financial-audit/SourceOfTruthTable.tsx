@@ -15,7 +15,7 @@ interface Props extends SourceOfTruthTableProps {
   darkMode?: boolean;
 }
 
-export function SourceOfTruthTable({ rows, darkMode = true }: Props) {
+export function SourceOfTruthTable({ rows, scopeNote, darkMode = true }: Props) {
   const [hoveredRow, setHoveredRow] = useState<string | null>(null);
 
   const getSourceIcon = (source: string) => {
@@ -26,6 +26,13 @@ export function SourceOfTruthTable({ rows, darkMode = true }: Props) {
 
   return (
     <div className={`rounded-xl border overflow-hidden ${getCardBackground(darkMode)}`}>
+      {scopeNote && (
+        <div className={`px-4 py-2 text-xs border-b ${
+          darkMode ? 'text-gray-500 border-white/5 bg-white/[0.02]' : 'text-gray-500 border-gray-100 bg-gray-50'
+        }`}>
+          {scopeNote}
+        </div>
+      )}
       <table className="w-full">
         <thead className={darkMode ? 'bg-white/5' : 'bg-gray-50'}>
           <tr>
@@ -56,7 +63,9 @@ export function SourceOfTruthTable({ rows, darkMode = true }: Props) {
                 onMouseEnter={() => setHoveredRow(`source-${idx}`)}
                 onMouseLeave={() => setHoveredRow(null)}
                 className={`border-t transition-colors relative group ${
-                  row.status === 'Conflicting' 
+                  row.isProjectionOnly
+                    ? (darkMode ? 'border-white/10 bg-amber-500/5' : 'border-gray-200 bg-amber-50/60')
+                    : row.status === 'Conflicting'
                     ? getConflictBackground(darkMode)
                     : row.status === 'Single Source'
                     ? getSingleSourceBackground(darkMode)

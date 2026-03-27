@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { MockedFunction } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { DealsList } from '../components/pages/DealsList';
@@ -41,31 +41,32 @@ vi.mock('../lib/apiClient', () => {
     apiGetDocuments: vi.fn(),
     apiAutoProgressDeal: vi.fn(),
     apiDeleteDeal: vi.fn(),
+    apiArchiveDeal: vi.fn(),
+    apiUnarchiveDeal: vi.fn(),
   };
 });
 
 import * as apiClient from '../lib/apiClient';
 
-describe('DealsList delete deal', () => {
-  it('calls apiDeleteDeal after user confirms delete', async () => {
+describe('DealsList archive deal', () => {
+  it('calls apiArchiveDeal when user selects Archive action', async () => {
     const apiGetDeals = apiClient.apiGetDeals as MockedFunction<typeof apiClient.apiGetDeals>;
-    const apiGetDocuments = apiClient.apiGetDocuments as MockedFunction<
-      typeof apiClient.apiGetDocuments
-    >;
-    const apiDeleteDeal = apiClient.apiDeleteDeal as MockedFunction<typeof apiClient.apiDeleteDeal>;
+    const apiGetDocuments = apiClient.apiGetDocuments as MockedFunction<typeof apiClient.apiGetDocuments>;
+    const apiArchiveDeal = apiClient.apiArchiveDeal as MockedFunction<typeof apiClient.apiArchiveDeal>;
 
     apiGetDeals.mockResolvedValue([
       {
         id: 'deal-1',
-        name: 'Demo Deal',
+        name: 'Archive Candidate',
         stage: 'intake',
         priority: 'medium',
         trend: 'stable',
+        lifecycle_status: 'active',
         updated_at: new Date().toISOString(),
       } as any,
     ]);
     apiGetDocuments.mockResolvedValue({ documents: [] } as any);
-    apiDeleteDeal.mockResolvedValue({ ok: true } as any);
+    apiArchiveDeal.mockResolvedValue({ id: 'deal-1', lifecycle_status: 'archived' } as any);
 
     render(
       <ScoreSourceProvider>
@@ -75,26 +76,15 @@ describe('DealsList delete deal', () => {
 
     const user = userEvent.setup();
 
-    // Wait for the deal to appear.
     await waitFor(() => {
-      expect(screen.getByText(/Demo Deal/i)).toBeInTheDocument();
+      expect(screen.getByText(/Archive Candidate/i)).toBeInTheDocument();
     });
 
-    // Open actions menu and choose Delete.
-    await user.click(screen.getAllByRole('menuitem', { name: /^Delete$/i })[0]);
-
-    // Confirm modal
-    await waitFor(() => {
-      expect(screen.getByRole('heading', { name: /Delete Deal/i })).toBeInTheDocument();
-    });
-
-    const confirmInput = screen.getByPlaceholderText(/Demo Deal/i) as HTMLInputElement;
-    fireEvent.change(confirmInput, { target: { value: 'DELETE' } });
-    await user.click(screen.getByRole('button', { name: /delete deal/i }));
+    await user.click(screen.getAllByRole('menuitem', { name: /^Archive$/i })[0]);
 
     await waitFor(() => {
-      expect(apiDeleteDeal).toHaveBeenCalledTimes(1);
-      expect(apiDeleteDeal).toHaveBeenCalledWith('deal-1', { purge: false });
+      expect(apiArchiveDeal).toHaveBeenCalledTimes(1);
+      expect(apiArchiveDeal).toHaveBeenCalledWith('deal-1');
     });
   });
 });

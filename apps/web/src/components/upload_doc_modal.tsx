@@ -1,38 +1,75 @@
 import { useState, useRef, useEffect } from 'react';
 import { X, Upload, FileText, Check, AlertCircle, Loader2, Trash2, FileSpreadsheet, Presentation, File } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { apiUploadDocument } from '../lib/apiClient';
+
+type UploadDocType = 'pitch_deck' | 'financials' | 'product' | 'legal' | 'team' | 'market' | 'other';
 
 interface UploadedFile {
   id: string;
   file: File;
-  status: 'uploading' | 'uploaded' | 'failed';
+  status: 'ready' | 'uploading' | 'uploaded' | 'failed';
   progress: number;
   errorMessage?: string;
 }
 
-export default function Component() {
-  const [isOpen, setIsOpen] = useState(true);
+interface UploadDocModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  dealId: string;
+  onUploaded?: (summary: { uploaded: number; failed: number }) => void;
+}
+
+export default function UploadDocModal({ isOpen, onClose, dealId, onUploaded }: UploadDocModalProps) {
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showSuccess, setShowSuccess] = useState(false);
+  const [submitMessage, setSubmitMessage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
   // Keyboard accessibility
   useEffect(() => {
+    if (!isOpen) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && isOpen) {
-        setIsOpen(false);
+        onClose();
       }
       if (e.key === 'Enter' && isFormValid() && !isSubmitting) {
-        handleSubmit();
+        void handleSubmit();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, isSubmitting, uploadedFiles]);
+  }, [isOpen, isSubmitting, uploadedFiles, onClose]);
+
+  const isSupportedFile = (file: File) => {
+    const allowedTypes = new Set([
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ]);
+
+    const lower = file.name.toLowerCase();
+    const byExtension = ['.pdf', '.pptx', '.xlsx', '.docx'].some((ext) => lower.endsWith(ext));
+    return allowedTypes.has(file.type) || byExtension;
+  };
+
+  const inferDocumentType = (file: File): UploadDocType => {
+    const name = file.name.toLowerCase();
+
+    if (name.endsWith('.xlsx') || name.endsWith('.xls') || name.endsWith('.csv')) return 'financials';
+    if (/(financial|revenue|model|forecast|runway|burn|cap\s*table|valuation)/.test(name)) return 'financials';
+    if (/(pitch|deck|investor|teaser)/.test(name)) return 'pitch_deck';
+    if (/(term\s*sheet|safe|legal|agreement|contract|nda)/.test(name)) return 'legal';
+    if (/(team|founder|management|org\s*chart)/.test(name)) return 'team';
+    if (/(market|tam|sam|som|competitor|competition)/.test(name)) return 'market';
+    if (/(product|roadmap|demo|spec|technical)/.test(name)) return 'product';
+
+    return 'other';
+  };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -60,42 +97,19 @@ export default function Component() {
   };
 
   const processFiles = (files: File[]) => {
-    const allowedTypes = [
-      'application/pdf',
-      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    ];
+    setSubmitMessage(null);
 
     files.forEach((file) => {
-      if (allowedTypes.includes(file.type) && file.size <= MAX_FILE_SIZE) {
+      if (isSupportedFile(file) && file.size <= MAX_FILE_SIZE) {
         const fileId = Math.random().toString(36).substring(7);
         const newFile: UploadedFile = {
           id: fileId,
           file,
-          status: 'uploading',
-          progress: 0
+          status: 'ready',
+          progress: 0,
         };
 
         setUploadedFiles((prev) => [...prev, newFile]);
-
-        // Simulate upload
-        const uploadInterval = setInterval(() => {
-          setUploadedFiles((prev) =>
-            prev.map((f) =>
-              f.id === fileId ? { ...f, progress: Math.min(f.progress + 10, 100) } : f
-            )
-          );
-        }, 150);
-
-        setTimeout(() => {
-          clearInterval(uploadInterval);
-          setUploadedFiles((prev) =>
-            prev.map((f) =>
-              f.id === fileId ? { ...f, status: 'uploaded' as const } : f
-            )
-          );
-        }, 1500);
       } else {
         const fileId = Math.random().toString(36).substring(7);
         const newFile: UploadedFile = {
@@ -115,25 +129,51 @@ export default function Component() {
     setUploadedFiles((prev) => prev.filter((f) => f.id !== id));
   };
 
-  const handleSubmit = () => {
-    const hasUploadedFile = uploadedFiles.some((f) => f.status === 'uploaded');
-    if (!hasUploadedFile) return;
+  const handleSubmit = async () => {
+    const candidates = uploadedFiles.filter((f) => f.status === 'ready' || f.status === 'failed');
+    if (candidates.length === 0 || !dealId) return;
 
     setIsSubmitting(true);
-    
-    // Simulate submission
-    setTimeout(() => {
-      setIsSubmitting(false);
-      setIsOpen(false);
-      setShowSuccess(true);
-      // Reset form
+    setSubmitMessage(null);
+
+    let uploadedCount = 0;
+    let failedCount = 0;
+
+    for (const item of candidates) {
+      setUploadedFiles((prev) => prev.map((f) => (f.id === item.id ? { ...f, status: 'uploading', progress: 15, errorMessage: undefined } : f)));
+
+      try {
+        const docType = inferDocumentType(item.file);
+        await apiUploadDocument(dealId, item.file, docType, item.file.name, { duplicatePolicy: 'skip' });
+        uploadedCount += 1;
+        setUploadedFiles((prev) => prev.map((f) => (f.id === item.id ? { ...f, status: 'uploaded', progress: 100, errorMessage: undefined } : f)));
+      } catch (err) {
+        failedCount += 1;
+        const message = err instanceof Error ? err.message : 'Upload failed';
+        setUploadedFiles((prev) => prev.map((f) => (f.id === item.id ? { ...f, status: 'failed', progress: 0, errorMessage: message } : f)));
+      }
+    }
+
+    setIsSubmitting(false);
+
+    if (uploadedCount > 0) {
+      onUploaded?.({ uploaded: uploadedCount, failed: failedCount });
+    }
+
+    if (failedCount === 0 && uploadedCount > 0) {
       setUploadedFiles([]);
-    }, 2000);
+      onClose();
+      return;
+    }
+
+    if (failedCount > 0) {
+      setSubmitMessage(`Uploaded ${uploadedCount} file(s). Failed ${failedCount}. You can retry by clicking Upload again.`);
+    }
   };
 
   const isFormValid = () => {
     return (
-      uploadedFiles.some((f) => f.status === 'uploaded') &&
+      uploadedFiles.some((f) => f.status === 'ready' || f.status === 'uploaded' || f.status === 'failed') &&
       !uploadedFiles.some((f) => f.status === 'uploading')
     );
   };
@@ -162,8 +202,8 @@ export default function Component() {
 
   const getTotalFileInfo = () => {
     const totalSize = uploadedFiles.reduce((acc, f) => acc + f.file.size, 0);
-    const uploadedCount = uploadedFiles.filter((f) => f.status === 'uploaded').length;
-    return { totalSize, uploadedCount, totalCount: uploadedFiles.length };
+    const readyCount = uploadedFiles.filter((f) => f.status === 'ready' || f.status === 'uploaded').length;
+    return { totalSize, readyCount, totalCount: uploadedFiles.length };
   };
 
   const truncateFilename = (filename: string, maxLength = 30) => {
@@ -174,31 +214,20 @@ export default function Component() {
     return `${truncated}...${ext}`;
   };
 
-  if (!isOpen) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950 flex items-center justify-center p-8">
-        <button
-          onClick={() => setIsOpen(true)}
-          className="px-6 py-3 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
-        >
-          Open Document Upload Modal
-        </button>
-      </div>
-    );
-  }
+  if (!isOpen) return null;
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950 flex items-center justify-center p-8">
+    <div className="fixed inset-0 z-50 bg-gradient-to-br from-zinc-950/95 via-zinc-900/95 to-zinc-950/95 flex items-center justify-center p-8">
       {/* Overlay */}
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setIsOpen(false)} />
+      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
       
       {/* Modal */}
-      <div className="relative w-full max-w-[600px] bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 rounded-[16px] shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_0_rgba(255,255,255,0.05)] border border-zinc-700/50 p-6">
+      <div className="relative w-full max-w-2xl bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 rounded-2xl shadow-[0_8px_32px_rgba(0,0,0,0.4),inset_0_1px_0_0_rgba(255,255,255,0.05)] border border-zinc-700/50 p-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-xl text-white">Document upload</h2>
           <button
-            onClick={() => setIsOpen(false)}
+            onClick={onClose}
             className="text-zinc-400 hover:text-white transition-colors"
           >
             <X className="w-5 h-5" strokeWidth={1.5} />
@@ -236,14 +265,9 @@ export default function Component() {
           )}
 
           {/* Uploaded Files */}
-          <AnimatePresence>
-            {uploadedFiles.map((uploadedFile) => (
-              <motion.div
+          {uploadedFiles.map((uploadedFile) => (
+              <div
                 key={uploadedFile.id}
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, x: -20 }}
-                transition={{ duration: 0.2 }}
                 className="group flex flex-col gap-2 p-3 bg-zinc-900/50 border border-zinc-700/50 rounded-lg hover:bg-zinc-900/70 hover:border-zinc-600/50 transition-all"
               >
                 <div className="flex items-center gap-3">
@@ -276,6 +300,11 @@ export default function Component() {
                     {uploadedFile.status === 'uploading' && (
                       <Loader2 className="w-4 h-4 text-blue-400 animate-spin" strokeWidth={1.5} />
                     )}
+                    {uploadedFile.status === 'ready' && (
+                      <div className="w-5 h-5 rounded-full bg-zinc-500/20 flex items-center justify-center">
+                        <Check className="w-3 h-3 text-zinc-300" strokeWidth={2} />
+                      </div>
+                    )}
                     {uploadedFile.status === 'uploaded' && (
                       <div className="w-5 h-5 rounded-full bg-emerald-500/20 flex items-center justify-center">
                         <Check className="w-3 h-3 text-emerald-400" strokeWidth={2} />
@@ -299,17 +328,14 @@ export default function Component() {
                 {/* Progress Bar */}
                 {uploadedFile.status === 'uploading' && (
                   <div className="w-full h-1 bg-zinc-800 rounded-full overflow-hidden">
-                    <motion.div
-                      className="h-full bg-blue-400"
-                      initial={{ width: 0 }}
-                      animate={{ width: `${uploadedFile.progress}%` }}
-                      transition={{ duration: 0.3 }}
+                    <div
+                      className="h-full bg-blue-400 transition-all duration-300"
+                      style={{ width: `${uploadedFile.progress}%` }}
                     />
                   </div>
                 )}
-              </motion.div>
+              </div>
             ))}
-          </AnimatePresence>
 
           {/* Show dropzone again if files exist */}
           {uploadedFiles.length > 0 && (
@@ -336,22 +362,32 @@ export default function Component() {
               />
             </div>
           )}
+
+          {submitMessage && (
+            <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+              {submitMessage}
+            </div>
+          )}
         </div>
 
         {/* Footer */}
         <div className="flex items-center justify-between mt-6 pt-6 border-t border-zinc-700/50">
           <div className="flex items-center gap-3">
             <button
-              onClick={() => setIsOpen(false)}
+              onClick={onClose}
               className="px-4 py-2 text-zinc-300 hover:text-white transition-colors"
             >
               Cancel
             </button>
             {uploadedFiles.length > 0 && (
               <div className="text-xs text-zinc-400">
-                {getTotalFileInfo().uploadedCount} of {getTotalFileInfo().totalCount} files ready • {formatFileSize(getTotalFileInfo().totalSize)}
+                {getTotalFileInfo().readyCount} of {getTotalFileInfo().totalCount} files ready • {formatFileSize(getTotalFileInfo().totalSize)}
               </div>
             )}
+          </div>
+
+          <div className="text-[11px] text-zinc-500 text-center px-2">
+            Document type is auto-detected from filename and file extension.
           </div>
           
           <button

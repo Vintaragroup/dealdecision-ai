@@ -28,6 +28,7 @@ import { DealWorkspaceHeader } from '../workspace/DealWorkspaceTopSection';
 import { DealOverviewTab } from '../workspace/DealOverviewTab';
 import { DealWorkspaceOverviewComp } from '../workspace/Dealworkspace-Legacy/dealworkspace_overview_comp';
 import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
+import UploadDocModal from '../upload_doc_modal';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
 import { resolveCanonicalScore, type ResolvedScore } from '../../lib/resolveCanonicalScore';
 import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
@@ -165,6 +166,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [showCommentsPanel, setShowCommentsPanel] = useState(false);
   const [comments, setComments] = useState<Array<{ id: string; user: string; message: string; timestamp: Date }>>([]);
   const [showMoreActions, setShowMoreActions] = useState(false);
+  const [showUploadDocModal, setShowUploadDocModal] = useState(false);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [showScoreBreakdown, setShowScoreBreakdown] = useState(false);
   const [showScoreTraceDebug, setShowScoreTraceDebug] = useState(false);
@@ -4673,12 +4675,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     { id: 'financial-audit', label: 'Financial Audit', icon: <Clipboard className="w-4 h-4" /> },
     { id: 'analyst', label: 'Graph', icon: <Eye className="w-4 h-4" /> },
     { id: 'analysis', label: 'AI Analysis', icon: <Sparkles className="w-4 h-4" /> },
+    { id: 'documents', label: 'Documents', icon: <FileText className="w-4 h-4" /> },
   ];
 
   // Secondary tabs accessible via the More dropdown.
   const moreTabs = [
     { id: 'jobs', label: 'Jobs', icon: <Zap className="w-4 h-4" /> },
-    { id: 'documents', label: 'Documents', icon: <FileText className="w-4 h-4" /> },
     { id: 'evidence', label: 'Evidence', icon: <Shield className="w-4 h-4" /> },
     { id: 'diligence', label: 'Due Diligence', icon: <Shield className="w-4 h-4" /> },
     { id: 'feedback', label: 'Investment Thesis', icon: <Target className="w-4 h-4" /> },
@@ -6465,7 +6467,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                         <button
                           onClick={() => {
                             setShowMoreActions(false);
-                            addToast('info', 'Upload Modal', 'Feature coming soon');
+                            setShowUploadDocModal(true);
                           }}
                           className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
                             darkMode
@@ -6770,7 +6772,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               evidenceCoverage={vm.header.evidenceCoverage}
               evidenceConfidence={vm.header.evidenceConfidence}
               onRefreshInsights={runAIAnalysis}
-              onUploadDocument={() => setActiveTab('documents')}
+              onUploadDocument={() => setShowUploadDocModal(true)}
               onMoreActions={() => setShowMoreActions(true)}
               analyzing={vm.header.analyzing}
               isFounder={false /* no isFounder in useUserRole(); awaiting future role expansion */}
@@ -6779,6 +6781,18 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           </div>
 
         </div>
+
+        {dealId ? (
+          <UploadDocModal
+            isOpen={showUploadDocModal}
+            onClose={() => setShowUploadDocModal(false)}
+            dealId={dealId}
+            onUploaded={() => {
+              setDocumentsReloadKey((v) => v + 1);
+              addToast('success', 'Upload complete', 'Document library has been refreshed.');
+            }}
+          />
+        ) : null}
 
         {/* Tabs Section */}
 

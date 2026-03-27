@@ -11,7 +11,7 @@ describe("decideLowContentOutcome", () => {
 		});
 		expect(retry.kind).toBe("retry");
 		expect(retry.jobStatus).toBe("succeeded_with_warnings");
-		expect(retry.docStatus).toBe("completed");
+		expect(retry.docStatus).toBe("ready_for_analysis");
 		expect(retry.nextAttempt).toBe(1);
 
 		const needsOcr = decideLowContentOutcome({

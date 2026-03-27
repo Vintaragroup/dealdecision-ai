@@ -43,4 +43,15 @@ describe('documentStatusView', () => {
     expect(summary.inProgress).toBe(2);
     expect(summary.attention).toBe(2);
   });
+
+  it('keeps summary completed count aligned with Analysis Completed label mapping', () => {
+    const statuses = ['ready_for_analysis', 'completed', 'processing', 'needs_review'] as const;
+    const summary = summarizeDocumentStatuses(statuses.map((status) => ({ status })));
+
+    const mappedCompletedCount = statuses
+      .map((status) => getDocumentStatusView(status))
+      .filter((view) => view.label === 'Analysis Completed').length;
+
+    expect(summary.completed).toBe(mappedCompletedCount);
+  });
 });

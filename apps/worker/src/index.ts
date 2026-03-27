@@ -1608,7 +1608,8 @@ async function ingestDocumentProcessor(job: Job) {
 
 				// Only flip the document out of "processing" if we already have content.
 				if (existingTextLen > 0) {
-					await updateDocumentStatus(documentId, "completed");
+					// Legacy alias "completed" is read-compatible only; writers should emit ready_for_analysis.
+					await updateDocumentStatus(documentId, "ready_for_analysis");
 				}
 				await updateJob(job, "succeeded", `Succeeded with warnings: ${message}`, 100);
 				console.warn(`[ingest_document] non-fatal OCR-ish error doc=${documentId} needsOcr=${needsOcr}: ${message}`);

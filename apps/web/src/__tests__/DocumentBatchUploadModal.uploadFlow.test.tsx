@@ -69,6 +69,13 @@ describe('DocumentBatchUploadModal upload flow', () => {
     await waitFor(() => {
       expect(apiClient.apiBulkAssignDocuments).toHaveBeenCalledTimes(1);
       expect(apiClient.apiUploadDocument).toHaveBeenCalledTimes(1);
+      expect(apiClient.apiUploadDocument).toHaveBeenCalledWith(
+        'deal-1',
+        expect.any(File),
+        'other',
+        'pitch.pdf',
+        { duplicatePolicy: 'skip' }
+      );
       expect(onSuccess).toHaveBeenCalledTimes(1);
       expect(onClose).toHaveBeenCalledTimes(1);
     });
@@ -113,7 +120,7 @@ describe('DocumentBatchUploadModal upload flow', () => {
     await user.click(screen.getByRole('button', { name: /upload documents/i }));
 
     await waitFor(() => {
-      expect(apiClient.apiUploadDocument).toHaveBeenCalledTimes(1);
+      expect(apiClient.apiUploadDocument).toHaveBeenCalledTimes(3);
     });
 
     expect(onSuccess).not.toHaveBeenCalled();

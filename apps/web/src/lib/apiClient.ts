@@ -836,6 +836,7 @@ export function apiGetDocuments(dealId: string) {
     type: string;
     status: string;
     uploaded_at?: string;
+    size_bytes?: number;
   }> }>(`/api/v1/deals/${dealId}/documents`);
 }
 
@@ -1828,11 +1829,18 @@ export function apiChatDeal(dealId: string, message: string, dioVersionId?: stri
   });
 }
 
-export async function apiUploadDocument(dealId: string, file: File, type = 'other', title?: string) {
+export async function apiUploadDocument(
+  dealId: string,
+  file: File,
+  type = 'other',
+  title?: string,
+  options?: { duplicatePolicy?: 'skip' | 'replace' | 'keep_both' }
+) {
   const form = new FormData();
   form.append('file', file);
   form.append('type', type);
   if (title) form.append('title', title);
+  if (options?.duplicatePolicy) form.append('duplicate_policy', options.duplicatePolicy);
 
   return request<{
     document: {

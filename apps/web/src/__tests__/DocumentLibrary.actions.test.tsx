@@ -106,4 +106,45 @@ describe('DocumentLibrary document actions', () => {
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute('title', 'Select a deal to download this document');
   });
+
+  it('renders human-readable file size when size_bytes is provided by API', () => {
+    render(
+      <DocumentLibrary
+        darkMode={true}
+        dealId="deal-1"
+        documents={[
+          {
+            document_id: 'doc-1',
+            title: 'Pitch Deck.pdf',
+            type: 'other',
+            status: 'ready_for_analysis',
+            size_bytes: 2048,
+            uploaded_at: new Date().toISOString(),
+          } as any,
+        ]}
+      />
+    );
+
+    expect(screen.getAllByText('2 KB').length).toBeGreaterThan(0);
+  });
+
+  it('maps legacy completed status to Analysis Completed badge label', () => {
+    render(
+      <DocumentLibrary
+        darkMode={true}
+        dealId="deal-1"
+        documents={[
+          {
+            document_id: 'doc-legacy',
+            title: 'Legacy Deck.pdf',
+            type: 'other',
+            status: 'completed',
+            uploaded_at: new Date().toISOString(),
+          } as any,
+        ]}
+      />
+    );
+
+    expect(screen.getByText('Analysis Completed')).toBeInTheDocument();
+  });
 });

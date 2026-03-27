@@ -71,7 +71,7 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
     name: string;
     type: string;
     category: string;
-    size: number;
+    size: number | null;
     uploadedAt: Date;
     uploadedBy: string;
     tags: string[];
@@ -92,7 +92,9 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
           name: doc.title || 'Document',
           type: doc.type,
           category: doc.type,
-          size: 0,
+          size: typeof doc.size_bytes === 'number' && Number.isFinite(doc.size_bytes) && doc.size_bytes >= 0
+            ? doc.size_bytes
+            : null,
           uploadedAt: doc.uploaded_at ? new Date(doc.uploaded_at) : new Date(),
           uploadedBy: 'System',
           tags: [],
@@ -140,7 +142,8 @@ export function DocumentLibrary({ darkMode, dealId, documents: initialDocuments,
     return <File className="w-6 h-6 text-gray-500" />;
   };
 
-  const formatFileSize = (bytes: number) => {
+  const formatFileSize = (bytes: number | null) => {
+    if (bytes === null) return 'Unknown size';
     if (bytes === 0) return '0 Bytes';
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB'];

@@ -129,4 +129,59 @@ describe('DocumentBatchUploadModal upload flow', () => {
     // Non-blocking error surfaced via toast
     expect(screen.getByText(/upload incomplete/i)).toBeInTheDocument();
   });
+
+  it('reports partial failure counts and completed progress for multi-file upload', async () => {
+    const onClose = vi.fn();
+    const onSuccess = vi.fn();
+
+    vi.mocked(apiClient.apiAnalyzeDocumentsBatch).mockResolvedValue({
+      analysis: {
+        summary: { totalFiles: 2, totalGroups: 1, matched: 1, new: 0 },
+        duplicates: [],
+        groups: [
+          {
+            company: 'Acme Co',
+            status: 'matched',
+            dealId: 'deal-1',
+            dealName: 'Acme Co',
+            documentType: 'other',
+            fileCount: 2,
+            files: ['pitch-a.pdf', 'pitch-b.pdf'],
+          },
+        ],
+      },
+    } as any);
+
+    vi.mocked(apiClient.apiBulkAssignDocuments).mockResolvedValue({
+      assignments: [
+        { filename: 'pitch-a.pdf', dealId: 'deal-1', dealName: 'Acme Co' },
+        { filename: 'pitch-b.pdf', dealId: 'deal-1', dealName: 'Acme Co' },
+      ],
+    } as any);
+
+    vi.mocked(apiClient.apiUploadDocument)
+      .mockResolvedValueOnce({ document: { id: 'doc-a' } } as any)
+      .mockRejectedValue(new Error('upload failed'));
+
+    render(<DocumentBatchUploadModal onClose={onClose} onSuccess={onSuccess} />);
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+    const user = userEvent.setup();
+    await user.upload(input, [
+      new File(['a'], 'pitch-a.pdf', { type: 'application/pdf' }),
+      new File(['b'], 'pitch-b.pdf', { type: 'application/pdf' }),
+    ]);
+
+    await screen.findByText('Acme Co', { selector: 'p' });
+    await user.click(screen.getByRole('button', { name: /upload documents/i }));
+
+    await waitFor(() => {
+      expect(apiClient.apiUploadDocument).toHaveBeenCalledTimes(4);
+    });
+
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText(/uploaded 1 file\(s\)\. failures: 1\./i)).toBeInTheDocument();
+    expect(screen.getByText('2/2')).toBeInTheDocument();
+  });
 });

@@ -42,6 +42,7 @@ describe('DocumentLibrary document actions', () => {
     expect(screen.getByLabelText('Re-run extraction for Pitch Deck.pdf')).toHaveAttribute('title', 'Re-run extraction');
     expect(screen.getByLabelText('Download document Pitch Deck.pdf')).toHaveAttribute('title', 'Download document');
     expect(screen.getByLabelText('Delete document Pitch Deck.pdf')).toHaveAttribute('title', 'Delete document');
+    expect(screen.getByText('Analysis Completed')).toBeInTheDocument();
   });
 
   it('starts download using signed URL endpoint', async () => {

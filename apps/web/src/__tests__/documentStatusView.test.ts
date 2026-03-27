@@ -54,4 +54,12 @@ describe('documentStatusView', () => {
 
     expect(summary.completed).toBe(mappedCompletedCount);
   });
+
+  it('returns the same badge label before and after reload-style remapping', () => {
+    const firstPass = getDocumentStatusView('ready_for_analysis').label;
+    const secondPass = getDocumentStatusView('ready_for_analysis').label;
+
+    expect(firstPass).toBe('Analysis Completed');
+    expect(secondPass).toBe('Analysis Completed');
+  });
 });

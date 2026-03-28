@@ -50,6 +50,7 @@ function formatRelativeDate(value: string | null): string {
 
 export function AdminUserAnalyticsDetailView({ user, onBack }: AdminUserAnalyticsDetailViewProps) {
   const [range, setRange] = useState<RangeValue>(30);
+  const [dealViewTab, setDealViewTab] = useState<'overview' | 'current' | 'stale'>('overview');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<AdminUserAnalyticsResponse | null>(null);
@@ -83,6 +84,19 @@ export function AdminUserAnalyticsDetailView({ user, onBack }: AdminUserAnalytic
     if (!data || data.kpis.total_deals === 0) return 0;
     return data.kpis.total_documents / data.kpis.total_deals;
   }, [data]);
+
+  const selectedDeals = useMemo(() => {
+    if (!data) return [];
+    if (dealViewTab === 'current') return data.current_deals;
+    if (dealViewTab === 'stale') return data.stale_deals;
+    return data.deals;
+  }, [data, dealViewTab]);
+
+  const emptyMessage = useMemo(() => {
+    if (dealViewTab === 'current') return 'No currently active deals in the last 30 days.';
+    if (dealViewTab === 'stale') return 'No stale deals found (30+ days without activity).';
+    return 'No deal activity found in this view.';
+  }, [dealViewTab]);
 
   return (
     <div className="space-y-6 rounded-[14px] bg-gradient-to-br from-zinc-900/95 to-zinc-950/95 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] p-6 border border-zinc-800/60">
@@ -145,17 +159,52 @@ export function AdminUserAnalyticsDetailView({ user, onBack }: AdminUserAnalytic
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
             <KPICard label="Total Deals" value={data.kpis.total_deals} />
             <KPICard label="Active Deals" value={data.kpis.active_deals} />
-            <KPICard label="Archived Deals" value={data.kpis.archived_deals} />
+            <KPICard label="Current Deals (30d)" value={data.kpis.current_deals_30d} />
+            <KPICard label="Stale Deals (30d+)" value={data.kpis.stale_deals_30d} subtitle="No recent touch detected" />
             <KPICard label="Documents" value={data.kpis.total_documents} subtitle={`${avgDocsPerDeal.toFixed(1)} docs/deal`} />
             <KPICard label="Jobs" value={data.kpis.total_jobs} subtitle={`${data.kpis.failed_jobs} failed`} />
             <KPICard label="AI Analyses" value={data.kpis.ai_analyses_total} subtitle={`${data.kpis.ai_llm_called_total} with live LLM`} />
           </div>
 
+          {data.kpis.stale_deals_30d > 0 && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+              <div className="font-medium">Stale deal cleanup recommended</div>
+              <div className="mt-1 text-amber-100/90">
+                {data.kpis.stale_deals_30d} deal(s) have no activity for 30+ days. For deals not marked funded or passed, consider archiving or deleting.
+              </div>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 bg-zinc-800/80 rounded-lg p-1 self-start w-fit">
+            <button
+              onClick={() => setDealViewTab('overview')}
+              className={`px-3 py-1.5 text-xs rounded-md transition-colors ${dealViewTab === 'overview' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+            >
+              Overview
+            </button>
+            <button
+              onClick={() => setDealViewTab('current')}
+              className={`px-3 py-1.5 text-xs rounded-md transition-colors ${dealViewTab === 'current' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+            >
+              Current Deals
+            </button>
+            <button
+              onClick={() => setDealViewTab('stale')}
+              className={`px-3 py-1.5 text-xs rounded-md transition-colors ${dealViewTab === 'stale' ? 'bg-zinc-700 text-white' : 'text-zinc-400 hover:text-zinc-200'}`}
+            >
+              Stale Deals
+            </button>
+          </div>
+
           <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
             <div className="xl:col-span-2 rounded-[12px] bg-zinc-900/70 border border-zinc-800 p-5">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm uppercase tracking-wider text-zinc-400">Deal Activity</h3>
-                <span className="text-xs text-zinc-500">Top 20 by recency</span>
+                <h3 className="text-sm uppercase tracking-wider text-zinc-400">
+                  {dealViewTab === 'overview' ? 'Deal Activity' : dealViewTab === 'current' ? 'Current Deals' : 'Stale Deals'}
+                </h3>
+                <span className="text-xs text-zinc-500">
+                  {dealViewTab === 'overview' ? 'Top 20 by recency' : dealViewTab === 'current' ? 'Touched in last 30 days' : 'No activity for 30+ days'}
+                </span>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full">
@@ -165,24 +214,43 @@ export function AdminUserAnalyticsDetailView({ user, onBack }: AdminUserAnalytic
                       <th className="text-left py-2 text-xs text-zinc-500 uppercase">Stage</th>
                       <th className="text-left py-2 text-xs text-zinc-500 uppercase">Docs</th>
                       <th className="text-left py-2 text-xs text-zinc-500 uppercase">Jobs</th>
-                      <th className="text-left py-2 text-xs text-zinc-500 uppercase">Updated</th>
+                      <th className="text-left py-2 text-xs text-zinc-500 uppercase">Last Activity</th>
+                      {dealViewTab !== 'overview' && (
+                        <th className="text-left py-2 text-xs text-zinc-500 uppercase">Recommendation</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
-                    {data.deals.length === 0 && (
+                    {selectedDeals.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="py-6 text-sm text-zinc-500 text-center">
-                          No user-attributed deal activity in this window.
+                        <td colSpan={dealViewTab === 'overview' ? 5 : 6} className="py-6 text-sm text-zinc-500 text-center">
+                          {emptyMessage}
                         </td>
                       </tr>
                     )}
-                    {data.deals.map((deal) => (
+                    {selectedDeals.map((deal) => (
                       <tr key={deal.deal_id} className="border-b border-zinc-900/80">
                         <td className="py-3 text-sm text-zinc-200">{deal.name}</td>
                         <td className="py-3 text-sm text-zinc-400">{deal.stage ?? 'Unknown'}</td>
                         <td className="py-3 text-sm text-zinc-300">{deal.document_count}</td>
                         <td className="py-3 text-sm text-zinc-300">{deal.total_jobs} ({deal.failed_jobs} failed)</td>
-                        <td className="py-3 text-sm text-zinc-500">{formatRelativeDate(deal.updated_at)}</td>
+                        <td className="py-3 text-sm text-zinc-500">
+                          {formatRelativeDate(deal.last_activity_at ?? deal.updated_at)}
+                          {dealViewTab !== 'overview' && (
+                            <span className="ml-2 text-xs text-zinc-600">({deal.stale_days}d)</span>
+                          )}
+                        </td>
+                        {dealViewTab !== 'overview' && (
+                          <td className="py-3 text-sm">
+                            <span className={deal.recommendation_action === 'archive_or_delete' ? 'text-amber-300' : 'text-zinc-500'}>
+                              {deal.recommendation_action === 'archive_or_delete'
+                                ? 'Archive or delete (if not funded/passed)'
+                                : deal.recommendation_action === 'keep_monitoring'
+                                  ? 'Keep (funded/passed)'
+                                  : 'No action needed'}
+                            </span>
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>

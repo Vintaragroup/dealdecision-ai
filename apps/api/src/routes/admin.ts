@@ -999,6 +999,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const normalizedDays = allowed.has(daysRaw) ? daysRaw : "30";
       const daysWindow = normalizedDays === "all" ? null : Number(normalizedDays);
       const sinceIso = daysWindow != null ? new Date(Date.now() - daysWindow * 24 * 60 * 60 * 1000).toISOString() : null;
+      const staleCutoffIso = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
       const pool = getPool();
       const hasMemberships = await hasTable("organization_memberships");
@@ -1051,6 +1052,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         total_deals: string;
         active_deals: string;
         archived_deals: string;
+        stale_deals_30d: string;
+        current_deals_30d: string;
         last_deal_activity_at: string | null;
       }>(
         `SELECT
@@ -1061,15 +1064,33 @@ export async function registerAdminRoutes(app: FastifyInstance) {
            COUNT(*) FILTER (
              WHERE COALESCE(NULLIF(d.lifecycle_status, ''), 'active') IN ('archived', 'deleted')
            )::text AS archived_deals,
-           MAX(GREATEST(d.created_at, d.updated_at))::text AS last_deal_activity_at
+           COUNT(*) FILTER (
+             WHERE COALESCE(NULLIF(d.lifecycle_status, ''), 'active') NOT IN ('archived', 'deleted')
+               AND GREATEST(
+                 d.updated_at,
+                 COALESCE((SELECT MAX(COALESCE(doc.updated_at, doc.uploaded_at)) FROM documents doc WHERE doc.deal_id = d.id AND doc.deleted_at IS NULL), d.updated_at),
+                 COALESCE((SELECT MAX(COALESCE(j.updated_at, j.created_at)) FROM jobs j WHERE j.deal_id = d.id), d.updated_at)
+               ) < $2::timestamptz
+           )::text AS stale_deals_30d,
+           COUNT(*) FILTER (
+             WHERE COALESCE(NULLIF(d.lifecycle_status, ''), 'active') NOT IN ('archived', 'deleted')
+               AND GREATEST(
+                 d.updated_at,
+                 COALESCE((SELECT MAX(COALESCE(doc.updated_at, doc.uploaded_at)) FROM documents doc WHERE doc.deal_id = d.id AND doc.deleted_at IS NULL), d.updated_at),
+                 COALESCE((SELECT MAX(COALESCE(j.updated_at, j.created_at)) FROM jobs j WHERE j.deal_id = d.id), d.updated_at)
+               ) >= $2::timestamptz
+           )::text AS current_deals_30d,
+           MAX(
+             GREATEST(
+               d.updated_at,
+               COALESCE((SELECT MAX(COALESCE(doc.updated_at, doc.uploaded_at)) FROM documents doc WHERE doc.deal_id = d.id AND doc.deleted_at IS NULL), d.updated_at),
+               COALESCE((SELECT MAX(COALESCE(j.updated_at, j.created_at)) FROM jobs j WHERE j.deal_id = d.id), d.updated_at)
+             )
+           )::text AS last_deal_activity_at
          FROM deals d
-         WHERE d.created_by_user_id = $1
-           AND d.deleted_at IS NULL
-           AND (
-             $2::timestamptz IS NULL
-             OR GREATEST(d.created_at, d.updated_at) >= $2::timestamptz
-           )`,
-        [clerkUserId, sinceIso]
+         WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
+           AND d.deleted_at IS NULL`,
+        [clerkUserId, staleCutoffIso]
       );
 
       const { rows: dealRows } = await pool.query<{
@@ -1083,6 +1104,9 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         total_jobs: string;
         failed_jobs: string;
         last_job_at: string | null;
+        last_activity_at: string | null;
+        stale_days: number | string | null;
+        recommendation_action: string | null;
       }>(
         `SELECT
            d.id AS deal_id,
@@ -1108,21 +1132,52 @@ export async function registerAdminRoutes(app: FastifyInstance) {
               WHERE j.deal_id = d.id
                 AND j.status = 'failed'
            ) AS failed_jobs,
-           (
-             SELECT MAX(COALESCE(j.updated_at, j.created_at))::text
-               FROM jobs j
-              WHERE j.deal_id = d.id
-           ) AS last_job_at
+           job_meta.last_job_at::text AS last_job_at,
+           GREATEST(
+             d.updated_at,
+             COALESCE(doc_meta.last_document_activity_at, d.updated_at),
+             COALESCE(job_meta.last_job_at, d.updated_at)
+           )::text AS last_activity_at,
+           GREATEST(
+             0,
+             FLOOR(
+               EXTRACT(
+                 EPOCH FROM (
+                   now() - GREATEST(
+                     d.updated_at,
+                     COALESCE(doc_meta.last_document_activity_at, d.updated_at),
+                     COALESCE(job_meta.last_job_at, d.updated_at)
+                   )
+                 )
+               ) / 86400
+             )
+           )::int AS stale_days,
+           CASE
+             WHEN LOWER(COALESCE(d.stage, '')) IN ('funded', 'passed') THEN 'keep_monitoring'
+             WHEN COALESCE(NULLIF(d.lifecycle_status, ''), 'active') IN ('archived', 'deleted') THEN 'already_closed'
+             ELSE 'archive_or_delete'
+           END AS recommendation_action
          FROM deals d
-         WHERE d.created_by_user_id = $1
+         LEFT JOIN LATERAL (
+           SELECT MAX(COALESCE(doc.updated_at, doc.uploaded_at)) AS last_document_activity_at
+             FROM documents doc
+            WHERE doc.deal_id = d.id
+              AND doc.deleted_at IS NULL
+         ) doc_meta ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT MAX(COALESCE(j.updated_at, j.created_at)) AS last_job_at
+             FROM jobs j
+            WHERE j.deal_id = d.id
+         ) job_meta ON TRUE
+         WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
            AND d.deleted_at IS NULL
-           AND (
-             $2::timestamptz IS NULL
-             OR GREATEST(d.created_at, d.updated_at) >= $2::timestamptz
-           )
-         ORDER BY GREATEST(d.created_at, d.updated_at) DESC
-         LIMIT 20`,
-        [clerkUserId, sinceIso]
+         ORDER BY GREATEST(
+           d.updated_at,
+           COALESCE(doc_meta.last_document_activity_at, d.updated_at),
+           COALESCE(job_meta.last_job_at, d.updated_at)
+         ) DESC
+         LIMIT 200`,
+        [clerkUserId]
       );
 
       const { rows: docAggRows } = await pool.query<{
@@ -1134,7 +1189,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
            MAX(COALESCE(doc.updated_at, doc.uploaded_at))::text AS last_document_activity_at
          FROM documents doc
          INNER JOIN deals d ON d.id = doc.deal_id
-         WHERE d.created_by_user_id = $1
+         WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
            AND d.deleted_at IS NULL
            AND doc.deleted_at IS NULL
            AND (
@@ -1157,7 +1212,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
                  MAX(COALESCE(j.updated_at, j.created_at))::text AS last_job_activity_at
                FROM jobs j
                INNER JOIN deals d ON d.id = j.deal_id
-               WHERE d.created_by_user_id = $1
+               WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
                  AND d.deleted_at IS NULL
                  AND (
                    $2::timestamptz IS NULL
@@ -1181,7 +1236,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
                  MAX(na.created_at)::text AS last_ai_activity_at
                FROM node_ai_analyses na
                INNER JOIN deals d ON d.id = na.deal_id
-               WHERE d.created_by_user_id = $1
+               WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
                  AND d.deleted_at IS NULL
                  AND (
                    $2::timestamptz IS NULL
@@ -1238,7 +1293,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
                  COALESCE(j.updated_at, j.created_at)::text AS at
                FROM jobs j
                INNER JOIN deals d ON d.id = j.deal_id
-               WHERE d.created_by_user_id = $1
+               WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
                  AND d.deleted_at IS NULL
                  AND (
                    $2::timestamptz IS NULL
@@ -1278,11 +1333,50 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         total_deals: "0",
         active_deals: "0",
         archived_deals: "0",
+        stale_deals_30d: "0",
+        current_deals_30d: "0",
         last_deal_activity_at: null,
       };
       const docAgg = docAggRows[0] ?? { total_documents: "0", last_document_activity_at: null };
       const jobAgg = jobAggRows[0] ?? { total_jobs: "0", failed_jobs: "0", last_job_activity_at: null };
       const aiAgg = aiAggRows[0] ?? { analyses_total: "0", llm_called_total: "0", last_ai_activity_at: null };
+
+      const scopedDeals = dealRows.map((d) => {
+        const lifecycle = d.lifecycle_status ?? "active";
+        const lastActivityAt = d.last_activity_at ?? d.last_job_at ?? d.updated_at;
+        const parsedStaleDays = typeof d.stale_days === "number"
+          ? d.stale_days
+          : Number.parseInt(String(d.stale_days ?? "0"), 10);
+        return {
+          deal_id: d.deal_id,
+          name: d.name,
+          stage: d.stage,
+          lifecycle_status: lifecycle,
+          created_at: d.created_at,
+          updated_at: d.updated_at,
+          last_activity_at: lastActivityAt,
+          stale_days: Number.isFinite(parsedStaleDays) ? parsedStaleDays : 0,
+          recommendation_action: d.recommendation_action ?? "archive_or_delete",
+          document_count: Number(d.document_count ?? "0"),
+          total_jobs: Number(d.total_jobs ?? "0"),
+          failed_jobs: Number(d.failed_jobs ?? "0"),
+          last_job_at: d.last_job_at,
+        };
+      });
+
+      const staleDeals = scopedDeals
+        .filter((d) => {
+          const status = String(d.lifecycle_status ?? "active").toLowerCase();
+          return !["archived", "deleted"].includes(status) && d.stale_days >= 30;
+        })
+        .sort((a, b) => b.stale_days - a.stale_days);
+
+      const currentDeals = scopedDeals
+        .filter((d) => {
+          const status = String(d.lifecycle_status ?? "active").toLowerCase();
+          return !["archived", "deleted"].includes(status) && d.stale_days < 30;
+        })
+        .sort((a, b) => new Date(b.last_activity_at ?? b.updated_at).getTime() - new Date(a.last_activity_at ?? a.updated_at).getTime());
 
       const lastActivityCandidates = [
         access?.updated_at ?? null,
@@ -1330,6 +1424,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           total_deals: Number(dealAgg.total_deals ?? "0"),
           active_deals: Number(dealAgg.active_deals ?? "0"),
           archived_deals: Number(dealAgg.archived_deals ?? "0"),
+          stale_deals_30d: Number(dealAgg.stale_deals_30d ?? "0"),
+          current_deals_30d: Number(dealAgg.current_deals_30d ?? "0"),
           total_documents: Number(docAgg.total_documents ?? "0"),
           total_jobs: Number(jobAgg.total_jobs ?? "0"),
           failed_jobs: Number(jobAgg.failed_jobs ?? "0"),
@@ -1337,27 +1433,18 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           ai_llm_called_total: Number(aiAgg.llm_called_total ?? "0"),
           last_activity_at: lastActivityAt,
         },
-        deals: dealRows.map((d) => ({
-          deal_id: d.deal_id,
-          name: d.name,
-          stage: d.stage,
-          lifecycle_status: d.lifecycle_status,
-          created_at: d.created_at,
-          updated_at: d.updated_at,
-          document_count: Number(d.document_count ?? "0"),
-          total_jobs: Number(d.total_jobs ?? "0"),
-          failed_jobs: Number(d.failed_jobs ?? "0"),
-          last_job_at: d.last_job_at,
-        })),
+        deals: scopedDeals.slice(0, 20),
+        current_deals: currentDeals.slice(0, 50),
+        stale_deals: staleDeals.slice(0, 50),
         activity,
         data_quality: {
           attributed_sources: {
             platform_access: access != null,
             organization_memberships: hasMemberships,
-            deals_created_by_user: true,
-            documents_via_owned_deals: true,
-            jobs_via_owned_deals: hasJobs,
-            node_ai_analyses_via_owned_deals: hasNodeAnalyses,
+            deals_accessible_scope: true,
+            documents_via_accessible_deals: true,
+            jobs_via_accessible_deals: hasJobs,
+            node_ai_analyses_via_accessible_deals: hasNodeAnalyses,
             audit_log_actor_events: hasAuditLog,
           },
           unsupported_metrics: {

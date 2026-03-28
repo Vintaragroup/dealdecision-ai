@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { MoreHorizontal, Shield, ShieldOff, CalendarClock, UserX, AlertCircle, Tag, UserPlus } from 'lucide-react';
+import { MoreHorizontal, Shield, ShieldOff, CalendarClock, UserX, AlertCircle, Tag, UserPlus, BarChart3 } from 'lucide-react';
 import { StatusPill } from './StatusPill';
 import {
   apiAdminListUsers,
@@ -41,9 +41,10 @@ function RoleBadge({ role }: { role: AccountRole | null }) {
 interface UsersTableProps {
   searchQuery: string;
   refreshKey?: number;
+  onViewAnalytics?: (user: MergedUserRecord) => void;
 }
 
-export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
+export function UsersTable({ searchQuery, refreshKey, onViewAnalytics }: UsersTableProps) {
   const [users, setUsers] = useState<MergedUserRecord[]>([]);
   const [clerkAvailable, setClerkAvailable] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(true);
@@ -209,7 +210,11 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
                 </tr>
               ) : (
                 filteredUsers.map((user) => (
-                  <tr key={user.clerk_user_id} className="hover:bg-zinc-800/30 transition-colors">
+                  <tr
+                    key={user.clerk_user_id}
+                    className="hover:bg-zinc-800/30 transition-colors cursor-pointer"
+                    onClick={() => onViewAnalytics?.(user)}
+                  >
                     <td className="px-6 py-4">
                       <div>
                         <div className="text-sm text-white font-medium">
@@ -249,7 +254,10 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
                       ) : (
                         <>
                           <button
-                            onClick={() => void toggleAdmin(user)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void toggleAdmin(user);
+                            }}
                             disabled={!!busy}
                             className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors disabled:opacity-50 ${
                               user.is_admin ? 'bg-blue-600' : 'bg-zinc-700'
@@ -273,7 +281,10 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
                     <td className="px-6 py-4">
                       <div className="relative">
                         <button
-                          onClick={() => setActiveDropdown(activeDropdown === user.clerk_user_id ? null : user.clerk_user_id)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setActiveDropdown(activeDropdown === user.clerk_user_id ? null : user.clerk_user_id);
+                          }}
                           disabled={!!busy}
                           className="p-1.5 hover:bg-zinc-700 rounded-lg transition-colors disabled:opacity-50"
                         >
@@ -293,6 +304,16 @@ export function UsersTable({ searchQuery, refreshKey }: UsersTableProps) {
                               </button>
                             ) : (
                               <>
+                                <button
+                                  onClick={() => {
+                                    setActiveDropdown(null);
+                                    onViewAnalytics?.(user);
+                                  }}
+                                  className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-700 transition-colors text-left"
+                                >
+                                  <BarChart3 className="w-4 h-4" strokeWidth={1.5} />
+                                  View Analytics
+                                </button>
                                 <button
                                   onClick={() => void extendUser(user)}
                                   className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-zinc-300 hover:bg-zinc-700 transition-colors text-left"

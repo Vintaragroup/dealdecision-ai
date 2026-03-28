@@ -2965,6 +2965,78 @@ export async function apiAdminListUsers(opts?: {
   return request(`/api/v1/admin/users${qs ? `?${qs}` : ''}`);
 }
 
+export type AdminUserAnalyticsResponse = {
+  user: {
+    clerk_user_id: string;
+    org_id: string | null;
+    access_status: 'active' | 'pending' | 'expired' | 'revoked' | 'not_provisioned';
+    access_expires_at: string | null;
+    is_admin: boolean;
+    account_role: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client' | null;
+    grant_source: string | null;
+    notes: string | null;
+    created_at: string | null;
+    updated_at: string | null;
+    membership: {
+      clerk_org_id: string;
+      org_role: 'org_owner' | 'org_manager' | 'org_member' | string;
+      membership_status: 'active' | 'pending' | 'revoked' | string;
+      seat_consuming: boolean;
+    } | null;
+  };
+  window: {
+    days: number | null;
+    since: string | null;
+    label: string;
+  };
+  kpis: {
+    total_deals: number;
+    active_deals: number;
+    archived_deals: number;
+    total_documents: number;
+    total_jobs: number;
+    failed_jobs: number;
+    ai_analyses_total: number;
+    ai_llm_called_total: number;
+    last_activity_at: string | null;
+  };
+  deals: Array<{
+    deal_id: string;
+    name: string;
+    stage: string | null;
+    lifecycle_status: string | null;
+    created_at: string;
+    updated_at: string;
+    document_count: number;
+    total_jobs: number;
+    failed_jobs: number;
+    last_job_at: string | null;
+  }>;
+  activity: Array<{
+    id: string;
+    kind: 'audit' | 'job';
+    at: string;
+    severity: 'info' | 'warning';
+    label: string;
+    detail: string;
+    source: string;
+  }>;
+  data_quality: {
+    attributed_sources: Record<string, boolean>;
+    unsupported_metrics: Record<string, { status: 'unavailable'; reason: string }>;
+  };
+};
+
+export async function apiAdminGetUserAnalytics(
+  clerkUserId: string,
+  opts?: { days?: 7 | 30 | 90 | 'all' }
+): Promise<AdminUserAnalyticsResponse> {
+  const params = new URLSearchParams();
+  if (opts?.days != null) params.set('days', String(opts.days));
+  const qs = params.toString();
+  return request(`/api/v1/admin/users/${encodeURIComponent(clerkUserId)}/analytics${qs ? `?${qs}` : ''}`);
+}
+
 export type PlatformAuditLogRecord = {
   id: string;
   actor_user_id: string;
@@ -3002,6 +3074,75 @@ export async function apiAdminListAuditLogs(opts?: {
   if (opts?.to) params.set('to', opts.to);
   const qs = params.toString();
   return request(`/api/v1/admin/audit-logs${qs ? `?${qs}` : ''}`);
+}
+
+export type AdminAuditAlertSummary = {
+  window_hours: number;
+  total_alerts: number;
+  by_action: Array<{ action_type: string; count: number }>;
+  recent_events: Array<{
+    id: string;
+    action_type: string;
+    entity_type: string;
+    entity_id: string;
+    actor_user_id: string;
+    actor_role: string;
+    reason: string;
+    source: 'ui' | 'api' | 'job' | 'system' | 'script';
+    created_at: string;
+  }>;
+};
+
+export async function apiAdminGetAuditAlertSummary(opts?: {
+  hours?: number;
+  limit?: number;
+}): Promise<AdminAuditAlertSummary> {
+  const params = new URLSearchParams();
+  if (opts?.hours != null) params.set('hours', String(opts.hours));
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request(`/api/v1/admin/audit-alerts/summary${qs ? `?${qs}` : ''}`);
+}
+
+export type SuperAdminOpsFeed = {
+  window_hours: number;
+  system_alerts: Array<{
+    id: string;
+    action_type: string;
+    entity_type: string;
+    entity_id: string;
+    actor_user_id: string;
+    actor_role: string;
+    reason: string;
+    source: 'ui' | 'api' | 'job' | 'system' | 'script';
+    created_at: string;
+  }>;
+  error_logs: Array<{
+    job_id: string;
+    type: string | null;
+    status: string;
+    deal_id: string | null;
+    document_id: string | null;
+    message: string | null;
+    error: string | null;
+    created_at: string | null;
+    updated_at: string | null;
+  }>;
+  availability: {
+    platform_audit_log: boolean;
+    jobs: boolean;
+  };
+};
+
+export async function apiAdminGetSuperAdminOpsFeed(opts?: {
+  hours?: number;
+  limit?: number;
+}): Promise<SuperAdminOpsFeed> {
+  const params = new URLSearchParams();
+  if (opts?.hours != null) params.set('hours', String(opts.hours));
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request(`/api/v1/admin/super-admin/ops-feed${qs ? `?${qs}` : ''}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

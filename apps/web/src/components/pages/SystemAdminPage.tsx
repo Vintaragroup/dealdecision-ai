@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { Navigate } from 'react-router-dom';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Navigate, useSearchParams } from 'react-router-dom';
 import { LucideIcon } from 'lucide-react';
-import { apiGetMyAccess, apiAdminListUsers, apiAdminListInvites } from '../../lib/apiClient';
+import { apiGetMyAccess, apiAdminListUsers, apiAdminListInvites, apiAdminGetAuditAlertSummary, type AdminAuditAlertSummary } from '../../lib/apiClient';
+import type { MergedUserRecord } from '../../lib/apiClient';
 import { 
   Users, 
   Mail, 
@@ -25,14 +26,47 @@ import { InviteCreationPanel } from '../admin/InviteCreationPanel';
 import { RecoveryCenter } from '../admin/RecoveryCenter';
 import { AuditLogsPanel } from '../admin/AuditLogsPanel';
 import { OrgManagementPanel } from '../admin/OrgManagementPanel';
+import { SuperAdminOpsPanel } from '../admin/SuperAdminOpsPanel';
+import { AdminUserAnalyticsDetailView } from '../admin/admin-user-analytics';
 
-type TabType = 'overview' | 'users' | 'invites' | 'orgs' | 'audit' | 'recovery';
+type TabType = 'overview' | 'users' | 'invites' | 'orgs' | 'audit' | 'recovery' | 'super_admin_ops';
 type AdminStatus = 'loading' | 'allowed' | 'denied';
 
+const TAB_VALUES: TabType[] = ['overview', 'users', 'invites', 'orgs', 'audit', 'recovery', 'super_admin_ops'];
+
+function normalizeTab(value: string | null): TabType {
+  if (value && (TAB_VALUES as string[]).includes(value)) return value as TabType;
+  return 'overview';
+}
+
 export default function AdminControlPanel() {
-  const [activeTab, setActiveTab] = useState<TabType>('overview');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState<TabType>(() => normalizeTab(searchParams.get('tab')));
   const [adminStatus, setAdminStatus] = useState<AdminStatus>('loading');
   const [adminRole, setAdminRole] = useState<'super_admin' | 'admin' | null>(null);
+
+  useEffect(() => {
+    const tabFromUrl = normalizeTab(searchParams.get('tab'));
+    if (tabFromUrl !== activeTab) {
+      setActiveTab(tabFromUrl);
+    }
+  }, [searchParams, activeTab]);
+
+  const setTabAndQuery = (tab: TabType) => {
+    setActiveTab(tab);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', tab);
+      if (tab !== 'users') {
+        next.delete('analytics_user');
+        next.delete('analytics_email');
+        next.delete('analytics_name');
+        next.delete('analytics_status');
+        next.delete('analytics_role');
+      }
+      return next;
+    });
+  };
 
   useEffect(() => {
     apiGetMyAccess()
@@ -87,7 +121,7 @@ export default function AdminControlPanel() {
         {/* Tab Navigation */}
         <div className="flex gap-1 mb-6 rounded-[14px] bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] p-1.5">
           <button
-            onClick={() => setActiveTab('overview')}
+            onClick={() => setTabAndQuery('overview')}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'overview'
                 ? 'bg-zinc-700/50 text-white shadow-lg'
@@ -98,7 +132,7 @@ export default function AdminControlPanel() {
             Overview
           </button>
           <button
-            onClick={() => setActiveTab('users')}
+            onClick={() => setTabAndQuery('users')}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'users'
                 ? 'bg-zinc-700/50 text-white shadow-lg'
@@ -109,7 +143,7 @@ export default function AdminControlPanel() {
             Users & Access
           </button>
           <button
-            onClick={() => setActiveTab('invites')}
+            onClick={() => setTabAndQuery('invites')}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'invites'
                 ? 'bg-zinc-700/50 text-white shadow-lg'
@@ -120,7 +154,7 @@ export default function AdminControlPanel() {
             Invites
           </button>
           <button
-            onClick={() => setActiveTab('recovery')}
+            onClick={() => setTabAndQuery('recovery')}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'recovery'
                 ? 'bg-zinc-700/50 text-white shadow-lg'
@@ -131,7 +165,7 @@ export default function AdminControlPanel() {
             Recovery Center
           </button>
           <button
-            onClick={() => setActiveTab('orgs')}
+            onClick={() => setTabAndQuery('orgs')}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'orgs'
                 ? 'bg-zinc-700/50 text-white shadow-lg'
@@ -142,7 +176,7 @@ export default function AdminControlPanel() {
             Org Management
           </button>
           <button
-            onClick={() => setActiveTab('audit')}
+            onClick={() => setTabAndQuery('audit')}
             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
               activeTab === 'audit'
                 ? 'bg-zinc-700/50 text-white shadow-lg'
@@ -152,6 +186,19 @@ export default function AdminControlPanel() {
             <ScrollText className="w-4 h-4" strokeWidth={1.5} />
             Audit Logs
           </button>
+          {adminRole === 'super_admin' && (
+            <button
+              onClick={() => setTabAndQuery('super_admin_ops')}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                activeTab === 'super_admin_ops'
+                  ? 'bg-zinc-700/50 text-white shadow-lg'
+                  : 'text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/30'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4" strokeWidth={1.5} />
+              Super Admin Ops
+            </button>
+          )}
         </div>
 
         {/* Tab Content */}
@@ -161,6 +208,7 @@ export default function AdminControlPanel() {
         {activeTab === 'orgs' && <OrgManagementPanel />}
         {activeTab === 'audit' && <AuditLogsPanel />}
         {activeTab === 'recovery' && <RecoveryCenter adminRole={adminRole} />}
+        {activeTab === 'super_admin_ops' && adminRole === 'super_admin' && <SuperAdminOpsPanel />}
       </div>
     </div>
   );
@@ -174,18 +222,21 @@ function OverviewSection() {
     { label: 'Active Invites', value: 0, icon: Mail },
   ]);
   const [loading, setLoading] = useState(true);
+  const [alertSummary, setAlertSummary] = useState<AdminAuditAlertSummary | null>(null);
 
   useEffect(() => {
     Promise.all([
       apiAdminListUsers({ limit: 500 }),
       apiAdminListInvites({ limit: 500 }),
+      apiAdminGetAuditAlertSummary({ hours: 24, limit: 5 }),
     ])
-      .then(([usersResp, invitesResp]) => {
+      .then(([usersResp, invitesResp, alertResp]) => {
         const provisioned = usersResp.records.filter((u) => u.access_status !== 'not_provisioned');
         const active = provisioned.filter((u) => u.access_status === 'active').length;
         const expired = provisioned.filter((u) => u.access_status === 'expired' || u.access_status === 'revoked').length;
         const pending = provisioned.filter((u) => u.access_status === 'pending').length;
         const activeInvites = invitesResp.records.filter((inv) => inv.status === 'active').length;
+        setAlertSummary(alertResp);
 
         setMetrics([
           { label: 'Active Users', value: active, icon: CheckCircle2 },
@@ -215,50 +266,149 @@ function OverviewSection() {
           <AuditLogsPanel compact />
         )}
       </div>
+
+      <div className="rounded-[14px] bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] p-6">
+        <h3 className="text-lg font-semibold text-white mb-3">Governance Alerts (24h)</h3>
+        <div className="flex items-center gap-2 mb-4">
+          <span className="text-2xl font-semibold text-amber-200">{alertSummary?.total_alerts ?? 0}</span>
+          <span className="text-sm text-zinc-400">high-signal governance events</span>
+        </div>
+
+        <div className="space-y-2 mb-4">
+          {(alertSummary?.by_action ?? []).slice(0, 5).map((entry) => (
+            <div key={entry.action_type} className="flex items-center justify-between text-sm">
+              <span className="text-zinc-300 font-mono">{entry.action_type}</span>
+              <span className="text-zinc-100">{entry.count}</span>
+            </div>
+          ))}
+          {(alertSummary?.by_action ?? []).length === 0 && (
+            <div className="text-sm text-zinc-500">No governance alerts in the selected window.</div>
+          )}
+        </div>
+
+        <div className="border-t border-zinc-800 pt-3">
+          <h4 className="text-xs uppercase tracking-wider text-zinc-500 mb-2">Recent</h4>
+          <div className="space-y-2">
+            {(alertSummary?.recent_events ?? []).slice(0, 3).map((event) => (
+              <div key={event.id} className="text-xs text-zinc-300">
+                <span className="font-mono text-zinc-200">{event.action_type}</span>
+                <span className="text-zinc-500"> · {event.entity_type}:{event.entity_id}</span>
+              </div>
+            ))}
+            {(alertSummary?.recent_events ?? []).length === 0 && (
+              <div className="text-xs text-zinc-500">No recent governance alert events.</div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
 function UsersSection() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [searchQuery, setSearchQuery] = useState('');
   const [showFilters, setShowFilters] = useState(false);
 
+  const selectedUser = useMemo<MergedUserRecord | null>(() => {
+    const clerkUserId = searchParams.get('analytics_user');
+    if (!clerkUserId) return null;
+
+    const accessStatus = searchParams.get('analytics_status');
+    const role = searchParams.get('analytics_role');
+
+    return {
+      clerk_user_id: clerkUserId,
+      email: searchParams.get('analytics_email'),
+      full_name: searchParams.get('analytics_name'),
+      clerk_created_at: null,
+      id: null,
+      org_id: null,
+      access_status: (accessStatus as MergedUserRecord['access_status']) ?? 'not_provisioned',
+      access_expires_at: null,
+      is_admin: role === 'super_admin' || role === 'admin',
+      account_role: (role as MergedUserRecord['account_role']) ?? null,
+      grant_source: null,
+      notes: null,
+      granted_by_user_id: null,
+      created_at: null,
+      updated_at: null,
+    };
+  }, [searchParams]);
+
+  const setSelectedUserInUrl = (user: MergedUserRecord | null) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set('tab', 'users');
+
+      if (!user) {
+        next.delete('analytics_user');
+        next.delete('analytics_email');
+        next.delete('analytics_name');
+        next.delete('analytics_status');
+        next.delete('analytics_role');
+        return next;
+      }
+
+      next.set('analytics_user', user.clerk_user_id);
+      if (user.email) next.set('analytics_email', user.email); else next.delete('analytics_email');
+      if (user.full_name) next.set('analytics_name', user.full_name); else next.delete('analytics_name');
+      if (user.access_status) next.set('analytics_status', user.access_status);
+      if (user.account_role) next.set('analytics_role', user.account_role); else next.delete('analytics_role');
+      return next;
+    });
+  };
+
   return (
     <div className="space-y-6">
-      {/* Controls */}
-      <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-        <div className="flex gap-3 flex-1 w-full sm:w-auto">
-          {/* Search */}
-          <div className="relative flex-1 max-w-md">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" strokeWidth={1.5} />
-            <input
-              type="text"
-              placeholder="Search by email or user ID..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 bg-zinc-800/50 border border-zinc-700 rounded-lg text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500"
-            />
+      {selectedUser && (
+        <AdminUserAnalyticsDetailView
+          user={selectedUser}
+          onBack={() => setSelectedUserInUrl(null)}
+        />
+      )}
+
+      {!selectedUser && (
+        <>
+          {/* Controls */}
+          <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+            <div className="flex gap-3 flex-1 w-full sm:w-auto">
+              {/* Search */}
+              <div className="relative flex-1 max-w-md">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" strokeWidth={1.5} />
+                <input
+                  type="text"
+                  placeholder="Search by email or user ID..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2.5 bg-zinc-800/50 border border-zinc-700 rounded-lg text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500"
+                />
+              </div>
+
+              {/* Filter */}
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className="flex items-center gap-2 px-4 py-2.5 bg-zinc-800/50 border border-zinc-700 rounded-lg text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
+              >
+                <Filter className="w-4 h-4" strokeWidth={1.5} />
+                Filter
+              </button>
+            </div>
+
+            {/* Add User Button */}
+            <button className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium text-white transition-colors">
+              <Plus className="w-4 h-4" strokeWidth={1.5} />
+              Add User
+            </button>
           </div>
-          
-          {/* Filter */}
-          <button 
-            onClick={() => setShowFilters(!showFilters)}
-            className="flex items-center gap-2 px-4 py-2.5 bg-zinc-800/50 border border-zinc-700 rounded-lg text-sm text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors"
-          >
-            <Filter className="w-4 h-4" strokeWidth={1.5} />
-            Filter
-          </button>
-        </div>
 
-        {/* Add User Button */}
-        <button className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium text-white transition-colors">
-          <Plus className="w-4 h-4" strokeWidth={1.5} />
-          Add User
-        </button>
-      </div>
-
-      {/* Users Table */}
-      <UsersTable searchQuery={searchQuery} />
+          {/* Users Table */}
+          <UsersTable
+            searchQuery={searchQuery}
+            onViewAnalytics={(user) => setSelectedUserInUrl(user)}
+          />
+        </>
+      )}
     </div>
   );
 }

@@ -54,6 +54,21 @@ async function hasTable(tableName: string): Promise<boolean> {
   return rows[0]?.oid != null;
 }
 
+const GOVERNANCE_ALERT_ACTIONS: ReadonlyArray<string> = [
+  "deal.purge",
+  "document.hard_delete",
+  "platform_access.set_admin_status",
+  "platform_access.set_account_role",
+  "organization_membership.set_role",
+  "platform_access.revoke",
+  "organization_membership.revoke",
+  "invite.create",
+  "invite.revoke",
+  "invite.redeem",
+  "invite.expired",
+  "invite.redeem_failed",
+];
+
 function requireMutationReason(request: FastifyRequest, reply: FastifyReply, defaultReason?: string): string | null {
   const reason = extractAuditReason((request as any).body, {
     query: (request as any).query,
@@ -623,6 +638,177 @@ export async function registerAdminRoutes(app: FastifyInstance) {
   });
 
   /**
+   * GET /api/v1/admin/audit-alerts/summary
+   * Returns governance alert counts and recent events from platform_audit_log.
+   */
+  app.get<{
+    Querystring: {
+      hours?: string;
+      limit?: string;
+    };
+  }>("/api/v1/admin/audit-alerts/summary", async (request, reply) => {
+    const tableOk = await hasTable("platform_audit_log");
+    if (!tableOk) {
+      return reply.status(404).send({ error: "platform_audit_log_not_found" });
+    }
+
+    const hoursRaw = Number(request.query.hours ?? 24);
+    const hours = Number.isFinite(hoursRaw) ? Math.max(1, Math.min(168, Math.floor(hoursRaw))) : 24;
+    const limitRaw = Number(request.query.limit ?? 25);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 25;
+
+    const pool = getPool();
+
+    const { rows: byActionRows } = await pool.query<{ action_type: string; count: string }>(
+      `SELECT action_type, COUNT(*)::text AS count
+         FROM platform_audit_log
+        WHERE action_type = ANY($1::text[])
+          AND created_at >= now() - make_interval(hours => $2::int)
+        GROUP BY action_type
+        ORDER BY COUNT(*) DESC, action_type ASC`,
+      [GOVERNANCE_ALERT_ACTIONS, hours]
+    );
+
+    const { rows: totalRows } = await pool.query<{ total: string }>(
+      `SELECT COUNT(*)::text AS total
+         FROM platform_audit_log
+        WHERE action_type = ANY($1::text[])
+          AND created_at >= now() - make_interval(hours => $2::int)`,
+      [GOVERNANCE_ALERT_ACTIONS, hours]
+    );
+
+    const { rows: recentRows } = await pool.query<{
+      id: string;
+      action_type: string;
+      entity_type: string;
+      entity_id: string;
+      actor_user_id: string;
+      actor_role: string;
+      reason: string;
+      source: string;
+      created_at: string;
+    }>(
+      `SELECT id, action_type, entity_type, entity_id, actor_user_id, actor_role, reason, source, created_at
+         FROM platform_audit_log
+        WHERE action_type = ANY($1::text[])
+          AND created_at >= now() - make_interval(hours => $2::int)
+        ORDER BY created_at DESC
+        LIMIT $3`,
+      [GOVERNANCE_ALERT_ACTIONS, hours, limit]
+    );
+
+    return reply.send({
+      window_hours: hours,
+      total_alerts: Number(totalRows[0]?.total ?? "0"),
+      by_action: byActionRows.map((r) => ({ action_type: r.action_type, count: Number(r.count) })),
+      recent_events: recentRows,
+    });
+  });
+
+  /**
+   * GET /api/v1/admin/super-admin/ops-feed
+   * Super-admin visibility endpoint for system alerts + recent errors.
+   */
+  app.get<{
+    Querystring: {
+      hours?: string;
+      limit?: string;
+    };
+  }>("/api/v1/admin/super-admin/ops-feed", async (request, reply) => {
+    const superAllowed = await requireSuperAdminAuth(request, reply);
+    if (!superAllowed) return;
+
+    const hoursRaw = Number(request.query.hours ?? 24);
+    const hours = Number.isFinite(hoursRaw) ? Math.max(1, Math.min(168, Math.floor(hoursRaw))) : 24;
+    const limitRaw = Number(request.query.limit ?? 25);
+    const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(200, Math.floor(limitRaw))) : 25;
+
+    const pool = getPool();
+    const hasAuditLog = await hasTable("platform_audit_log");
+    const hasJobs = await hasTable("jobs");
+
+    let systemAlerts: Array<{
+      id: string;
+      action_type: string;
+      entity_type: string;
+      entity_id: string;
+      actor_user_id: string;
+      actor_role: string;
+      reason: string;
+      source: string;
+      created_at: string;
+    }> = [];
+
+    let errorLogs: Array<{
+      job_id: string;
+      type: string | null;
+      status: string;
+      deal_id: string | null;
+      document_id: string | null;
+      message: string | null;
+      error: string | null;
+      created_at: string | null;
+      updated_at: string | null;
+    }> = [];
+
+    if (hasAuditLog) {
+      const { rows } = await pool.query<{
+        id: string;
+        action_type: string;
+        entity_type: string;
+        entity_id: string;
+        actor_user_id: string;
+        actor_role: string;
+        reason: string;
+        source: string;
+        created_at: string;
+      }>(
+        `SELECT id, action_type, entity_type, entity_id, actor_user_id, actor_role, reason, source, created_at
+           FROM platform_audit_log
+          WHERE action_type = ANY($1::text[])
+            AND created_at >= now() - make_interval(hours => $2::int)
+          ORDER BY created_at DESC
+          LIMIT $3`,
+        [GOVERNANCE_ALERT_ACTIONS, hours, limit]
+      );
+      systemAlerts = rows;
+    }
+
+    if (hasJobs) {
+      const { rows } = await pool.query<{
+        job_id: string;
+        type: string | null;
+        status: string;
+        deal_id: string | null;
+        document_id: string | null;
+        message: string | null;
+        error: string | null;
+        created_at: string | null;
+        updated_at: string | null;
+      }>(
+        `SELECT job_id, type, status, deal_id, document_id, message, error, created_at, updated_at
+           FROM jobs
+          WHERE status = 'failed'
+            AND COALESCE(updated_at, created_at) >= now() - make_interval(hours => $1::int)
+          ORDER BY COALESCE(updated_at, created_at) DESC
+          LIMIT $2`,
+        [hours, limit]
+      );
+      errorLogs = rows;
+    }
+
+    return reply.send({
+      window_hours: hours,
+      system_alerts: systemAlerts,
+      error_logs: errorLogs,
+      availability: {
+        platform_audit_log: hasAuditLog,
+        jobs: hasJobs,
+      },
+    });
+  });
+
+  /**
    * GET /api/v1/admin/users
    * Returns a merged view of Clerk users (identity) + platform_access (authorization).
    *
@@ -791,6 +977,405 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       }
 
       return reply.send({ clerkAvailable, records, total: records.length });
+    }
+  );
+
+  /**
+   * GET /api/v1/admin/users/:clerkUserId/analytics
+   * Aggregated user analytics for admin detail view.
+   *
+   * Query:
+   *   days?: 7 | 30 | 90 | all (default 30)
+   */
+  app.get<{
+    Params: { clerkUserId: string };
+    Querystring: { days?: string };
+  }>(
+    "/api/v1/admin/users/:clerkUserId/analytics",
+    async (request, reply) => {
+      const clerkUserId = request.params.clerkUserId;
+      const daysRaw = typeof request.query.days === "string" ? request.query.days.trim().toLowerCase() : "30";
+      const allowed = new Set(["7", "30", "90", "all"]);
+      const normalizedDays = allowed.has(daysRaw) ? daysRaw : "30";
+      const daysWindow = normalizedDays === "all" ? null : Number(normalizedDays);
+      const sinceIso = daysWindow != null ? new Date(Date.now() - daysWindow * 24 * 60 * 60 * 1000).toISOString() : null;
+
+      const pool = getPool();
+      const hasMemberships = await hasTable("organization_memberships");
+      const hasJobs = await hasTable("jobs");
+      const hasNodeAnalyses = await hasTable("node_ai_analyses");
+      const hasAuditLog = await hasTable("platform_audit_log");
+
+      const { rows: accessRows } = await pool.query<{
+        clerk_user_id: string;
+        org_id: string | null;
+        access_status: string;
+        access_expires_at: string | null;
+        is_admin: boolean;
+        account_role: string | null;
+        grant_source: string | null;
+        notes: string | null;
+        created_at: string | null;
+        updated_at: string | null;
+      }>(
+        `SELECT clerk_user_id, org_id, access_status, access_expires_at, is_admin, account_role,
+                grant_source, notes, created_at, updated_at
+           FROM platform_access
+          WHERE clerk_user_id = $1
+          LIMIT 1`,
+        [clerkUserId]
+      );
+
+      const access = accessRows[0] ?? null;
+
+      const membership = hasMemberships
+        ? (
+            await pool.query<{
+              clerk_org_id: string;
+              org_role: string;
+              membership_status: string;
+              seat_consuming: boolean;
+              updated_at: string | null;
+            }>(
+              `SELECT clerk_org_id, org_role, membership_status, seat_consuming, updated_at
+                 FROM organization_memberships
+                WHERE clerk_user_id = $1
+                ORDER BY updated_at DESC
+                LIMIT 1`,
+              [clerkUserId]
+            )
+          ).rows[0] ?? null
+        : null;
+
+      const { rows: dealAggRows } = await pool.query<{
+        total_deals: string;
+        active_deals: string;
+        archived_deals: string;
+        last_deal_activity_at: string | null;
+      }>(
+        `SELECT
+           COUNT(*)::text AS total_deals,
+           COUNT(*) FILTER (
+             WHERE COALESCE(NULLIF(d.lifecycle_status, ''), 'active') NOT IN ('archived', 'deleted')
+           )::text AS active_deals,
+           COUNT(*) FILTER (
+             WHERE COALESCE(NULLIF(d.lifecycle_status, ''), 'active') IN ('archived', 'deleted')
+           )::text AS archived_deals,
+           MAX(GREATEST(d.created_at, d.updated_at))::text AS last_deal_activity_at
+         FROM deals d
+         WHERE d.created_by_user_id = $1
+           AND d.deleted_at IS NULL
+           AND (
+             $2::timestamptz IS NULL
+             OR GREATEST(d.created_at, d.updated_at) >= $2::timestamptz
+           )`,
+        [clerkUserId, sinceIso]
+      );
+
+      const { rows: dealRows } = await pool.query<{
+        deal_id: string;
+        name: string;
+        stage: string | null;
+        lifecycle_status: string | null;
+        created_at: string;
+        updated_at: string;
+        document_count: string;
+        total_jobs: string;
+        failed_jobs: string;
+        last_job_at: string | null;
+      }>(
+        `SELECT
+           d.id AS deal_id,
+           d.name,
+           d.stage,
+           d.lifecycle_status,
+           d.created_at::text,
+           d.updated_at::text,
+           (
+             SELECT COUNT(*)::text
+               FROM documents doc
+              WHERE doc.deal_id = d.id
+                AND doc.deleted_at IS NULL
+           ) AS document_count,
+           (
+             SELECT COUNT(*)::text
+               FROM jobs j
+              WHERE j.deal_id = d.id
+           ) AS total_jobs,
+           (
+             SELECT COUNT(*)::text
+               FROM jobs j
+              WHERE j.deal_id = d.id
+                AND j.status = 'failed'
+           ) AS failed_jobs,
+           (
+             SELECT MAX(COALESCE(j.updated_at, j.created_at))::text
+               FROM jobs j
+              WHERE j.deal_id = d.id
+           ) AS last_job_at
+         FROM deals d
+         WHERE d.created_by_user_id = $1
+           AND d.deleted_at IS NULL
+           AND (
+             $2::timestamptz IS NULL
+             OR GREATEST(d.created_at, d.updated_at) >= $2::timestamptz
+           )
+         ORDER BY GREATEST(d.created_at, d.updated_at) DESC
+         LIMIT 20`,
+        [clerkUserId, sinceIso]
+      );
+
+      const { rows: docAggRows } = await pool.query<{
+        total_documents: string;
+        last_document_activity_at: string | null;
+      }>(
+        `SELECT
+           COUNT(*)::text AS total_documents,
+           MAX(COALESCE(doc.updated_at, doc.uploaded_at))::text AS last_document_activity_at
+         FROM documents doc
+         INNER JOIN deals d ON d.id = doc.deal_id
+         WHERE d.created_by_user_id = $1
+           AND d.deleted_at IS NULL
+           AND doc.deleted_at IS NULL
+           AND (
+             $2::timestamptz IS NULL
+             OR COALESCE(doc.updated_at, doc.uploaded_at) >= $2::timestamptz
+           )`,
+        [clerkUserId, sinceIso]
+      );
+
+      const jobAggRows = hasJobs
+        ? (
+            await pool.query<{
+              total_jobs: string;
+              failed_jobs: string;
+              last_job_activity_at: string | null;
+            }>(
+              `SELECT
+                 COUNT(*)::text AS total_jobs,
+                 COUNT(*) FILTER (WHERE j.status = 'failed')::text AS failed_jobs,
+                 MAX(COALESCE(j.updated_at, j.created_at))::text AS last_job_activity_at
+               FROM jobs j
+               INNER JOIN deals d ON d.id = j.deal_id
+               WHERE d.created_by_user_id = $1
+                 AND d.deleted_at IS NULL
+                 AND (
+                   $2::timestamptz IS NULL
+                   OR COALESCE(j.updated_at, j.created_at) >= $2::timestamptz
+                 )`,
+              [clerkUserId, sinceIso]
+            )
+          ).rows
+        : [{ total_jobs: "0", failed_jobs: "0", last_job_activity_at: null }];
+
+      const aiAggRows = hasNodeAnalyses
+        ? (
+            await pool.query<{
+              analyses_total: string;
+              llm_called_total: string;
+              last_ai_activity_at: string | null;
+            }>(
+              `SELECT
+                 COUNT(*)::text AS analyses_total,
+                 COUNT(*) FILTER (WHERE llm_called = true)::text AS llm_called_total,
+                 MAX(na.created_at)::text AS last_ai_activity_at
+               FROM node_ai_analyses na
+               INNER JOIN deals d ON d.id = na.deal_id
+               WHERE d.created_by_user_id = $1
+                 AND d.deleted_at IS NULL
+                 AND (
+                   $2::timestamptz IS NULL
+                   OR na.created_at >= $2::timestamptz
+                 )`,
+              [clerkUserId, sinceIso]
+            )
+          ).rows
+        : [{ analyses_total: "0", llm_called_total: "0", last_ai_activity_at: null }];
+
+      const auditRows = hasAuditLog
+        ? (
+            await pool.query<{
+              id: string;
+              action_type: string;
+              entity_type: string;
+              entity_id: string;
+              reason: string;
+              source: string;
+              created_at: string;
+            }>(
+              `SELECT id, action_type, entity_type, entity_id, reason, source, created_at::text
+                 FROM platform_audit_log
+                WHERE actor_user_id = $1
+                  AND (
+                    $2::timestamptz IS NULL
+                    OR created_at >= $2::timestamptz
+                  )
+                ORDER BY created_at DESC
+                LIMIT 20`,
+              [clerkUserId, sinceIso]
+            )
+          ).rows
+        : [];
+
+      const recentJobs = hasJobs
+        ? (
+            await pool.query<{
+              job_id: string;
+              type: string | null;
+              status: string;
+              deal_id: string | null;
+              message: string | null;
+              error: string | null;
+              at: string;
+            }>(
+              `SELECT
+                 j.job_id,
+                 j.type,
+                 j.status,
+                 j.deal_id::text,
+                 j.message,
+                 j.error,
+                 COALESCE(j.updated_at, j.created_at)::text AS at
+               FROM jobs j
+               INNER JOIN deals d ON d.id = j.deal_id
+               WHERE d.created_by_user_id = $1
+                 AND d.deleted_at IS NULL
+                 AND (
+                   $2::timestamptz IS NULL
+                   OR COALESCE(j.updated_at, j.created_at) >= $2::timestamptz
+                 )
+               ORDER BY COALESCE(j.updated_at, j.created_at) DESC
+               LIMIT 20`,
+              [clerkUserId, sinceIso]
+            )
+          ).rows
+        : [];
+
+      const activity = [
+        ...auditRows.map((a) => ({
+          id: `audit:${a.id}`,
+          kind: "audit",
+          at: a.created_at,
+          severity: "info" as const,
+          label: a.action_type,
+          detail: `${a.entity_type}:${a.entity_id}${a.reason ? ` • ${a.reason}` : ""}`,
+          source: a.source,
+        })),
+        ...recentJobs.map((j) => ({
+          id: `job:${j.job_id}:${j.at}`,
+          kind: "job",
+          at: j.at,
+          severity: j.status === "failed" ? ("warning" as const) : ("info" as const),
+          label: `Job ${j.status}`,
+          detail: `${j.type ?? "unknown"}${j.deal_id ? ` • deal:${j.deal_id}` : ""}${j.message ? ` • ${j.message}` : ""}`,
+          source: "jobs",
+        })),
+      ]
+        .sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime())
+        .slice(0, 30);
+
+      const dealAgg = dealAggRows[0] ?? {
+        total_deals: "0",
+        active_deals: "0",
+        archived_deals: "0",
+        last_deal_activity_at: null,
+      };
+      const docAgg = docAggRows[0] ?? { total_documents: "0", last_document_activity_at: null };
+      const jobAgg = jobAggRows[0] ?? { total_jobs: "0", failed_jobs: "0", last_job_activity_at: null };
+      const aiAgg = aiAggRows[0] ?? { analyses_total: "0", llm_called_total: "0", last_ai_activity_at: null };
+
+      const lastActivityCandidates = [
+        access?.updated_at ?? null,
+        membership?.updated_at ?? null,
+        dealAgg.last_deal_activity_at,
+        docAgg.last_document_activity_at,
+        jobAgg.last_job_activity_at,
+        aiAgg.last_ai_activity_at,
+        activity[0]?.at ?? null,
+      ].filter((v): v is string => typeof v === "string" && v.length > 0);
+
+      const lastActivityAt = lastActivityCandidates.length > 0
+        ? new Date(
+            Math.max(...lastActivityCandidates.map((v) => new Date(v).getTime()))
+          ).toISOString()
+        : null;
+
+      return reply.send({
+        user: {
+          clerk_user_id: clerkUserId,
+          org_id: access?.org_id ?? null,
+          access_status: access?.access_status ?? "not_provisioned",
+          access_expires_at: access?.access_expires_at ?? null,
+          is_admin: access?.is_admin ?? false,
+          account_role: access?.account_role ?? null,
+          grant_source: access?.grant_source ?? null,
+          notes: access?.notes ?? null,
+          created_at: access?.created_at ?? null,
+          updated_at: access?.updated_at ?? null,
+          membership: membership
+            ? {
+                clerk_org_id: membership.clerk_org_id,
+                org_role: membership.org_role,
+                membership_status: membership.membership_status,
+                seat_consuming: membership.seat_consuming,
+              }
+            : null,
+        },
+        window: {
+          days: daysWindow,
+          since: sinceIso,
+          label: daysWindow == null ? "all" : `${daysWindow}d`,
+        },
+        kpis: {
+          total_deals: Number(dealAgg.total_deals ?? "0"),
+          active_deals: Number(dealAgg.active_deals ?? "0"),
+          archived_deals: Number(dealAgg.archived_deals ?? "0"),
+          total_documents: Number(docAgg.total_documents ?? "0"),
+          total_jobs: Number(jobAgg.total_jobs ?? "0"),
+          failed_jobs: Number(jobAgg.failed_jobs ?? "0"),
+          ai_analyses_total: Number(aiAgg.analyses_total ?? "0"),
+          ai_llm_called_total: Number(aiAgg.llm_called_total ?? "0"),
+          last_activity_at: lastActivityAt,
+        },
+        deals: dealRows.map((d) => ({
+          deal_id: d.deal_id,
+          name: d.name,
+          stage: d.stage,
+          lifecycle_status: d.lifecycle_status,
+          created_at: d.created_at,
+          updated_at: d.updated_at,
+          document_count: Number(d.document_count ?? "0"),
+          total_jobs: Number(d.total_jobs ?? "0"),
+          failed_jobs: Number(d.failed_jobs ?? "0"),
+          last_job_at: d.last_job_at,
+        })),
+        activity,
+        data_quality: {
+          attributed_sources: {
+            platform_access: access != null,
+            organization_memberships: hasMemberships,
+            deals_created_by_user: true,
+            documents_via_owned_deals: true,
+            jobs_via_owned_deals: hasJobs,
+            node_ai_analyses_via_owned_deals: hasNodeAnalyses,
+            audit_log_actor_events: hasAuditLog,
+          },
+          unsupported_metrics: {
+            chat_sessions: {
+              status: "unavailable",
+              reason: "No per-user chat session telemetry table is available in the governed schema.",
+            },
+            token_usage: {
+              status: "unavailable",
+              reason: "Token usage is tracked per model/deal call, not reliably attributable to a clerk_user_id in current schema.",
+            },
+            session_duration: {
+              status: "unavailable",
+              reason: "No user session duration telemetry source is currently available.",
+            },
+          },
+        },
+      });
     }
   );
 

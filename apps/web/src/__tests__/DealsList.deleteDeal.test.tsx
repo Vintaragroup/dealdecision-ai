@@ -86,7 +86,7 @@ describe('DealsList delete deal', () => {
     // Confirm modal
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /Move Deal To Trash/i })).toBeInTheDocument();
-      expect(screen.getByText(/The deal and its documents will be soft-deleted/i)).toBeInTheDocument();
+      expect(screen.getByText(/This is a soft delete\./i)).toBeInTheDocument();
     });
 
     const confirmInput = screen.getByPlaceholderText(/Demo Deal/i) as HTMLInputElement;

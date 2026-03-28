@@ -38,6 +38,21 @@ export type AuditActorContext = {
   source: PlatformAuditSource;
 };
 
+const GOVERNANCE_ALERT_ACTIONS = new Set<string>([
+  "deal.purge",
+  "document.hard_delete",
+  "platform_access.set_admin_status",
+  "platform_access.set_account_role",
+  "organization_membership.set_role",
+  "platform_access.revoke",
+  "organization_membership.revoke",
+  "invite.create",
+  "invite.revoke",
+  "invite.redeem",
+  "invite.expired",
+  "invite.redeem_failed",
+]);
+
 const ACTION_TYPE_RE = /^[a-z0-9_]+\.[a-z0-9_]+$/;
 
 function nonEmpty(value: unknown, field: string): string {
@@ -110,7 +125,10 @@ export function extractAuditReason(
 
 export async function writePlatformAuditLog(
   input: PlatformAuditLogInput,
-  opts?: { db?: Queryable }
+  opts?: {
+    db?: Queryable;
+    alertDispatcher?: (row: PlatformAuditLogRow) => Promise<void> | void;
+  }
 ): Promise<PlatformAuditLogRow> {
   const actorUserId = nonEmpty(input.actor_user_id, "actor_user_id");
   const actorRole = nonEmpty(input.actor_role, "actor_role");
@@ -164,5 +182,66 @@ export async function writePlatformAuditLog(
     ]
   );
 
-  return rows[0];
+  const insertedRow = rows[0];
+  if (insertedRow && GOVERNANCE_ALERT_ACTIONS.has(insertedRow.action_type)) {
+    const dispatch = opts?.alertDispatcher ?? dispatchGovernanceAlert;
+    void Promise.resolve(dispatch(insertedRow)).catch((err) => {
+      console.error("governance_alert_dispatch_failed", {
+        action_type: insertedRow.action_type,
+        entity_type: insertedRow.entity_type,
+        entity_id: insertedRow.entity_id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+
+  return insertedRow;
+}
+
+async function dispatchGovernanceAlert(row: PlatformAuditLogRow): Promise<void> {
+  const payload = {
+    event: "governance_alert",
+    action_type: row.action_type,
+    entity_type: row.entity_type,
+    entity_id: row.entity_id,
+    actor_user_id: row.actor_user_id,
+    actor_role: row.actor_role,
+    source: row.source,
+    reason: row.reason,
+    created_at: row.created_at,
+  };
+
+  console.warn("governance_alert", payload);
+
+  const webhookUrl = process.env.GOVERNANCE_ALERT_WEBHOOK_URL?.trim();
+  if (!webhookUrl) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 2500);
+  try {
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => "");
+      console.error("governance_alert_webhook_non_2xx", {
+        status: response.status,
+        body,
+        action_type: row.action_type,
+      });
+    }
+  } catch (err) {
+    console.error("governance_alert_webhook_failed", {
+      action_type: row.action_type,
+      entity_type: row.entity_type,
+      entity_id: row.entity_id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }

@@ -51,8 +51,8 @@ describe('DocumentLibrary delete document', () => {
     await user.click(screen.getByRole('button', { name: /move to trash \(1\)/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Move selected documents to trash\?/i)).toBeInTheDocument();
-      expect(screen.getByText(/They can be restored later by an admin/i)).toBeInTheDocument();
+      expect(screen.getByText(/Move document to trash\?/i)).toBeInTheDocument();
+      expect(screen.getByText(/This is a soft delete and can be restored by an admin/i)).toBeInTheDocument();
     });
 
     // Confirm delete

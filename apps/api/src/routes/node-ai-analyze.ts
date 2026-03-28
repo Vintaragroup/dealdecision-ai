@@ -3,6 +3,7 @@ import { createHash } from "crypto";
 import { z } from "zod";
 
 import { getPool } from "../lib/db";
+import { recordLLMMetrics } from "../lib/llm";
 import { sanitizeText } from "@dealdecision/core";
 import { compactForAiSource } from "../lib/ai-compact";
 
@@ -428,6 +429,19 @@ export async function registerNodeAiAnalyzeRoutes(app: FastifyInstance, poolOver
         ],
         temperature: 0,
         maxTokens: 900,
+      });
+
+      await recordLLMMetrics({
+        dealId,
+        taskType: "synthesis",
+        model: completion.model || model,
+        provider: "openai",
+        inputTokens: Number(completion.usage?.prompt_tokens ?? 0),
+        outputTokens: Number(completion.usage?.completion_tokens ?? 0),
+        costUsd: 0,
+        latencyMs: Date.now() - startedAt,
+        cached: false,
+        clerkUserId: typeof (request as any)?.auth?.userId === "string" ? (request as any).auth.userId : undefined,
       });
 
       const rawText = completion.content.trim();

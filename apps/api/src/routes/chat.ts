@@ -9,6 +9,7 @@ import type {
 import { buildOrchestratorReportV1, classifyQuestionIntent, buildPromptPolicyBlock, enforceAnswerSanity } from "@dealdecision/core";
 import type { OrchestratorReportV1, QuestionIntent, AnswerBasis, FinancialSegment, FinancialFactV1, FinancialCoverageV1, PageRegistryRowV1, DealFactV1 } from "@dealdecision/core";
 import { getPool } from "../lib/db";
+import { recordLLMMetrics } from "../lib/llm";
 import { getFinancialFactsForChat, getFinancialCoverageForChat } from "./financial-facts";
 import { getPageContextForChat } from "./pages";
 import { getDealFactsForChat } from "./deal-facts";
@@ -38,7 +39,12 @@ async function openaiChatCompletion(params: {
   temperature: number;
   maxTokens: number;
   jsonMode?: boolean;
-}): Promise<{ content: string; model: string }> {
+}): Promise<{
+  content: string;
+  model: string;
+  usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  latencyMs: number;
+}> {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error("OPENAI_API_KEY is not configured");
 
@@ -52,6 +58,7 @@ async function openaiChatCompletion(params: {
     body.response_format = { type: "json_object" };
   }
 
+  const startedAt = Date.now();
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -71,7 +78,16 @@ async function openaiChatCompletion(params: {
   if (typeof content !== "string" || content.trim().length === 0) {
     throw new Error("OpenAI returned empty content");
   }
-  return { content, model: json.model };
+  return {
+    content,
+    model: json.model,
+    usage: {
+      prompt_tokens: Number(json?.usage?.prompt_tokens ?? 0),
+      completion_tokens: Number(json?.usage?.completion_tokens ?? 0),
+      total_tokens: Number(json?.usage?.total_tokens ?? 0),
+    },
+    latencyMs: Date.now() - startedAt,
+  };
 }
 
 // ============================================================================
@@ -785,6 +801,9 @@ export async function registerChatRoutes(
     let suggested_actions: DealChatActionV1[] = fallbackActions;
     let answer_basis: AnswerBasis | undefined;
     let unknowns_used: string[] | undefined;
+    const requesterUserId = typeof (request as any)?.auth?.userId === "string"
+      ? (request as any).auth.userId
+      : undefined;
 
     try {
       const result = await openaiChatCompletion({
@@ -796,6 +815,20 @@ export async function registerChatRoutes(
         temperature: 0.2,
         maxTokens: 900,
         jsonMode: true,
+      });
+
+      // Best-effort logging to llm_performance_metrics for admin token analytics.
+      await recordLLMMetrics({
+        dealId: deal_id,
+        taskType: "chat-response",
+        model: result.model || "gpt-4o-mini",
+        provider: "openai",
+        inputTokens: result.usage.prompt_tokens,
+        outputTokens: result.usage.completion_tokens,
+        costUsd: 0,
+        latencyMs: result.latencyMs,
+        cached: false,
+        clerkUserId: requesterUserId,
       });
 
       // Parse structured JSON from LLM

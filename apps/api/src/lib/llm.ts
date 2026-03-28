@@ -157,31 +157,67 @@ export async function recordLLMMetrics(metrics: {
   costUsd: number;
   latencyMs: number;
   cached: boolean;
+  clerkUserId?: string;
   errorMessage?: string;
 }): Promise<void> {
   const pool = getPool();
   
   try {
-    await pool.query(
-      `INSERT INTO llm_performance_metrics 
-       (deal_id, cycle_number, task_type, selected_model, provider_type, 
-        input_tokens, output_tokens, total_tokens, cost_usd, latency_ms, cached, error_message)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-      [
-        metrics.dealId,
-        metrics.cycleNumber,
-        metrics.taskType,
-        metrics.model,
-        metrics.provider,
-        metrics.inputTokens,
-        metrics.outputTokens,
-        metrics.inputTokens + metrics.outputTokens,
-        metrics.costUsd,
-        metrics.latencyMs,
-        metrics.cached,
-        metrics.errorMessage || null,
-      ]
+    const { rows: clerkUserColumnRows } = await pool.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1
+           FROM information_schema.columns
+          WHERE table_schema = 'public'
+            AND table_name = 'llm_performance_metrics'
+            AND column_name = 'clerk_user_id'
+       ) AS exists`
     );
+    const hasClerkUserId = Boolean(clerkUserColumnRows[0]?.exists);
+
+    if (hasClerkUserId) {
+      await pool.query(
+        `INSERT INTO llm_performance_metrics 
+         (deal_id, cycle_number, task_type, selected_model, provider_type,
+          input_tokens, output_tokens, total_tokens, cost_usd, latency_ms, cached, clerk_user_id, error_message)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          metrics.dealId,
+          metrics.cycleNumber,
+          metrics.taskType,
+          metrics.model,
+          metrics.provider,
+          metrics.inputTokens,
+          metrics.outputTokens,
+          metrics.inputTokens + metrics.outputTokens,
+          metrics.costUsd,
+          metrics.latencyMs,
+          metrics.cached,
+          metrics.clerkUserId || null,
+          metrics.errorMessage || null,
+        ]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO llm_performance_metrics 
+         (deal_id, cycle_number, task_type, selected_model, provider_type, 
+          input_tokens, output_tokens, total_tokens, cost_usd, latency_ms, cached, error_message)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [
+          metrics.dealId,
+          metrics.cycleNumber,
+          metrics.taskType,
+          metrics.model,
+          metrics.provider,
+          metrics.inputTokens,
+          metrics.outputTokens,
+          metrics.inputTokens + metrics.outputTokens,
+          metrics.costUsd,
+          metrics.latencyMs,
+          metrics.cached,
+          metrics.errorMessage || null,
+        ]
+      );
+    }
   } catch (err) {
     console.error('Failed to record LLM metrics:', err);
     // Don't throw - metrics are secondary to operation success

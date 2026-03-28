@@ -48,6 +48,14 @@ function formatRelativeDate(value: string | null): string {
   return date.toLocaleDateString();
 }
 
+function formatCompactNumber(value: number): string {
+  return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(value);
+}
+
+function formatUsd(value: number): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(value);
+}
+
 export function AdminUserAnalyticsDetailView({ user, onBack }: AdminUserAnalyticsDetailViewProps) {
   const [range, setRange] = useState<RangeValue>(30);
   const [dealViewTab, setDealViewTab] = useState<'overview' | 'current' | 'stale'>('overview');
@@ -164,6 +172,11 @@ export function AdminUserAnalyticsDetailView({ user, onBack }: AdminUserAnalytic
             <KPICard label="Documents" value={data.kpis.total_documents} subtitle={`${avgDocsPerDeal.toFixed(1)} docs/deal`} />
             <KPICard label="Jobs" value={data.kpis.total_jobs} subtitle={`${data.kpis.failed_jobs} failed`} />
             <KPICard label="AI Analyses" value={data.kpis.ai_analyses_total} subtitle={`${data.kpis.ai_llm_called_total} with live LLM`} />
+            <KPICard
+              label="LLM Token Usage"
+              value={formatCompactNumber(data.kpis.llm_total_tokens)}
+              subtitle={`${formatCompactNumber(data.kpis.llm_calls)} calls • ${formatUsd(data.kpis.llm_cost_usd)}`}
+            />
           </div>
 
           {data.kpis.stale_deals_30d > 0 && (

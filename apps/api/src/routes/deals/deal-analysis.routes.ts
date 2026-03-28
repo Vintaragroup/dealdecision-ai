@@ -11,6 +11,7 @@ import path from "path";
 import { fetchPhaseBVisualsFromDb } from "../../lib/phaseb-visuals";
 import { getUploadsRootDir } from "../../plugins/uploads-static";
 import { getPool } from "../../lib/db";
+import { recordLLMMetrics } from "../../lib/llm";
 import { resolveVisualAssetImageUriForApi } from "../../lib/visual-asset-image-uri";
 import type { Deal } from "@dealdecision/contracts";
 import type { JobStatus, JobType } from "@dealdecision/contracts";
@@ -232,6 +233,7 @@ export async function registerDealAnalysisRoutes(
 
     let rawContent: string;
     try {
+      const llmCallStarted = Date.now();
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -256,9 +258,25 @@ export async function registerDealAnalysisRoutes(
         return reply.status(502).send({ error: "llm_error", message: `OpenAI returned ${res.status}` });
       }
 
-      type OAIResp = { choices: Array<{ message?: { content?: string } }>; model: string };
+      type OAIResp = {
+        choices: Array<{ message?: { content?: string } }>;
+        model: string;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
       const json = (await res.json()) as OAIResp;
       rawContent = json.choices?.[0]?.message?.content?.trim() ?? "";
+      await recordLLMMetrics({
+        dealId,
+        taskType: "synthesis",
+        model: json.model || model,
+        provider: "openai",
+        inputTokens: Number(json?.usage?.prompt_tokens ?? 0),
+        outputTokens: Number(json?.usage?.completion_tokens ?? 0),
+        costUsd: 0,
+        latencyMs: Date.now() - llmCallStarted,
+        cached: false,
+        clerkUserId: typeof (request as any)?.auth?.userId === "string" ? (request as any).auth.userId : undefined,
+      });
     } catch (err) {
       console.error("[deal-terms-analysis] fetch_error", { dealId, err: err instanceof Error ? err.message : String(err) });
       return reply.status(502).send({ error: "llm_error", message: "OpenAI request failed" });
@@ -403,6 +421,7 @@ export async function registerDealAnalysisRoutes(
 
     let rawContent: string;
     try {
+      const llmCallStarted = Date.now();
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -427,9 +446,25 @@ export async function registerDealAnalysisRoutes(
         return reply.status(502).send({ error: "llm_error", message: `OpenAI returned ${res.status}` });
       }
 
-      type OAIResp = { choices: Array<{ message?: { content?: string } }>; model: string };
+      type OAIResp = {
+        choices: Array<{ message?: { content?: string } }>;
+        model: string;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
       const json = (await res.json()) as OAIResp;
       rawContent = json.choices?.[0]?.message?.content?.trim() ?? "";
+      await recordLLMMetrics({
+        dealId,
+        taskType: "synthesis",
+        model: json.model || model,
+        provider: "openai",
+        inputTokens: Number(json?.usage?.prompt_tokens ?? 0),
+        outputTokens: Number(json?.usage?.completion_tokens ?? 0),
+        costUsd: 0,
+        latencyMs: Date.now() - llmCallStarted,
+        cached: false,
+        clerkUserId: typeof (request as any)?.auth?.userId === "string" ? (request as any).auth.userId : undefined,
+      });
     } catch (err) {
       console.error("[market-analysis] fetch_error", { dealId, err: err instanceof Error ? err.message : String(err) });
       return reply.status(502).send({ error: "llm_error", message: "OpenAI request failed" });
@@ -661,6 +696,7 @@ export async function registerDealAnalysisRoutes(
 
     let rawContent: string;
     try {
+      const llmCallStarted = Date.now();
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -685,9 +721,25 @@ export async function registerDealAnalysisRoutes(
         return reply.status(502).send({ error: "llm_error", message: `OpenAI returned ${res.status}` });
       }
 
-      type OAIResp = { choices: Array<{ message?: { content?: string } }>; model: string };
+      type OAIResp = {
+        choices: Array<{ message?: { content?: string } }>;
+        model: string;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
       const json = (await res.json()) as OAIResp;
       rawContent = json.choices?.[0]?.message?.content?.trim() ?? "";
+      await recordLLMMetrics({
+        dealId,
+        taskType: "synthesis",
+        model: json.model || model,
+        provider: "openai",
+        inputTokens: Number(json?.usage?.prompt_tokens ?? 0),
+        outputTokens: Number(json?.usage?.completion_tokens ?? 0),
+        costUsd: 0,
+        latencyMs: Date.now() - llmCallStarted,
+        cached: false,
+        clerkUserId: typeof (request as any)?.auth?.userId === "string" ? (request as any).auth.userId : undefined,
+      });
     } catch (err) {
       console.error("[financial-analysis] fetch_error", {
         dealId, err: err instanceof Error ? err.message : String(err),
@@ -934,6 +986,7 @@ export async function registerDealAnalysisRoutes(
 
     let rawContent: string;
     try {
+      const llmCallStarted = Date.now();
       const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
@@ -958,9 +1011,25 @@ export async function registerDealAnalysisRoutes(
         return reply.status(502).send({ error: "llm_error", message: `OpenAI returned ${res.status}` });
       }
 
-      type OAIResp = { choices: Array<{ message?: { content?: string } }>; model: string };
+      type OAIResp = {
+        choices: Array<{ message?: { content?: string } }>;
+        model: string;
+        usage?: { prompt_tokens?: number; completion_tokens?: number };
+      };
       const json = (await res.json()) as OAIResp;
       rawContent = json.choices?.[0]?.message?.content?.trim() ?? "";
+      await recordLLMMetrics({
+        dealId,
+        taskType: "synthesis",
+        model: json.model || model,
+        provider: "openai",
+        inputTokens: Number(json?.usage?.prompt_tokens ?? 0),
+        outputTokens: Number(json?.usage?.completion_tokens ?? 0),
+        costUsd: 0,
+        latencyMs: Date.now() - llmCallStarted,
+        cached: false,
+        clerkUserId: typeof (request as any)?.auth?.userId === "string" ? (request as any).auth.userId : undefined,
+      });
     } catch (err) {
       console.error("[risk-verification] fetch_error", {
         dealId, err: err instanceof Error ? err.message : String(err),

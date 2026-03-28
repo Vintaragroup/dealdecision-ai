@@ -3000,6 +3000,11 @@ export type AdminUserAnalyticsResponse = {
     failed_jobs: number;
     ai_analyses_total: number;
     ai_llm_called_total: number;
+    llm_calls: number;
+    llm_total_tokens: number;
+    llm_input_tokens: number;
+    llm_output_tokens: number;
+    llm_cost_usd: number;
     last_activity_at: string | null;
   };
   deals: Array<{

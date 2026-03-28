@@ -35,6 +35,7 @@ import { computeOverrideQualityV1 } from '../lib/override-quality-v1';
 import { computeDeterministicModifierV1, computeDeterministicScorePreviewV1Diagnostics, shouldPinUnadjusted } from '../lib/deterministic-score-preview-v1';
 import { StageTimer, nowMs } from '../lib/telemetry/stage-timer';
 import { enqueueJob } from '../services/jobs';
+import { recordLLMMetrics } from '../lib/llm';
 
 const isUuid = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
 
@@ -387,6 +388,25 @@ async function openaiChatCompletion(params: {
       'LLM_CALL_DONE'
     );
   }
+
+  if (params.audit?.deal_id && typeof params.audit.deal_id === 'string' && params.audit.deal_id.trim().length > 0) {
+    const clerkUserId = typeof (params.audit.request as any)?.auth?.userId === 'string'
+      ? (params.audit.request as any).auth.userId
+      : undefined;
+    await recordLLMMetrics({
+      dealId: params.audit.deal_id,
+      taskType: 'synthesis',
+      model: json.model || params.model,
+      provider: 'openai',
+      inputTokens: Number(json?.usage?.prompt_tokens ?? 0),
+      outputTokens: Number(json?.usage?.completion_tokens ?? 0),
+      costUsd: 0,
+      latencyMs: nowMs() - startedAtMs,
+      cached: false,
+      clerkUserId,
+    });
+  }
+
   return { content, model: json.model, usage: json.usage, finish_reason: choice0?.finish_reason };
 }
 

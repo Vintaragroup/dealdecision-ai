@@ -174,19 +174,26 @@ export async function registerDealCoreRoutes(
     }
 
     const hasLifecycleStatus = await hasColumn(pool, "deals", "lifecycle_status");
+    const hasDealOrgId = await hasColumn(pool, "deals", "org_id");
     if (!hasLifecycleStatus && lifecycleFilter === "archived") {
       return [];
     }
 
     const userId = (request as any)?.auth?.userId;
+    const orgId = (request as any)?.auth?.orgId;
     const bypassAuthEnvRaw = typeof process.env.DISABLE_CLERK_AUTH === "string" ? process.env.DISABLE_CLERK_AUTH : "";
     const bypassAuthEnv = ["1", "true", "yes", "on"].includes(bypassAuthEnvRaw.trim().toLowerCase());
     const bypassAuth = Boolean((request as any)?.auth?.claims?.bypass_auth) || bypassAuthEnv;
     const hasUserId = !bypassAuth && typeof userId === "string" && userId.trim().length > 0;
+    const hasOrgScope = !bypassAuth && hasDealOrgId && typeof orgId === "string" && orgId.trim().length > 0;
     const whereClauses = ["d.deleted_at IS NULL"];
     const params: any[] = [];
 
-    if (hasUserId) {
+    if (hasOrgScope) {
+      params.push(orgId.trim());
+      const i = params.length;
+      whereClauses.push(`d.org_id = $${i}`);
+    } else if (hasUserId) {
       params.push(userId);
       const i = params.length;
       whereClauses.push(`(d.created_by_user_id = $${i} OR d.created_by_user_id IS NULL)`);

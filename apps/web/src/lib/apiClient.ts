@@ -2993,6 +2993,8 @@ export type AdminUserAnalyticsResponse = {
     total_deals: number;
     active_deals: number;
     archived_deals: number;
+    stale_deals_30d: number;
+    current_deals_30d: number;
     total_documents: number;
     total_jobs: number;
     failed_jobs: number;
@@ -3007,6 +3009,39 @@ export type AdminUserAnalyticsResponse = {
     lifecycle_status: string | null;
     created_at: string;
     updated_at: string;
+    last_activity_at: string;
+    stale_days: number;
+    recommendation_action: 'archive_or_delete' | 'keep_monitoring' | 'already_closed' | string;
+    document_count: number;
+    total_jobs: number;
+    failed_jobs: number;
+    last_job_at: string | null;
+  }>;
+  current_deals: Array<{
+    deal_id: string;
+    name: string;
+    stage: string | null;
+    lifecycle_status: string | null;
+    created_at: string;
+    updated_at: string;
+    last_activity_at: string;
+    stale_days: number;
+    recommendation_action: 'archive_or_delete' | 'keep_monitoring' | 'already_closed' | string;
+    document_count: number;
+    total_jobs: number;
+    failed_jobs: number;
+    last_job_at: string | null;
+  }>;
+  stale_deals: Array<{
+    deal_id: string;
+    name: string;
+    stage: string | null;
+    lifecycle_status: string | null;
+    created_at: string;
+    updated_at: string;
+    last_activity_at: string;
+    stale_days: number;
+    recommendation_action: 'archive_or_delete' | 'keep_monitoring' | 'already_closed' | string;
     document_count: number;
     total_jobs: number;
     failed_jobs: number;

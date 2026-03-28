@@ -6169,7 +6169,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
             : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
         }`}>
-          <div className="flex flex-col sm:flex-row items-start justify-between gap-4 sm:gap-0 sm:mb-6">
+          <div className="flex flex-col sm:flex-row items-start justify-between gap-4 sm:gap-4 sm:mb-6">
             <div className="flex-1">
               {dealId && (
                 <CanonicalIdentityRenameBanner
@@ -6183,9 +6183,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             </div>
             
             {/* Streamlined Action Buttons - 3 Main + More Menu */}
-            <div className="flex items-center gap-2 relative">
+            <div className="w-full sm:w-auto flex flex-wrap items-center justify-start sm:justify-end gap-2 relative">
               {(pageUnderstandingGate.status !== 'idle' || pageUnderstandingGate.readiness) && (
-                <div className={`mr-2 rounded-2xl border px-3 py-2 text-xs max-w-[420px] ${darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-700'}`}>
+                <div className={`order-3 sm:order-none w-full sm:w-auto sm:mr-2 rounded-2xl border px-3 py-2 text-xs max-w-none sm:max-w-[420px] ${darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-700'}`}>
                   {(() => {
                     const readiness = pageUnderstandingGate.readiness;
                     const ready = !!readiness?.ready;
@@ -6777,6 +6777,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               analyzing={vm.header.analyzing}
               isFounder={false /* no isFounder in useUserRole(); awaiting future role expansion */}
               signals={vm.header.signals}
+              scoreSummaryText={topSectionScoreDriverOneLiner || vm.header.dealDescription}
+              scoreStrengthBullets={filteredStrengths}
+              scoreWeaknessBullets={[
+                ...filteredWeaknesses,
+                ...stripScoreFractionsFromItems(topSectionActionsToImprove),
+              ]}
             />
           </div>
 

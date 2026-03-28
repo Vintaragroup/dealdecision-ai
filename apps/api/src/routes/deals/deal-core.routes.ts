@@ -189,7 +189,15 @@ export async function registerDealCoreRoutes(
     const whereClauses = ["d.deleted_at IS NULL"];
     const params: any[] = [];
 
-    if (hasOrgScope) {
+    if (hasOrgScope && hasUserId) {
+      params.push(userId);
+      const userIdx = params.length;
+      params.push(orgId.trim());
+      const orgIdx = params.length;
+      // Hybrid access: always include a user's own deals, plus org-associated deals.
+      // This prevents empty pipelines when org linkage lags behind deal creation.
+      whereClauses.push(`(d.created_by_user_id = $${userIdx} OR d.org_id = $${orgIdx})`);
+    } else if (hasOrgScope) {
       params.push(orgId.trim());
       const i = params.length;
       whereClauses.push(`d.org_id = $${i}`);

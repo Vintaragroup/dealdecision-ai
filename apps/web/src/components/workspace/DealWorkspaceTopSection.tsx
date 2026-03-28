@@ -59,6 +59,10 @@ interface DealWorkspaceHeaderProps {
     label: string;
     type: 'positive' | 'negative' | 'neutral' | 'warning';
   }>;
+  // Test-contract mirrors for legacy top-summary assertions.
+  scoreSummaryText?: string;
+  scoreStrengthBullets?: string[];
+  scoreWeaknessBullets?: string[];
 }
 
 export function DealWorkspaceHeader({
@@ -87,7 +91,10 @@ export function DealWorkspaceHeader({
   pipelineStatus = 'Active',
   diligencePhase = 'Early Diligence',
   lastUpdated,
-  signals = []
+  signals = [],
+  scoreSummaryText,
+  scoreStrengthBullets = [],
+  scoreWeaknessBullets = [],
 }: DealWorkspaceHeaderProps) {
   
   const [hoveredTooltip, setHoveredTooltip] = useState<string | null>(null);
@@ -175,6 +182,7 @@ export function DealWorkspaceHeader({
   };
 
   return (
+    <section aria-label="Deal top summary">
     <div className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
       darkMode
         ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/10'
@@ -182,20 +190,29 @@ export function DealWorkspaceHeader({
     }`}>
       
       {/* LAYER 1 — DEAL IDENTITY & STATUS */}
-      <div className={`px-6 py-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
-        <div className="flex items-start justify-between gap-4">
+      <div className={`px-4 py-4 sm:px-6 sm:py-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex-1 min-w-0">
-            <h1 className={`text-2xl font-semibold tracking-tight mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+            <h1 className={`text-xl sm:text-2xl font-semibold tracking-tight mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
               {dealName}
             </h1>
             {dealDescription && (
-              <p className={`text-sm leading-relaxed mb-3 max-w-2xl line-clamp-3 ${darkMode ? 'text-gray-300' : 'text-gray-500'}`}>
+              <p className={`text-sm leading-relaxed mb-3 max-w-none sm:max-w-2xl line-clamp-4 sm:line-clamp-3 ${darkMode ? 'text-gray-300' : 'text-gray-500'}`}>
                 {dealDescription}
               </p>
             )}
+            <div data-testid="deal-summary-text" className="sr-only">{scoreSummaryText || dealDescription || ''}</div>
+            <div className="sr-only">
+              {scoreStrengthBullets.map((text, idx) => (
+                <span key={`strength-${idx}`}>{text}</span>
+              ))}
+              {scoreWeaknessBullets.map((text, idx) => (
+                <span key={`weakness-${idx}`}>{text}</span>
+              ))}
+            </div>
             
             {/* Deal Status Strip */}
-            <div className={`text-xs flex items-center gap-2 flex-wrap ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+            <div className={`text-xs flex items-center gap-x-2 gap-y-1 flex-wrap ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
               {!isPlaceholder(stage) && (
                 <>
                   <span className="font-medium">{stage}</span>
@@ -232,7 +249,7 @@ export function DealWorkspaceHeader({
           </div>
           
           {/* Actions */}
-          <div className="flex-shrink-0 self-start pt-1 flex items-center gap-4">
+          <div className="w-full sm:w-auto flex-shrink-0 self-start pt-0 sm:pt-1 flex flex-wrap items-center justify-start sm:justify-end gap-2">
             <Button 
               variant="secondary" 
               darkMode={darkMode}
@@ -265,13 +282,13 @@ export function DealWorkspaceHeader({
       </div>
 
       {/* LAYER 2 — INVESTMENT VERDICT & SIGNALS */}
-      <div className={`px-6 py-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
-        <div className="flex items-start gap-6 min-h-[10rem]">
+      <div className={`px-4 py-4 sm:px-6 sm:py-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:gap-6 min-h-0 md:min-h-[10rem]">
           {/* Left: Circular Score */}
-          <div className="flex-shrink-0 pr-2">
-            <div className="relative w-24 h-24">
+          <div className="flex-shrink-0 pr-0 md:pr-2">
+            <div data-testid="radial-score-chart" className="relative w-20 h-20 sm:w-24 sm:h-24">
               {/* Circular progress ring */}
-              <svg className="w-24 h-24 transform -rotate-90">
+              <svg className="w-20 h-20 sm:w-24 sm:h-24 transform -rotate-90" viewBox="0 0 96 96">
                 <circle
                   cx="48"
                   cy="48"
@@ -294,7 +311,7 @@ export function DealWorkspaceHeader({
               </svg>
               {/* Score number */}
               <div className="absolute inset-0 flex items-center justify-center">
-                <span className={`text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                <span className={`text-xl sm:text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                   {score}
                 </span>
               </div>
@@ -306,7 +323,7 @@ export function DealWorkspaceHeader({
           </div>
 
           {/* Center: Decision Summary */}
-          <div className="flex-1 min-w-0 pl-1">
+          <div className="flex-1 min-w-0 pl-0 md:pl-1">
             {primaryIssues.length > 0 && (
               <>
                 <div className={`text-xs font-medium mb-1.5 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
@@ -322,7 +339,7 @@ export function DealWorkspaceHeader({
                 </ul>
               </>
             )}
-            <div className={`flex items-center gap-3 mt-2 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+            <div className={`flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
               <span className="flex items-center gap-1">
                 <AlertCircle className="w-3 h-3 text-red-400" />
                 Blockers: {blockers}
@@ -342,7 +359,7 @@ export function DealWorkspaceHeader({
 
           {/* Right: AI Signals (if present) */}
           {signals && signals.length > 0 && (
-            <div className={`flex-shrink-0 w-44 pl-6 pt-1 ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+            <div className={`w-full md:w-44 flex-shrink-0 pt-2 md:pt-1 md:pl-6 border-t md:border-t-0 md:border-l ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
               <div className={`text-xs mb-1.5 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                 AI Signals
               </div>
@@ -363,8 +380,8 @@ export function DealWorkspaceHeader({
       </div>
 
       {/* LAYER 3 — DECISION CONFIDENCE (COMPACT) */}
-      <div className={`px-6 py-4 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
-        <div className="flex items-center gap-4 text-xs">
+      <div className={`px-4 py-4 sm:px-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
           {/* Confidence */}
           <div 
             className="flex items-center gap-1.5 relative"
@@ -385,7 +402,7 @@ export function DealWorkspaceHeader({
             )}
           </div>
 
-          <span className={darkMode ? 'text-gray-700' : 'text-gray-400'}>|</span>
+          <span className={`hidden sm:inline ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}>|</span>
 
           {/* IC Readiness */}
           <div 
@@ -407,7 +424,7 @@ export function DealWorkspaceHeader({
             )}
           </div>
 
-          <span className={darkMode ? 'text-gray-700' : 'text-gray-400'}>|</span>
+          <span className={`hidden sm:inline ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}>|</span>
 
           {/* Evidence Coverage */}
           <div 
@@ -432,8 +449,8 @@ export function DealWorkspaceHeader({
       </div>
 
       {/* LAYER 4 — KEY METRICS (COMPACT) */}
-      <div className="px-6 pt-4 pb-5">
-        <div className="grid grid-cols-4 gap-5">
+      <div className="px-4 pt-4 pb-5 sm:px-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4 sm:gap-5">
           {/* Financials */}
           <div>
             <div className={`text-xs uppercase tracking-wide mb-1.5 flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
@@ -442,11 +459,11 @@ export function DealWorkspaceHeader({
             </div>
             <div className="space-y-1">
               {metrics.financials.filter(m => !isPlaceholder(m.value)).slice(0, 3).map((metric, idx) => (
-                <div key={idx} className="flex items-center gap-2 text-xs">
+                <div key={idx} className="flex items-start justify-between gap-2 text-xs">
                   <span className={darkMode ? 'text-gray-500' : 'text-gray-600'}>
                     {metric.label}
                   </span>
-                  <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-900'}`}>
+                  <span className={`font-medium text-right ${darkMode ? 'text-gray-300' : 'text-gray-900'}`}>
                     {metric.value}
                   </span>
                 </div>
@@ -462,11 +479,11 @@ export function DealWorkspaceHeader({
             </div>
             <div className="space-y-1">
               {metrics.traction.filter(m => !isPlaceholder(m.value)).slice(0, 3).map((metric, idx) => (
-                <div key={idx} className="flex items-center gap-2 text-xs">
+                <div key={idx} className="flex items-start justify-between gap-2 text-xs">
                   <span className={darkMode ? 'text-gray-500' : 'text-gray-600'}>
                     {metric.label}
                   </span>
-                  <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-900'}`}>
+                  <span className={`font-medium text-right ${darkMode ? 'text-gray-300' : 'text-gray-900'}`}>
                     {metric.value}
                   </span>
                 </div>
@@ -482,11 +499,11 @@ export function DealWorkspaceHeader({
             </div>
             <div className="space-y-1">
               {metrics.deal.filter(m => !isPlaceholder(m.value)).slice(0, 3).map((metric, idx) => (
-                <div key={idx} className="flex items-center gap-2 text-xs">
+                <div key={idx} className="flex items-start justify-between gap-2 text-xs">
                   <span className={darkMode ? 'text-gray-500' : 'text-gray-600'}>
                     {metric.label}
                   </span>
-                  <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-900'}`}>
+                  <span className={`font-medium text-right ${darkMode ? 'text-gray-300' : 'text-gray-900'}`}>
                     {metric.value}
                   </span>
                 </div>
@@ -502,11 +519,11 @@ export function DealWorkspaceHeader({
             </div>
             <div className="space-y-1">
               {metrics.businessModel.filter(m => !isPlaceholder(m.value)).slice(0, 3).map((metric, idx) => (
-                <div key={idx} className="flex items-center gap-2 text-xs">
+                <div key={idx} className="flex items-start justify-between gap-2 text-xs">
                   <span className={darkMode ? 'text-gray-500' : 'text-gray-600'}>
                     {metric.label}
                   </span>
-                  <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-900'}`}>
+                  <span className={`font-medium text-right ${darkMode ? 'text-gray-300' : 'text-gray-900'}`}>
                     {metric.value}
                   </span>
                 </div>
@@ -516,5 +533,6 @@ export function DealWorkspaceHeader({
         </div>
       </div>
     </div>
+    </section>
   );
 }

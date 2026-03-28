@@ -1069,11 +1069,11 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         : (typeof membership?.clerk_org_id === "string" && membership.clerk_org_id.trim().length > 0)
           ? membership.clerk_org_id.trim()
           : null;
-      const useOrgScope = Boolean(hasDealOrgId && scopedOrgId);
-      const dealScopeParam = useOrgScope ? scopedOrgId : clerkUserId;
-      const dealScopeWhere = useOrgScope
-        ? "d.org_id = $1::text"
-        : "(d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)";
+      const hasScopedOrg = Boolean(hasDealOrgId && scopedOrgId);
+      const dealScopeParam = clerkUserId;
+      // Personal-first analytics: keep per-user signal canonical.
+      const dealScopeWhere = "(d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)";
+      const orgDealScopeWhere = hasScopedOrg ? "d.org_id = $1::text" : null;
 
       const { rows: dealAggRows } = await pool.query<{
         total_deals: string;
@@ -1274,6 +1274,48 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           ).rows
         : [{ analyses_total: "0", llm_called_total: "0", last_ai_activity_at: null }];
 
+      let orgTotalDeals = 0;
+      let orgTotalDocuments = 0;
+      let personalDealsOrgAssociated = 0;
+      let personalDealsUnassociated = 0;
+
+      if (hasScopedOrg && orgDealScopeWhere) {
+        const { rows: orgDealAggRows } = await pool.query<{ total_deals: string }>(
+          `SELECT COUNT(*)::text AS total_deals
+             FROM deals d
+            WHERE ${orgDealScopeWhere}
+              AND d.deleted_at IS NULL`,
+          [scopedOrgId]
+        );
+        orgTotalDeals = Number(orgDealAggRows[0]?.total_deals ?? "0");
+
+        const { rows: orgDocAggRows } = await pool.query<{ total_documents: string }>(
+          `SELECT COUNT(*)::text AS total_documents
+             FROM documents doc
+             INNER JOIN deals d ON d.id = doc.deal_id
+            WHERE ${orgDealScopeWhere}
+              AND d.deleted_at IS NULL
+              AND doc.deleted_at IS NULL`,
+          [scopedOrgId]
+        );
+        orgTotalDocuments = Number(orgDocAggRows[0]?.total_documents ?? "0");
+
+        const { rows: personalAssociationRows } = await pool.query<{
+          associated: string;
+          unassociated: string;
+        }>(
+          `SELECT
+             COUNT(*) FILTER (WHERE d.org_id = $2::text)::text AS associated,
+             COUNT(*) FILTER (WHERE d.org_id IS NULL OR d.org_id <> $2::text)::text AS unassociated
+           FROM deals d
+           WHERE d.deleted_at IS NULL
+             AND d.created_by_user_id = $1`,
+          [clerkUserId, scopedOrgId]
+        );
+        personalDealsOrgAssociated = Number(personalAssociationRows[0]?.associated ?? "0");
+        personalDealsUnassociated = Number(personalAssociationRows[0]?.unassociated ?? "0");
+      }
+
       const auditRows = hasAuditLog
         ? (
             await pool.query<{
@@ -1368,6 +1410,10 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const jobAgg = jobAggRows[0] ?? { total_jobs: "0", failed_jobs: "0", last_job_activity_at: null };
       const aiAgg = aiAggRows[0] ?? { analyses_total: "0", llm_called_total: "0", last_ai_activity_at: null };
 
+      if (!hasScopedOrg) {
+        personalDealsUnassociated = Number(dealAgg.total_deals ?? "0");
+      }
+
       const scopedDeals = dealRows.map((d) => {
         const lifecycle = d.lifecycle_status ?? "active";
         const lastActivityAt = d.last_activity_at ?? d.last_job_at ?? d.updated_at;
@@ -1454,6 +1500,10 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           stale_deals_30d: Number(dealAgg.stale_deals_30d ?? "0"),
           current_deals_30d: Number(dealAgg.current_deals_30d ?? "0"),
           total_documents: Number(docAgg.total_documents ?? "0"),
+          org_total_deals: orgTotalDeals,
+          org_total_documents: orgTotalDocuments,
+          personal_deals_org_associated: personalDealsOrgAssociated,
+          personal_deals_unassociated: personalDealsUnassociated,
           total_jobs: Number(jobAgg.total_jobs ?? "0"),
           failed_jobs: Number(jobAgg.failed_jobs ?? "0"),
           ai_analyses_total: Number(aiAgg.analyses_total ?? "0"),
@@ -1468,7 +1518,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           attributed_sources: {
             platform_access: access != null,
             organization_memberships: hasMemberships,
-            deals_org_scope_enabled: useOrgScope,
+            deals_org_scope_enabled: hasScopedOrg,
             deals_accessible_scope: true,
             documents_via_accessible_deals: true,
             jobs_via_accessible_deals: hasJobs,

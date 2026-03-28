@@ -371,6 +371,56 @@
   }
 }
 @layer utilities {
+  .deal-top-identity-row {
+    display: flex;
+    flex-direction: column;
+    gap: calc(var(--spacing) * 4);
+  }
+
+  .deal-top-actions-row {
+    width: 100%;
+    flex-shrink: 0;
+    align-self: flex-start;
+    padding-top: calc(var(--spacing) * 0);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: calc(var(--spacing) * 2);
+  }
+
+  @media (width >= 40rem) {
+    .deal-top-identity-row {
+      flex-direction: row;
+      align-items: flex-start;
+      justify-content: space-between;
+    }
+
+    .deal-top-actions-row {
+      width: auto;
+      padding-top: calc(var(--spacing) * 1);
+      justify-content: flex-end;
+    }
+  }
+
+  .deal-top-signals-pane {
+    width: 100%;
+    flex-shrink: 0;
+    padding-top: calc(var(--spacing) * 2);
+    border-top-style: var(--tw-border-style);
+    border-top-width: 1px;
+  }
+  @media (width >= 48rem) {
+    .deal-top-signals-pane {
+      width: 11rem;
+      padding-top: calc(var(--spacing) * 1);
+      padding-left: calc(var(--spacing) * 6);
+      border-top-width: 0;
+      border-left-style: var(--tw-border-style);
+      border-left-width: 1px;
+    }
+  }
+
   .\@container\/card-header {
     container-type: inline-size;
     container-name: card-header;

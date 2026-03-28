@@ -16,7 +16,8 @@ import { enqueueJob } from "../services/jobs";
 import { autoProgressDealStage } from "../services/stageProgression";
 import { normalizeDealName } from "../lib/normalize-deal-name";
 import { reconcileIngest } from "../lib/ingest-reconcile";
-import { requireDestructiveAuth } from "./deals/_shared";
+import { requireDestructiveAuth, requirePurgeAuth, buildPurgeConfirmationToken, requirePurgeConfirmation } from "./deals/_shared";
+import { writePlatformAuditLog, getAuditActorContext, extractAuditReason } from "../lib/platform-audit-log";
 
 function isUuid(value: string): boolean {
   return z.string().uuid().safeParse(value).success;
@@ -1813,20 +1814,36 @@ export async function registerDocumentRoutes(
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
     const dealId = sanitizeText(deal_id);
     const purge = parseBoolQ((request.query as any)?.purge, false);
+    const reason = extractAuditReason((request as any).body, {
+      query: (request as any).query,
+      headers: request.headers,
+    });
+    if (!reason) {
+      return reply.status(400).send({ error: "reason is required for this privileged mutation", code: "MISSING_AUDIT_REASON" });
+    }
+    const actor = getAuditActorContext(request as any);
 
     if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
       return;
     }
 
     if (purge) {
-      const authz = requireDestructiveAuth(request as any);
+      const authz = await requirePurgeAuth(request as any, reply as any);
       if (!authz.ok) {
         return reply.status(authz.status).send({ error: authz.error });
       }
+
+      const confirm = requirePurgeConfirmation(
+        request as any,
+        buildPurgeConfirmationToken({ entityType: "document", entityId: document_id })
+      );
+      if (!confirm.ok) {
+        return reply.status(confirm.status).send({ error: confirm.error, code: "PURGE_CONFIRMATION_REQUIRED" });
+      }
     }
 
-    const existing = await pool.query<{ id: string }>(
-      `SELECT id
+    const existing = await pool.query<{ id: string; deal_id: string; title: string | null; status: string | null; deleted_at: string | null }>(
+      `SELECT id, deal_id, title, status, deleted_at
          FROM documents
         WHERE deal_id = $1 AND id = $2
           AND deleted_at IS NULL
@@ -1865,6 +1882,16 @@ export async function registerDocumentRoutes(
         return reply.status(404).send({ error: "Document not found" });
       }
 
+      await writePlatformAuditLog({
+        ...actor,
+        action_type: purge ? "document.hard_delete" : "document.soft_delete",
+        entity_type: "document",
+        entity_id: document_id,
+        before_state: existing.rows[0] ?? {},
+        after_state: { id: deleted.rows[0].id, deal_id: dealId, delete_mode: purge ? "hard" : "soft" },
+        reason,
+      });
+
       return reply.send({ ok: true, deal_id: dealId, document_id: deleted.rows[0].id, delete_mode: purge ? "hard" : "soft" });
     } catch (error: any) {
       try {
@@ -1880,6 +1907,14 @@ export async function registerDocumentRoutes(
   app.post("/api/v1/deals/:deal_id/documents/:document_id/restore", async (request, reply) => {
     const { deal_id, document_id } = request.params as { deal_id: string; document_id: string };
     const dealId = sanitizeText(deal_id);
+    const reason = extractAuditReason((request as any).body, {
+      query: (request as any).query,
+      headers: request.headers,
+    });
+    if (!reason) {
+      return reply.status(400).send({ error: "reason is required for this privileged mutation", code: "MISSING_AUDIT_REASON" });
+    }
+    const actor = getAuditActorContext(request as any);
 
     if (!(await ensureDealAccess({ pool, request, reply, dealId }))) {
       return;
@@ -1889,6 +1924,15 @@ export async function registerDocumentRoutes(
     if (!authz.ok) {
       return reply.status(authz.status).send({ error: authz.error });
     }
+
+    const { rows: beforeRows } = await pool.query<{ id: string; deal_id: string; title: string | null; status: string | null; deleted_at: string | null }>(
+      `SELECT id, deal_id, title, status, deleted_at
+         FROM documents
+        WHERE deal_id = $1
+          AND id = $2
+        LIMIT 1`,
+      [dealId, document_id]
+    );
 
     const restored = await pool.query<{ id: string }>(
       `UPDATE documents
@@ -1904,6 +1948,16 @@ export async function registerDocumentRoutes(
     if (!restored.rows.length) {
       return reply.status(404).send({ error: "Deleted document not found" });
     }
+
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: "document.restore",
+      entity_type: "document",
+      entity_id: document_id,
+      before_state: beforeRows[0] ?? {},
+      after_state: { id: restored.rows[0].id, deal_id: dealId, deleted_at: null },
+      reason,
+    });
 
     return reply.send({ ok: true, deal_id: dealId, document_id: restored.rows[0].id });
   });

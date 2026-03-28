@@ -250,7 +250,7 @@ export function DocumentPreviewModal({ document, darkMode, onClose, onRequestDel
                       : 'bg-red-50 hover:bg-red-100'
                   }`}
                 >
-                  Delete Document
+                  Move Document To Trash
                 </button>
               </div>
             </div>

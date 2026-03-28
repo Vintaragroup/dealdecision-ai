@@ -658,41 +658,77 @@ export function apiUpdateDeal(
   }).then((deal) => normalizeDeal(deal));
 }
 
-export function apiDeleteDeal(dealId: string, opts?: { purge?: boolean }) {
+export function apiDeleteDeal(
+  dealId: string,
+  opts?: { purge?: boolean; reason?: string; confirm_text?: string }
+) {
   const purge = opts?.purge === true;
   const qs = purge ? '?purge=true' : '';
   const adminToken = getDevAdminToken();
+  const reason = typeof opts?.reason === 'string' && opts.reason.trim().length > 0
+    ? opts.reason.trim()
+    : purge
+      ? 'Deal permanently purged from web UI'
+      : 'Deal soft-deleted from web UI';
+  const confirmText = typeof opts?.confirm_text === 'string' && opts.confirm_text.trim().length > 0
+    ? opts.confirm_text.trim()
+    : undefined;
+
+  const payload: Record<string, unknown> = { reason };
+  if (confirmText) payload.confirm_text = confirmText;
+
   return request<{ ok: boolean; deal_id: string; purge?: unknown }>(`/api/v1/deals/${dealId}${qs}`, {
     method: 'DELETE',
     headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+    body: JSON.stringify(payload),
   });
 }
 
-export function apiRestoreDeal(dealId: string) {
+export function apiRestoreDeal(dealId: string, reason?: string) {
   const adminToken = getDevAdminToken();
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'Deal restored from web UI';
   return request<Deal>(`/api/v1/deals/${dealId}/restore`, {
     method: 'PATCH',
     headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+    body: JSON.stringify({ reason: resolvedReason }),
   }).then((deal) => normalizeDeal(deal));
 }
 
-export function apiPurgeDeal(dealId: string) {
+export function apiPurgeDeal(dealId: string, opts?: { reason?: string; confirm_text?: string }) {
   const adminToken = getDevAdminToken();
+  const reason = typeof opts?.reason === 'string' && opts.reason.trim().length > 0
+    ? opts.reason.trim()
+    : 'Deal permanently purged from web UI';
+  const confirmText = typeof opts?.confirm_text === 'string' && opts.confirm_text.trim().length > 0
+    ? opts.confirm_text.trim()
+    : `PURGE DEAL ${dealId}`;
+
   return request<{ ok: boolean; deal_id: string; purge?: unknown }>(`/api/v1/deals/${dealId}?purge=true`, {
     method: 'DELETE',
     headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
+    body: JSON.stringify({ reason, confirm_text: confirmText }),
   });
 }
 
-export function apiArchiveDeal(dealId: string) {
+export function apiArchiveDeal(dealId: string, reason?: string) {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'Deal archived from web UI';
   return request<Deal>(`/api/v1/deals/${dealId}/archive`, {
     method: 'PATCH',
+    body: JSON.stringify({ reason: resolvedReason }),
   }).then((deal) => normalizeDeal(deal));
 }
 
-export function apiUnarchiveDeal(dealId: string) {
+export function apiUnarchiveDeal(dealId: string, reason?: string) {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'Deal unarchived from web UI';
   return request<Deal>(`/api/v1/deals/${dealId}/unarchive`, {
     method: 'PATCH',
+    body: JSON.stringify({ reason: resolvedReason }),
   }).then((deal) => normalizeDeal(deal));
 }
 
@@ -1931,10 +1967,13 @@ export async function apiRetryDocument(dealId: string, documentId: string) {
   });
 }
 
-export async function apiDeleteDocument(dealId: string, documentId: string) {
+export async function apiDeleteDocument(dealId: string, documentId: string, reason?: string) {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'Document soft-deleted from web UI';
   return request<{ ok: true; deal_id: string; document_id: string }>(
     `/api/v1/deals/${dealId}/documents/${documentId}`,
-    { method: 'DELETE' }
+    { method: 'DELETE', body: JSON.stringify({ reason: resolvedReason }) }
   );
 }
 
@@ -2733,6 +2772,7 @@ export type AdminCreateInviteBody = {
   org_id?: string;
   expires_at?: string;
   notes?: string;
+  reason?: string;
 };
 
 export type AdminCreateInviteResponse = {
@@ -2766,9 +2806,12 @@ export async function apiRedeemInvite(code: string): Promise<InviteRedeemRespons
 
 export async function apiAdminCreateInvite(body: AdminCreateInviteBody): Promise<AdminCreateInviteResponse> {
   const adminToken = getDevAdminToken();
+  const reason = typeof body.reason === 'string' && body.reason.trim().length > 0
+    ? body.reason.trim()
+    : 'Admin invite created from web UI';
   return request<AdminCreateInviteResponse>('/api/v1/admin/invite-codes', {
     method: 'POST',
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, reason }),
     headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined,
   });
 }
@@ -2823,50 +2866,69 @@ export async function apiAdminListPlatformAccess(opts?: {
 
 export async function apiAdminSetAdminStatus(
   clerkUserId: string,
-  isAdmin: boolean
+  isAdmin: boolean,
+  reason?: string
 ): Promise<{ ok: boolean; record: { clerk_user_id: string; access_status: string; is_admin: boolean; updated_at: string } }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : `Admin status ${isAdmin ? 'enabled' : 'disabled'} from web UI`;
   return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/admin-status`, {
     method: 'PATCH',
-    body: JSON.stringify({ is_admin: isAdmin }),
+    body: JSON.stringify({ is_admin: isAdmin, reason: resolvedReason }),
   });
 }
 
 export async function apiAdminRevokeAccess(
-  clerkUserId: string
+  clerkUserId: string,
+  reason?: string
 ): Promise<{ ok: boolean; record: { clerk_user_id: string; access_status: string; updated_at: string } }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'Platform access revoked from web UI';
   return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/revoke`, {
     method: 'PATCH',
-    body: JSON.stringify({}),
+    body: JSON.stringify({ reason: resolvedReason }),
   });
 }
 
 export async function apiAdminExtendAccess(
   clerkUserId: string,
-  accessDurationDays: number
+  accessDurationDays: number,
+  reason?: string
 ): Promise<{ ok: boolean; record: { clerk_user_id: string; access_status: string; access_expires_at: string; updated_at: string } }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : `Platform access extended by ${accessDurationDays} days from web UI`;
   return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/extend`, {
     method: 'PATCH',
-    body: JSON.stringify({ access_duration_days: accessDurationDays }),
+    body: JSON.stringify({ access_duration_days: accessDurationDays, reason: resolvedReason }),
   });
 }
 
 export async function apiAdminSetAccountRole(
   clerkUserId: string,
-  accountRole: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client'
+  accountRole: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client',
+  reason?: string
 ): Promise<{ ok: boolean; record: { clerk_user_id: string; account_role: string; is_admin: boolean; updated_at: string } }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : `Account role set to ${accountRole} from web UI`;
   return request(`/api/v1/admin/platform-access/${encodeURIComponent(clerkUserId)}/account-role`, {
     method: 'PATCH',
-    body: JSON.stringify({ account_role: accountRole }),
+    body: JSON.stringify({ account_role: accountRole, reason: resolvedReason }),
   });
 }
 
 export async function apiAdminProvisionUser(
   clerkUserId: string,
-  opts?: { account_role?: string; access_duration_days?: number; notes?: string }
+  opts?: { account_role?: string; access_duration_days?: number; notes?: string; reason?: string }
 ): Promise<{ ok: boolean; record: PlatformAccessRecord }> {
+  const resolvedReason = typeof opts?.reason === 'string' && opts.reason.trim().length > 0
+    ? opts.reason.trim()
+    : 'User provisioned from web UI';
   return request('/api/v1/admin/provision-user', {
     method: 'POST',
-    body: JSON.stringify({ clerk_user_id: clerkUserId, ...opts }),
+    body: JSON.stringify({ clerk_user_id: clerkUserId, ...opts, reason: resolvedReason }),
   });
 }
 
@@ -2901,6 +2963,186 @@ export async function apiAdminListUsers(opts?: {
   if (opts?.limit != null) params.set('limit', String(opts.limit));
   const qs = params.toString();
   return request(`/api/v1/admin/users${qs ? `?${qs}` : ''}`);
+}
+
+export type AdminUserAnalyticsResponse = {
+  user: {
+    clerk_user_id: string;
+    org_id: string | null;
+    access_status: 'active' | 'pending' | 'expired' | 'revoked' | 'not_provisioned';
+    access_expires_at: string | null;
+    is_admin: boolean;
+    account_role: 'super_admin' | 'admin' | 'account_executive' | 'analyst' | 'client' | null;
+    grant_source: string | null;
+    notes: string | null;
+    created_at: string | null;
+    updated_at: string | null;
+    membership: {
+      clerk_org_id: string;
+      org_role: 'org_owner' | 'org_manager' | 'org_member' | string;
+      membership_status: 'active' | 'pending' | 'revoked' | string;
+      seat_consuming: boolean;
+    } | null;
+  };
+  window: {
+    days: number | null;
+    since: string | null;
+    label: string;
+  };
+  kpis: {
+    total_deals: number;
+    active_deals: number;
+    archived_deals: number;
+    total_documents: number;
+    total_jobs: number;
+    failed_jobs: number;
+    ai_analyses_total: number;
+    ai_llm_called_total: number;
+    last_activity_at: string | null;
+  };
+  deals: Array<{
+    deal_id: string;
+    name: string;
+    stage: string | null;
+    lifecycle_status: string | null;
+    created_at: string;
+    updated_at: string;
+    document_count: number;
+    total_jobs: number;
+    failed_jobs: number;
+    last_job_at: string | null;
+  }>;
+  activity: Array<{
+    id: string;
+    kind: 'audit' | 'job';
+    at: string;
+    severity: 'info' | 'warning';
+    label: string;
+    detail: string;
+    source: string;
+  }>;
+  data_quality: {
+    attributed_sources: Record<string, boolean>;
+    unsupported_metrics: Record<string, { status: 'unavailable'; reason: string }>;
+  };
+};
+
+export async function apiAdminGetUserAnalytics(
+  clerkUserId: string,
+  opts?: { days?: 7 | 30 | 90 | 'all' }
+): Promise<AdminUserAnalyticsResponse> {
+  const params = new URLSearchParams();
+  if (opts?.days != null) params.set('days', String(opts.days));
+  const qs = params.toString();
+  return request(`/api/v1/admin/users/${encodeURIComponent(clerkUserId)}/analytics${qs ? `?${qs}` : ''}`);
+}
+
+export type PlatformAuditLogRecord = {
+  id: string;
+  actor_user_id: string;
+  actor_role: string;
+  action_type: string;
+  entity_type: string;
+  entity_id: string;
+  before_state: Record<string, unknown>;
+  after_state: Record<string, unknown>;
+  reason: string;
+  source: 'ui' | 'api' | 'job' | 'system' | 'script';
+  created_at: string;
+};
+
+export async function apiAdminListAuditLogs(opts?: {
+  limit?: number;
+  offset?: number;
+  actor_user_id?: string;
+  action_type?: string;
+  entity_type?: string;
+  entity_id?: string;
+  source?: 'ui' | 'api' | 'job' | 'system' | 'script';
+  from?: string;
+  to?: string;
+}): Promise<{ records: PlatformAuditLogRecord[]; limit: number; offset: number; total: number }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.offset != null) params.set('offset', String(opts.offset));
+  if (opts?.actor_user_id) params.set('actor_user_id', opts.actor_user_id);
+  if (opts?.action_type) params.set('action_type', opts.action_type);
+  if (opts?.entity_type) params.set('entity_type', opts.entity_type);
+  if (opts?.entity_id) params.set('entity_id', opts.entity_id);
+  if (opts?.source) params.set('source', opts.source);
+  if (opts?.from) params.set('from', opts.from);
+  if (opts?.to) params.set('to', opts.to);
+  const qs = params.toString();
+  return request(`/api/v1/admin/audit-logs${qs ? `?${qs}` : ''}`);
+}
+
+export type AdminAuditAlertSummary = {
+  window_hours: number;
+  total_alerts: number;
+  by_action: Array<{ action_type: string; count: number }>;
+  recent_events: Array<{
+    id: string;
+    action_type: string;
+    entity_type: string;
+    entity_id: string;
+    actor_user_id: string;
+    actor_role: string;
+    reason: string;
+    source: 'ui' | 'api' | 'job' | 'system' | 'script';
+    created_at: string;
+  }>;
+};
+
+export async function apiAdminGetAuditAlertSummary(opts?: {
+  hours?: number;
+  limit?: number;
+}): Promise<AdminAuditAlertSummary> {
+  const params = new URLSearchParams();
+  if (opts?.hours != null) params.set('hours', String(opts.hours));
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request(`/api/v1/admin/audit-alerts/summary${qs ? `?${qs}` : ''}`);
+}
+
+export type SuperAdminOpsFeed = {
+  window_hours: number;
+  system_alerts: Array<{
+    id: string;
+    action_type: string;
+    entity_type: string;
+    entity_id: string;
+    actor_user_id: string;
+    actor_role: string;
+    reason: string;
+    source: 'ui' | 'api' | 'job' | 'system' | 'script';
+    created_at: string;
+  }>;
+  error_logs: Array<{
+    job_id: string;
+    type: string | null;
+    status: string;
+    deal_id: string | null;
+    document_id: string | null;
+    message: string | null;
+    error: string | null;
+    created_at: string | null;
+    updated_at: string | null;
+  }>;
+  availability: {
+    platform_audit_log: boolean;
+    jobs: boolean;
+  };
+};
+
+export async function apiAdminGetSuperAdminOpsFeed(opts?: {
+  hours?: number;
+  limit?: number;
+}): Promise<SuperAdminOpsFeed> {
+  const params = new URLSearchParams();
+  if (opts?.hours != null) params.set('hours', String(opts.hours));
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request(`/api/v1/admin/super-admin/ops-feed${qs ? `?${qs}` : ''}`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2939,9 +3181,104 @@ export async function apiAdminListInvites(opts?: {
 }
 
 export async function apiAdminRevokeInvite(code: string): Promise<{ ok: boolean }> {
+  const reason = 'Invite revoked from web UI';
   return request(`/api/v1/admin/invite-codes/${encodeURIComponent(code)}/revoke`, {
     method: 'POST',
-    body: JSON.stringify({}),
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export type AdminRecoveryDealRecord = {
+  id: string;
+  name: string;
+  stage: string | null;
+  priority: string | null;
+  lifecycle_status: string | null;
+  owner: string | null;
+  deleted_at: string;
+  updated_at: string | null;
+};
+
+export type AdminRecoveryDocumentRecord = {
+  document_id: string;
+  deal_id: string;
+  deal_name: string | null;
+  title: string | null;
+  type: string | null;
+  status: string | null;
+  deleted_at: string;
+  updated_at: string | null;
+  deal_deleted_at: string | null;
+};
+
+export async function apiAdminListDeletedDeals(opts?: {
+  limit?: number;
+  offset?: number;
+  query?: string;
+}): Promise<{ records: AdminRecoveryDealRecord[]; limit: number; offset: number; total: number }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.offset != null) params.set('offset', String(opts.offset));
+  if (opts?.query && opts.query.trim().length > 0) params.set('query', opts.query.trim());
+  const qs = params.toString();
+  return request(`/api/v1/admin/recovery/deals${qs ? `?${qs}` : ''}`);
+}
+
+export async function apiAdminListDeletedDocuments(opts?: {
+  limit?: number;
+  offset?: number;
+  query?: string;
+  deal_id?: string;
+}): Promise<{ records: AdminRecoveryDocumentRecord[]; limit: number; offset: number; total: number }> {
+  const params = new URLSearchParams();
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  if (opts?.offset != null) params.set('offset', String(opts.offset));
+  if (opts?.query && opts.query.trim().length > 0) params.set('query', opts.query.trim());
+  if (opts?.deal_id && opts.deal_id.trim().length > 0) params.set('deal_id', opts.deal_id.trim());
+  const qs = params.toString();
+  return request(`/api/v1/admin/recovery/documents${qs ? `?${qs}` : ''}`);
+}
+
+export async function apiAdminRestoreDeal(dealId: string, reason?: string): Promise<{ ok: boolean; deal_id: string }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'Deal restored from recovery center';
+  return request(`/api/v1/admin/recovery/deals/${encodeURIComponent(dealId)}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({ reason: resolvedReason }),
+  });
+}
+
+export async function apiAdminRestoreDocument(
+  documentId: string,
+  reason?: string
+): Promise<{ ok: boolean; document_id: string; deal_id: string }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'Document restored from recovery center';
+  return request(`/api/v1/admin/recovery/documents/${encodeURIComponent(documentId)}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({ reason: resolvedReason }),
+  });
+}
+
+export async function apiAdminPurgeDeal(
+  dealId: string,
+  opts: { reason: string; confirm_text: string }
+): Promise<{ ok: boolean; deal_id: string; purge: unknown }> {
+  return request(`/api/v1/admin/recovery/deals/${encodeURIComponent(dealId)}/purge`, {
+    method: 'POST',
+    body: JSON.stringify({ reason: opts.reason, confirm_text: opts.confirm_text }),
+  });
+}
+
+export async function apiAdminPurgeDocument(
+  documentId: string,
+  opts: { reason: string; confirm_text: string }
+): Promise<{ ok: boolean; document_id: string; deal_id: string }> {
+  return request(`/api/v1/admin/recovery/documents/${encodeURIComponent(documentId)}/purge`, {
+    method: 'POST',
+    body: JSON.stringify({ reason: opts.reason, confirm_text: opts.confirm_text }),
   });
 }
 
@@ -2998,11 +3335,14 @@ export async function apiAdminGetOrg(orgId: string): Promise<{ org: OrgSettings 
 
 export async function apiAdminUpsertOrg(
   orgId: string,
-  data: Partial<Pick<OrgSettings, 'organization_name' | 'included_seats' | 'seat_limit' | 'billing_status' | 'notes'>>
+  data: Partial<Pick<OrgSettings, 'organization_name' | 'included_seats' | 'seat_limit' | 'billing_status' | 'notes'>> & { reason?: string }
 ): Promise<{ ok: boolean; org: OrgSettings }> {
+  const reason = typeof data.reason === 'string' && data.reason.trim().length > 0
+    ? data.reason.trim()
+    : 'Organization settings updated from web UI';
   return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}`, {
     method: 'PUT',
-    body: JSON.stringify(data),
+    body: JSON.stringify({ ...data, reason }),
   });
 }
 
@@ -3015,20 +3355,29 @@ export async function apiAdminListOrgMembers(
 export async function apiAdminSetOrgMemberRole(
   orgId: string,
   userId: string,
-  orgRole: 'org_owner' | 'org_manager' | 'org_member'
+  orgRole: 'org_owner' | 'org_manager' | 'org_member',
+  reason?: string
 ): Promise<{ ok: boolean; member: OrgMember }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : `Organization member role set to ${orgRole} from web UI`;
   return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}/role`, {
     method: 'PATCH',
-    body: JSON.stringify({ org_role: orgRole }),
+    body: JSON.stringify({ org_role: orgRole, reason: resolvedReason }),
   });
 }
 
 export async function apiAdminRevokeOrgMembership(
   orgId: string,
-  userId: string
+  userId: string,
+  reason?: string
 ): Promise<{ ok: boolean }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'Organization membership revoked from web UI';
   return request(`/api/v1/admin/orgs/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`, {
     method: 'DELETE',
+    body: JSON.stringify({ reason: resolvedReason }),
   });
 }
 
@@ -3049,28 +3398,41 @@ export async function apiCreateTeamInvite(body: {
   email?: string;
   access_duration_days?: 3 | 5 | 7 | 14;
   notes?: string;
+  reason?: string;
 }): Promise<{ ok: boolean; invite_url: string; code: string }> {
+  const reason = typeof body.reason === 'string' && body.reason.trim().length > 0
+    ? body.reason.trim()
+    : 'Team invite created from web UI';
   return request('/api/v1/team/invite', {
     method: 'POST',
-    body: JSON.stringify({ access_duration_days: 7, ...body }),
+    body: JSON.stringify({ access_duration_days: 7, ...body, reason }),
   });
 }
 
 export async function apiSetTeamMemberRole(
   userId: string,
-  orgRole: 'org_owner' | 'org_manager' | 'org_member'
+  orgRole: 'org_owner' | 'org_manager' | 'org_member',
+  reason?: string
 ): Promise<{ ok: boolean; member: OrgMember }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : `Team member role set to ${orgRole} from web UI`;
   return request(`/api/v1/team/members/${encodeURIComponent(userId)}/role`, {
     method: 'PATCH',
-    body: JSON.stringify({ org_role: orgRole }),
+    body: JSON.stringify({ org_role: orgRole, reason: resolvedReason }),
   });
 }
 
 export async function apiRemoveTeamMember(
-  userId: string
+  userId: string,
+  reason?: string
 ): Promise<{ ok: boolean }> {
+  const resolvedReason = typeof reason === 'string' && reason.trim().length > 0
+    ? reason.trim()
+    : 'Team member removed from web UI';
   return request(`/api/v1/team/members/${encodeURIComponent(userId)}`, {
     method: 'DELETE',
+    body: JSON.stringify({ reason: resolvedReason }),
   });
 }
 

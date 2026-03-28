@@ -48,14 +48,23 @@ describe('DocumentLibrary delete document', () => {
     await user.click(checkbox);
 
     // Trigger delete request
-    await user.click(screen.getByRole('button', { name: /delete \(1\)/i }));
+    await user.click(screen.getByRole('button', { name: /move to trash \(1\)/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Move document to trash\?/i)).toBeInTheDocument();
+      expect(screen.getByText(/This is a soft delete and can be restored by an admin/i)).toBeInTheDocument();
+    });
 
     // Confirm delete
-    await user.click(screen.getByRole('button', { name: /^delete$/i }));
+    await user.click(screen.getByRole('button', { name: /^move to trash$/i }));
 
     await waitFor(() => {
       expect(apiDeleteDocument).toHaveBeenCalledTimes(1);
-      expect(apiDeleteDocument).toHaveBeenCalledWith('deal-1', 'doc-1');
+      expect(apiDeleteDocument).toHaveBeenCalledWith(
+        'deal-1',
+        'doc-1',
+        'Document soft-deleted by user from document library'
+      );
       expect(onDeleted).toHaveBeenCalledTimes(1);
     });
   });

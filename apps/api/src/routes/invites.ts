@@ -20,6 +20,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { randomBytes } from "node:crypto";
 import { getPool } from "../lib/db";
+import { writePlatformAuditLog, getAuditActorContext, extractAuditReason } from "../lib/platform-audit-log";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -30,6 +31,19 @@ type AllowedDuration = (typeof ALLOWED_DURATIONS)[number];
 
 function isAllowedDuration(n: unknown): n is AllowedDuration {
   return ALLOWED_DURATIONS.includes(n as any);
+}
+
+function requireMutationReason(request: FastifyRequest, reply: FastifyReply, defaultReason?: string): string | null {
+  const reason = extractAuditReason((request as any).body, {
+    query: (request as any).query,
+    headers: request.headers,
+    defaultReason,
+  });
+  if (!reason) {
+    reply.status(400).send({ error: 'reason is required for this privileged mutation', code: 'MISSING_AUDIT_REASON' });
+    return null;
+  }
+  return reason;
 }
 
 // ---------------------------------------------------------------------------
@@ -49,7 +63,7 @@ async function requireAdminAuth(
   reply: FastifyReply
 ): Promise<boolean> {
   // Dev auth bypass.
-  if (Boolean(request.auth?.claims?.['bypass_auth'])) return true;
+  if (Boolean((request as any).auth?.claims?.['bypass_auth'])) return true;
 
   // ADMIN_TOKEN escape hatch.
   const adminToken = process.env.ADMIN_TOKEN?.trim();
@@ -61,7 +75,7 @@ async function requireAdminAuth(
   }
 
   // DB-backed check: platform_access.is_admin = true.
-  const userId = request.auth?.userId;
+  const userId = (request as any).auth?.userId;
   if (!userId) {
     reply.status(401).send({ error: 'Unauthorized' });
     return false;
@@ -200,10 +214,14 @@ export async function registerInviteRoutes(app: FastifyInstance) {
       org_id?: string | null;
       expires_at?: string | null;
       notes?: string | null;
+      reason?: string | null;
     };
   }>("/api/v1/admin/invite-codes", async (request, reply) => {
     const { access_duration_days, email = null, org_id = null, expires_at = null, notes = null } =
       request.body ?? {};
+    const reason = requireMutationReason(request, reply);
+    if (!reason) return;
+    const actor = getAuditActorContext(request);
 
     if (!isAllowedDuration(access_duration_days)) {
       return reply.status(400).send({
@@ -238,6 +256,22 @@ export async function registerInviteRoutes(app: FastifyInstance) {
 
     const record = rows[0];
     const inviteUrl = buildInviteUrl(request, record.code);
+
+    await writePlatformAuditLog({
+      ...actor,
+      action_type: "invite.create",
+      entity_type: "invite_code",
+      entity_id: record.code,
+      before_state: {},
+      after_state: {
+        code: record.code,
+        status: record.status,
+        email: record.email,
+        org_id: record.org_id,
+        access_duration_days: record.access_duration_days,
+      },
+      reason,
+    });
 
     return reply.status(201).send({
       ok: true,
@@ -369,6 +403,46 @@ export async function registerInviteRoutes(app: FastifyInstance) {
       const auth = (request as any)?.auth;
       const clerkUserId = auth?.userId;
       const clerkOrgId = auth?.orgId ?? null;
+      const actor = getAuditActorContext(request);
+
+      const auditRedeemFailure = async (args: {
+        action_type: "invite.expired" | "invite.redeem_failed";
+        entity_id: string;
+        code: string;
+        error: string;
+        status?: string | null;
+        invite_id?: string | null;
+      }) => {
+        try {
+          await writePlatformAuditLog({
+            ...actor,
+            action_type: args.action_type,
+            entity_type: "invite_code",
+            entity_id: args.entity_id,
+            before_state: {
+              invite_id: args.invite_id ?? null,
+              status: args.status ?? null,
+              code: args.code,
+            },
+            after_state: {
+              result: "failed",
+              error: args.error,
+              actor_user_id: clerkUserId ?? null,
+            },
+            reason: args.error,
+          });
+        } catch (err) {
+          request.log.warn(
+            {
+              event: "invite_redeem_failure_audit_write_failed",
+              action_type: args.action_type,
+              entity_id: args.entity_id,
+              err,
+            },
+            "Failed to write invite redeem failure audit event"
+          );
+        }
+      };
 
       if (!clerkUserId) {
         return reply.status(401).send({ error: "Authentication required" });
@@ -392,6 +466,14 @@ export async function registerInviteRoutes(app: FastifyInstance) {
 
         if (inviteRows.length === 0) {
           await client.query("ROLLBACK");
+          await auditRedeemFailure({
+            action_type: "invite.redeem_failed",
+            entity_id: code.trim(),
+            code: code.trim(),
+            error: "INVITE_NOT_FOUND",
+            status: null,
+            invite_id: null,
+          });
           return reply.status(400).send({ valid: false, code: "INVITE_NOT_FOUND", error: "Invite code not found" });
         }
 
@@ -400,20 +482,52 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         // Validate status
         if (invite.status === "revoked") {
           await client.query("ROLLBACK");
+          await auditRedeemFailure({
+            action_type: "invite.redeem_failed",
+            entity_id: invite.code,
+            code: invite.code,
+            error: "INVITE_REVOKED",
+            status: invite.status,
+            invite_id: invite.id,
+          });
           return reply.status(400).send({ valid: false, code: "INVITE_REVOKED", error: "Invite has been revoked" });
         }
         if (invite.status === "redeemed") {
           await client.query("ROLLBACK");
+          await auditRedeemFailure({
+            action_type: "invite.redeem_failed",
+            entity_id: invite.code,
+            code: invite.code,
+            error: "INVITE_ALREADY_REDEEMED",
+            status: invite.status,
+            invite_id: invite.id,
+          });
           return reply.status(400).send({ valid: false, code: "INVITE_ALREADY_REDEEMED", error: "Invite has already been redeemed" });
         }
         if (invite.status === "expired") {
           await client.query("ROLLBACK");
+          await auditRedeemFailure({
+            action_type: "invite.expired",
+            entity_id: invite.code,
+            code: invite.code,
+            error: "INVITE_EXPIRED",
+            status: invite.status,
+            invite_id: invite.id,
+          });
           return reply.status(400).send({ valid: false, code: "INVITE_EXPIRED", error: "Invite has expired" });
         }
         if (invite.expires_at !== null) {
           const expiresMs = new Date(invite.expires_at).getTime();
           if (Number.isFinite(expiresMs) && Date.now() > expiresMs) {
             await client.query("ROLLBACK");
+            await auditRedeemFailure({
+              action_type: "invite.expired",
+              entity_id: invite.code,
+              code: invite.code,
+              error: "INVITE_EXPIRED",
+              status: invite.status,
+              invite_id: invite.id,
+            });
             return reply.status(400).send({ valid: false, code: "INVITE_EXPIRED", error: "Invite has expired" });
           }
         }
@@ -423,6 +537,14 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         // verify the restriction and must reject rather than silently bypass it.
         if (invite.email !== null && clerkEmail === null) {
           await client.query("ROLLBACK");
+          await auditRedeemFailure({
+            action_type: "invite.redeem_failed",
+            entity_id: invite.code,
+            code: invite.code,
+            error: "INVITE_EMAIL_UNVERIFIABLE",
+            status: invite.status,
+            invite_id: invite.id,
+          });
           return reply.status(400).send({
             valid: false,
             code: "INVITE_EMAIL_UNVERIFIABLE",
@@ -432,6 +554,14 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         if (invite.email !== null && clerkEmail !== null) {
           if (invite.email.toLowerCase() !== clerkEmail) {
             await client.query("ROLLBACK");
+            await auditRedeemFailure({
+              action_type: "invite.redeem_failed",
+              entity_id: invite.code,
+              code: invite.code,
+              error: "INVITE_EMAIL_MISMATCH",
+              status: invite.status,
+              invite_id: invite.id,
+            });
             return reply.status(403).send({ valid: false, code: "INVITE_EMAIL_MISMATCH", error: "This invite is restricted to a different email address" });
           }
         }
@@ -458,6 +588,14 @@ export async function registerInviteRoutes(app: FastifyInstance) {
             const activeSeats = Number(seatCountRows[0]?.cnt ?? 0);
             if (activeSeats >= seatLimit) {
               await client.query("ROLLBACK");
+              await auditRedeemFailure({
+                action_type: "invite.redeem_failed",
+                entity_id: invite.code,
+                code: invite.code,
+                error: "SEAT_LIMIT_REACHED",
+                status: invite.status,
+                invite_id: invite.id,
+              });
               return reply.status(402).send({
                 valid: false,
                 code: "SEAT_LIMIT_REACHED",
@@ -482,6 +620,14 @@ export async function registerInviteRoutes(app: FastifyInstance) {
           // Active: do not silently override. User already has access.
           if (currentStatus === "active") {
             await client.query("ROLLBACK");
+            await auditRedeemFailure({
+              action_type: "invite.redeem_failed",
+              entity_id: invite.code,
+              code: invite.code,
+              error: "ALREADY_HAS_ACCESS",
+              status: invite.status,
+              invite_id: invite.id,
+            });
             return reply.status(409).send({
               valid: false,
               code: "ALREADY_HAS_ACCESS",
@@ -494,6 +640,14 @@ export async function registerInviteRoutes(app: FastifyInstance) {
           // rather than the global 403 intercept redirecting to /access-denied.
           if (currentStatus === "revoked") {
             await client.query("ROLLBACK");
+            await auditRedeemFailure({
+              action_type: "invite.redeem_failed",
+              entity_id: invite.code,
+              code: invite.code,
+              error: "ACCESS_REVOKED",
+              status: invite.status,
+              invite_id: invite.id,
+            });
             return reply.status(400).send({
               valid: false,
               code: "ACCESS_REVOKED",
@@ -553,6 +707,27 @@ export async function registerInviteRoutes(app: FastifyInstance) {
         // ─────────────────────────────────────────────────────────────────────
 
         await client.query("COMMIT");
+
+        await writePlatformAuditLog({
+          ...actor,
+          action_type: "invite.redeem",
+          entity_type: "invite_code",
+          entity_id: invite.code,
+          before_state: {
+            invite_id: invite.id,
+            status: invite.status,
+            redeemed_by_clerk_user_id: invite.redeemed_by_clerk_user_id ?? null,
+            org_id: invite.org_id ?? null,
+          },
+          after_state: {
+            status: 'redeemed',
+            redeemed_by_clerk_user_id: clerkUserId,
+            redeemed_email: clerkEmail,
+            org_id: orgId,
+            access_expires_at: accessExpiresAt.toISOString(),
+          },
+          reason: 'invite_redeem_flow',
+        });
 
         return reply.send({
           ok: true,

@@ -85,16 +85,20 @@ describe('DealsList delete deal', () => {
 
     // Confirm modal
     await waitFor(() => {
-      expect(screen.getByRole('heading', { name: /Delete Deal/i })).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /Move Deal To Trash/i })).toBeInTheDocument();
+      expect(screen.getByText(/This is a soft delete\./i)).toBeInTheDocument();
     });
 
     const confirmInput = screen.getByPlaceholderText(/Demo Deal/i) as HTMLInputElement;
     fireEvent.change(confirmInput, { target: { value: 'DELETE' } });
-    await user.click(screen.getByRole('button', { name: /delete deal/i }));
+    await user.click(screen.getByRole('button', { name: /move to trash/i }));
 
     await waitFor(() => {
       expect(apiDeleteDeal).toHaveBeenCalledTimes(1);
-      expect(apiDeleteDeal).toHaveBeenCalledWith('deal-1', { purge: false });
+      expect(apiDeleteDeal).toHaveBeenCalledWith('deal-1', {
+        purge: false,
+        reason: 'Deal soft-deleted by user from deals list (Demo Deal)',
+      });
     });
   });
 });

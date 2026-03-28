@@ -84,7 +84,7 @@ describe('DealsList archive deal', () => {
 
     await waitFor(() => {
       expect(apiArchiveDeal).toHaveBeenCalledTimes(1);
-      expect(apiArchiveDeal).toHaveBeenCalledWith('deal-1');
+      expect(apiArchiveDeal).toHaveBeenCalledWith('deal-1', 'Deal archived by user from deals list');
     });
   });
 });

@@ -169,15 +169,23 @@ export async function registerDealIngestionRoutes(
     const priority = data?.priority ?? "medium";
     const owner = data?.owner ?? null;
     const createdByUserId = (request as any)?.auth?.userId ?? null;
+    const orgId = (request as any)?.auth?.orgId ?? null;
+    const hasDealOrgId = await hasColumn(pool, "deals", "org_id");
 
     const requestedName = typeof data?.name === "string" ? sanitizeText(data.name) : "";
     const name = requestedName || `Draft Deal ${randomUUID().slice(0, 8)}`;
 
     const { rows } = await pool.query<{ id: string }>(
-      `INSERT INTO deals (name, stage, priority, llm_phase_mode, owner, created_by_user_id)
-       VALUES ($1, $2, $3, 'exploratory', $4, $5)
-       RETURNING id`,
-      [name, stage, priority, owner, createdByUserId]
+      hasDealOrgId
+        ? `INSERT INTO deals (name, stage, priority, llm_phase_mode, owner, created_by_user_id, org_id)
+           VALUES ($1, $2, $3, 'exploratory', $4, $5, $6)
+           RETURNING id`
+        : `INSERT INTO deals (name, stage, priority, llm_phase_mode, owner, created_by_user_id)
+           VALUES ($1, $2, $3, 'exploratory', $4, $5)
+           RETURNING id`,
+      hasDealOrgId
+        ? [name, stage, priority, owner, createdByUserId, orgId]
+        : [name, stage, priority, owner, createdByUserId]
     );
 
     const dealId = rows[0]?.id;
@@ -197,17 +205,29 @@ export async function registerDealIngestionRoutes(
   // Useful when moving from a single-tenant/dev dataset to per-user deal ownership.
   app.post("/api/v1/deals/claim", async (request, reply) => {
     const userId = (request as any)?.auth?.userId;
+    const orgId = (request as any)?.auth?.orgId;
     if (typeof userId !== "string" || userId.trim().length === 0) {
       return reply.status(401).send({ error: "Unauthorized" });
     }
 
+    const hasDealOrgId = await hasColumn(pool, "deals", "org_id");
+
     const { rowCount } = await pool.query(
-      `UPDATE deals
-          SET created_by_user_id = $1,
-              updated_at = now()
-        WHERE deleted_at IS NULL
-          AND created_by_user_id IS NULL`,
-      [userId.trim()]
+      hasDealOrgId
+        ? `UPDATE deals
+            SET created_by_user_id = $1,
+                org_id = COALESCE(org_id, $2),
+                updated_at = now()
+          WHERE deleted_at IS NULL
+            AND created_by_user_id IS NULL`
+        : `UPDATE deals
+            SET created_by_user_id = $1,
+                updated_at = now()
+          WHERE deleted_at IS NULL
+            AND created_by_user_id IS NULL`,
+      hasDealOrgId
+        ? [userId.trim(), typeof orgId === "string" && orgId.trim().length > 0 ? orgId.trim() : null]
+        : [userId.trim()]
     );
 
     return reply.status(200).send({ claimed: rowCount ?? 0 });
@@ -391,6 +411,8 @@ export async function registerDealIngestionRoutes(
 
     const { name, stage, priority, trend, score, owner } = parsed.data;
     const createdByUserId = (request as any)?.auth?.userId ?? null;
+    const orgId = (request as any)?.auth?.orgId ?? null;
+    const hasDealOrgId = await hasColumn(pool, "deals", "org_id");
 
     // Guard against accidental duplicates (common in bulk assignment / OCR scenarios).
     // We keep this lightweight (no schema changes) by normalizing and comparing in-app.
@@ -410,10 +432,16 @@ export async function registerDealIngestionRoutes(
     }
 
     const { rows } = await pool.query<DealRow>(
-      `INSERT INTO deals (name, stage, priority, llm_phase_mode, trend, score, owner, created_by_user_id)
-       VALUES ($1, $2, $3, 'exploratory', $4, $5, $6, $7)
-       RETURNING *`,
-      [name, stage, priority, trend ?? null, score ?? null, owner ?? null, createdByUserId]
+      hasDealOrgId
+        ? `INSERT INTO deals (name, stage, priority, llm_phase_mode, trend, score, owner, created_by_user_id, org_id)
+           VALUES ($1, $2, $3, 'exploratory', $4, $5, $6, $7, $8)
+           RETURNING *`
+        : `INSERT INTO deals (name, stage, priority, llm_phase_mode, trend, score, owner, created_by_user_id)
+           VALUES ($1, $2, $3, 'exploratory', $4, $5, $6, $7)
+           RETURNING *`,
+      hasDealOrgId
+        ? [name, stage, priority, trend ?? null, score ?? null, owner ?? null, createdByUserId, orgId]
+        : [name, stage, priority, trend ?? null, score ?? null, owner ?? null, createdByUserId]
     );
 
     return mapDeal(rows[0], null, "full");

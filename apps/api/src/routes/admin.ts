@@ -54,6 +54,21 @@ async function hasTable(tableName: string): Promise<boolean> {
   return rows[0]?.oid != null;
 }
 
+async function hasColumn(tableName: string, columnName: string): Promise<boolean> {
+  const pool = getPool();
+  const { rows } = await pool.query<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+         FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = $2
+     ) as exists`,
+    [tableName, columnName]
+  );
+  return rows[0]?.exists === true;
+}
+
 const GOVERNANCE_ALERT_ACTIONS: ReadonlyArray<string> = [
   "deal.purge",
   "document.hard_delete",
@@ -1006,6 +1021,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const hasJobs = await hasTable("jobs");
       const hasNodeAnalyses = await hasTable("node_ai_analyses");
       const hasAuditLog = await hasTable("platform_audit_log");
+      const hasDealOrgId = await hasColumn("deals", "org_id");
 
       const { rows: accessRows } = await pool.query<{
         clerk_user_id: string;
@@ -1048,6 +1064,17 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           ).rows[0] ?? null
         : null;
 
+      const scopedOrgId = (typeof access?.org_id === "string" && access.org_id.trim().length > 0)
+        ? access.org_id.trim()
+        : (typeof membership?.clerk_org_id === "string" && membership.clerk_org_id.trim().length > 0)
+          ? membership.clerk_org_id.trim()
+          : null;
+      const useOrgScope = Boolean(hasDealOrgId && scopedOrgId);
+      const dealScopeParam = useOrgScope ? scopedOrgId : clerkUserId;
+      const dealScopeWhere = useOrgScope
+        ? "d.org_id = $1::text"
+        : "(d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)";
+
       const { rows: dealAggRows } = await pool.query<{
         total_deals: string;
         active_deals: string;
@@ -1070,7 +1097,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
                  d.updated_at,
                  COALESCE((SELECT MAX(COALESCE(doc.updated_at, doc.uploaded_at)) FROM documents doc WHERE doc.deal_id = d.id AND doc.deleted_at IS NULL), d.updated_at),
                  COALESCE((SELECT MAX(COALESCE(j.updated_at, j.created_at)) FROM jobs j WHERE j.deal_id = d.id), d.updated_at)
-               ) < $2::timestamptz
+                 ) < $2::timestamptz
            )::text AS stale_deals_30d,
            COUNT(*) FILTER (
              WHERE COALESCE(NULLIF(d.lifecycle_status, ''), 'active') NOT IN ('archived', 'deleted')
@@ -1078,7 +1105,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
                  d.updated_at,
                  COALESCE((SELECT MAX(COALESCE(doc.updated_at, doc.uploaded_at)) FROM documents doc WHERE doc.deal_id = d.id AND doc.deleted_at IS NULL), d.updated_at),
                  COALESCE((SELECT MAX(COALESCE(j.updated_at, j.created_at)) FROM jobs j WHERE j.deal_id = d.id), d.updated_at)
-               ) >= $2::timestamptz
+                 ) >= $2::timestamptz
            )::text AS current_deals_30d,
            MAX(
              GREATEST(
@@ -1088,9 +1115,9 @@ export async function registerAdminRoutes(app: FastifyInstance) {
              )
            )::text AS last_deal_activity_at
          FROM deals d
-         WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
+         WHERE ${dealScopeWhere}
            AND d.deleted_at IS NULL`,
-        [clerkUserId, staleCutoffIso]
+        [dealScopeParam, staleCutoffIso]
       );
 
       const { rows: dealRows } = await pool.query<{
@@ -1169,7 +1196,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
              FROM jobs j
             WHERE j.deal_id = d.id
          ) job_meta ON TRUE
-         WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
+         WHERE ${dealScopeWhere}
            AND d.deleted_at IS NULL
          ORDER BY GREATEST(
            d.updated_at,
@@ -1177,7 +1204,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
            COALESCE(job_meta.last_job_at, d.updated_at)
          ) DESC
          LIMIT 200`,
-        [clerkUserId]
+        [dealScopeParam]
       );
 
       const { rows: docAggRows } = await pool.query<{
@@ -1189,14 +1216,14 @@ export async function registerAdminRoutes(app: FastifyInstance) {
            MAX(COALESCE(doc.updated_at, doc.uploaded_at))::text AS last_document_activity_at
          FROM documents doc
          INNER JOIN deals d ON d.id = doc.deal_id
-         WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
+         WHERE ${dealScopeWhere}
            AND d.deleted_at IS NULL
            AND doc.deleted_at IS NULL
            AND (
              $2::timestamptz IS NULL
              OR COALESCE(doc.updated_at, doc.uploaded_at) >= $2::timestamptz
            )`,
-        [clerkUserId, sinceIso]
+        [dealScopeParam, sinceIso]
       );
 
       const jobAggRows = hasJobs
@@ -1212,13 +1239,13 @@ export async function registerAdminRoutes(app: FastifyInstance) {
                  MAX(COALESCE(j.updated_at, j.created_at))::text AS last_job_activity_at
                FROM jobs j
                INNER JOIN deals d ON d.id = j.deal_id
-               WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
+               WHERE ${dealScopeWhere}
                  AND d.deleted_at IS NULL
                  AND (
                    $2::timestamptz IS NULL
                    OR COALESCE(j.updated_at, j.created_at) >= $2::timestamptz
                  )`,
-              [clerkUserId, sinceIso]
+              [dealScopeParam, sinceIso]
             )
           ).rows
         : [{ total_jobs: "0", failed_jobs: "0", last_job_activity_at: null }];
@@ -1236,13 +1263,13 @@ export async function registerAdminRoutes(app: FastifyInstance) {
                  MAX(na.created_at)::text AS last_ai_activity_at
                FROM node_ai_analyses na
                INNER JOIN deals d ON d.id = na.deal_id
-               WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
+               WHERE ${dealScopeWhere}
                  AND d.deleted_at IS NULL
                  AND (
                    $2::timestamptz IS NULL
                    OR na.created_at >= $2::timestamptz
                  )`,
-              [clerkUserId, sinceIso]
+              [dealScopeParam, sinceIso]
             )
           ).rows
         : [{ analyses_total: "0", llm_called_total: "0", last_ai_activity_at: null }];
@@ -1293,7 +1320,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
                  COALESCE(j.updated_at, j.created_at)::text AS at
                FROM jobs j
                INNER JOIN deals d ON d.id = j.deal_id
-               WHERE (d.created_by_user_id = $1 OR d.created_by_user_id IS NULL)
+               WHERE ${dealScopeWhere}
                  AND d.deleted_at IS NULL
                  AND (
                    $2::timestamptz IS NULL
@@ -1301,7 +1328,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
                  )
                ORDER BY COALESCE(j.updated_at, j.created_at) DESC
                LIMIT 20`,
-              [clerkUserId, sinceIso]
+              [dealScopeParam, sinceIso]
             )
           ).rows
         : [];
@@ -1441,6 +1468,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           attributed_sources: {
             platform_access: access != null,
             organization_memberships: hasMemberships,
+            deals_org_scope_enabled: useOrgScope,
             deals_accessible_scope: true,
             documents_via_accessible_deals: true,
             jobs_via_accessible_deals: hasJobs,

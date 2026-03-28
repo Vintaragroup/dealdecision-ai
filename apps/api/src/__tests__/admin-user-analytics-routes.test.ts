@@ -27,6 +27,9 @@ test('GET /api/v1/admin/users/:id/analytics returns aggregated metrics with expl
       if (text.includes('SELECT to_regclass($1) as oid')) {
         return { rows: [{ oid: 'exists' }] };
       }
+      if (text.includes('FROM information_schema.columns')) {
+        return { rows: [{ exists: false }] };
+      }
       if (text.includes('FROM platform_access') && text.includes('WHERE clerk_user_id = $1') && text.includes('access_status')) {
         return {
           rows: [

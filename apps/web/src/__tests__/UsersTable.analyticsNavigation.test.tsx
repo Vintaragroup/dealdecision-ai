@@ -69,4 +69,19 @@ describe('UsersTable analytics entry', () => {
     expect(onViewAnalytics).toHaveBeenCalledTimes(1);
     expect(onViewAnalytics.mock.calls[0]?.[0]?.clerk_user_id).toBe('user-123');
   });
+
+  test('invokes onViewAnalytics when row is clicked', async () => {
+    const onViewAnalytics = vi.fn();
+
+    render(<UsersTable searchQuery="" onViewAnalytics={onViewAnalytics} />);
+
+    const rowLabel = await screen.findByText('Analyst User');
+    const row = rowLabel.closest('tr');
+    expect(row).not.toBeNull();
+
+    fireEvent.click(row!);
+
+    expect(onViewAnalytics).toHaveBeenCalledTimes(1);
+    expect(onViewAnalytics.mock.calls[0]?.[0]?.clerk_user_id).toBe('user-123');
+  });
 });

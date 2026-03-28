@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { MoreHorizontal, Shield, ShieldOff, CalendarClock, UserX, AlertCircle, Tag, UserPlus, BarChart3 } from 'lucide-react';
+import { MoreHorizontal, Shield, ShieldOff, CalendarClock, UserX, AlertCircle, Tag, UserPlus, BarChart3, ChevronRight } from 'lucide-react';
 import { StatusPill } from './StatusPill';
 import {
   apiAdminListUsers,
@@ -212,7 +212,7 @@ export function UsersTable({ searchQuery, refreshKey, onViewAnalytics }: UsersTa
                 filteredUsers.map((user) => (
                   <tr
                     key={user.clerk_user_id}
-                    className="hover:bg-zinc-800/30 transition-colors cursor-pointer"
+                    className="group hover:bg-zinc-800/30 transition-colors cursor-pointer"
                     onClick={() => onViewAnalytics?.(user)}
                   >
                     <td className="px-6 py-4">
@@ -232,6 +232,10 @@ export function UsersTable({ searchQuery, refreshKey, onViewAnalytics }: UsersTa
                           {user.clerk_user_id}
                         </div>
                         {user.notes && <div className="text-xs text-zinc-500 mt-0.5">{user.notes}</div>}
+                        <div className="mt-2 inline-flex items-center gap-1 text-[11px] text-zinc-500 group-hover:text-zinc-300 transition-colors">
+                          View analytics
+                          <ChevronRight className="w-3 h-3" strokeWidth={1.5} />
+                        </div>
                       </div>
                     </td>
                     <td className="px-6 py-4">
@@ -305,7 +309,8 @@ export function UsersTable({ searchQuery, refreshKey, onViewAnalytics }: UsersTa
                             ) : (
                               <>
                                 <button
-                                  onClick={() => {
+                                  onClick={(e) => {
+                                    e.stopPropagation();
                                     setActiveDropdown(null);
                                     onViewAnalytics?.(user);
                                   }}

@@ -17,9 +17,9 @@ export function UnderwritingReadiness({
 }: Props) {
   return (
     <div className={`p-6 rounded-xl border ${getCardBackground(darkMode)}`}>
-      <div className="flex items-start gap-6">
+      <div className="flex flex-col sm:flex-row items-start gap-6">
         {/* Score Circle */}
-        <div className="flex-shrink-0 text-center">
+        <div className="flex-shrink-0 text-center w-full sm:w-auto">
           <div className={`w-32 h-32 rounded-full border-4 flex items-center justify-center ${
             score >= 80
               ? (darkMode ? 'border-emerald-500/30 bg-emerald-500/10' : 'border-emerald-300 bg-emerald-50')

@@ -50,7 +50,7 @@ export function CrossSourceReconciliation({ conflicts, reconciliationStatus, rec
             </span>
           </div>
           
-          <div className="grid grid-cols-2 gap-4 mb-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
             <div className={`p-3 rounded-lg border ${
               darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
             }`}>

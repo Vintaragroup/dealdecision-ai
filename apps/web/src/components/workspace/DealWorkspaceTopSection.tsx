@@ -191,7 +191,7 @@ export function DealWorkspaceHeader({
       
       {/* LAYER 1 — DEAL IDENTITY & STATUS */}
       <div className={`px-4 py-4 sm:px-6 sm:py-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="deal-top-identity-row">
           <div className="flex-1 min-w-0">
             <h1 className={`text-xl sm:text-2xl font-semibold tracking-tight mb-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
               {dealName}
@@ -249,7 +249,7 @@ export function DealWorkspaceHeader({
           </div>
           
           {/* Actions */}
-          <div className="w-full sm:w-auto flex-shrink-0 self-start pt-0 sm:pt-1 flex flex-wrap items-center justify-start sm:justify-end gap-2">
+          <div className="deal-top-actions-row">
             <Button 
               variant="secondary" 
               darkMode={darkMode}
@@ -359,7 +359,7 @@ export function DealWorkspaceHeader({
 
           {/* Right: AI Signals (if present) */}
           {signals && signals.length > 0 && (
-            <div className={`w-full md:w-44 flex-shrink-0 pt-2 md:pt-1 md:pl-6 border-t md:border-t-0 md:border-l ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
+            <div className={`deal-top-signals-pane border-solid ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
               <div className={`text-xs mb-1.5 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                 AI Signals
               </div>

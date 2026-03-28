@@ -43,13 +43,13 @@ export function FinancialSnapshot({ metrics, darkMode = true }: Props) {
 
   return (
     <div className={`p-4 rounded-xl border ${getCardBackground(darkMode)}`}>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         {metrics.map((metric, idx) => (
           <div
             key={idx}
             className={`p-3 rounded-lg border ${
               darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
-            } ${metric.label === 'Gross Margin' ? 'col-span-2' : ''}`}
+            } ${metric.label === 'Gross Margin' ? 'sm:col-span-2' : ''}`}
           >
             <div className="flex items-center gap-2 mb-2">
               <div className={getColor(metric.label)}>

@@ -15,14 +15,14 @@ export function SummaryMetricsBar({
   darkMode = true
 }: Props) {
   return (
-    <div className={`sticky top-0 z-10 p-6 rounded-xl border backdrop-blur-lg ${
+    <div className={`sm:sticky sm:top-0 z-10 p-4 sm:p-6 rounded-xl border backdrop-blur-lg ${
       darkMode 
         ? 'bg-[#0B0F14]/95 border-white/10' 
         : 'bg-white/95 border-gray-200'
     }`}>
-      <div className="flex items-center justify-between gap-8">
+      <div className="grid grid-cols-2 xl:grid-cols-5 gap-3 sm:gap-4">
         {/* Completeness Score */}
-        <div>
+        <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
           <div className={`text-xs mb-1.5 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
             Completeness
           </div>
@@ -34,10 +34,8 @@ export function SummaryMetricsBar({
           </div>
         </div>
 
-        <div className={`w-px h-12 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
-
         {/* Critical Metrics */}
-        <div>
+        <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
           <div className={`text-xs mb-1.5 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
             Critical Metrics
           </div>
@@ -46,10 +44,8 @@ export function SummaryMetricsBar({
           </div>
         </div>
 
-        <div className={`w-px h-12 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
-
         {/* Conflicts */}
-        <div>
+        <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
           <div className={`text-xs mb-1.5 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
             Conflicts
           </div>
@@ -63,10 +59,8 @@ export function SummaryMetricsBar({
           </div>
         </div>
 
-        <div className={`w-px h-12 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
-
         {/* Surfaced Facts */}
-        <div>
+        <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
           <div className={`text-xs mb-1.5 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
             Surfaced Facts
           </div>
@@ -78,10 +72,8 @@ export function SummaryMetricsBar({
           </div>
         </div>
 
-        <div className={`w-px h-12 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
-
         {/* Validated Facts */}
-        <div>
+        <div className={`p-3 rounded-lg border col-span-2 xl:col-span-1 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
           <div className={`text-xs mb-1.5 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
             Validated Facts
           </div>

@@ -22,7 +22,8 @@ export function RawFactExplorer({ facts, darkMode = true }: Props) {
 
   return (
     <div className={`rounded-xl border overflow-hidden ${getCardBackground(darkMode)}`}>
-      <table className="w-full">
+      <div className="overflow-x-auto">
+      <table className="w-full" style={{ minWidth: '760px' }}>
         <thead className={darkMode ? 'bg-white/5' : 'bg-gray-50'}>
           <tr>
             <th className={`text-left px-4 py-3 text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} style={{ width: '40px' }}>
@@ -87,7 +88,7 @@ export function RawFactExplorer({ facts, darkMode = true }: Props) {
               {expandedRows[`fact-${idx}`] && (
                 <tr className={darkMode ? 'bg-white/5 border-t border-white/10' : 'bg-gray-50 border-t border-gray-200'}>
                   <td colSpan={6} className="px-4 py-4">
-                    <div className="grid grid-cols-3 gap-4 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
                       <div>
                         <div className={`mb-1 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                           Sheet / Page
@@ -120,6 +121,7 @@ export function RawFactExplorer({ facts, darkMode = true }: Props) {
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

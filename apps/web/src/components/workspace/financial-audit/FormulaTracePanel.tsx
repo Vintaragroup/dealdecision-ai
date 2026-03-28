@@ -20,11 +20,11 @@ export function FormulaTracePanel({ traces, darkMode = true }: Props) {
                 : (darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200')
             }`}
           >
-            <div className="flex items-center justify-between mb-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
               <span className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                 {formula.metric}
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className={`text-xs ${
                   darkMode ? 'text-gray-500' : 'text-gray-600'
                 }`}>

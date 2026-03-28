@@ -16,9 +16,9 @@ export function InvestorActionPanel({
 }: Props) {
   return (
     <div className={`p-6 rounded-xl border ${getCardBackground(darkMode)}`}>
-      <div className="flex items-start gap-6">
+      <div className="flex flex-col lg:flex-row items-start gap-6">
         {/* Left: Status Badge */}
-        <div className="flex-shrink-0">
+        <div className="flex-shrink-0 w-full lg:w-auto">
           <div className={`px-6 py-3 rounded-xl border font-bold text-base ${getStatusColor(status, darkMode)}`}>
             {status === 'WARNING' && <AlertTriangle className="w-5 h-5 inline mr-2" />}
             {status === 'PARTIAL' && <AlertCircle className="w-5 h-5 inline mr-2" />}
@@ -28,7 +28,7 @@ export function InvestorActionPanel({
         </div>
 
         {/* Right: Action Sections */}
-        <div className="flex-1 grid grid-cols-3 gap-6">
+        <div className="flex-1 w-full grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
           
           {/* Resolve Before Investment */}
           <div>

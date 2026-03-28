@@ -33,7 +33,8 @@ export function SourceOfTruthTable({ rows, scopeNote, darkMode = true }: Props) 
           {scopeNote}
         </div>
       )}
-      <table className="w-full">
+      <div className="overflow-x-auto">
+      <table className="w-full" style={{ minWidth: '760px' }}>
         <thead className={darkMode ? 'bg-white/5' : 'bg-gray-50'}>
           <tr>
             <th className={`text-left px-4 py-3 text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
@@ -163,6 +164,7 @@ export function SourceOfTruthTable({ rows, scopeNote, darkMode = true }: Props) 
           ))}
         </tbody>
       </table>
+      </div>
     </div>
   );
 }

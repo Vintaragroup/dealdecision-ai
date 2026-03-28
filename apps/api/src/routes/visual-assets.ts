@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createHash } from "crypto";
 import { z } from "zod";
 import { getPool } from "../lib/db";
+import { recordLLMMetrics } from "../lib/llm";
 import { sanitizeText } from "@dealdecision/core";
 import { compactForAiSource } from "../lib/ai-compact";
 
@@ -307,6 +308,21 @@ export async function registerVisualAssetRoutes(app: FastifyInstance, poolOverri
           temperature: 0,
           maxTokens: 900,
         });
+
+        if (typeof row.deal_id === "string" && row.deal_id.length > 0) {
+          await recordLLMMetrics({
+            dealId: row.deal_id,
+            taskType: "synthesis",
+            model: completion.model || model,
+            provider: "openai",
+            inputTokens: Number(completion.usage?.prompt_tokens ?? 0),
+            outputTokens: Number(completion.usage?.completion_tokens ?? 0),
+            costUsd: 0,
+            latencyMs: Date.now() - startedAt,
+            cached: false,
+            clerkUserId: typeof (request as any)?.auth?.userId === "string" ? (request as any).auth.userId : undefined,
+          });
+        }
 
         const rawText = completion.content.trim();
         const durationMs = Date.now() - startedAt;

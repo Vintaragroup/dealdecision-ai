@@ -106,6 +106,18 @@ test('GET /api/v1/admin/users/:id/analytics returns aggregated metrics with expl
           rows: [{ analyses_total: '4', llm_called_total: '3', last_ai_activity_at: new Date().toISOString() }],
         };
       }
+      if (text.includes('FROM llm_performance_metrics l')) {
+        return {
+          rows: [{
+            llm_calls: '6',
+            llm_total_tokens: '12000',
+            llm_input_tokens: '9000',
+            llm_output_tokens: '3000',
+            llm_cost_usd: '0.42',
+            last_llm_activity_at: new Date().toISOString(),
+          }],
+        };
+      }
       if (text.includes('FROM platform_audit_log')) {
         return {
           rows: [
@@ -164,10 +176,16 @@ test('GET /api/v1/admin/users/:id/analytics returns aggregated metrics with expl
   assert.equal(body.kpis.total_jobs, 2);
   assert.equal(body.kpis.failed_jobs, 1);
   assert.equal(body.kpis.ai_analyses_total, 4);
+  assert.equal(body.kpis.llm_calls, 6);
+  assert.equal(body.kpis.llm_total_tokens, 12000);
+  assert.equal(body.kpis.llm_input_tokens, 9000);
+  assert.equal(body.kpis.llm_output_tokens, 3000);
+  assert.equal(body.kpis.llm_cost_usd, 0.42);
   assert.equal(body.deals.length, 1);
   assert.equal(body.activity.length, 2);
   assert.equal(body.data_quality.unsupported_metrics.chat_sessions.status, 'unavailable');
-  assert.equal(body.data_quality.unsupported_metrics.token_usage.status, 'unavailable');
+  assert.equal(body.data_quality.unsupported_metrics.token_usage, undefined);
+  assert.equal(body.data_quality.unsupported_metrics.session_duration.status, 'unavailable');
 
   await app.close();
 });

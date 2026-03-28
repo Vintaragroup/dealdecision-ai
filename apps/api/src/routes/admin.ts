@@ -1021,6 +1021,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const hasJobs = await hasTable("jobs");
       const hasNodeAnalyses = await hasTable("node_ai_analyses");
       const hasAuditLog = await hasTable("platform_audit_log");
+      const hasLlmPerformanceMetrics = await hasTable("llm_performance_metrics");
+      const hasLlmClerkUserId = hasLlmPerformanceMetrics && await hasColumn("llm_performance_metrics", "clerk_user_id");
       const hasDealOrgId = await hasColumn("deals", "org_id");
 
       const { rows: accessRows } = await pool.query<{
@@ -1274,6 +1276,57 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           ).rows
         : [{ analyses_total: "0", llm_called_total: "0", last_ai_activity_at: null }];
 
+      const llmAggRows = hasLlmPerformanceMetrics
+        ? (
+            await pool.query<{
+              llm_calls: string;
+              llm_total_tokens: string;
+              llm_input_tokens: string;
+              llm_output_tokens: string;
+              llm_cost_usd: string;
+              last_llm_activity_at: string | null;
+            }>(
+              hasLlmClerkUserId
+                ? `SELECT
+                     COUNT(*)::text AS llm_calls,
+                     COALESCE(SUM(l.total_tokens), 0)::text AS llm_total_tokens,
+                     COALESCE(SUM(l.input_tokens), 0)::text AS llm_input_tokens,
+                     COALESCE(SUM(l.output_tokens), 0)::text AS llm_output_tokens,
+                     COALESCE(SUM(l.cost_usd), 0)::text AS llm_cost_usd,
+                     MAX(l.created_at)::text AS last_llm_activity_at
+                   FROM llm_performance_metrics l
+                   WHERE l.clerk_user_id = $1
+                     AND (
+                       $2::timestamptz IS NULL
+                       OR l.created_at >= $2::timestamptz
+                     )`
+                : `SELECT
+                     COUNT(*)::text AS llm_calls,
+                     COALESCE(SUM(l.total_tokens), 0)::text AS llm_total_tokens,
+                     COALESCE(SUM(l.input_tokens), 0)::text AS llm_input_tokens,
+                     COALESCE(SUM(l.output_tokens), 0)::text AS llm_output_tokens,
+                     COALESCE(SUM(l.cost_usd), 0)::text AS llm_cost_usd,
+                     MAX(l.created_at)::text AS last_llm_activity_at
+                   FROM llm_performance_metrics l
+                   INNER JOIN deals d ON d.id = l.deal_id
+                   WHERE ${dealScopeWhere}
+                     AND d.deleted_at IS NULL
+                     AND (
+                       $2::timestamptz IS NULL
+                       OR l.created_at >= $2::timestamptz
+                     )`,
+              [dealScopeParam, sinceIso]
+            )
+          ).rows
+        : [{
+            llm_calls: "0",
+            llm_total_tokens: "0",
+            llm_input_tokens: "0",
+            llm_output_tokens: "0",
+            llm_cost_usd: "0",
+            last_llm_activity_at: null,
+          }];
+
       let orgTotalDeals = 0;
       let orgTotalDocuments = 0;
       let personalDealsOrgAssociated = 0;
@@ -1409,6 +1462,14 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       const docAgg = docAggRows[0] ?? { total_documents: "0", last_document_activity_at: null };
       const jobAgg = jobAggRows[0] ?? { total_jobs: "0", failed_jobs: "0", last_job_activity_at: null };
       const aiAgg = aiAggRows[0] ?? { analyses_total: "0", llm_called_total: "0", last_ai_activity_at: null };
+      const llmAgg = llmAggRows[0] ?? {
+        llm_calls: "0",
+        llm_total_tokens: "0",
+        llm_input_tokens: "0",
+        llm_output_tokens: "0",
+        llm_cost_usd: "0",
+        last_llm_activity_at: null,
+      };
 
       if (!hasScopedOrg) {
         personalDealsUnassociated = Number(dealAgg.total_deals ?? "0");
@@ -1458,6 +1519,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         docAgg.last_document_activity_at,
         jobAgg.last_job_activity_at,
         aiAgg.last_ai_activity_at,
+        llmAgg.last_llm_activity_at,
         activity[0]?.at ?? null,
       ].filter((v): v is string => typeof v === "string" && v.length > 0);
 
@@ -1508,6 +1570,11 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           failed_jobs: Number(jobAgg.failed_jobs ?? "0"),
           ai_analyses_total: Number(aiAgg.analyses_total ?? "0"),
           ai_llm_called_total: Number(aiAgg.llm_called_total ?? "0"),
+          llm_calls: Number(llmAgg.llm_calls ?? "0"),
+          llm_total_tokens: Number(llmAgg.llm_total_tokens ?? "0"),
+          llm_input_tokens: Number(llmAgg.llm_input_tokens ?? "0"),
+          llm_output_tokens: Number(llmAgg.llm_output_tokens ?? "0"),
+          llm_cost_usd: Number(llmAgg.llm_cost_usd ?? "0"),
           last_activity_at: lastActivityAt,
         },
         deals: scopedDeals.slice(0, 20),
@@ -1523,16 +1590,14 @@ export async function registerAdminRoutes(app: FastifyInstance) {
             documents_via_accessible_deals: true,
             jobs_via_accessible_deals: hasJobs,
             node_ai_analyses_via_accessible_deals: hasNodeAnalyses,
+            llm_metrics_via_accessible_deals: hasLlmPerformanceMetrics,
+            llm_metrics_direct_user_attribution: hasLlmClerkUserId,
             audit_log_actor_events: hasAuditLog,
           },
           unsupported_metrics: {
             chat_sessions: {
               status: "unavailable",
               reason: "No per-user chat session telemetry table is available in the governed schema.",
-            },
-            token_usage: {
-              status: "unavailable",
-              reason: "Token usage is tracked per model/deal call, not reliably attributable to a clerk_user_id in current schema.",
             },
             session_duration: {
               status: "unavailable",

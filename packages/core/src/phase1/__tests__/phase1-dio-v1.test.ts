@@ -76,6 +76,32 @@ describe("generatePhase1DIOV1 (Phase 1 UI-usability)", () => {
 		expect(out.executive_summary_v2?.missing ?? []).not.toContain("market_icp");
 	});
 
+	it("suppresses Wholesale/Retail business model for software-like deals without physical goods evidence", () => {
+		const out = generatePhase1DIOV1({
+			deal: { deal_id: "deal-wholesale-software", name: "LendFlow", stage: "intake" },
+			inputDocuments: [
+				{
+					document_id: "doc-wholesale-software",
+					title: "LendFlow Deck",
+					type: "pitch_deck",
+					full_text:
+						"LendFlow provides workflow automation software for lenders. API-first underwriting platform integrated with CRM/LOS.",
+				},
+			],
+			deal_overview_v2: {
+				deal_name: "LendFlow",
+				product_solution: "Workflow automation platform for lender underwriting teams.",
+				market_icp: "Mortgage lenders and loan operations teams.",
+				business_model: "Wholesale/Retail",
+				raise: "Raising $2M seed",
+				generated_at: "2025-01-01T00:00:00.000Z",
+			},
+		});
+
+		expect(out.executive_summary_v1.business_model).not.toMatch(/wholesale|retail/i);
+		expect(out.deal_overview_v2?.business_model ?? "").not.toMatch(/wholesale|retail/i);
+	});
+
 	it("executive_summary_v2 uses only structured Phase 1 signals (no OCR junk)", () => {
 		const out = generatePhase1DIOV1({
 			deal: { deal_id: "deal-v2-no-ocr", name: "CleanCo", stage: "intake" },

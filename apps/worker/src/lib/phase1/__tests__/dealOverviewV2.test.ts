@@ -50,7 +50,7 @@ describe('buildPhase1DealOverviewV2 (product_solution / market_icp extraction)',
 		];
 
 		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
-		expect(out.product_solution).toMatch(/help/i);
+		expect(out.product_solution ?? '').toMatch(/help/i);
 		expect(out.product_solution).not.toBeNull();
 	});
 
@@ -115,6 +115,59 @@ describe('buildPhase1DealOverviewV2 (product_solution / market_icp extraction)',
 		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
 		expect(out.product_solution).toBeNull();
 		expect(out.market_icp).toBeNull();
+	});
+
+	it('rejects malformed OCR-like product fragments', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-bad-fragment', [
+				{ text: 'OVERVIEW' },
+				{ text: 'Fosters strong Automates borrower 52.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution).toBeNull();
+	});
+
+	it('suppresses duplicate weak text across product_solution and market_icp', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-dup', [
+				{ text: 'OVERVIEW' },
+				{ text: 'Built for growth 43.' },
+				{ text: 'WHO WE SERVE' },
+				{ text: 'Built for growth 43.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution).toBeNull();
+		expect(out.market_icp).toBeNull();
+	});
+
+	it('suppresses candidates from low-quality placeholder-dominant pages', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-low-quality', [
+				{ text: 'Slide 1\nConfidential\nTBD\nN/A\nPlaceholder' },
+				{ text: 'OVERVIEW\nComing soon\nTBD\nN/A\nPlaceholder' },
+				{ text: 'WHO WE SERVE\nTBD\nN/A\nPlaceholder' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution).toBeNull();
+		expect(out.market_icp).toBeNull();
+	});
+
+	it('keeps short but valid startup tagline with clear target', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-good-short', [
+				{ text: 'OVERVIEW\nAutomates underwriting workflows for lenders.' },
+				{ text: 'WHO WE SERVE\nMortgage lenders and loan teams.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution ?? '').toMatch(/automates underwriting workflows for lenders/i);
 	});
 
 	it("accepts anchored 'WHO WE SERVE' within next 6 lines", () => {

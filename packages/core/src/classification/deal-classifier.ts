@@ -183,6 +183,7 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
   const explicitlyPreRevenue = /pre[-\s]?revenue|no\s+revenue|revenue\s*:\s*\$?0\b/.test(textLc);
   const looksPreRevenue = explicitlyPreRevenue || !hasRevenueSignal;
   const earlyStageStartupSignal = /\bseed\b|\bpre[-\s]?seed\b|\bearly\s+stage\b|\bstartup\b|\bpilot\b|\bbeta\b/.test(textLc);
+  const softwareStartupSignal = /\b(saas|software|platform|api|workflow|automation|crm|los|lender|predictive|ai|machine\s+learning|b2b|subscription|fintech)\b/.test(textLc);
 
   const realEstateRules: SignalRule[] = [
     { id: "noi", re: /\bnoi\b|net operating income/, weight: 0.25, reason: "Contains NOI" },
@@ -412,7 +413,7 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
     // Otherwise, fall back to the chosen domain policy (reduces unknown_generic when domain signals exist).
     const { best: bestSubPolicyCandidate, policyId: bestSubPolicyId } = pickBestPolicyCandidate(sorted);
     const strongSubPolicyThreshold = 0.7;
-    const selected_policy: DealPolicyId = (bestSubPolicyCandidate.confidence ?? 0) >= strongSubPolicyThreshold
+    let selected_policy: DealPolicyId = (bestSubPolicyCandidate.confidence ?? 0) >= strongSubPolicyThreshold
       ? bestSubPolicyId
       : domain_policy_id;
 
@@ -425,6 +426,19 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
       const diff = Math.abs(top2[0].confidence - top2[1].confidence);
       if (diff <= 0.1) {
         routing_reason.push(`Hybrid ambiguity: top2 confidence diff ${diff.toFixed(2)} <= 0.10; using domain policy ${domain_policy_id}`);
+      }
+    }
+
+    if (selected_policy === "unknown_generic" && softwareStartupSignal) {
+      if (hasRevenueSignal) {
+        selected_policy = "operating_startup_revenue_v1";
+        routing_reason.push("Startup/software fallback: revenue signal present; promoting unknown_generic to operating_startup_revenue_v1");
+      } else if (earlyStageStartupSignal || startupRaise.score >= 0.3) {
+        selected_policy = "startup_raise";
+        routing_reason.push("Startup/software fallback: early-stage startup terms present; promoting unknown_generic to startup_raise");
+      } else {
+        selected_policy = "enterprise_saas_b2b_v1";
+        routing_reason.push("Startup/software fallback: software platform signals present; promoting unknown_generic to enterprise_saas_b2b_v1");
       }
     }
 

@@ -1888,6 +1888,25 @@ function arbitrateDealTruth(params: {
 	};
 }
 
+function suppressWholesaleRetailForSoftwareContext(params: {
+	business_model: string;
+	domainText: string;
+	product_solution: string;
+	market_icp: string;
+}): string {
+	const model = safeString(params.business_model);
+	if (!/\bwholesale|retail\b/i.test(model)) return model;
+
+	const evidenceText = [params.domainText, params.product_solution, params.market_icp].filter(Boolean).join(' ');
+	const softwareSignals = /\b(saas|software|platform|api|workflow|automation|crm|los|lender|underwriting|predictive|ai|machine\s+learning|b2b|subscription|fintech)\b/i.test(evidenceText);
+	if (!softwareSignals) return model;
+
+	const physicalGoodsSignals = /\b(inventory|sku|warehouse|fulfillment|packaging|manufacturing|consumer\s+goods|cpg|retail\s+doors?|store\s+shelves?|distributor|wholesale\s+accounts?)\b/i.test(evidenceText);
+	if (physicalGoodsSignals) return model;
+
+	return 'Unknown';
+}
+
 function detectTractionSignals(text: string, companyHint?: string): string[] {
 	const sentences = extractCandidateSentences(text);
 	const signals: Array<{ re: RegExp; label: string }> = [
@@ -2505,6 +2524,12 @@ export function generatePhase1DIOV1(params: {
 	productSentence = arbitration.product_solution;
 	marketSentence = arbitration.market_icp;
 	const looksRE = arbitration.looksRE;
+	business_model = suppressWholesaleRetailForSoftwareContext({
+		business_model,
+		domainText,
+		product_solution: productSentence,
+		market_icp: marketSentence,
+	});
 
 	// Business model / archetype evidence quality gate (after arbitration, before coverage/score).
 	if (business_model !== "Unknown") {
@@ -2734,7 +2759,12 @@ export function generatePhase1DIOV1(params: {
 			const sourceDealType = safeNonEmpty((overviewV2Normalized as any)?.deal_type) || safeNonEmpty(overview.deal_type);
 			const sourceLooksRealEstate = /^real_estate/i.test(sourceDealType);
 			if (sourceLooksRealEstate) return "Unknown";
-			return candidate;
+			return suppressWholesaleRetailForSoftwareContext({
+				business_model: candidate,
+				domainText,
+				product_solution: finalTruth.product_solution,
+				market_icp: finalTruth.market_icp,
+			});
 		})(),
 		raise: safeNonEmpty((overviewV2Normalized as any)?.raise) || finalTruth.raise,
 		raise_terms: (() => {

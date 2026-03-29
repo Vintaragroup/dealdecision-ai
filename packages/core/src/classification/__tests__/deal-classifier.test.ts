@@ -69,6 +69,22 @@ describe("deal-classifier v1", () => {
     expect(out.candidates.length).toBeGreaterThan(0);
   });
 
+  it("does not fall back to unknown_generic for software startup signals", () => {
+    const text = `
+    AI workflow automation platform for lenders and loan officers.
+    Predictive underwriting engine integrates with CRM/LOS systems.
+    B2B subscription software.
+    `;
+
+    const out = classifyDealV1({
+      documents: [{ full_text: text }],
+      evidence: [],
+    });
+
+    expect(out.selected_policy).not.toBe("unknown_generic");
+    expect(["enterprise_saas_b2b_v1", "startup_raise", "operating_startup_revenue_v1"]).toContain(out.selected_policy);
+  });
+
   it("classifies execution-ready pre-revenue ventures and routes to execution_ready_v1", () => {
     const text = `
     We are pre-revenue today.

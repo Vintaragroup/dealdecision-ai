@@ -321,6 +321,76 @@ function isSentenceFragment(value: string): boolean {
   return false;
 }
 
+const PLACEHOLDER_LINE_RE = /\b(lorem\s+ipsum|placeholder|tbd|n\/?a|coming\s+soon|confidential|slide\s+\d+)\b/i;
+const SOFTWARE_STARTUP_SIGNAL_RE = /\b(saas|software|platform|api|workflow|automation|crm|los|lender|predictive|ai|machine\s+learning|subscription|b2b|fintech)\b/i;
+
+function assessPageTextQuality(lines: string[]): { penalty: number; reasons: string[] } {
+	if (!Array.isArray(lines) || lines.length === 0) return { penalty: 25, reasons: ['page_empty'] };
+
+	let meaningful = 0;
+	let placeholder = 0;
+	let shortOrNoisy = 0;
+	let alphaChars = 0;
+	let nonAlnumChars = 0;
+
+	for (const line of lines) {
+		const s = sanitizeInlineText(line);
+		if (!s) continue;
+		if (PLACEHOLDER_LINE_RE.test(s)) placeholder += 1;
+		if (/[A-Za-z]/.test(s) && s.length >= 14) meaningful += 1;
+		const compact = s.replace(/\s+/g, '');
+		if (compact.length < 8) shortOrNoisy += 1;
+		alphaChars += (compact.match(/[A-Za-z]/g) ?? []).length;
+		nonAlnumChars += (compact.match(/[^A-Za-z0-9]/g) ?? []).length;
+	}
+
+	const placeholderRatio = lines.length > 0 ? placeholder / lines.length : 0;
+	const shortRatio = lines.length > 0 ? shortOrNoisy / lines.length : 0;
+	const charTotal = Math.max(1, alphaChars + nonAlnumChars);
+	const symbolRatio = nonAlnumChars / charTotal;
+
+	const reasons: string[] = [];
+	let penalty = 0;
+	if (meaningful < 2) {
+		reasons.push('low_text_density');
+		penalty += 12;
+	}
+	if (placeholderRatio >= 0.35) {
+		reasons.push('placeholder_dominant');
+		penalty += 10;
+	}
+	if (shortRatio >= 0.5) {
+		reasons.push('fragmented_lines');
+		penalty += 6;
+	}
+	if (symbolRatio > 0.32) {
+		reasons.push('symbol_heavy');
+		penalty += 6;
+	}
+
+	return { penalty, reasons };
+}
+
+function looksLikeMalformedNarrativeFragment(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (!s) return true;
+
+	if (!/[.!?]$/.test(s) && s.length < 42 && !/\bfor\b/i.test(s) && !isTaglineVerbMatch(s)) return true;
+
+	const tokens = s.split(/\s+/).filter(Boolean);
+	if (tokens.length <= 5) {
+		const hasDigit = /\d/.test(s);
+		const hasStrongTarget = /\bfor\b|\bteams?\b|\bcustomers?\b|\blenders?\b|\bborrowers?\b/i.test(s);
+		if (hasDigit && !hasStrongTarget) return true;
+	}
+
+	const titleCaseChunks = (s.match(/\b[A-Z][a-z]{3,}\b/g) ?? []).length;
+	const actionVerbs = (s.match(/\b(automates?|predicts?|enables?|delivers?|provides?|helps?|connects?)\b/gi) ?? []).length;
+	if (titleCaseChunks >= 2 && actionVerbs >= 1 && /\d/.test(s) && !/\bfor\b/i.test(s)) return true;
+
+	return false;
+}
+
 function inferCompanyHintFromDocTitle(title: string): string {
 	const t = sanitizeInlineText(title);
 	if (!t) return '';
@@ -468,6 +538,7 @@ function computeCandidateScore(params: {
 		if (/\b(customers?|teams?|operators?|buyers?|users?|companies|businesses)\b/i.test(s)) score += 10;
 		if (/\b(smb|mid-?market|enterprise|commercial)\b/i.test(s)) score += 6;
 		if (/\b(icp|ideal\s+customer|target\s+(customer|market))\b/i.test(s)) score += 10;
+		if (DU_VERB_ANY_RE.test(s) && /\b(workflow|platform|software|solution|product|automate|engine|api)\b/i.test(s)) score -= 14;
 	}
 
 	// Penalize heading-ish text.
@@ -493,6 +564,19 @@ function collectCandidatesFromPages(params: {
 
 	for (const p of pages) {
 		const lines = splitLines(p.text);
+		const pageQuality = assessPageTextQuality(lines);
+		if (debug && pageQuality.penalty > 0) {
+			console.log(
+				JSON.stringify({
+					event: 'phase1_deal_overview_v2_page_quality_downgrade',
+					mode: params.mode,
+					document_id: params.docId,
+					page: p.page,
+					penalty: pageQuality.penalty,
+					reasons: pageQuality.reasons,
+				})
+			);
+		}
 
 		// (a) Anchored headings: next 6 lines only.
 		for (let i = 0; i < lines.length; i++) {
@@ -516,7 +600,8 @@ function collectCandidatesFromPages(params: {
 				if (allCaps && !tagline) rejected_reasons.push('all_caps_non_tagline');
 
 				const score = computeCandidateScore({ mode: params.mode, source_type: 'anchored', value: cleaned });
-				if (score < 10) rejected_reasons.push('score_below_threshold');
+				const finalScore = score - pageQuality.penalty;
+				if (finalScore < 10) rejected_reasons.push('score_below_threshold');
 
 				out.push({
 					page: p.page,
@@ -525,7 +610,7 @@ function collectCandidatesFromPages(params: {
 					mode: params.mode,
 					source_type: 'anchored',
 					anchor_heading: line,
-					score,
+					score: finalScore,
 					rejected_reasons,
 					accepted: rejected_reasons.length === 0,
 					source: {
@@ -563,7 +648,8 @@ function collectCandidatesFromPages(params: {
 			if (blocked.blocked) rejected_reasons.push(...blocked.reasons);
 
 			const score = computeCandidateScore({ mode: params.mode, source_type: 'tagline', value: cleaned });
-			if (score < 10) rejected_reasons.push('score_below_threshold');
+			const finalScore = score - pageQuality.penalty;
+			if (finalScore < 10) rejected_reasons.push('score_below_threshold');
 
 			out.push({
 				page: p.page,
@@ -571,7 +657,7 @@ function collectCandidatesFromPages(params: {
 				raw: cleaned,
 				mode: params.mode,
 				source_type: 'tagline',
-				score,
+				score: finalScore,
 				rejected_reasons,
 				accepted: rejected_reasons.length === 0,
 				source: { document_id: params.docId, page_range: [p.page, p.page], note: 'tagline:verb_pattern' },
@@ -1425,14 +1511,17 @@ function evaluateFallbackCandidate(raw: string): { ok: boolean; score: number; r
 	let score = 0;
 	if (!s) return { ok: false, score, rejected_reason: 'empty' };
 	if (isLegalDisclaimerBoilerplate(s)) return { ok: false, score, rejected_reason: 'legal_disclaimer_boilerplate' };
+	if (looksLikeMalformedNarrativeFragment(s)) return { ok: false, score, rejected_reason: 'malformed_fragment' };
 
 	// Reject OCR logo artifacts and short cover taglines (common on title slides).
 	if (looksLikeSpacedLogoArtifact(s)) return { ok: false, score, rejected_reason: 'spaced_logo_artifact' };
 	if (looksLikeCoverTagline(s)) return { ok: false, score, rejected_reason: 'cover_tagline' };
 
-	// Reject all-caps blocks.
+	// Reject all-caps blocks unless they are verb-led taglines.
 	const upperRatio = uppercaseLetterRatio(s);
-	if (s.length > 40 && upperRatio > 0.65) return { ok: false, score, rejected_reason: 'all_caps_block' };
+	if (s.length > 40 && upperRatio > 0.65 && !isTaglineVerbMatch(s)) {
+		return { ok: false, score, rejected_reason: 'all_caps_block' };
+	}
 
 	// Reject roster/team language.
 	if (/\b(on-air|talent|roster|lineup|coaches|players|extended\s+team|advisors|staff)\b/i.test(s)) {
@@ -1454,6 +1543,12 @@ function evaluateFallbackCandidate(raw: string): { ok: boolean; score: number; r
 	if (bulletCount >= 2) return { ok: false, score, rejected_reason: 'too_many_bullets' };
 	if (s.length > 60 && sepDensity > 0.18) return { ok: false, score, rejected_reason: 'high_separator_density' };
 
+	const digits = (s.match(/\d/g) ?? []).length;
+	const letters = (s.match(/[A-Za-z]/g) ?? []).length;
+	if (digits >= 2 && letters > 0 && digits / letters > 0.2 && !/\b(\$|arr|mrr|revenue|customers?)\b/i.test(s)) {
+		return { ok: false, score, rejected_reason: 'numeric_noise_fragment' };
+	}
+
 	// Lightweight scoring for debugging/observability (does not override reject rules).
 	if (s.length >= 45 && s.length <= 180) score += 10;
 	if (upperRatio < 0.5) score += 6;
@@ -1462,6 +1557,51 @@ function evaluateFallbackCandidate(raw: string): { ok: boolean; score: number; r
 	if (/\b(helps|enables|provides|delivers|serves|built\s+for|designed\s+for)\b/i.test(s)) score += 6;
 	if (commaCount >= 2) score -= 4;
 	if (sepDensity > 0.12) score -= 4;
+
+	return { ok: true, score };
+}
+
+function evaluatePublishedOverviewField(
+	value: string,
+	mode: 'product' | 'market'
+): { ok: boolean; score: number; rejected_reason?: string } {
+	const s = sanitizeInlineText(value);
+	if (!s) return { ok: false, score: 0, rejected_reason: 'empty' };
+
+	const fallback = evaluateFallbackCandidate(s);
+	if (!fallback.ok) {
+		const recoverableProductFallback =
+			mode === 'product'
+			&& (
+				fallback.rejected_reason === 'too_many_commas'
+				|| fallback.rejected_reason === 'high_separator_density'
+				|| (fallback.rejected_reason === 'malformed_fragment' && isTaglineVerbMatch(s) && s.length >= 28)
+			)
+			&& DU_VERB_ANY_RE.test(s)
+			&& s.length >= 28;
+		if (!recoverableProductFallback) return fallback;
+	}
+
+	let score = Math.max(0, fallback.score);
+	if (s.length >= 36) score += 3;
+	if (/[.!?]$/.test(s)) score += 2;
+
+	if (mode === 'product') {
+		const hasVerb = DU_VERB_ANY_RE.test(s);
+		const hasProductNoun = /\b(platform|software|solution|product|api|workflow|tool|system|engine|company|league)\b/i.test(s);
+		const hasTarget = /\b(for\s+\w+|teams?|customers?|operators?|lenders?|borrowers?)\b/i.test(s);
+		if (!hasVerb && !hasProductNoun) return { ok: false, score, rejected_reason: 'product_not_descriptive' };
+		if (hasVerb && hasTarget) score += 4;
+		if (s.length >= 100) score += 6;
+		if ((s.match(/,/g) ?? []).length >= 3) score += 4;
+		if (SOFTWARE_STARTUP_SIGNAL_RE.test(s)) score += 3;
+		if (score < 11) return { ok: false, score, rejected_reason: 'product_score_low' };
+	} else {
+		if (isSentenceFragment(s)) return { ok: false, score, rejected_reason: 'market_sentence_fragment' };
+		if (!MARKET_SIGNAL_RE.test(s)) return { ok: false, score, rejected_reason: 'market_signal_missing' };
+		score += 3;
+		if (score < 8) return { ok: false, score, rejected_reason: 'market_score_low' };
+	}
 
 	return { ok: true, score };
 }
@@ -1708,6 +1848,86 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 						}
 						: { document_id: docs[0]?.document_id ?? 'unknown', note: 'du fallback_market_icp' }
 				);
+			}
+		}
+	}
+
+	const productEval = product_solution ? evaluatePublishedOverviewField(product_solution, 'product') : null;
+	if (debug && product_solution && productEval) {
+		console.log(
+			JSON.stringify({
+				event: 'phase1_deal_overview_v2_publish_eval',
+				field: 'product_solution',
+				ok: productEval.ok,
+				score: productEval.score,
+				reason: productEval.rejected_reason ?? null,
+				text_head: sanitizeInlineText(product_solution).slice(0, 120),
+			})
+		);
+	}
+	if (product_solution && productEval && !productEval.ok) {
+		if (debug) {
+			console.log(
+				JSON.stringify({
+					event: 'phase1_deal_overview_v2_publish_suppressed',
+					field: 'product_solution',
+					reason: productEval.rejected_reason ?? 'publish_gate',
+					text_head: sanitizeInlineText(product_solution).slice(0, 160),
+				})
+			);
+		}
+		product_solution = undefined;
+	}
+
+	const marketEval = market_icp ? evaluatePublishedOverviewField(market_icp, 'market') : null;
+	if (debug && market_icp && marketEval) {
+		console.log(
+			JSON.stringify({
+				event: 'phase1_deal_overview_v2_publish_eval',
+				field: 'market_icp',
+				ok: marketEval.ok,
+				score: marketEval.score,
+				reason: marketEval.rejected_reason ?? null,
+				text_head: sanitizeInlineText(market_icp).slice(0, 120),
+			})
+		);
+	}
+	if (market_icp && marketEval && !marketEval.ok) {
+		if (debug) {
+			console.log(
+				JSON.stringify({
+					event: 'phase1_deal_overview_v2_publish_suppressed',
+					field: 'market_icp',
+					reason: marketEval.rejected_reason ?? 'publish_gate',
+					text_head: sanitizeInlineText(market_icp).slice(0, 160),
+				})
+			);
+		}
+		market_icp = undefined;
+	}
+
+	if (product_solution && market_icp) {
+		const pNorm = sanitizeInlineText(product_solution).toLowerCase();
+		const mNorm = sanitizeInlineText(market_icp).toLowerCase();
+		if (pNorm && pNorm === mNorm) {
+			const pScore = productEval?.score ?? 0;
+			const mScore = marketEval?.score ?? 0;
+			if (debug) {
+				console.log(
+					JSON.stringify({
+						event: 'phase1_deal_overview_v2_duplicate_resolution',
+						pScore,
+						mScore,
+						threshold: 11,
+						text_head: sanitizeInlineText(product_solution).slice(0, 120),
+					})
+				);
+			}
+				if (Math.max(pScore, mScore) < 11) {
+				product_solution = undefined;
+				market_icp = undefined;
+			} else {
+				market_icp = undefined;
 			}
 		}
 	}

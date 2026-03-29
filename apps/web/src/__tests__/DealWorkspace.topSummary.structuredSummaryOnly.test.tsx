@@ -43,7 +43,7 @@ describe('DealWorkspace top summary uses structured_summary deal_summary_v1 only
     vi.clearAllMocks();
   });
 
-  test('renders structured_summary.long_summary and does not concatenate deal_summary_v1 tiers', async () => {
+  test('renders structured_summary one-liner mirror only and does not concatenate deal_summary_v1 tiers', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
       dioStatus: 'ready',
@@ -99,13 +99,11 @@ describe('DealWorkspace top summary uses structured_summary deal_summary_v1 only
     renderWorkspace({ dealId: 'deal-1' });
 
     const top = await screen.findByLabelText('Deal top summary');
+    const summaryMirror = screen.getByTestId('deal-summary-text');
 
-    // Wait for async report wiring.
-    await screen.findByText('STRUCTURED LONG SUMMARY');
-
-    expect(within(top).getByText('STRUCTURED ONE LINER')).toBeInTheDocument();
-    expect(within(top).getByText('STRUCTURED LONG SUMMARY')).toBeInTheDocument();
-    expect(within(top).getByText('Second paragraph.')).toBeInTheDocument();
+    expect(summaryMirror).toHaveTextContent('STRUCTURED ONE LINER');
+    expect(summaryMirror).not.toHaveTextContent('STRUCTURED LONG SUMMARY');
+    expect(summaryMirror).not.toHaveTextContent('Second paragraph.');
 
     expect(within(top).queryByText(/TIER HERO/)).toBeNull();
     expect(within(top).queryByText(/TIER OVERVIEW/)).toBeNull();

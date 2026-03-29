@@ -153,8 +153,9 @@ describe('DealWorkspace canonical report binding', () => {
     expect(within(top).queryByText(/Deterministic deal summary unavailable\./i)).toBeNull();
     expect(within(top).queryByText(/Deterministic \(degraded\)/i)).toBeNull();
 
-    const longSlot = top.querySelector('[data-slot="topSummary.dealSummary.long"]') as HTMLElement | null;
-    expect(longSlot).not.toBeNull();
-    expect((longSlot as HTMLElement).textContent?.trim() || '').toBe('');
+    // Current header exposes a single summary mirror for top-level assertions.
+    const summaryMirror = screen.getByTestId('deal-summary-text');
+    expect(summaryMirror).toBeInTheDocument();
+    expect(summaryMirror).not.toHaveTextContent(overlayHeroSentence);
   });
 });

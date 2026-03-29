@@ -54,6 +54,7 @@ import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
 import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
 import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
 import { chooseGovernedKeyFact } from '../../lib/chooseGovernedKeyFact';
+import { applyPolicyAwareAdvisoryAsks, getRealEstateDealStructureFallback, selectBestRealEstateSemanticField } from '../../lib/realEstatePolicyRefinement';
 import { CanonicalIdentityRenameBanner } from '../deal/CanonicalIdentityRenameBanner';
 import { deriveGatingState, shouldSuppressNeedsReview } from '../../lib/badgePolicy';
 import { useAsyncStaleGuard } from '../../lib/hooks/useAsyncStaleGuard';
@@ -2454,6 +2455,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     supportsProceeding: string[];
     diligenceItems: string[];
     scoreRationale: string;
+    advisoryRefinement: {
+      source: 'original' | 'real_estate_refined';
+      replacementApplied: boolean;
+      suppressedStartupAsks: string[];
+      injectedRealEstateAsks: string[];
+    };
   } => {
     const safeNonEmpty = (v: unknown): string | null => {
       if (typeof v !== 'string') return null;
@@ -2665,11 +2672,22 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       ]).join(' ');
     })();
 
+    const refinedDiligence = applyPolicyAwareAdvisoryAsks({
+      policyFamily,
+      asks: uniq(diligence).slice(0, 12),
+    });
+
     return {
       snapshot: snapshot || 'Company snapshot is pending: structured facts were not extracted from the materials.',
       supportsProceeding: uniq(supports).slice(0, 6),
-      diligenceItems: uniq(diligence).slice(0, 12),
+      diligenceItems: refinedDiligence.asks,
       scoreRationale,
+      advisoryRefinement: {
+        source: refinedDiligence.source,
+        replacementApplied: refinedDiligence.replacementApplied,
+        suppressedStartupAsks: refinedDiligence.suppressedStartupAsks,
+        injectedRealEstateAsks: refinedDiligence.injectedRealEstateAsks,
+      },
     };
   };
 
@@ -3042,7 +3060,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const topSectionStrengths: string[] = scoreExplanationV1?.primary_strengths ?? [];
   const topSectionWeaknesses: string[] = scoreExplanationV1?.primary_constraints ?? [];
   // Actions = verb-led diligence items + execution dependencies from scoreExplanationV1.
-  const topSectionActionsToImprove: string[] = scoreExplanationV1?.action_recommendations ?? [];
+  const topSectionActionRefinement = applyPolicyAwareAdvisoryAsks({
+    policyFamily,
+    asks: scoreExplanationV1?.action_recommendations ?? [],
+  });
+  const topSectionActionsToImprove: string[] = topSectionActionRefinement.asks;
 
   const topSectionConfidence: 'High' | 'Medium' | 'Low' = decisionTileConfidenceBand === 'high'
     ? 'High'
@@ -3944,8 +3966,89 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       preferDeterministic: selectedHeader.ready,
     });
 
-    return { product, market, businessModel, raise };
-  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1, investorInsights.report, looksRealEstate]);
+    if (!looksRealEstate) {
+      return { product, market, businessModel, raise, realEstateSemanticDiagnostics: null };
+    }
+
+    const assetFacilitySelection = selectBestRealEstateSemanticField('asset_facility', [
+      { value: ovFacts?.product_solution?.value ?? null, source: 'governed_ui_copy.product_solution', lane: 'governed' },
+      { value: authoritativeProductTextV1, source: 'report.structured_summary.product_summary_v1', lane: 'deterministic' },
+      { value: canonicalProduct, source: 'report.deal_summary_v1.product.text', lane: 'deterministic' },
+      { value: overviewProductCanonical, source: 'overview.product.canonical', lane: 'deterministic' },
+      { value: product.value, source: 'governedKeyFacts.product', lane: product.provenance.source === 'governed' ? 'governed' : 'deterministic' },
+    ]);
+
+    const submarketDemandSelection = selectBestRealEstateSemanticField('submarket_demand', [
+      { value: ovFacts?.market_icp?.value ?? null, source: 'governed_ui_copy.market_icp', lane: 'governed' },
+      { value: authoritativeMarketTextV1, source: 'report.structured_summary.market_summary_v1', lane: 'deterministic' },
+      { value: canonicalMarket, source: 'report.deal_summary_v1.market_target.text', lane: 'deterministic' },
+      { value: overviewMarketIcpCanonical, source: 'overview.market.canonical', lane: 'deterministic' },
+      { value: market.value, source: 'governedKeyFacts.market', lane: market.provenance.source === 'governed' ? 'governed' : 'deterministic' },
+    ]);
+
+    const dealStructureSelection = selectBestRealEstateSemanticField('deal_structure', [
+      { value: ovFacts?.raise?.value ?? null, source: 'governed_ui_copy.raise', lane: 'governed' },
+      { value: ovFacts?.business_model?.value ?? null, source: 'governed_ui_copy.business_model', lane: 'governed' },
+      { value: selectedHeader.business_model.value ?? null, source: 'report.header.business_model', lane: 'deterministic' },
+      { value: selectedHeader.raise.value ?? null, source: 'report.header.raise', lane: 'deterministic' },
+      { value: overviewRaiseTermsCanonical, source: 'overview.raise_terms.canonical', lane: 'deterministic' },
+      { value: overviewBusinessModelCanonical, source: 'overview.business_model.canonical', lane: 'deterministic' },
+      { value: reportView.businessModel, source: 'reportView.businessModel', lane: 'deterministic' },
+      { value: businessModel.value, source: 'governedKeyFacts.businessModel', lane: businessModel.provenance.source === 'governed' ? 'governed' : 'deterministic' },
+      { value: raise.value, source: 'governedKeyFacts.raise', lane: raise.provenance.source === 'governed' ? 'governed' : 'deterministic' },
+    ]);
+
+    const toProvenance = (lane: 'governed' | 'deterministic' | 'fallback' | 'missing'): 'governed' | 'deterministic' | 'missing' => {
+      if (lane === 'governed') return 'governed';
+      if (lane === 'missing') return 'missing';
+      return 'deterministic';
+    };
+
+    const productRefined = assetFacilitySelection.value
+      ? {
+          ...product,
+          value: assetFacilitySelection.value,
+          provenance: { source: toProvenance(assetFacilitySelection.lane) },
+          fromOverlay: assetFacilitySelection.lane === 'governed',
+        }
+      : { ...product, value: keyFactMissingText, provenance: { source: 'missing' as const }, fromOverlay: false };
+
+    const marketRefined = submarketDemandSelection.value
+      ? {
+          ...market,
+          value: submarketDemandSelection.value,
+          provenance: { source: toProvenance(submarketDemandSelection.lane) },
+          fromOverlay: submarketDemandSelection.lane === 'governed',
+        }
+      : { ...market, value: keyFactMissingText, provenance: { source: 'missing' as const }, fromOverlay: false };
+
+    const dealStructureFallback = getRealEstateDealStructureFallback([
+      selectedHeader.business_model.value,
+      selectedHeader.raise.value,
+      overviewRaiseTermsCanonical,
+      overviewBusinessModelCanonical,
+      reportView.businessModel,
+    ].filter((v): v is string => typeof v === 'string').join(' '));
+
+    const businessModelRefined = {
+      ...businessModel,
+      value: dealStructureSelection.value || dealStructureFallback,
+      provenance: { source: dealStructureSelection.value ? toProvenance(dealStructureSelection.lane) : 'deterministic' as const },
+      fromOverlay: dealStructureSelection.lane === 'governed',
+    };
+
+    return {
+      product: productRefined,
+      market: marketRefined,
+      businessModel: businessModelRefined,
+      raise,
+      realEstateSemanticDiagnostics: {
+        assetFacility: assetFacilitySelection,
+        submarketDemand: submarketDemandSelection,
+        dealStructure: dealStructureSelection,
+      },
+    };
+  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, selectedHeader.business_model.value, selectedHeader.raise.value, authoritativeProductTextV1, authoritativeMarketTextV1, canonicalProduct, canonicalMarket, investorInsights.report, looksRealEstate, reportView.businessModel]);
 
   const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -4917,8 +5020,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         businessModel: vm.overview.businessModelSummary,
         raise: vm.overview.raiseTerms,
       },
+      semanticRanking: governedKeyFacts.realEstateSemanticDiagnostics ?? null,
+      advisoryRefinement: {
+        diligenceSource: icMemo.advisoryRefinement.source,
+        diligenceReplacementApplied: icMemo.advisoryRefinement.replacementApplied,
+        diligenceSuppressedStartupAsks: icMemo.advisoryRefinement.suppressedStartupAsks.slice(0, 6),
+        diligenceInjectedRealEstateAsks: icMemo.advisoryRefinement.injectedRealEstateAsks.slice(0, 6),
+        topSectionSource: topSectionActionRefinement.source,
+        topSectionSuppressedStartupAsks: topSectionActionRefinement.suppressedStartupAsks.slice(0, 6),
+      },
     });
-  }, [dealId, policyFamily, looksRealEstate, governedKeyFacts, vm.overview]);
+  }, [dealId, policyFamily, looksRealEstate, governedKeyFacts, vm.overview, icMemo, topSectionActionRefinement]);
 
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {

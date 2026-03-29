@@ -59,8 +59,8 @@ function makeDio(dealId: string, policyId: string): any {
   };
 }
 
-function makePool(dealId: string, dio: any): any {
-  let cachedSummary: any = null;
+function makePool(dealId: string, dio: any, opts?: { initialSummary?: any; throwOnDioRead?: boolean }): any {
+  let cachedSummary: any = opts?.initialSummary ?? null;
 
   return {
     query: async (sql: string, params?: unknown[]) => {
@@ -81,6 +81,9 @@ function makePool(dealId: string, dio: any): any {
       }
 
       if (q.includes("FROM deal_intelligence_objects") && q.includes("WHERE deal_id = $1")) {
+        if (opts?.throwOnDioRead) {
+          throw new Error("DIO should not be queried on cache-hit path");
+        }
         assert.deepEqual(params, [dealId]);
         return {
           rows: [
@@ -162,4 +165,76 @@ test("conviction_v1 preserves selected_policy_id for real-estate policy", async 
   assert.equal(conviction?.selected_policy_id, "real_estate_underwriting");
 
   await app.close();
+});
+
+test("conviction_v1 cache-hit returns persisted payload with no recomputation", async () => {
+  const dealId = "00000000-0000-4000-8000-00000000e401";
+  const dio = makeDio(dealId, "operating_startup_revenue_v1");
+
+  const persistedConviction = {
+    schema_version: "conviction_v1",
+    selected_policy_id: "operating_startup_revenue_v1",
+    conviction_score_0_100: 64,
+    conviction_band: "medium",
+    recommendation_posture: "further_diligence",
+    confidence_0_1: 0.71,
+    coverage_ratio_0_1: 0.63,
+    contradiction_index_0_1: 0.18,
+  };
+
+  const pool = makePool(
+    dealId,
+    dio,
+    {
+      initialSummary: {
+        __compiler_version: 12,
+        conviction_v1: persistedConviction,
+        report: { conviction_v1: persistedConviction },
+      },
+    },
+  );
+
+  const app = Fastify({ logger: false });
+  await registerReportRoutes(app as any, pool as any);
+
+  const res = await app.inject({ method: "GET", url: `/api/v1/deals/${dealId}/report` });
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+  const conviction = body?.report?.conviction_v1 ?? body?.conviction_v1;
+
+  assert.deepEqual(conviction, persistedConviction);
+  await app.close();
+});
+
+test("conviction_v1 is emitted for startup, real-estate, and execution-ready policies", async () => {
+  const startupDealId = "00000000-0000-4000-8000-00000000e501";
+  const realEstateDealId = "00000000-0000-4000-8000-00000000e502";
+  const executionDealId = "00000000-0000-4000-8000-00000000e503";
+
+  const startupApp = Fastify({ logger: false });
+  await registerReportRoutes(startupApp as any, makePool(startupDealId, makeDio(startupDealId, "operating_startup_revenue_v1")) as any);
+  const startupRes = await startupApp.inject({ method: "GET", url: `/api/v1/deals/${startupDealId}/report` });
+  assert.equal(startupRes.statusCode, 200);
+  const startupConviction = (startupRes.json() as any)?.report?.conviction_v1 ?? (startupRes.json() as any)?.conviction_v1;
+  assert.equal(startupConviction?.schema_version, "conviction_v1");
+  assert.equal(startupConviction?.selected_policy_id, "operating_startup_revenue_v1");
+  await startupApp.close();
+
+  const realEstateApp = Fastify({ logger: false });
+  await registerReportRoutes(realEstateApp as any, makePool(realEstateDealId, makeDio(realEstateDealId, "real_estate_underwriting")) as any);
+  const realEstateRes = await realEstateApp.inject({ method: "GET", url: `/api/v1/deals/${realEstateDealId}/report` });
+  assert.equal(realEstateRes.statusCode, 200);
+  const realEstateConviction = (realEstateRes.json() as any)?.report?.conviction_v1 ?? (realEstateRes.json() as any)?.conviction_v1;
+  assert.equal(realEstateConviction?.schema_version, "conviction_v1");
+  assert.equal(realEstateConviction?.selected_policy_id, "real_estate_underwriting");
+  await realEstateApp.close();
+
+  const executionApp = Fastify({ logger: false });
+  await registerReportRoutes(executionApp as any, makePool(executionDealId, makeDio(executionDealId, "execution_ready_v1")) as any);
+  const executionRes = await executionApp.inject({ method: "GET", url: `/api/v1/deals/${executionDealId}/report` });
+  assert.equal(executionRes.statusCode, 200);
+  const executionConviction = (executionRes.json() as any)?.report?.conviction_v1 ?? (executionRes.json() as any)?.conviction_v1;
+  assert.equal(executionConviction?.schema_version, "conviction_v1");
+  assert.equal(executionConviction?.selected_policy_id, "execution_ready_v1");
+  await executionApp.close();
 });

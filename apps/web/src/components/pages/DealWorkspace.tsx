@@ -1812,6 +1812,32 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const decisionScoreExplanation = (reportFromApi as any)?.metadata?.score_explanation as any;
   const deterministicScoreInputsV1 = (reportFromApi as any)?.metadata?.deterministic_score_inputs_v1 as any;
+  // Conviction is compiler-owned and persisted in /report payload. Frontend must never recompute it.
+  const convictionV1 = (() => {
+    const direct = (reportFromApi as any)?.conviction_v1;
+    if (direct && typeof direct === 'object') return direct;
+    const nested = (reportEnvelope as any)?.report?.conviction_v1;
+    if (nested && typeof nested === 'object') return nested;
+    return null;
+  })();
+
+  const convictionPct = (v: unknown): string => {
+    const n = typeof v === 'number' && Number.isFinite(v) ? v : null;
+    if (n == null) return '—';
+    return `${Math.round(Math.max(0, Math.min(1, n)) * 100)}%`;
+  };
+
+  const convictionScore = (v: unknown): string => {
+    const n = typeof v === 'number' && Number.isFinite(v) ? v : null;
+    if (n == null) return '—';
+    return `${Math.round(Math.max(0, Math.min(100, n)))}`;
+  };
+
+  const convictionDelta = (v: unknown): string => {
+    const n = typeof v === 'number' && Number.isFinite(v) ? v : null;
+    if (n == null) return '—';
+    return `${n > 0 ? '+' : ''}${Math.round(n)}`;
+  };
 
   const bandToBadgeClasses = (band: 'high' | 'med' | 'low' | 'unknown') => {
     if (band === 'high') return darkMode ? 'bg-emerald-500/10 text-emerald-200 border-emerald-500/20' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
@@ -8680,26 +8706,148 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Overview Tab — fully sourced from WorkspaceViewModel. */}
             {activeTab === 'overview' && (
-              <DealOverviewTab
-                darkMode={darkMode}
-                companyName={vm.overview.companyName}
-                companyDescription={vm.overview.companyDescription}
-                snapshotFactLabels={vm.overview.snapshotFactLabels}
-                snapshotFacts={vm.overview.snapshotFacts}
-                signals={vm.overview.signalData}
-                financials={vm.overview.financials}
-                traction={vm.overview.traction}
-                deal={vm.overview.deal}
-                businessModel={vm.overview.businessModel}
-                evidenceLabels={vm.overview.evidenceLabels}
-                productSummary={vm.overview.productSummary}
-                marketSummary={vm.overview.marketSummary}
-                businessModelSummary={vm.overview.businessModelSummary}
-                raiseTerms={vm.overview.raiseTerms}
-                insightsScore={vm.overview.insightsScore}
-                insightsConfidence={vm.overview.insightsConfidence}
-                onOpenInsights={() => setActiveTab('investor-insights')}
-              />
+              <div className="space-y-6">
+                <DealOverviewTab
+                  darkMode={darkMode}
+                  companyName={vm.overview.companyName}
+                  companyDescription={vm.overview.companyDescription}
+                  snapshotFactLabels={vm.overview.snapshotFactLabels}
+                  snapshotFacts={vm.overview.snapshotFacts}
+                  signals={vm.overview.signalData}
+                  financials={vm.overview.financials}
+                  traction={vm.overview.traction}
+                  deal={vm.overview.deal}
+                  businessModel={vm.overview.businessModel}
+                  evidenceLabels={vm.overview.evidenceLabels}
+                  productSummary={vm.overview.productSummary}
+                  marketSummary={vm.overview.marketSummary}
+                  businessModelSummary={vm.overview.businessModelSummary}
+                  raiseTerms={vm.overview.raiseTerms}
+                  insightsScore={vm.overview.insightsScore}
+                  insightsConfidence={vm.overview.insightsConfidence}
+                  onOpenInsights={() => setActiveTab('investor-insights')}
+                />
+
+                <section
+                  data-testid="conviction-panel"
+                  className={`rounded-xl border p-5 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
+                >
+                  <h2 className={`text-sm uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Conviction Summary</h2>
+
+                  {!convictionV1 ? (
+                    <div className={`mt-3 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Conviction is unavailable for this report payload.
+                    </div>
+                  ) : (
+                    <div className="mt-4 space-y-5">
+                      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
+                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Score</div>
+                          <div className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{convictionScore(convictionV1.conviction_score_0_100)}</div>
+                        </div>
+                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Band</div>
+                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{String(convictionV1.conviction_band ?? '—')}</div>
+                        </div>
+                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recommendation</div>
+                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{String(convictionV1.recommendation_posture ?? '—')}</div>
+                        </div>
+                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Confidence</div>
+                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{convictionPct(convictionV1.confidence_0_1)}</div>
+                        </div>
+                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage</div>
+                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{convictionPct(convictionV1.coverage_ratio_0_1)}</div>
+                        </div>
+                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Policy</div>
+                          <div className={`text-sm font-medium break-words ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{String(convictionV1.selected_policy_id ?? '—')}</div>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                          <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Why This Score</h3>
+                          <div className="space-y-3">
+                            <div>
+                              <div className={`text-xs mb-1 ${darkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>Top Positive Contributors</div>
+                              {Array.isArray(convictionV1.top_positive_contributors) && convictionV1.top_positive_contributors.length > 0 ? (
+                                <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  {convictionV1.top_positive_contributors.map((item: any, idx: number) => (
+                                    <li key={`conv-pos-${idx}`}>{String(item?.label ?? item?.key ?? 'signal')} ({convictionDelta(item?.score_delta_0_100)})</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No positive contributors listed.</div>
+                              )}
+                            </div>
+                            <div>
+                              <div className={`text-xs mb-1 ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>Top Negative Contributors</div>
+                              {Array.isArray(convictionV1.top_negative_contributors) && convictionV1.top_negative_contributors.length > 0 ? (
+                                <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  {convictionV1.top_negative_contributors.map((item: any, idx: number) => (
+                                    <li key={`conv-neg-${idx}`}>{String(item?.label ?? item?.key ?? 'signal')} ({convictionDelta(item?.score_delta_0_100)})</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No negative contributors listed.</div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                          <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>What Needs to Be Proven</h3>
+                          <div className="space-y-3">
+                            <div>
+                              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Unknowns</div>
+                              {Array.isArray(convictionV1.unknowns) && convictionV1.unknowns.length > 0 ? (
+                                <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  {convictionV1.unknowns.map((item: any, idx: number) => (
+                                    <li key={`conv-unk-${idx}`}>{String(item?.text ?? item?.code ?? 'Unknown signal')}</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No unknowns currently listed.</div>
+                              )}
+                            </div>
+                            <div>
+                              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Required Next Checks</div>
+                              {Array.isArray(convictionV1.required_next_checks) && convictionV1.required_next_checks.length > 0 ? (
+                                <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                                  {convictionV1.required_next_checks.map((item: any, idx: number) => (
+                                    <li key={`conv-next-${idx}`}>{String(item?.text ?? 'Follow-up required')}</li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No required checks currently listed.</div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                        <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Risk / Contradictions</h3>
+                        {Array.isArray(convictionV1.contradictions) && convictionV1.contradictions.length > 0 ? (
+                          <ul className={`space-y-2 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                            {convictionV1.contradictions.map((item: any, idx: number) => (
+                              <li key={`conv-contr-${idx}`} className={`rounded-lg border px-3 py-2 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
+                                <span className={`text-xs font-medium mr-2 ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>[{String(item?.severity ?? 'unknown').toUpperCase()}]</span>
+                                <span>{String(item?.text ?? 'Contradiction detected')}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No contradictions currently listed.</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </section>
+              </div>
             )}
 
             {/* Documents Tab */}

@@ -2,6 +2,7 @@ import { getDealPolicy } from "../classification/deal-policy-registry.js";
 import { getScoreBandV2 } from "../scoring/score-bands-v2.js";
 import { getStageWeightMatrix } from "../scoring/stage-weight-matrix.js";
 import { getConvictionCalibration } from "./conviction-calibration.js";
+import { reconcileConvictionTruthV1 } from "./conviction-reconciliation.js";
 import type {
   ConvictionContributorV1,
   ConvictionContradictionV1,
@@ -250,7 +251,7 @@ export function buildConvictionV1(args: {
 
   const calibration = getConvictionCalibration(selectedPolicyId, stage);
 
-  const contradictions = buildContradictions(scoreExplanation);
+  const rawContradictions = buildContradictions(scoreExplanation);
 
   const coverageProfile = args.financial_coverage_v1;
   const coverageEvidenceRefs = refsFromCoverageEvidence(coverageProfile?.evidence);
@@ -359,7 +360,10 @@ export function buildConvictionV1(args: {
   );
   const evidenceQualityCoverage = clamp01(asNumber(totals?.coverage_ratio) ?? 0.5);
 
-  const contradictionWeight = contradictions.reduce((sum, c) => {
+  const missingInputsRaw = Array.isArray(scoreExplanation?.totals?.unadjusted_missing_inputs)
+    ? uniqueStrings(scoreExplanation.totals.unadjusted_missing_inputs.map((x: any) => String(x)))
+    : [];
+  const rawContradictionWeight = rawContradictions.reduce((sum, c) => {
     const sev = c.severity === "high"
       ? calibration.contradiction_severity_weight.high
       : c.severity === "medium"
@@ -367,8 +371,8 @@ export function buildConvictionV1(args: {
         : calibration.contradiction_severity_weight.low;
     return sum + sev;
   }, 0);
-  const contradictionSignal = clamp01(contradictionWeight / 4);
-  const contradictionCoverage = clamp01(contradictions.length > 0 ? 0.85 : 0.2);
+  const rawContradictionSignal = clamp01(rawContradictionWeight / 4);
+  const rawContradictionCoverage = clamp01(rawContradictions.length > 0 ? 0.85 : 0.2);
 
   const contradictionConfidenceProxy = clamp01(
     asNumber(scoreExplanation?.totals?.confidence_score)
@@ -504,16 +508,40 @@ export function buildConvictionV1(args: {
     ),
     contradictions: mkFamily(
       "contradictions",
-      contradictions.length > 0 ? "contradicted" : "probable",
-      contradictionSignal,
+      rawContradictions.length > 0 ? "contradicted" : "probable",
+      rawContradictionSignal,
       0.80,
-      contradictionCoverage,
+      rawContradictionCoverage,
       "conviction_v1.contradictions",
       3,
-      contradictions.flatMap((c) => c.evidence_refs),
-      contradictions.map((c) => c.code),
+      rawContradictions.flatMap((c) => c.evidence_refs),
+      rawContradictions.map((c) => c.code),
     ),
   };
+
+  const reconciliation = reconcileConvictionTruthV1({
+    familyInputs,
+    contradictions: rawContradictions,
+    missingInputs: missingInputsRaw,
+    businessModelSignal,
+    marketSignalModel,
+    teamSignal,
+    tractionSignalModel,
+  });
+
+  const familyInputsReconciled = reconciliation.familyInputs;
+  const contradictions = reconciliation.contradictions;
+  const missingInputs = reconciliation.missingInputs;
+
+  const contradictionWeight = contradictions.reduce((sum, c) => {
+    const sev = c.severity === "high"
+      ? calibration.contradiction_severity_weight.high
+      : c.severity === "medium"
+        ? calibration.contradiction_severity_weight.medium
+        : calibration.contradiction_severity_weight.low;
+    return sum + sev;
+  }, 0);
+  const contradictionSignal = clamp01(contradictionWeight / 4);
 
   const familyWeights = buildPolicyFamilyWeights(selectedPolicyId, stage);
 
@@ -541,7 +569,7 @@ export function buildConvictionV1(args: {
     for (const key of keys) {
       const w = familyWeights[key] ?? 0;
       if (!(w > 0)) continue;
-      num += w * picker(familyInputs[key]);
+      num += w * picker(familyInputsReconciled[key]);
       den += w;
     }
     return den > 0 ? clamp01(num / den) : 0.5;
@@ -618,17 +646,17 @@ export function buildConvictionV1(args: {
   );
 
   if (contradictionIndex >= 0.82) convictionScore = Math.min(convictionScore, 46);
-  if (familyInputs.risk_dependencies.status === "contradicted" && familyInputs.risk_dependencies.signal_strength >= 0.70) {
+  if (familyInputsReconciled.risk_dependencies.status === "contradicted" && familyInputsReconciled.risk_dependencies.signal_strength >= 0.70) {
     convictionScore = Math.min(convictionScore, 45);
   }
-  if (familyInputs.financial_truth.status === "unknown" && coverageRatio < 0.25 && contradictionIndex > 0.45) {
+  if (familyInputsReconciled.financial_truth.status === "unknown" && coverageRatio < 0.25 && contradictionIndex > 0.45) {
     convictionScore = Math.min(convictionScore, 58);
   }
 
   const qualifiesForPlausibleFloor =
     positiveIndex >= calibration.stage_profile.floor_positive_index_min
     && contradictionIndex <= calibration.stage_profile.floor_max_contradiction_index
-    && !(familyInputs.risk_dependencies.status === "contradicted" && familyInputs.risk_dependencies.signal_strength >= 0.70);
+    && !(familyInputsReconciled.risk_dependencies.status === "contradicted" && familyInputsReconciled.risk_dependencies.signal_strength >= 0.70);
 
   if (qualifiesForPlausibleFloor) {
     convictionScore = Math.max(convictionScore, calibration.stage_profile.plausible_score_floor);
@@ -638,8 +666,8 @@ export function buildConvictionV1(args: {
   const recommendationPosture = mapPostureFromBand(band.key);
 
   const contributors: Array<ConvictionContributorV1 & { family: ConvictionInputFamilyKeyV1 }> = [];
-  for (const key of Object.keys(familyInputs) as ConvictionInputFamilyKeyV1[]) {
-    const f = familyInputs[key];
+  for (const key of Object.keys(familyInputsReconciled) as ConvictionInputFamilyKeyV1[]) {
+    const f = familyInputsReconciled[key];
     const w = familyWeights[key] ?? 0;
     const positiveContribution = buildFamilyScore(f.signal_strength, f.confidence, f.coverage);
     let delta = (positiveContribution - 0.5) * (w * 100);
@@ -683,10 +711,7 @@ export function buildConvictionV1(args: {
     .slice(0, 3)
     .map(({ family, ...rest }) => rest);
 
-  const unknownsFromFamilies = buildUnknownsFromFamilies(familyInputs);
-  const missingInputs = Array.isArray(scoreExplanation?.totals?.unadjusted_missing_inputs)
-    ? uniqueStrings(scoreExplanation.totals.unadjusted_missing_inputs.map((x: any) => String(x)))
-    : [];
+  const unknownsFromFamilies = buildUnknownsFromFamilies(familyInputsReconciled);
 
   const unknowns = [
     ...unknownsFromFamilies,
@@ -743,7 +768,7 @@ export function buildConvictionV1(args: {
     confidence_0_1: confidence,
     coverage_ratio_0_1: coverageRatio,
     contradiction_index_0_1: contradictionIndex,
-    inputs: familyInputs,
+    inputs: familyInputsReconciled,
     summary: {
       headline: summaryHeadline,
       rationale: summaryRationale,
@@ -753,6 +778,7 @@ export function buildConvictionV1(args: {
         `policy=${selectedPolicyId ?? "unknown_generic"}`,
         `stage=${stage}`,
         `policy_label=${policy.label}`,
+        ...reconciliation.diagnostics.slice(0, 10),
       ],
     },
     top_positive_contributors: topPositiveContributors,

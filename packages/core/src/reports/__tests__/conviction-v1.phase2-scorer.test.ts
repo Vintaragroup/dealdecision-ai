@@ -421,4 +421,284 @@ describe("conviction_v1 phase2 deterministic scorer", () => {
     const realEstateTop = realEstate.top_positive_contributors.map((x) => x.key);
     expect(startupTop.join("|")).not.toBe(realEstateTop.join("|"));
   });
+
+  it("false unknown override: product, market, and team unknowns are cleared when deterministic evidence exists", () => {
+    const reconciled = buildConvictionV1({
+      ...baseArgs(),
+      business_model_signal_v1: {
+        confidence: "low",
+        pricing_present: false,
+        revenue_model_present: false,
+        customer_segment_present: false,
+        notes: ["API workflow platform automates lender decisioning for operations teams."],
+      },
+      market_accessibility_signal_v1: {
+        confidence: "low",
+        icp_defined: false,
+        distribution_path_present: false,
+        som_defined: false,
+      },
+      team_signal_v1: {
+        confidence: "low",
+        founder_count: 0,
+        key_roles_present: { technical: false, gtm: false },
+        domain_experience_present: false,
+        signals: [
+          { code: "technical_lead_present_and_verified", present: true },
+          { code: "gtm_lead_present_and_verified", present: true },
+        ],
+      },
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        totals: {
+          ...baseArgs().score_explanation.totals,
+          unadjusted_missing_inputs: ["product_signal", "market_signal", "team_signal"],
+        },
+      },
+    });
+
+    expect(reconciled.inputs.product_or_asset_quality.status).not.toBe("unknown");
+    expect(reconciled.inputs.market_demand.status).not.toBe("unknown");
+    expect(reconciled.inputs.team_execution.status).not.toBe("unknown");
+    expect(reconciled.unknowns.some((u) => u.code === "unknown_product_or_asset_quality")).toBe(false);
+    expect(reconciled.unknowns.some((u) => u.code === "unknown_market_demand")).toBe(false);
+    expect(reconciled.unknowns.some((u) => u.code === "unknown_team_execution")).toBe(false);
+  });
+
+  it("false contradiction suppression: technical, gtm, and market contradictions are removed by stronger evidence", () => {
+    const reconciled = buildConvictionV1({
+      ...baseArgs(),
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        stage_weighted_v1: {
+          dimensions: [
+            { key: "team", notes: ["no_technical_lead", "no_gtm_lead"], evidence_ids: ["ev-team"] },
+            { key: "market", notes: ["tam_without_icp"], evidence_ids: ["ev-mk"] },
+          ],
+        },
+      },
+      team_signal_v1: {
+        confidence: "high",
+        founder_count: 2,
+        key_roles_present: { technical: true, gtm: true },
+        domain_experience_present: true,
+        signals: [{ code: "balanced_team", present: true }],
+      },
+      market_accessibility_signal_v1: {
+        confidence: "high",
+        icp_defined: true,
+        distribution_path_present: true,
+        som_defined: true,
+      },
+    });
+
+    expect(reconciled.contradictions.some((c) => c.code === "no_technical_lead")).toBe(false);
+    expect(reconciled.contradictions.some((c) => c.code === "no_gtm_lead")).toBe(false);
+    expect(reconciled.contradictions.some((c) => c.code === "tam_without_icp")).toBe(false);
+  });
+
+  it("priority enforcement: weak fallback negatives do not override strong explicit evidence", () => {
+    const reconciled = buildConvictionV1({
+      ...baseArgs(),
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        stage_weighted_v1: {
+          dimensions: [
+            { key: "traction", notes: ["business_model_absent"], evidence_ids: ["ev-tr"] },
+          ],
+        },
+        totals: {
+          ...baseArgs().score_explanation.totals,
+          unadjusted_missing_inputs: ["business_model_absent"],
+        },
+      },
+      business_model_signal_v1: {
+        confidence: "high",
+        pricing_present: true,
+        revenue_model_present: true,
+        customer_segment_present: true,
+        notes: ["SaaS subscription model with usage-based API overages."],
+      },
+    });
+
+    expect(reconciled.contradictions.some((c) => c.code === "business_model_absent")).toBe(false);
+    expect(reconciled.inputs.product_or_asset_quality.status).not.toBe("unknown");
+    expect(reconciled.summary.notes.some((n) => n.includes("LOW_PRIORITY_FLAG_DISCARDED"))).toBe(true);
+  });
+
+  it("no junk promotion: poor OCR fragments do not get promoted as strong reconciliation evidence", () => {
+    const junk = buildConvictionV1({
+      ...baseArgs(),
+      business_model_signal_v1: {
+        confidence: "low",
+        pricing_present: false,
+        revenue_model_present: false,
+        customer_segment_present: false,
+        notes: ["@@@ #### 1234 //////"],
+      },
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        components: {
+          ...baseArgs().score_explanation.components,
+          narrative_arc: { ...baseArgs().score_explanation.components.narrative_arc, evidence_ids: [] },
+        },
+      },
+    });
+
+    expect(junk.inputs.product_or_asset_quality.status).toBe("unknown");
+    expect(junk.summary.notes.some((n) => n.includes("UNKNOWN_OVERRIDDEN_BY_EVIDENCE:product_or_asset_quality"))).toBe(false);
+  });
+
+  it("StackFactor-like regression: strong explicit product/market/team evidence suppresses stale fallback contradictions", () => {
+    const reconciled = buildConvictionV1({
+      ...baseArgs(),
+      business_model_signal_v1: {
+        confidence: "low",
+        pricing_present: false,
+        revenue_model_present: false,
+        customer_segment_present: false,
+        notes: ["Platform automates AP workflows for mid-market finance teams via SaaS API subscriptions."],
+      },
+      market_accessibility_signal_v1: {
+        confidence: "low",
+        icp_defined: false,
+        distribution_path_present: false,
+        som_defined: false,
+      },
+      team_signal_v1: {
+        confidence: "low",
+        founder_count: 0,
+        key_roles_present: { technical: false, gtm: false },
+        domain_experience_present: false,
+        signals: [
+          { code: "chief_technology_officer_present_and_verified", present: true },
+          { code: "head_of_growth_gtm_lead_present_and_verified", present: true },
+        ],
+      },
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        stage_weighted_v1: {
+          dimensions: [
+            { key: "team", notes: ["no_technical_lead", "no_gtm_lead"], evidence_ids: ["ev-team"] },
+            { key: "market", notes: ["tam_without_icp"], evidence_ids: ["ev-mk"] },
+            { key: "business_model", notes: ["business_model_absent"], evidence_ids: ["ev-bm"] },
+          ],
+        },
+        totals: {
+          ...baseArgs().score_explanation.totals,
+          unadjusted_missing_inputs: ["product_signal", "market_signal", "team_signal", "business_model_absent"],
+        },
+      },
+    });
+
+    expect(reconciled.inputs.product_or_asset_quality.status).not.toBe("unknown");
+    expect(reconciled.inputs.market_demand.status).not.toBe("unknown");
+    expect(reconciled.inputs.team_execution.status).not.toBe("unknown");
+    expect(reconciled.contradictions.some((c) => c.code === "no_technical_lead")).toBe(false);
+    expect(reconciled.contradictions.some((c) => c.code === "no_gtm_lead")).toBe(false);
+    expect(reconciled.contradictions.some((c) => c.code === "tam_without_icp")).toBe(false);
+    expect(reconciled.conviction_score_0_100).toBeGreaterThanOrEqual(50);
+  });
+
+  it("backward safety: truly weak/broken deals remain low conviction and contradiction-heavy", () => {
+    const broken = buildConvictionV1({
+      ...baseArgs(),
+      selected_policy_id: "unknown_generic",
+      financial_coverage_v1: {
+        ...baseArgs().financial_coverage_v1,
+        coverage: {
+          historical_revenue_present: false,
+          forecast_revenue_present: false,
+          income_statement_present: false,
+          burn_rate_present: false,
+          runway_present: false,
+          unit_economics_present: false,
+          balance_sheet_present: false,
+          cash_flow_present: false,
+        },
+        sources: [{ kind: "deck", document_id: "doc-deck" }],
+      },
+      business_model_signal_v1: {
+        confidence: "low",
+        pricing_present: false,
+        revenue_model_present: false,
+        customer_segment_present: false,
+        notes: ["@@@ #### 1234 //////"],
+      },
+      market_accessibility_signal_v1: {
+        confidence: "low",
+        icp_defined: false,
+        distribution_path_present: false,
+        som_defined: false,
+      },
+      team_signal_v1: {
+        confidence: "low",
+        founder_count: 0,
+        key_roles_present: { technical: false, gtm: false },
+        domain_experience_present: false,
+        signals: [],
+      },
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        components: {
+          ...baseArgs().score_explanation.components,
+          narrative_arc: { ...baseArgs().score_explanation.components.narrative_arc, evidence_ids: [] },
+          slide_sequence: { ...baseArgs().score_explanation.components.slide_sequence, evidence_ids: [] },
+          risk_assessment: {
+            ...baseArgs().score_explanation.components.risk_assessment,
+            red_flags: ["critical contractual inconsistency with material impact"],
+          },
+        },
+        stage_weighted_v1: {
+          dimensions: [
+            { key: "team", notes: ["no_technical_lead", "no_gtm_lead"], evidence_ids: ["ev-team"] },
+          ],
+        },
+      },
+    });
+
+    expect(broken.conviction_score_0_100).toBeLessThanOrEqual(45);
+    expect(broken.inputs.product_or_asset_quality.status).toBe("unknown");
+    expect(broken.contradictions.length).toBeGreaterThan(0);
+  });
+
+  it("band/recommendation consistency: recommendation_posture is derived from conviction band", () => {
+    const strong = buildConvictionV1(baseArgs());
+    const weak = buildConvictionV1({
+      ...baseArgs(),
+      financial_coverage_v1: {
+        ...baseArgs().financial_coverage_v1,
+        coverage: {
+          historical_revenue_present: false,
+          forecast_revenue_present: false,
+          income_statement_present: false,
+          burn_rate_present: false,
+          runway_present: false,
+          unit_economics_present: false,
+          balance_sheet_present: false,
+          cash_flow_present: false,
+        },
+      },
+      team_signal_v1: {
+        confidence: "low",
+        founder_count: 0,
+        key_roles_present: { technical: false, gtm: false },
+        domain_experience_present: false,
+        signals: [],
+      },
+    });
+
+    const expectedPosture = (band: string): string => {
+      if (band === "hard_pass") return "pass";
+      if (band === "consider_caution") return "consider";
+      if (band === "strong_consider") return "consider";
+      if (band === "fund_caution") return "yes";
+      if (band === "fund_track") return "yes";
+      if (band === "fund_confident") return "strong_yes";
+      return "consider";
+    };
+
+    expect(strong.recommendation_posture).toBe(expectedPosture(strong.conviction_band));
+    expect(weak.recommendation_posture).toBe(expectedPosture(weak.conviction_band));
+  });
 });

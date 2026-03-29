@@ -2495,10 +2495,90 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return false;
     };
 
-    const product = safeNonEmpty(canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
-    const market = safeNonEmpty(canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
-    const businessModel = safeNonEmpty(overviewBusinessModel);
-    const raise = safeNonEmpty(reportCanonicalRaise.value || overviewRaiseTerms);
+    const normalizeSemantic = (value: string): string =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const hasRealEstateLeakTerms = (value: string): boolean =>
+      /\b(yield|cap\s*rate|noi|ltc|dscr|budget-based)\b/i.test(value);
+
+    const localHasMalformedNumericPlaceholder = (value: string): boolean => {
+      const s = value.trim();
+      if (!s) return true;
+      if (/^\$\s*[,.-]*\s*$/i.test(s)) return true;
+      if (/^\$\s*[,.-]+\s*[kmbn]*$/i.test(s)) return true;
+      return false;
+    };
+
+    const dealTypeRaw = safeText(overviewV2?.deal_type) || safeText((executiveSummaryV1 as any)?.deal_type) || '';
+    const dealTypeNorm = dealTypeRaw.toLowerCase();
+    const isStartupDealType = dealTypeNorm === 'startup_raise';
+    const isRealEstateDealType = dealTypeNorm === 'real_estate_preferred_equity' || dealTypeNorm === 'real_estate' || policyFamily === 'real_estate';
+
+    type LocalCandidate = { sourcePath: string; value: string };
+    const pickLocal = (candidates: LocalCandidate[]): { value: string; sourcePath: string } => {
+      for (const c of candidates) {
+        const v = safeText(c.value);
+        if (!v) continue;
+        if (c.sourcePath.includes('raise') && localHasMalformedNumericPlaceholder(v)) continue;
+        return { value: v, sourcePath: c.sourcePath };
+      }
+      return { value: '', sourcePath: 'missing' };
+    };
+
+    const dfv1Local = (governedOverview as any)?.overview?.overview_json?.display_facts_v1 ?? null;
+    const phase1Local = (governedOverview as any)?.overview?.overview_json?.phase1 ?? null;
+
+    // Hard source binding for hero summary semantics.
+    const productPick = pickLocal([
+      { sourcePath: 'overview_json.display_facts_v1.product_solution.text', value: safeText(dfv1Local?.product_solution?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.product.text', value: safeText(dfv1Local?.product?.text) },
+      { sourcePath: 'overview_json.phase1.deal_overview_v2.product_solution', value: safeText(overviewV2?.product_solution) },
+      { sourcePath: 'overview_json.phase1.deal_summary_v2.product.text', value: safeText((phase1Local?.deal_summary_v2 as any)?.product?.text) || safeText((dealSummaryV2 as any)?.product?.text) },
+    ]);
+    const marketPick = pickLocal([
+      { sourcePath: 'overview_json.display_facts_v1.market_icp.text', value: safeText(dfv1Local?.market_icp?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.market.text', value: safeText(dfv1Local?.market?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.submarket.text', value: safeText(dfv1Local?.submarket?.text) },
+      { sourcePath: 'overview_json.phase1.deal_overview_v2.market_icp', value: safeText(overviewV2?.market_icp) },
+      { sourcePath: 'overview_json.phase1.deal_summary_v2.market.text', value: safeText((phase1Local?.deal_summary_v2 as any)?.market?.text) || safeText((dealSummaryV2 as any)?.market?.text) },
+    ]);
+    const businessModelPick = pickLocal([
+      { sourcePath: 'overview_json.display_facts_v1.business_model.text', value: safeText(dfv1Local?.business_model?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.deal_structure.text', value: safeText(dfv1Local?.deal_structure?.text) },
+      { sourcePath: 'overview_json.phase1.deal_overview_v2.business_model', value: safeText(overviewV2?.business_model) },
+      { sourcePath: 'overview_json.phase1.deal_summary_v2.business_model', value: safeText((phase1Local?.deal_summary_v2 as any)?.business_model) || safeText((dealSummaryV2 as any)?.business_model) },
+      { sourcePath: 'policy_resolved.overviewBusinessModel', value: safeText(overviewBusinessModel) },
+    ]);
+    const raisePick = pickLocal([
+      { sourcePath: 'overview_json.display_facts_v1.raise_terms.text', value: safeText(dfv1Local?.raise_terms?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.raise.text', value: safeText(dfv1Local?.raise?.text) },
+      { sourcePath: 'policy_resolved.reportCanonicalRaise', value: safeText(reportCanonicalRaise.value) },
+      { sourcePath: 'overview_json.phase1.deal_overview_v2.raise', value: safeText(overviewV2?.raise) },
+      { sourcePath: 'overview_json.phase1.deal_summary_v2.raise', value: safeText((phase1Local?.deal_summary_v2 as any)?.raise) || safeText((dealSummaryV2 as any)?.raise) },
+      { sourcePath: 'policy_resolved.overviewRaiseTerms', value: safeText(overviewRaiseTerms) },
+    ]);
+
+    let productSolutionHero = productPick.value;
+    let marketIcpHero = marketPick.value;
+
+    if (isStartupDealType) {
+      if (productSolutionHero && hasRealEstateLeakTerms(productSolutionHero)) productSolutionHero = '';
+      if (marketIcpHero && hasRealEstateLeakTerms(marketIcpHero)) marketIcpHero = '';
+    }
+
+    if (productSolutionHero && marketIcpHero && normalizeSemantic(productSolutionHero) === normalizeSemantic(marketIcpHero)) {
+      marketIcpHero = '';
+    }
+
+    const product = safeNonEmpty(productSolutionHero);
+    const market = safeNonEmpty(marketIcpHero);
+
+    const businessModel = safeNonEmpty(businessModelPick.value || overviewBusinessModel);
+    const raise = safeNonEmpty(raisePick.value || reportCanonicalRaise.value || overviewRaiseTerms);
 
     const kpis: any[] = deterministicScoreInputsV1 && Array.isArray(deterministicScoreInputsV1.kpis)
       ? deterministicScoreInputsV1.kpis
@@ -2522,7 +2602,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
 
     const snapshotSentences: string[] = [];
-    if (policyFamily === 'real_estate') {
+    if (isRealEstateDealType) {
       if (product) snapshotSentences.push(`Asset / facility: ${product}.`);
       if (market) snapshotSentences.push(`Submarket / demand: ${market}.`);
     } else {
@@ -2549,7 +2629,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     // What supports proceeding: evidence-backed bullets only.
     const supports: string[] = [];
-    if (policyFamily === 'real_estate') {
+    if (isRealEstateDealType) {
       if (product) supports.push(`Asset / facility is explicitly described: ${product}.`);
       if (market) supports.push(`Submarket / demand is explicitly described: ${market}.`);
     } else {
@@ -2686,6 +2766,20 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       policyFamily,
       asks: uniq(diligence).slice(0, 12),
     });
+
+    if (import.meta.env.DEV) {
+      console.log('HERO_BINDING_DEBUG', {
+        deal_id: dealId ?? null,
+        selected_policy_id: selectedPolicyId ?? null,
+        deal_type: dealTypeRaw || null,
+        fields: {
+          product: { sourcePath: productPick.sourcePath, value: productSolutionHero || null },
+          market: { sourcePath: marketPick.sourcePath, value: marketIcpHero || null },
+          business_model: { sourcePath: businessModelPick.sourcePath, value: businessModel || null },
+          raise: { sourcePath: raisePick.sourcePath, value: raise || null, hidden: localHasMalformedNumericPlaceholder(raisePick.value || '') },
+        },
+      });
+    }
 
     return {
       snapshot: snapshot || 'Company snapshot is pending: structured facts were not extracted from the materials.',
@@ -3266,6 +3360,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       source: reportReady ? 'report' : 'fallback',
     } as const;
   }, [
+    dealId,
     reportReady,
     reportFromApi,
     reportEnvelope,
@@ -3646,6 +3741,27 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     || deterministicOverviewSlots.business_model?.value
     || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
   const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
+
+  const displayFactsV1 = useMemo(() => {
+    const dfv1 = (governedOverview as any)?.overview?.overview_json?.display_facts_v1;
+    if (!dfv1 || typeof dfv1 !== 'object') return null;
+    return dfv1 as any;
+  }, [governedOverview]);
+
+  const normalizeHeroText = (value: string): string =>
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const hasMalformedNumericPlaceholder = (value: string): boolean => {
+    const s = value.trim();
+    if (!s) return true;
+    if (/^\$\s*[,.-]*\s*$/i.test(s)) return true;
+    if (/^\$\s*[,.-]+\s*[kmbn]*$/i.test(s)) return true;
+    return false;
+  };
   const splitTierDeepToParagraphs = (raw: string): string[] => {
     const normalized = String(raw ?? '')
       .replace(/\r\n/g, '\n')
@@ -4152,6 +4268,164 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
   }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, selectedHeader.business_model.value, selectedHeader.raise.value, authoritativeProductTextV1, authoritativeMarketTextV1, canonicalProduct, canonicalMarket, investorInsights.report, looksRealEstate, reportView.businessModel, reportCanonicalRaise.value]);
 
+  type HeroFieldRole = 'product' | 'market' | 'business_model' | 'raise';
+  type HeroSourceTier =
+    | 'display_facts_v1'
+    | 'policy_resolved'
+    | 'governed_ui_copy_v1'
+    | 'deal_overview_v2'
+    | 'deal_summary_v2'
+    | 'summary_text';
+
+  type HeroFieldCandidate = {
+    tier: HeroSourceTier;
+    sourcePath: string;
+    value: string;
+  };
+
+  type HeroFieldBinding = {
+    role: HeroFieldRole;
+    value: string | null;
+    sourcePathUsed: string;
+    sourceTierUsed: HeroSourceTier;
+    fallbackUsed: boolean;
+    hiddenDueToFormatting: boolean;
+    hiddenDueToDedupe: boolean;
+    rejectedSources: Array<{ sourcePath: string; reason: string; value: string }>;
+    rawCandidates: HeroFieldCandidate[];
+  };
+
+  const chooseHeroFieldByPrecedence = (
+    role: HeroFieldRole,
+    candidates: HeroFieldCandidate[],
+  ): HeroFieldBinding => {
+    const cleaned = candidates
+      .map((c) => ({ ...c, value: safeText(c.value) }))
+      .filter((c) => c.value.length > 0);
+
+    const rejected: Array<{ sourcePath: string; reason: string; value: string }> = [];
+    for (const c of cleaned) {
+      const malformed = role === 'raise' ? hasMalformedNumericPlaceholder(c.value) : false;
+      if (malformed) {
+        rejected.push({ sourcePath: c.sourcePath, reason: 'malformed_or_placeholder', value: c.value });
+        continue;
+      }
+      return {
+        role,
+        value: c.value,
+        sourcePathUsed: c.sourcePath,
+        sourceTierUsed: c.tier,
+        fallbackUsed: c.tier !== 'display_facts_v1' && c.tier !== 'policy_resolved',
+        hiddenDueToFormatting: false,
+        hiddenDueToDedupe: false,
+        rejectedSources: rejected,
+        rawCandidates: cleaned,
+      };
+    }
+
+    return {
+      role,
+      value: null,
+      sourcePathUsed: 'missing',
+      sourceTierUsed: 'summary_text',
+      fallbackUsed: false,
+      hiddenDueToFormatting: cleaned.length > 0,
+      hiddenDueToDedupe: false,
+      rejectedSources: rejected,
+      rawCandidates: cleaned,
+    };
+  };
+
+  const heroFieldBindings = useMemo(() => {
+    // Universal precedence for hero/header binding:
+    // display_facts_v1 -> policy_resolved -> governed_ui_copy_v1 -> deal_overview_v2 -> deal_summary_v2 -> summary_text.
+    const ovFacts = workspaceMirrorVM.missing ? null : (workspaceMirrorVM.facts as any);
+    const phase1 = (governedOverview as any)?.overview?.overview_json?.phase1 ?? null;
+    const phase1DealSummaryV2 = phase1?.deal_summary_v2 ?? null;
+
+    const buildRoleCandidates = (role: HeroFieldRole): HeroFieldCandidate[] => {
+      if (role === 'product') {
+        return [
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.product_solution.text', value: safeText(displayFactsV1?.product_solution?.text) },
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.product.text', value: safeText(displayFactsV1?.product?.text) },
+          { tier: 'policy_resolved', sourcePath: 'policy_resolved.product', value: safeText(governedKeyFacts.product.value) },
+          { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.product_solution', value: safeText(ovFacts?.product_solution?.value) },
+          { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.product_solution', value: safeText(overviewV2?.product_solution) },
+          { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.product.text', value: safeText((phase1DealSummaryV2 as any)?.product?.text) || safeText((dealSummaryV2 as any)?.product?.text) },
+        ];
+      }
+      if (role === 'market') {
+        return [
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.market_icp.text', value: safeText(displayFactsV1?.market_icp?.text) },
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.market.text', value: safeText(displayFactsV1?.market?.text) },
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.submarket.text', value: safeText(displayFactsV1?.submarket?.text) },
+          { tier: 'policy_resolved', sourcePath: 'policy_resolved.market', value: safeText(governedKeyFacts.market.value) },
+          { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.market_icp', value: safeText(ovFacts?.market_icp?.value) },
+          { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.market_icp', value: safeText(overviewV2?.market_icp) },
+          { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.market.text', value: safeText((phase1DealSummaryV2 as any)?.market?.text) || safeText((dealSummaryV2 as any)?.market?.text) },
+        ];
+      }
+      if (role === 'business_model') {
+        return [
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.business_model.text', value: safeText(displayFactsV1?.business_model?.text) },
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.deal_structure.text', value: safeText(displayFactsV1?.deal_structure?.text) },
+          { tier: 'policy_resolved', sourcePath: 'policy_resolved.business_model', value: safeText(governedKeyFacts.businessModel.value) },
+          { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.business_model', value: safeText(ovFacts?.business_model?.value) },
+          { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.business_model', value: safeText(overviewV2?.business_model) },
+          { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.business_model', value: safeText((phase1DealSummaryV2 as any)?.business_model) || safeText((dealSummaryV2 as any)?.business_model) },
+        ];
+      }
+      return [
+        { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.raise_terms.text', value: safeText(displayFactsV1?.raise_terms?.text) },
+        { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.raise.text', value: safeText(displayFactsV1?.raise?.text) },
+        { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.terms.text', value: safeText(displayFactsV1?.terms?.text) },
+        { tier: 'policy_resolved', sourcePath: 'policy_resolved.raise', value: safeText(governedKeyFacts.raise.value) },
+        { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.raise_terms', value: safeText(ovFacts?.raise?.value) },
+        { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.raise', value: safeText(overviewV2?.raise) },
+        { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.raise', value: safeText((phase1DealSummaryV2 as any)?.raise) || safeText((dealSummaryV2 as any)?.raise) },
+      ];
+    };
+
+    const product = chooseHeroFieldByPrecedence('product', buildRoleCandidates('product'));
+    const market = chooseHeroFieldByPrecedence('market', buildRoleCandidates('market'));
+    const businessModel = chooseHeroFieldByPrecedence('business_model', buildRoleCandidates('business_model'));
+    const raise = chooseHeroFieldByPrecedence('raise', buildRoleCandidates('raise'));
+
+    if (product.value && market.value && normalizeHeroText(product.value) === normalizeHeroText(market.value)) {
+      market.hiddenDueToDedupe = true;
+      market.rejectedSources.push({ sourcePath: market.sourcePathUsed, reason: 'duplicate_with_product', value: market.value });
+      market.value = null;
+      market.sourcePathUsed = 'suppressed.duplicate_with_product';
+    }
+
+    const policySummary = (() => {
+      const p = safeText(product.value);
+      const m = safeText(market.value);
+      const bm = safeText(businessModel.value);
+      if (looksRealEstate) {
+        if (p && m) return `Asset / facility: ${p}. Submarket / demand: ${m}.`;
+        if (p) return `Asset / facility: ${p}.`;
+        if (m) return `Submarket / demand: ${m}.`;
+      }
+      if (p && m) return `Company sells ${p} and targets ${m}.`;
+      if (p) return `Company sells ${p}.`;
+      if (m) return `Target market / ICP: ${m}.`;
+      if (bm) return `Business model: ${bm}.`;
+      return '';
+    })();
+
+    const oneLiner = chooseHeroFieldByPrecedence('product', [
+      { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.hero_summary.text', value: safeText(displayFactsV1?.hero_summary?.text) },
+      { tier: 'policy_resolved', sourcePath: 'policy_resolved.hero_summary', value: policySummary },
+      { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.hero_summary', value: safeText(ovFacts?.deal_summary_mid?.value) },
+      { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.summary_text', value: safeText((phase1?.deal_overview_v2 as any)?.summary_text) },
+      { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.summary.one_liner', value: safeText((phase1DealSummaryV2 as any)?.summary?.one_liner) || safeText((dealSummaryV2 as any)?.summary?.one_liner) },
+      { tier: 'summary_text', sourcePath: 'overview.summary_text', value: safeText((governedOverview.overview as any)?.summary_text) },
+    ]);
+
+    return { product, market, businessModel, raise, oneLiner };
+  }, [workspaceMirrorVM, governedOverview, overviewV2, dealSummaryV2, governedKeyFacts, looksRealEstate, displayFactsV1]);
+
   const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -4205,7 +4479,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const listsFromGovernedUiCopy = !workspaceMirrorVM.missing && Boolean((workspaceMirrorVM as any)?.facts?.product_solution?.evidence_refs);
 
     return {
-      'deal-one-liner': `src=overview_json.phase1.governed_ui_copy_v1.hero_summary (fallbacks: deal_summary_v2.summary.one_liner, overview.summary_text) ${overlaySig}`,
+      'deal-one-liner': `src=display_facts_v1.hero_summary -> policy_resolved -> governed_ui_copy_v1.hero_summary -> deal_overview_v2 -> deal_summary_v2.summary.one_liner -> overview.summary_text ${overlaySig}`,
       'product-solution': srcKeyFact(
         governedKeyFacts.product.provenance,
         canonicalDealSummaryReady ? 'deal_summary_v2.product (canonical)' : 'deal_summary_v2.product (canonical/fallback)',
@@ -4324,23 +4598,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [workspaceMirrorVM, governedKeyFacts, authoritativeProductSummaryV1.sources, authoritativeMarketSummaryV1.sources]);
 
   const governedDealOneLinerDisplay = useMemo(() => {
-    // Priority:
-    // 1) PR2 deal_summary_v2.summary.one_liner (via workspaceMirrorVM.one_liner)
-    // 2) PR2 summary_text (top-level persisted field)
-    // 3) deterministic deal_summary_v1.tiers.overview (preferred display text)
-    // 4) deterministic deal_summary_v1.tiers.hero
-    const pr2 = !workspaceMirrorVM.missing ? (workspaceMirrorVM.one_liner ?? null) : null;
-    if (pr2 && pr2.trim().length > 0) return pr2;
-
-    const pr2SummaryText = typeof (governedOverview.overview as any)?.summary_text === 'string'
-      ? safeText((governedOverview.overview as any).summary_text)
-      : '';
-    if (pr2SummaryText) return pr2SummaryText;
+    const fromContract = safeText(heroFieldBindings.oneLiner.value);
+    if (fromContract) return fromContract;
 
     if (canonicalTierOverview) return canonicalTierOverview;
     if (canonicalTierHero) return canonicalTierHero;
     return 'Not extracted';
-  }, [workspaceMirrorVM, governedOverview.overview, canonicalTierOverview, canonicalTierHero]);
+  }, [heroFieldBindings, canonicalTierOverview, canonicalTierHero]);
 
   const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Authoritative (deterministic)' : 'Legacy';
 
@@ -5008,7 +5272,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const vm = useMemo(() => buildWorkspaceViewModel({
     displayName,
-    dealDescription: (dealInfo as any)?.description || topSectionScoreDriverOneLiner || '',
+    dealDescription: governedDealOneLinerDisplay || topSectionScoreDriverOneLiner || (dealInfo as any)?.description || '',
     dealStageLabel,
     dealStageRaw: dealStageRaw ?? '',
     industry: profileEdits.industry ?? '—',
@@ -5024,10 +5288,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     evidenceCoverage: vmEvidenceCoverage,
     selectedPolicyId,
     governedDealOneLiner: governedDealOneLinerDisplay,
-    governedProduct: governedKeyFacts.product.value,
-    governedMarket: governedKeyFacts.market.value,
-    governedBusinessModel: governedKeyFacts.businessModel.value,
-    governedRaise: governedKeyFacts.raise.value,
+    governedProduct: heroFieldBindings.product.value || governedKeyFacts.product.value,
+    governedMarket: heroFieldBindings.market.value || governedKeyFacts.market.value,
+    governedBusinessModel: heroFieldBindings.businessModel.value || governedKeyFacts.businessModel.value,
+    governedRaise: heroFieldBindings.raise.value || governedKeyFacts.raise.value,
     selectedHeaderReady: selectedHeader.ready,
     raiseValue: selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null,
     raiseLabel: selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null,
@@ -5075,11 +5339,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     insightsScore: canonicalScoreView.score0_100 ?? 0,
     insightsConfidence: topSectionConfidence,
   }), [
-    displayName, dealInfo, topSectionScoreDriverOneLiner, dealStageLabel, dealStageRaw,
+    displayName, dealInfo, topSectionScoreDriverOneLiner, governedDealOneLinerDisplay, dealStageLabel, dealStageRaw,
     profileEdits.industry, analyzing, reportView.score, vmVerdict, blockersCount,
     filteredStrengths, filteredWeaknesses, decisionTileConfidenceBand,
     scoreExplanationV1, vmEvidenceCoverage, governedDealOneLinerDisplay,
-    governedKeyFacts, selectedHeader, revenueCoveragePolicy, runwayTileValue,
+    governedKeyFacts, heroFieldBindings, selectedHeader, revenueCoveragePolicy, runwayTileValue,
     burnTileValue, reportStructuredGrowthValue, overviewV2, authoritativeBusinessModel,
     workspaceOverviewModel, topSectionDealType, vmPipelineStatus, vmDiligencePhase,
     selectedPolicyId, isStartupPolicySchema, topSectionRevenue, topSectionGrowth, topSectionCustomers, looksRealEstate, policyFamily,
@@ -5159,6 +5423,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       vm.overview.snapshotFacts.arr,
       vm.overview.snapshotFacts.growth,
       vm.overview.snapshotFacts.customers,
+      heroFieldBindings.product.sourcePathUsed,
+      heroFieldBindings.market.sourcePathUsed,
+      heroFieldBindings.businessModel.sourcePathUsed,
+      heroFieldBindings.raise.sourcePathUsed,
     ].join('|');
     if (lastPolicyOverviewLogRef.current === key) return;
     lastPolicyOverviewLogRef.current = key;
@@ -5182,6 +5450,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         businessModel: vm.overview.businessModelSummary,
         raise: vm.overview.raiseTerms,
       },
+      heroBindings: {
+        selectedPolicyId: selectedPolicyId ?? null,
+        product: heroFieldBindings.product,
+        market: heroFieldBindings.market,
+        businessModel: heroFieldBindings.businessModel,
+        raise: heroFieldBindings.raise,
+        oneLiner: heroFieldBindings.oneLiner,
+      },
       semanticRanking: governedKeyFacts.realEstateSemanticDiagnostics ?? null,
       topFieldDiagnostics,
       heroSuppression: {
@@ -5196,7 +5472,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         topSectionSuppressedStartupAsks: topSectionActionRefinement.suppressedStartupAsks.slice(0, 6),
       },
     });
-  }, [dealId, policyFamily, selectedPolicyId, looksRealEstate, governedKeyFacts, vm.overview, icMemo, topSectionActionRefinement, selectedHeader.ready, selectedHeader.raise.value, topSectionRevenue, topSectionGrowth, topSectionCustomers]);
+  }, [dealId, policyFamily, selectedPolicyId, looksRealEstate, governedKeyFacts, vm.overview, icMemo, topSectionActionRefinement, selectedHeader.ready, selectedHeader.raise.value, topSectionRevenue, topSectionGrowth, topSectionCustomers, heroFieldBindings]);
 
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {

@@ -178,10 +178,10 @@ describe('DealWorkspace governed overlay fetch', () => {
     });
 
     expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
-    expect(screen.getAllByText(/Overlay one-liner/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Overlay market/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Overlay one-liner/i)).toBeNull();
 
-    // Fallback PR2 facts should render, but be marked "Needs review".
+    // Fallback PR2 facts can still render when higher-confidence deterministic
+    // role text is unavailable for that slot.
     expect(screen.getAllByText(/Overlay product \(fallback\)/i).length).toBeGreaterThan(0);
 
     // When /report is ready, deterministic key-fact copy should win over overlay narrative drift.
@@ -194,8 +194,8 @@ describe('DealWorkspace governed overlay fetch', () => {
     expect(screen.queryByText(/Overlay raise/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/\$2M Seed/i)).not.toBeInTheDocument();
 
-    // Persisted overlay copy should be visible.
-    expect(screen.getAllByText(/Overlay one-liner/i).length).toBeGreaterThan(0);
+    // Narrative overlay one-liner should not override stronger structured bindings.
+    expect(screen.queryByText(/Overlay one-liner/i)).toBeNull();
 
     expect(screen.getByRole('button', { name: /run analysis/i })).toBeInTheDocument();
   });
@@ -274,8 +274,8 @@ describe('DealWorkspace governed overlay fetch', () => {
 
     expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
 
-    // PR2 overlay one-liner wins.
-    expect(screen.getAllByText(/Overlay one-liner/i).length).toBeGreaterThan(0);
+    // Structured bindings are preferred over narrative one-liner fallback.
+    expect(screen.queryByText(/Overlay one-liner/i)).toBeNull();
 
     // Deterministic OCR soup must not override PR2 phrasing.
     expect(screen.getAllByText(/send payment requests\. makes our lives SO much easier\./i).length).toBeGreaterThan(0);
@@ -474,10 +474,9 @@ describe('DealWorkspace governed overlay fetch', () => {
 
     expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
 
-    // With deterministic missing, the governed overlay should be used.
-    expect(screen.getAllByText(/Raw product/i).length).toBeGreaterThan(0);
-
-    expect(screen.getAllByText(/Raw product/i).length).toBeGreaterThan(0);
+    // With deterministic missing, display_facts_v1 should win over raw narrative fallback.
+    expect(screen.getAllByText(/Clean product statement/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Raw product/i)).toBeNull();
   });
 
   test('prefers deterministic structured product/market summaries and shows deterministic evidence refs when overlay points to wrong pages (Palm regression)', async () => {
@@ -702,7 +701,7 @@ describe('DealWorkspace governed overlay fetch', () => {
     // Overlay is available but collapsed by default.
     expect(screen.getByRole('button', { name: /^refresh$/i })).toBeInTheDocument();
 
-    expect(screen.getAllByText(/Overlay one-liner \(degraded\)/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Overlay one-liner \(degraded\)/i)).toBeNull();
   });
 
   test('degraded overlay flags (guard_degraded) default to deterministic and keep overlay available but collapsed', async () => {
@@ -768,7 +767,7 @@ describe('DealWorkspace governed overlay fetch', () => {
 
     expect(await screen.findByLabelText('Deal top summary')).toBeInTheDocument();
 
-    expect(screen.getAllByText(/Overlay one-liner \(guard degraded\)/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Overlay one-liner \(guard degraded\)/i)).toBeNull();
   });
 
   test('overlay failures do not break deterministic rendering', async () => {
@@ -921,4 +920,143 @@ describe('DealWorkspace governed overlay fetch', () => {
       // nothing
     }
   }, 15000);
+
+  test('recomputes hero fields per deal id with no startup/real-estate leakage', async () => {
+    vi.mocked(apiGetDeal).mockImplementation(async (dealId: string) => {
+      if (dealId === 'deal-re') {
+        return {
+          id: 'deal-re',
+          name: 'Desert Recovery RE',
+          selected_policy: 'real_estate_underwriting',
+          policy_id: 'real_estate_underwriting',
+          dioVersionId: 'dio-re',
+          dioStatus: 'ready',
+        } as any;
+      }
+      return {
+        id: 'deal-startup',
+        name: 'Startup API Co',
+        selected_policy: 'enterprise_saas_b2b_v1',
+        policy_id: 'enterprise_saas_b2b_v1',
+        dioVersionId: 'dio-su',
+        dioStatus: 'ready',
+      } as any;
+    });
+
+    vi.mocked(apiGetDealReport).mockImplementation(async (dealId: string) => ({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: `dio-${dealId}`, analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId,
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 58,
+        recommendation: 'consider',
+        sections: [],
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: dealId === 'deal-re' ? 'Real estate underwriting snapshot.' : 'Startup underwriting snapshot.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          kpis: {
+            raise: { value: dealId === 'deal-re' ? '$35M' : '$3M', sources: [] },
+          },
+        },
+        metadata: {
+          score_explanation: {
+            context: {
+              deal_type: dealId === 'deal-re' ? 'real_estate_preferred_equity' : 'startup_raise',
+            },
+          },
+          score_band_v2: { key: 'consider', label: 'Consider', overall_score: 58, thresholds_version: 'v2' },
+          decision_v1: { recommendation_key: 'consider', label: 'Consider', severity: 'warn', reasons: [] },
+        },
+      },
+    } as any));
+
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockImplementation(async (dealId: string) => {
+      if (dealId === 'deal-re') {
+        return {
+          overview: {
+            summary_text: 'Stale startup narrative that should not win',
+            overview_json: {
+              display_facts_v1: {
+                product_solution: { text: '48-bed inpatient rehabilitation facility' },
+                market_icp: { text: 'Albuquerque referral demand corridor' },
+                business_model: { text: 'Preferred equity with long-term lease structure' },
+                raise_terms: { text: '$35M construction facility with sponsor co-invest' },
+              },
+              phase1: {
+                governed_ui_copy_v1: {
+                  product_solution: 'Wrong startup product phrase',
+                  market_icp: 'Wrong startup market phrase',
+                  business_model: 'Wrong startup BM phrase',
+                  raise_terms: 'Wrong startup raise phrase',
+                },
+              },
+            },
+          },
+        } as any;
+      }
+
+      return {
+        overview: {
+          summary_text: 'Stale real estate narrative that should not win',
+          overview_json: {
+            display_facts_v1: {
+              product_solution: { text: 'Workflow API platform for compliance-heavy enterprises' },
+              market_icp: { text: 'Vertical SaaS operators with regulated payment flows' },
+              business_model: { text: 'Usage-based SaaS model' },
+              raise_terms: { text: '$3M seed' },
+            },
+            phase1: {
+              governed_ui_copy_v1: {
+                product_solution: 'Wrong RE asset phrase',
+                market_icp: 'Wrong RE market phrase',
+                business_model: 'Wrong RE BM phrase',
+                raise_terms: 'Wrong RE raise phrase',
+              },
+            },
+          },
+        },
+      } as any;
+    });
+
+    const view = render(
+      <ScoreSourceProvider>
+        <DealWorkspace
+          darkMode={false}
+          dealId="deal-startup"
+          dealData={{ id: 'deal-startup', name: 'Startup API Co' } as any}
+        />
+      </ScoreSourceProvider>,
+    );
+
+    await screen.findByLabelText('Deal top summary');
+    await waitFor(() => {
+      expect(screen.getAllByText(/Workflow API platform for compliance-heavy enterprises/i).length).toBeGreaterThan(0);
+    });
+
+    view.rerender(
+      <ScoreSourceProvider>
+        <DealWorkspace
+          darkMode={false}
+          dealId="deal-re"
+          dealData={{ id: 'deal-re', name: 'Desert Recovery RE' } as any}
+        />
+      </ScoreSourceProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/48-bed inpatient rehabilitation facility/i).length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText(/Workflow API platform for compliance-heavy enterprises/i)).toBeNull();
+    expect(screen.queryByText(/Wrong startup product phrase/i)).toBeNull();
+    expect(screen.queryByText(/Wrong RE asset phrase/i)).toBeNull();
+  });
 });

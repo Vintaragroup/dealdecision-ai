@@ -432,6 +432,29 @@ describe('policy-aware metric schema', () => {
     expect(noiTile?.value).toBe('—');
   });
 
+  test('malformed Raise short values are hidden instead of rendered', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'enterprise_saas_b2b_v1',
+      raiseValue: '$,',
+      governedRaise: '$,',
+    });
+
+    expect(vm.overview.snapshotFacts.raise).toBe('—');
+    expect(vm.header.raiseAmount).toBe('—');
+  });
+
+  test('startup growth falls back to Mentioned for qualitative non-numeric values', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'enterprise_saas_b2b_v1',
+      reportStructuredGrowthValue: 'Strong pipeline momentum',
+      growthValue: 'Growing quickly',
+    });
+
+    expect(vm.overview.snapshotFacts.growth).toBe('Mentioned');
+  });
+
   test('real-estate hides Raise / Terms when it collides with Deal structure wording', () => {
     const sameText = 'Preferred equity structure with sponsor equity and lease-backed investment terms';
     const vm = buildWorkspaceViewModel({

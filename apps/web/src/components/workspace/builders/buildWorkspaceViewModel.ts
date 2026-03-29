@@ -119,6 +119,15 @@ function asDisplayValue(v: string | null | undefined): string {
   return v.trim();
 }
 
+function sanitizeShortDisplayValue(v: string | null | undefined): string {
+  const s = asDisplayValue(v);
+  if (s === DASH) return DASH;
+  if (/^\$\s*[,.-]*\s*$/i.test(s)) return DASH;
+  if (/[\d]/.test(s) === false && /^[-,./\s$%]+$/.test(s)) return DASH;
+  if (/\$/.test(s) && /\d/.test(s) === false) return DASH;
+  return s;
+}
+
 function normalizeSemanticText(value: string | null | undefined): string {
   const s = asDisplayValue(value);
   if (s === DASH) return '';
@@ -339,12 +348,12 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
   const isFundSchema = policyFamily === 'fund';
 
   const raiseDisplayRaw = (() => {
-    const fromHeader = selectedHeaderReady ? asDisplayValue(raiseValue) : DASH;
+    const fromHeader = selectedHeaderReady ? sanitizeShortDisplayValue(raiseValue) : DASH;
     if (fromHeader !== DASH) return fromHeader;
     if (isRealEstateSchema) {
-      const fromGoverned = asDisplayValue(governedRaise);
+      const fromGoverned = sanitizeShortDisplayValue(governedRaise);
       if (fromGoverned !== DASH) return fromGoverned;
-      const fromBusinessModel = asDisplayValue(governedBusinessModel);
+      const fromBusinessModel = sanitizeShortDisplayValue(governedBusinessModel);
       if (fromBusinessModel !== DASH) return fromBusinessModel;
     }
     return DASH;
@@ -365,26 +374,26 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
   // Growth: prefer structured report value (numeric); fall back to header value.
   // If neither is numeric, show 'Mentioned' — qualitative evidence still informs investors.
   const growthDisplay = isRealEstateSchema
-    ? asDisplayValue(growthValue)
+    ? sanitizeShortDisplayValue(growthValue)
     : selectedHeaderReady
       ? (
         isStartupSchema
           ? asTractionDisplay(
-              asDisplayValue(reportStructuredGrowthValue) !== DASH
+              sanitizeShortDisplayValue(reportStructuredGrowthValue) !== DASH
                 ? (reportStructuredGrowthValue as string)
                 : (growthValue ?? null),
             )
-          : asDisplayValue(growthValue)
+          : sanitizeShortDisplayValue(growthValue)
       )
       : DASH;
   // Customers: startup schema keeps the qualitative fallback; non-startup keeps raw mapped metric.
   const customersDisplay = isRealEstateSchema
-    ? asDisplayValue(customersValue)
+    ? sanitizeShortDisplayValue(customersValue)
     : selectedHeaderReady
       ? (
         isStartupSchema
           ? asTractionDisplay(customersValue ?? null)
-          : asDisplayValue(customersValue)
+          : sanitizeShortDisplayValue(customersValue)
       )
       : DASH;
 

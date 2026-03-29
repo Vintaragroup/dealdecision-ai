@@ -332,6 +332,9 @@ export type ConvictionInputFamilyKeyV1 =
 export interface ConvictionInputFamilyV1 {
 	family: ConvictionInputFamilyKeyV1;
 	status: ConvictionInputStatusV1;
+	signal_strength: number;
+	confidence: number;
+	coverage: number;
 	source: string;
 	source_priority: number;
 	evidence_refs: string[];
@@ -377,7 +380,7 @@ export interface ConvictionLineageArtifactV1 {
 
 export interface ConvictionLineageV1 {
 	generated_at: string;
-	mapping_version: 'phase1_transitional_v1';
+	mapping_version: 'phase1_transitional_v1' | 'phase2_deterministic_v1';
 	source_artifacts: ConvictionLineageArtifactV1[];
 }
 

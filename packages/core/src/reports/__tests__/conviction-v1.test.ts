@@ -1,6 +1,6 @@
 import { compileDIOToReport } from "../compiler-simple";
 
-describe("conviction_v1 phase1 contract", () => {
+describe("conviction_v1 contract", () => {
   const now = new Date().toISOString();
 
   function makeDio(policyId: string): any {
@@ -64,9 +64,12 @@ describe("conviction_v1 phase1 contract", () => {
     expect(Array.isArray(c.unknowns)).toBe(true);
     expect(Array.isArray(c.contradictions)).toBe(true);
     expect(Array.isArray(c.required_next_checks)).toBe(true);
-    expect(c.lineage?.mapping_version).toBe("phase1_transitional_v1");
+    expect(c.lineage?.mapping_version).toBe("phase2_deterministic_v1");
     expect(Array.isArray(c.lineage?.source_artifacts)).toBe(true);
     expect(c.lineage.source_artifacts.some((x: any) => x.artifact === "score_explanation" && x.used === true)).toBe(true);
+    expect(typeof c.inputs.financial_truth.signal_strength).toBe("number");
+    expect(typeof c.inputs.financial_truth.confidence).toBe("number");
+    expect(typeof c.inputs.financial_truth.coverage).toBe("number");
   });
 
   it("preserves selected_policy_id across startup and real-estate policies", () => {

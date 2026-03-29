@@ -1716,10 +1716,14 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
   const convictionV1 = buildConvictionV1({
     selected_policy_id: (scoreExplanationAugmented as any)?.aggregation?.policy_id ?? null,
     overall_score: overallScoreFinal,
-    recommendation,
+    recommendation, // compatibility-only input; conviction posture is computed deterministically in phase2.
     score_explanation: scoreExplanationAugmented,
+    funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
     capital_logic_v1: capitalLogic,
+    business_model_signal_v1: businessModelSignal,
+    market_accessibility_signal_v1: marketAccessibilitySignal,
+    traction_signal_v1: tractionSignal,
     team_signal_v1: teamSignal,
   });
 
@@ -2046,11 +2050,16 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     overall_score: (typeof (base as any)?.overallScore === 'number' && Number.isFinite((base as any).overallScore))
       ? (base as any).overallScore
       : null,
-    recommendation: (base as any)?.recommendation ?? null,
+    recommendation: (base as any)?.recommendation ?? null, // compatibility-only input; conviction posture is computed deterministically in phase2.
     score_explanation: scoreExplanationAugmented,
+    funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
     capital_logic_v1: capitalLogic,
+    business_model_signal_v1: businessModelSignal,
+    market_accessibility_signal_v1: marketAccessibilitySignal,
+    traction_signal_v1: tractionSignal,
     team_signal_v1: teamSignal,
+    underwriting_readiness_v1: underwritingReadiness,
     financial_breakdown_v1: financialBreakdown,
   });
 

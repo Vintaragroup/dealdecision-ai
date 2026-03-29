@@ -23,6 +23,8 @@ const DEAL_STRUCTURE_SIGNAL_RE = /\b(preferred\s+equity|capital\s+stack|ltc|cons
 
 const ASSET_SIGNAL_RE = /\b(facility|hospital|irf|inpatient|rehabilitation|build[-\s]?to[-\s]?suit|single[-\s]?tenant|institutional[-\s]?quality|healthcare\s+facility|new\s+build)\b/i;
 const SUBMARKET_SIGNAL_RE = /\b(submarket|referral|hospital|medical\s+corridor|competition|under[-\s]?supply|aging\s+population|demand|occupancy|catchment|location)\b/i;
+const SUBMARKET_PRIORITY_RE = /\b(albuquerque|hospital|referral|market|demand|competition|corridor|proximity|population|acute\s*care|limited\s+freestanding\s+irf\s+competition)\b/i;
+const LEASE_OPERATOR_HEAVY_RE = /\b(lease|nnn|escalation|rent|construction|timeline|operator|management|capital\s+stack|ltc|sponsor\s+equity|debt)\b/i;
 
 const isNonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0 && v.trim() !== '—';
 
@@ -49,7 +51,11 @@ function lanePriority(lane: RealEstateSemanticCandidate['lane']): number {
 
 function semanticSignalScore(kind: RealEstateSemanticKind, text: string): number {
   if (kind === 'asset_facility') return ASSET_SIGNAL_RE.test(text) ? 20 : 0;
-  if (kind === 'submarket_demand') return SUBMARKET_SIGNAL_RE.test(text) ? 20 : 0;
+  if (kind === 'submarket_demand') {
+    let score = SUBMARKET_SIGNAL_RE.test(text) ? 20 : 0;
+    if (SUBMARKET_PRIORITY_RE.test(text)) score += 12;
+    return score;
+  }
   // deal_structure
   return DEAL_STRUCTURE_SIGNAL_RE.test(text) ? 24 : 0;
 }
@@ -57,6 +63,9 @@ function semanticSignalScore(kind: RealEstateSemanticKind, text: string): number
 function scoreCandidate(kind: RealEstateSemanticKind, candidate: RealEstateSemanticCandidate): { score: number; rejectReason: string | null } {
   const value = String(candidate.value ?? '').trim();
   if (!value) return { score: -999, rejectReason: 'empty' };
+
+  const hasSubmarketSignal = SUBMARKET_SIGNAL_RE.test(value);
+  const isLeaseHeavy = LEASE_OPERATOR_HEAVY_RE.test(value);
 
   let score = laneBonus(candidate.lane);
   const words = wordCount(value);
@@ -79,7 +88,20 @@ function scoreCandidate(kind: RealEstateSemanticKind, candidate: RealEstateSeman
     score -= 4;
   }
 
-  if (score < 12) {
+  if (kind === 'submarket_demand' && isLeaseHeavy && !hasSubmarketSignal) {
+    score -= 30;
+    if (score < 16) {
+      return { score, rejectReason: 'lease_heavy_mismatch' };
+    }
+  }
+
+  if (kind === 'submarket_demand' && !hasSubmarketSignal) {
+    score -= 8;
+  }
+
+  const minScore = kind === 'submarket_demand' ? 16 : 12;
+
+  if (score < minScore) {
     return { score, rejectReason: 'weak_semantic_match' };
   }
 

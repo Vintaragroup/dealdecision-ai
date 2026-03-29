@@ -28,6 +28,25 @@ describe('selectBestRealEstateSemanticField', () => {
     expect(result.value).toContain('referral');
   });
 
+  test('submarket/demand rejects lease-heavy sentence when demand/location context exists', () => {
+    const result = selectBestRealEstateSemanticField('submarket_demand', [
+      {
+        value: '20-year NNN lease with annual escalations and construction timeline milestones',
+        source: 'lease-heavy',
+        lane: 'governed',
+      },
+      {
+        value: 'Albuquerque medical corridor with proximity to four major hospitals and strong referral demand',
+        source: 'demand-location',
+        lane: 'deterministic',
+      },
+    ]);
+
+    expect(result.source).toBe('demand-location');
+    expect(result.value).toContain('Albuquerque');
+    expect(result.rejected.some((r) => r.source === 'lease-heavy' && r.reason === 'lease_heavy_mismatch')).toBe(true);
+  });
+
   test('deal structure rejects operator model and prefers capital/lease structure', () => {
     const result = selectBestRealEstateSemanticField('deal_structure', [
       { value: 'Operator delivers high-quality patient care model', source: 'operator-summary', lane: 'deterministic' },

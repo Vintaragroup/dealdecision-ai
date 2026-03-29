@@ -119,6 +119,51 @@ function asDisplayValue(v: string | null | undefined): string {
   return v.trim();
 }
 
+function normalizeSemanticText(value: string | null | undefined): string {
+  const s = asDisplayValue(value);
+  if (s === DASH) return '';
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractMoneyTokens(value: string | null | undefined): string[] {
+  const s = asDisplayValue(value);
+  if (s === DASH) return [];
+  const matches = s.match(/\$\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?/gi) ?? [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of matches) {
+    const cleaned = raw.replace(/\s+/g, ' ').trim();
+    if (!/\d/.test(cleaned)) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+function toConciseRaiseTerms(value: string | null | undefined): string {
+  const tokens = extractMoneyTokens(value);
+  if (tokens.length === 0) return DASH;
+  return tokens.slice(0, 2).join(' + ');
+}
+
+function sanitizeRealEstateNoi(value: string | null | undefined): string {
+  const s = asDisplayValue(value);
+  if (s === DASH) return DASH;
+  if (!/\d/.test(s)) return DASH;
+  if (/^\$\s*[,.-]*\s*$/i.test(s)) return DASH;
+  const directMoney = s.match(/\$\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?/i);
+  if (directMoney) return directMoney[0].replace(/\s+/g, ' ').trim();
+  const num = s.match(/[\d,]+(?:\.\d+)?/);
+  if (!num) return DASH;
+  return `$${num[0]}`;
+}
+
 function sanitizeEvidenceText(value: string | null | undefined, opts: { isRealEstateSchema: boolean }): string {
   const display = asDisplayValue(value);
   if (display === DASH) return MISSING_EVIDENCE_TEXT;
@@ -293,9 +338,27 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
   const isRealEstateSchema = policyFamily === 'real_estate';
   const isFundSchema = policyFamily === 'fund';
 
-  const raiseDisplay = selectedHeaderReady ? asDisplayValue(raiseValue) : DASH;
+  const raiseDisplayRaw = (() => {
+    const fromHeader = selectedHeaderReady ? asDisplayValue(raiseValue) : DASH;
+    if (fromHeader !== DASH) return fromHeader;
+    if (isRealEstateSchema) {
+      const fromGoverned = asDisplayValue(governedRaise);
+      if (fromGoverned !== DASH) return fromGoverned;
+      const fromBusinessModel = asDisplayValue(governedBusinessModel);
+      if (fromBusinessModel !== DASH) return fromBusinessModel;
+    }
+    return DASH;
+  })();
+
+  const raiseDisplay = isRealEstateSchema
+    ? (() => {
+      const concise = toConciseRaiseTerms(raiseDisplayRaw);
+      return concise !== DASH ? concise : raiseDisplayRaw;
+    })()
+    : raiseDisplayRaw;
+
   const revDisplay = isRealEstateSchema
-    ? asDisplayValue(revenueValue)
+    ? sanitizeRealEstateNoi(revenueValue)
     : selectedHeaderReady && revenueAllowed && isStartupSchema
       ? asDisplayValue(revenueValue)
       : DASH;
@@ -343,9 +406,15 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     return fromGoverned !== DASH ? fromGoverned : 'Unknown';
   })();
 
+  const raiseAndBusinessModelCollide = isRealEstateSchema
+    && normalizeSemanticText(raiseDisplay) !== ''
+    && normalizeSemanticText(raiseDisplay) === normalizeSemanticText(businessModelDisplay);
+
+  const raiseDisplayFinal = raiseAndBusinessModelCollide ? DASH : raiseDisplay;
+
   const financialTiles = isRealEstateSchema
     ? [
-        { label: selectedHeaderReady ? (raiseLabel ?? 'Raise / terms') : 'Raise / terms', value: raiseDisplay },
+        { label: selectedHeaderReady ? (raiseLabel ?? 'Raise / terms') : 'Raise / terms', value: raiseDisplayFinal },
         { label: 'NOI', value: revDisplay },
         { label: 'Target IRR', value: growthDisplay },
         { label: 'Term', value: customersDisplay },
@@ -449,7 +518,7 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     dealName: displayName,
     dealDescription,
     stage: dealStageLabel,
-    raiseAmount: raiseDisplay,
+    raiseAmount: raiseDisplayFinal,
     industry,
     score: reportViewScore,
     verdict,
@@ -479,7 +548,7 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     companyDescription: governedDealOneLiner,
     snapshotFactLabels,
     snapshotFacts: {
-      raise: raiseDisplay,
+      raise: raiseDisplayFinal,
       arr: isRealEstateSchema ? revDisplay : (isStartupSchema ? revDisplay : DASH),
       growth: growthDisplay,
       customers: customersDisplay,

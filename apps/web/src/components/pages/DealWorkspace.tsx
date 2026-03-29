@@ -2522,9 +2522,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
 
     const snapshotSentences: string[] = [];
-    if (product && market) snapshotSentences.push(`Company sells ${product} and targets ${market}.`);
-    else if (product) snapshotSentences.push(`Company sells ${product}.`);
-    else if (market) snapshotSentences.push(`Target market / ICP: ${market}.`);
+    if (policyFamily === 'real_estate') {
+      if (product) snapshotSentences.push(`Asset / facility: ${product}.`);
+      if (market) snapshotSentences.push(`Submarket / demand: ${market}.`);
+    } else {
+      if (product && market) snapshotSentences.push(`Company sells ${product} and targets ${market}.`);
+      else if (product) snapshotSentences.push(`Company sells ${product}.`);
+      else if (market) snapshotSentences.push(`Target market / ICP: ${market}.`);
+    }
 
     if (businessModel) snapshotSentences.push(`Business model: ${businessModel}.`);
     if (raise) snapshotSentences.push(`Raise / terms: ${raise}.`);
@@ -2544,8 +2549,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     // What supports proceeding: evidence-backed bullets only.
     const supports: string[] = [];
-    if (product) supports.push(`Product is explicitly described: ${product}.`);
-    if (market) supports.push(`Target market / ICP is explicitly described: ${market}.`);
+    if (policyFamily === 'real_estate') {
+      if (product) supports.push(`Asset / facility is explicitly described: ${product}.`);
+      if (market) supports.push(`Submarket / demand is explicitly described: ${market}.`);
+    } else {
+      if (product) supports.push(`Product is explicitly described: ${product}.`);
+      if (market) supports.push(`Target market / ICP is explicitly described: ${market}.`);
+    }
     if (businessModel) supports.push(`Business model is stated: ${businessModel}.`);
     if (raise) supports.push(`Raise / terms are stated: ${raise}.`);
 
@@ -2882,21 +2892,51 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return v.length > 0 ? v : '—';
   };
 
+  const hasNumericToken = (v: string): boolean => /\d/.test(v);
+  const isMalformedCurrency = (v: string): boolean => /^\$\s*[,.-]*\s*$/i.test(v);
+
+  const pickValueChecked = (
+    re: RegExp,
+    format: (m: RegExpMatchArray) => string,
+    isValid: (value: string) => boolean,
+  ): string => {
+    const v = pickValue(re, format);
+    if (v === '—') return v;
+    return isValid(v) ? v : '—';
+  };
+
+  const pickMoneyLike = (input: string): string | null => {
+    const matches = input.match(/\$\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?/gi) ?? [];
+    const cleaned = matches
+      .map((m) => m.replace(/\s+/g, ' ').trim())
+      .filter((m) => hasNumericToken(m) && !isMalformedCurrency(m));
+    if (cleaned.length === 0) return null;
+    return cleaned.slice(0, 2).join(' + ');
+  };
+
   const pickMoney = (): string => {
     if (reportReady) {
       // Canonical: amount-only from report.structured_summary.raise.value_json.amount.amount.
       const fromReport = safeText(reportCanonicalRaise.value);
-      if (fromReport) return fromReport;
+      if (fromReport) {
+        const compact = pickMoneyLike(fromReport);
+        if (compact) return compact;
+        if (hasNumericToken(fromReport) && !isMalformedCurrency(fromReport)) return fromReport;
+      }
     }
     const direct = safeText(overviewV2?.raise);
-    if (direct) return direct;
+    if (direct) {
+      const compact = pickMoneyLike(direct);
+      if (compact) return compact;
+      if (hasNumericToken(direct) && !isMalformedCurrency(direct)) return direct;
+    }
     // Look for $ amounts (supports $11.7M, $46.7MM, $1,200,000)
-    return pickValue(/\$\s*([\d,]+(?:\.\d+)?)\s*(m|mm|million|b|bn|billion)?/i, (m) => {
+    return pickValueChecked(/\$\s*([\d,]+(?:\.\d+)?)\s*(m|mm|million|b|bn|billion)?/i, (m) => {
       const num = m[1];
       const suf = (m[2] ?? '').toLowerCase();
       const suffix = suf ? suf.replace(/^mm$/, 'M').replace(/^m$/, 'M').replace(/^million$/, 'M').replace(/^bn$/, 'B').replace(/^billion$/, 'B').toUpperCase() : '';
       return `$${num}${suffix}`;
-    });
+    }, (v) => hasNumericToken(v) && !isMalformedCurrency(v));
   };
 
   type MetricCard = { label: string; value: string; change: string };
@@ -3074,7 +3114,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const topSectionRaise = pickMoney();
   const topSectionRevenue = looksRealEstate
-    ? pickValue(/\bnoi\b[^\d\$]{0,24}\$?([\d,]+(?:\.\d+)?)/i, (m) => `$${m[1]}`)
+    ? pickValueChecked(/\b(?:noi|year\s*[-\s]?1\s*(?:noi|rent))\b[^\d\$]{0,24}\$?([\d,]+(?:\.\d+)?)/i, (m) => `$${m[1]}`, (v) => hasNumericToken(v) && !isMalformedCurrency(v))
     : pickValue(/\b(revenue|arr|mrr)\b[\s:,-]{0,12}(\$?\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?)\b/i, (m) => m[2].replace(/\s+/g, ' ').trim());
   const topSectionGrowth = looksRealEstate
     ? pickValue(/\b(?:target\s+)?irr\b[^\d]{0,24}(\d{1,2}(?:\.\d+)?)\s*%/i, (m) => `${m[1]}%`)
@@ -4012,6 +4052,24 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return 'deterministic';
     };
 
+    const normalizeForCollision = (value: string | null | undefined): string =>
+      String(value ?? '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const extractConciseRaise = (value: string | null | undefined): string | null => {
+      const s = String(value ?? '').trim();
+      if (!s) return null;
+      const parts = s.match(/\$\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?/gi) ?? [];
+      const compact = parts
+        .map((p) => p.replace(/\s+/g, ' ').trim())
+        .filter((p) => /\d/.test(p));
+      if (compact.length === 0) return null;
+      return compact.slice(0, 2).join(' + ');
+    };
+
     const productRefined = assetFacilitySelection.value
       ? {
           ...product,
@@ -4045,11 +4103,39 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       fromOverlay: dealStructureSelection.lane === 'governed',
     };
 
+    const raiseCandidatesForConcise = [
+      selectedHeader.raise.value,
+      reportCanonicalRaise.value,
+      overviewRaiseTermsCanonical,
+      raise.value,
+    ];
+    const conciseRaise = raiseCandidatesForConcise
+      .map((v) => extractConciseRaise(v))
+      .find((v): v is string => typeof v === 'string' && v.trim().length > 0);
+
+    const raiseCollidesWithDealStructure = normalizeForCollision(raise.value) !== ''
+      && normalizeForCollision(raise.value) === normalizeForCollision(businessModelRefined.value);
+
+    const raiseRefined = raiseCollidesWithDealStructure
+      ? {
+          ...raise,
+          value: conciseRaise && normalizeForCollision(conciseRaise) !== normalizeForCollision(businessModelRefined.value)
+            ? conciseRaise
+            : keyFactMissingText,
+          provenance: {
+            source: conciseRaise && normalizeForCollision(conciseRaise) !== normalizeForCollision(businessModelRefined.value)
+              ? ('deterministic' as const)
+              : ('missing' as const),
+          },
+          fromOverlay: false,
+        }
+      : raise;
+
     return {
       product: productRefined,
       market: marketRefined,
       businessModel: businessModelRefined,
-      raise,
+      raise: raiseRefined,
       realEstateSemanticDiagnostics: {
         assetFacility: assetFacilitySelection,
         submarketDemand: submarketDemandSelection,
@@ -4058,9 +4144,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           applied: Boolean(assetFacilitySelection.value),
           excludedFromSubmarket: assetFacilitySelection.value ? [assetFacilitySelection.value] : [],
         },
+        raiseBusinessModelCollision: {
+          suppressed: raiseCollidesWithDealStructure,
+          conciseRaiseCandidate: conciseRaise,
+        },
       },
     };
-  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, selectedHeader.business_model.value, selectedHeader.raise.value, authoritativeProductTextV1, authoritativeMarketTextV1, canonicalProduct, canonicalMarket, investorInsights.report, looksRealEstate, reportView.businessModel]);
+  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, selectedHeader.business_model.value, selectedHeader.raise.value, authoritativeProductTextV1, authoritativeMarketTextV1, canonicalProduct, canonicalMarket, investorInsights.report, looksRealEstate, reportView.businessModel, reportCanonicalRaise.value]);
 
   const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -4999,6 +5089,66 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const lastPolicyOverviewLogRef = useRef<string | null>(null);
   useEffect(() => {
     if (!import.meta.env.DEV) return;
+
+    const topFieldDiagnostics = looksRealEstate
+      ? [
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'Raise / Terms',
+            sourcePathUsed: selectedHeader.ready && selectedHeader.raise.value
+              ? 'report.header.raise.value'
+              : governedKeyFacts.raise.provenance.source === 'governed'
+                ? 'overview_json.phase1.governed_ui_copy_v1.raise'
+                : 'governedKeyFacts.raise',
+            rawValue: selectedHeader.raise.value ?? governedKeyFacts.raise.value ?? null,
+            formattedValue: vm.overview.snapshotFacts.raise,
+            hidden: vm.overview.snapshotFacts.raise === '—',
+            hiddenReason: vm.overview.snapshotFacts.raise === '—' ? 'missing_or_collision_suppressed' : null,
+            dedupeOrCollisionSuppressed: Boolean((governedKeyFacts as any)?.realEstateSemanticDiagnostics?.raiseBusinessModelCollision?.suppressed),
+          },
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'NOI',
+            sourcePathUsed: 'topSectionRevenue -> WorkspaceViewModel.revenueValue',
+            rawValue: topSectionRevenue,
+            formattedValue: vm.overview.snapshotFacts.arr,
+            hidden: vm.overview.snapshotFacts.arr === '—',
+            hiddenReason: vm.overview.snapshotFacts.arr === '—' ? 'malformed_or_missing_numeric' : null,
+            dedupeOrCollisionSuppressed: false,
+          },
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'Target IRR',
+            sourcePathUsed: 'topSectionGrowth -> WorkspaceViewModel.growthValue',
+            rawValue: topSectionGrowth,
+            formattedValue: vm.overview.snapshotFacts.growth,
+            hidden: vm.overview.snapshotFacts.growth === '—',
+            hiddenReason: vm.overview.snapshotFacts.growth === '—' ? 'missing' : null,
+            dedupeOrCollisionSuppressed: false,
+          },
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'Term',
+            sourcePathUsed: 'topSectionCustomers -> WorkspaceViewModel.customersValue',
+            rawValue: topSectionCustomers,
+            formattedValue: vm.overview.snapshotFacts.customers,
+            hidden: vm.overview.snapshotFacts.customers === '—',
+            hiddenReason: vm.overview.snapshotFacts.customers === '—' ? 'missing' : null,
+            dedupeOrCollisionSuppressed: false,
+          },
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'Submarket / Demand',
+            sourcePathUsed: (governedKeyFacts as any)?.realEstateSemanticDiagnostics?.submarketDemand?.source ?? 'missing',
+            rawValue: vm.overview.marketSummary,
+            formattedValue: vm.overview.marketSummary,
+            hidden: vm.overview.marketSummary === keyFactMissingText,
+            hiddenReason: vm.overview.marketSummary === keyFactMissingText ? 'weak_or_missing_role_match' : null,
+            dedupeOrCollisionSuppressed: Boolean((governedKeyFacts as any)?.realEstateSemanticDiagnostics?.duplicateSuppression?.applied),
+          },
+        ]
+      : null;
+
     const key = [
       dealId ?? '',
       policyFamily,
@@ -5033,6 +5183,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         raise: vm.overview.raiseTerms,
       },
       semanticRanking: governedKeyFacts.realEstateSemanticDiagnostics ?? null,
+      topFieldDiagnostics,
+      heroSuppression: {
+        productServesSuppressed: looksRealEstate,
+      },
       advisoryRefinement: {
         diligenceSource: icMemo.advisoryRefinement.source,
         diligenceReplacementApplied: icMemo.advisoryRefinement.replacementApplied,
@@ -5042,7 +5196,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         topSectionSuppressedStartupAsks: topSectionActionRefinement.suppressedStartupAsks.slice(0, 6),
       },
     });
-  }, [dealId, policyFamily, looksRealEstate, governedKeyFacts, vm.overview, icMemo, topSectionActionRefinement]);
+  }, [dealId, policyFamily, selectedPolicyId, looksRealEstate, governedKeyFacts, vm.overview, icMemo, topSectionActionRefinement, selectedHeader.ready, selectedHeader.raise.value, topSectionRevenue, topSectionGrowth, topSectionCustomers]);
 
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {

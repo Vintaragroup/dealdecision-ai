@@ -327,7 +327,7 @@ describe('policy-aware metric schema', () => {
     });
 
     expect(vm.overview.snapshotFactLabels.arr).toBe('NOI');
-    expect(vm.overview.snapshotFacts.arr).toBe('$1.2M NOI');
+    expect(vm.overview.snapshotFacts.arr).toBe('$1.2M');
     expect(vm.header.metrics.financials.map((x) => x.label)).toEqual(['Seed', 'NOI', 'Target IRR', 'Term']);
     expect(vm.header.metrics.traction[0]?.label).toBe('Target IRR');
     expect(vm.header.metrics.traction[1]?.label).toBe('Term');
@@ -372,7 +372,7 @@ describe('policy-aware metric schema', () => {
     });
 
     expect(vm.overview.snapshotFactLabels.arr).toBe('NOI');
-    expect(vm.overview.snapshotFacts.arr).toBe('$1.2M NOI');
+    expect(vm.overview.snapshotFacts.arr).toBe('$1.2M');
     expect(vm.header.metrics.traction[0]?.label).toBe('Target IRR');
     expect(vm.header.metrics.traction[1]?.label).toBe('Term');
     expect(vm.header.metrics.businessModel[0]?.label).toBe('Deal structure');
@@ -406,6 +406,45 @@ describe('policy-aware metric schema', () => {
     expect(vm.overview.productSummary).toBe('Not extracted from evidence');
     expect(vm.overview.marketSummary).toBe('Not extracted from evidence');
     expect(vm.overview.businessModelSummary).toBe('Preferred equity structure');
+  });
+
+  test('real-estate raise falls back to governed raise summary when header raise is missing', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      raiseValue: null,
+      governedRaise: '$35.6M construction loan + $11.9M equity',
+    });
+
+    expect(vm.overview.snapshotFacts.raise).toBe('$35.6M + $11.9M');
+    expect(vm.header.raiseAmount).toBe('$35.6M + $11.9M');
+  });
+
+  test('real-estate malformed NOI placeholders are suppressed', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      revenueValue: '$,',
+    });
+
+    expect(vm.overview.snapshotFacts.arr).toBe('—');
+    const noiTile = vm.header.metrics.financials.find((x) => x.label === 'NOI');
+    expect(noiTile?.value).toBe('—');
+  });
+
+  test('real-estate hides Raise / Terms when it collides with Deal structure wording', () => {
+    const sameText = 'Preferred equity structure with sponsor equity and lease-backed investment terms';
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      raiseValue: sameText,
+      governedRaise: sameText,
+      businessModelValue: sameText,
+      governedBusinessModel: sameText,
+    });
+
+    expect(vm.overview.snapshotFacts.raise).toBe('—');
+    expect(vm.overview.businessModelSummary).toBe(sameText);
   });
 
   test('startup policy retains startup snapshot and evidence labeling', () => {

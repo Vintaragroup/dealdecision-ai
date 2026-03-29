@@ -76,6 +76,14 @@ type ArtifactProbe = {
   hasAllRequiredArtifacts: boolean;
 };
 
+function getRequiredFilePresence(dirPath: string): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  for (const spec of ARTIFACT_SPECS) {
+    out[spec.fileName] = existsSync(path.join(dirPath, spec.fileName));
+  }
+  return out;
+}
+
 function parseSections(markdown: string): Array<{ title: string; body: string }> {
   const lines = String(markdown ?? "").split(/\r?\n/);
   const sections: Array<{ title: string; body: string }> = [];
@@ -160,6 +168,20 @@ export function loadPolicyPromptRuntimePacket(opts?: { forceReload?: boolean }):
   };
 
   const { artifactsDir, probes } = findArtifactsDir();
+
+  try {
+    console.log(
+      JSON.stringify({
+        event: "POLICY_PROMPT_ARTIFACT_RUNTIME_DIAGNOSTIC",
+        cwd: process.cwd(),
+        resolved_artifacts_dir: artifactsDir,
+        artifacts_dir_exists: existsSync(artifactsDir),
+        required_files_exists: getRequiredFilePresence(artifactsDir),
+      })
+    );
+  } catch {
+    // ignore logging failures
+  }
 
   const artifacts = {} as Record<PolicyPromptArtifactId, LoadedPolicyPromptArtifact>;
   for (const spec of ARTIFACT_SPECS) {

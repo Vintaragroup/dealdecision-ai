@@ -98,6 +98,25 @@ describe('buildPhase1DealOverviewV2 (product_solution / market_icp extraction)',
 		expect(out.market_icp).toBeNull();
 	});
 
+	it('hard-rejects Albuquerque disclaimer phrase family for tagline candidates', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-legal-abq', [
+				{
+					text: [
+						'OVERVIEW',
+						'Whether to provide to Cross Development all or a portion of an investment is at the discretion of the recipient and subject to confidential submission terms.',
+						'WHO WE SERVE',
+						'The recipient may use this confidential information for limited use and must return this confidential submission upon request.',
+					].join('\n'),
+				},
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution).toBeNull();
+		expect(out.market_icp).toBeNull();
+	});
+
 	it("accepts anchored 'WHO WE SERVE' within next 6 lines", () => {
 		const docs: OverviewDocumentInput[] = [
 			docWithPages('doc1', [

@@ -46,7 +46,7 @@ import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, a
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
-import { getPolicyFamily, getPolicyScoreSectionLabel, resolveSelectedPolicyIdFromAny } from '@dealdecision/core';
+import { getPolicyFamily, getPolicyScoreSectionLabel, resolveSelectedPolicyIdFromAny } from '../../lib/policyUtils';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { derivePhaseBInsights } from '../../lib/phaseb-findings';

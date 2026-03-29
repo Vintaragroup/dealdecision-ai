@@ -10,6 +10,30 @@ import {
 } from "../policy-aware-prompt-runtime";
 
 describe("policy-aware prompt runtime integration", () => {
+  it("resolves artifacts from root search paths when /apps/worker/artifacts exists", () => {
+    const baseline = loadPolicyPromptRuntimePacket({ forceReload: true });
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "ddai-policy-runtime-layout-"));
+    const workerRoot = path.join(tempRoot, "apps", "worker");
+    const artifactRoot = path.join(workerRoot, "artifacts");
+    mkdirSync(artifactRoot, { recursive: true });
+
+    for (const artifact of Object.values(baseline.artifacts)) {
+      writeFileSync(path.join(artifactRoot, artifact.fileName), artifact.content, "utf8");
+    }
+
+    const prevRoots = process.env.POLICY_PROMPT_ARTIFACTS_ROOTS;
+    process.env.POLICY_PROMPT_ARTIFACTS_ROOTS = tempRoot;
+    try {
+      const packet = loadPolicyPromptRuntimePacket({ forceReload: true });
+      expect(packet.artifacts.system_audit_prompt_pack_v1.version).toBe("v1");
+      expect(packet.artifacts.policy_aware_output_template_v2.version).toBe("v2");
+    } finally {
+      if (typeof prevRoots === "string") process.env.POLICY_PROMPT_ARTIFACTS_ROOTS = prevRoots;
+      else delete process.env.POLICY_PROMPT_ARTIFACTS_ROOTS;
+      loadPolicyPromptRuntimePacket({ forceReload: true });
+    }
+  });
+
   it("loads artifacts from POLICY_PROMPT_ARTIFACTS_ROOT when provided", () => {
     const baseline = loadPolicyPromptRuntimePacket({ forceReload: true });
     const tempRoot = mkdtempSync(path.join(tmpdir(), "ddai-policy-artifacts-"));

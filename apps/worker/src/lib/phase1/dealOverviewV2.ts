@@ -369,6 +369,36 @@ const REJECT_BLOCK_RE: RegExp[] = [
 
 const LEGAL_DISCLAIMER_BLOCK_RE = /\b(for\s+informational\s+purposes\s+only|not\s+(?:an\s+offer|a\s+solicitation)|does\s+not\s+constitute\s+an\s+offer|offer\s+to\s+sell|private\s+placement\s+memorandum|forward[-\s]*looking\s+statements?|accredited\s+investors?|securities\s+act|investment\s+advice|past\s+performance|risk\s+factors?)\b/i;
 
+function normalizeLegalDisclaimerText(value: string): string {
+	return sanitizeInlineText(value)
+		.toLowerCase()
+		.replace(/["'“”‘’`]/g, ' ')
+		.replace(/[^a-z0-9]+/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+function containsAlbuquerqueDisclaimerFamily(value: string): boolean {
+	const s = normalizeLegalDisclaimerText(value);
+	if (!s) return false;
+	const requiredFamilies: RegExp[] = [
+		/\bwhether to provide\b/,
+		/\ball or a portion of an investment\b/,
+		/\bthe recipient\b/,
+		/\bconfidential submission\b/,
+		/\bconfidential information\b/,
+		/\blimited use\b/,
+		/\breturn this confidential submission\b/,
+	];
+	return requiredFamilies.some((re) => re.test(s));
+}
+
+function isLegalDisclaimerBoilerplate(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	if (!s) return false;
+	return LEGAL_DISCLAIMER_BLOCK_RE.test(s) || containsAlbuquerqueDisclaimerFamily(s);
+}
+
 type CandidateSourceType = 'anchored' | 'tagline' | 'definition';
 type OverviewCandidate = {
 	page: number;
@@ -389,7 +419,7 @@ function isBlockedCandidate(value: string): { blocked: boolean; reasons: string[
 	if (!s) return { blocked: true, reasons: ['empty'] };
 
 	if (hasAny(METAPHOR_PHRASES, s)) reasons.push('metaphor');
-	if (LEGAL_DISCLAIMER_BLOCK_RE.test(s)) reasons.push('legal_disclaimer_boilerplate');
+	if (isLegalDisclaimerBoilerplate(s)) reasons.push('legal_disclaimer_boilerplate');
 	for (const re of REJECT_BLOCK_RE) {
 		if (re.test(s)) {
 			reasons.push('blocked_keyword');
@@ -1394,7 +1424,7 @@ function evaluateFallbackCandidate(raw: string): { ok: boolean; score: number; r
 	const s = sanitizeInlineText(raw);
 	let score = 0;
 	if (!s) return { ok: false, score, rejected_reason: 'empty' };
-	if (LEGAL_DISCLAIMER_BLOCK_RE.test(s)) return { ok: false, score, rejected_reason: 'legal_disclaimer_boilerplate' };
+	if (isLegalDisclaimerBoilerplate(s)) return { ok: false, score, rejected_reason: 'legal_disclaimer_boilerplate' };
 
 	// Reject OCR logo artifacts and short cover taglines (common on title slides).
 	if (looksLikeSpacedLogoArtifact(s)) return { ok: false, score, rejected_reason: 'spaced_logo_artifact' };

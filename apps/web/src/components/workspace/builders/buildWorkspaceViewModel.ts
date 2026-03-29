@@ -23,7 +23,7 @@
 
 import type { WorkspaceViewModel, WorkspaceHeaderVM, WorkspaceOverviewVM } from '../contracts/workspaceViewModel';
 import { buildSignalCards, toOverviewSignalData } from './buildSignalCards';
-import { getPolicyFamily } from '@dealdecision/core';
+import { getPolicyFamily } from '../../../lib/policyUtils';
 
 // ─── Input contract ──────────────────────────────────────────────────────────
 

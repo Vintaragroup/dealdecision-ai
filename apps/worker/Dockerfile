@@ -23,7 +23,6 @@ COPY tsconfig.base.json ./
 # Copy workspace packages + worker sources so `workspace:*` deps resolve
 COPY packages ./packages
 COPY apps/worker ./apps/worker
-COPY artifacts ./artifacts
 
 RUN pnpm install --frozen-lockfile
 
@@ -108,8 +107,7 @@ RUN apt-get update \
 
 COPY --from=build /app/apps/worker/dist ./dist
 COPY --from=build /app/apps/worker/package.json ./package.json
-COPY --from=deps /app/artifacts /app/artifacts
-COPY --from=deps /app/artifacts ./artifacts
+RUN mkdir -p /app/artifacts ./artifacts
 
 # pnpm workspace runtime deps (symlinks + .pnpm store live under /app/node_modules)
 COPY --from=deps /app/node_modules /app/node_modules

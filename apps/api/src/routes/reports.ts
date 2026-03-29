@@ -104,7 +104,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 11; // bumped: cash_outflow_operating recognized as burn_rate signal; Rule 4 derives burn from cash outflow; Rule 3 extended with opex fallback
+const REPORT_COMPILER_VERSION = 12; // bumped: conviction_v1 canonical contract added to compiler output and cache payload
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {

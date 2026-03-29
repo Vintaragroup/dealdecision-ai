@@ -30,8 +30,10 @@ import {
   type FinancialBreakdownV1,
   type UnderwritingReadinessV1,
 } from '../models/financial-breakdown-v1.js';
+import type { ConvictionV1 } from '../models/conviction-v1.js';
 import type { FinancialIntegrityV1 } from '../types/financial-integrity-v1.js';
 import { computeFinancialIntegrityV1 } from '../analyzers/financial-integrity-analyzer-v1.js';
+import { buildConvictionV1 } from './conviction-v1.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -53,6 +55,7 @@ type ReportDTO = {
   team_signal_v1?: TeamSignalProfileV1;
   /** Financial integrity cross-source analysis (completeness, discrepancy, anomalies). Always non-null: falls back to empty baseline when analyzer did not run or DIO predates this field. */
   financial_integrity_v1?: FinancialIntegrityV1;
+  conviction_v1?: ConvictionV1;
   structured_summary?: {
     raise: {
       value: string | null;
@@ -1710,6 +1713,16 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       } as any)
     : scoreExplanation;
 
+  const convictionV1 = buildConvictionV1({
+    selected_policy_id: (scoreExplanationAugmented as any)?.aggregation?.policy_id ?? null,
+    overall_score: overallScoreFinal,
+    recommendation,
+    score_explanation: scoreExplanationAugmented,
+    financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
+    team_signal_v1: teamSignal,
+  });
+
   return {
     dealId: dio.deal_id,
     generatedAt: new Date().toISOString(),
@@ -1724,6 +1737,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     market_accessibility_signal_v1: marketAccessibilitySignal,
     traction_signal_v1: tractionSignal,
     team_signal_v1: teamSignal,
+    conviction_v1: convictionV1,
     structured_summary: structuredSummary,
     grade,
     recommendation,
@@ -2027,6 +2041,19 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     ? { ...existingExplanation, stage_weighted_v1: stageWeighted }
     : existingExplanation;
 
+  const convictionV1 = buildConvictionV1({
+    selected_policy_id: scoreExplanationAugmented?.aggregation?.policy_id ?? null,
+    overall_score: (typeof (base as any)?.overallScore === 'number' && Number.isFinite((base as any).overallScore))
+      ? (base as any).overallScore
+      : null,
+    recommendation: (base as any)?.recommendation ?? null,
+    score_explanation: scoreExplanationAugmented,
+    financial_coverage_v1: financialCoverage,
+    capital_logic_v1: capitalLogic,
+    team_signal_v1: teamSignal,
+    financial_breakdown_v1: financialBreakdown,
+  });
+
 	return {
 		...base,
     funding_stage_v1: fundingStage,
@@ -2039,6 +2066,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     market_accessibility_signal_v1: marketAccessibilitySignal,
     traction_signal_v1: tractionSignal,
     team_signal_v1: teamSignal,
+    conviction_v1: convictionV1,
     structured_summary: structuredSummary,
     sections,
     financial_integrity_v1: financialIntegrityV1,

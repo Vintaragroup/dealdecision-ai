@@ -288,9 +288,10 @@ describe("conviction_v1 phase3 golden snapshots", () => {
     const conviction = buildConvictionV1(baseArgs("operating_startup_revenue_v1"));
     const score = conviction.conviction_score_0_100;
 
-    expect(Math.abs(score - 80)).toBeLessThanOrEqual(2);
+    expect(score).toBeGreaterThanOrEqual(92);
+    expect(score).toBeLessThanOrEqual(96);
     expect(conviction.top_positive_contributors.length).toBeGreaterThan(0);
-    expect(conviction.recommendation_posture).toBe("yes");
+    expect(conviction.recommendation_posture).toBe("strong_yes");
     expect(normalizeForSnapshot(conviction)).toMatchSnapshot("startup_raise");
   });
 
@@ -301,9 +302,10 @@ describe("conviction_v1 phase3 golden snapshots", () => {
     } as any);
     const score = conviction.conviction_score_0_100;
 
-    expect(Math.abs(score - 79)).toBeLessThanOrEqual(2);
+    expect(score).toBeGreaterThanOrEqual(91);
+    expect(score).toBeLessThanOrEqual(96);
     expect(conviction.top_positive_contributors.length).toBeGreaterThan(0);
-    expect(conviction.recommendation_posture).toBe("yes");
+    expect(conviction.recommendation_posture).toBe("strong_yes");
     expect(normalizeForSnapshot(conviction)).toMatchSnapshot("real_estate_preferred_equity");
   });
 
@@ -321,9 +323,10 @@ describe("conviction_v1 phase3 golden snapshots", () => {
     } as any);
     const score = conviction.conviction_score_0_100;
 
-    expect(Math.abs(score - 80)).toBeLessThanOrEqual(2);
+    expect(score).toBeGreaterThanOrEqual(92);
+    expect(score).toBeLessThanOrEqual(96);
     expect(conviction.top_positive_contributors.length).toBeGreaterThan(0);
-    expect(conviction.recommendation_posture).toBe("yes");
+    expect(conviction.recommendation_posture).toBe("strong_yes");
     expect(normalizeForSnapshot(conviction)).toMatchSnapshot("execution_ready_startup");
   });
 });

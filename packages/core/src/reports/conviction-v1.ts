@@ -1,6 +1,7 @@
 import { getDealPolicy } from "../classification/deal-policy-registry.js";
 import { getScoreBandV2 } from "../scoring/score-bands-v2.js";
 import { getStageWeightMatrix } from "../scoring/stage-weight-matrix.js";
+import { getConvictionCalibration } from "./conviction-calibration.js";
 import type {
   ConvictionContributorV1,
   ConvictionContradictionV1,
@@ -62,6 +63,34 @@ const contradictionCodes = new Set([
   "no_technical_lead",
   "no_gtm_lead",
 ]);
+
+const highSeverityTerms = [
+  "critical",
+  "material",
+  "fraud",
+  "misstatement",
+  "default",
+  "insolv",
+  "covenant breach",
+  "contractual inconsistency",
+];
+
+const mediumSeverityTerms = [
+  "inconsistent",
+  "conflict",
+  "discrep",
+  "unclear",
+  "unsupported",
+  "mismatch",
+  "gap",
+];
+
+const classifyContradictionSeverity = (text: string, fallback: "low" | "medium"): "low" | "medium" | "high" => {
+  const t = text.toLowerCase();
+  if (highSeverityTerms.some((term) => t.includes(term))) return "high";
+  if (mediumSeverityTerms.some((term) => t.includes(term))) return "medium";
+  return fallback;
+};
 
 const mapPostureFromBand = (band: string): string => {
   if (band === "hard_pass") return "pass";
@@ -154,7 +183,7 @@ const buildContradictions = (scoreExplanation: any): ConvictionContradictionV1[]
         out.push({
           code: `red_flag_${key}`,
           text,
-          severity: "medium",
+          severity: classifyContradictionSeverity(text, "medium"),
           evidence_refs: Array.isArray(comp?.evidence_ids) ? uniqueStrings(comp.evidence_ids.map((x: any) => String(x))) : [],
           source: `score_explanation.components.${key}.red_flags`,
         });
@@ -170,10 +199,11 @@ const buildContradictions = (scoreExplanation: any): ConvictionContradictionV1[]
     for (const note of notes) {
       const code = asString(note);
       if (!code || !contradictionCodes.has(code)) continue;
+      const contradictionText = `${componentLabel[String(dim?.key)] ?? String(dim?.key)} has conflicting support (${code}).`;
       out.push({
         code,
-        text: `${componentLabel[String(dim?.key)] ?? String(dim?.key)} has conflicting support (${code}).`,
-        severity: "low",
+        text: contradictionText,
+        severity: classifyContradictionSeverity(contradictionText, "low"),
         evidence_refs: Array.isArray(dim?.evidence_ids) ? uniqueStrings(dim.evidence_ids.map((x: any) => String(x))) : [],
         source: "score_explanation.stage_weighted_v1.dimensions.notes",
       });
@@ -217,6 +247,8 @@ export function buildConvictionV1(args: {
     stageRaw === "pre_seed" || stageRaw === "seed" || stageRaw === "series_a" || stageRaw === "growth"
       ? stageRaw
       : "unknown";
+
+  const calibration = getConvictionCalibration(selectedPolicyId, stage);
 
   const contradictions = buildContradictions(scoreExplanation);
 
@@ -328,11 +360,21 @@ export function buildConvictionV1(args: {
   const evidenceQualityCoverage = clamp01(asNumber(totals?.coverage_ratio) ?? 0.5);
 
   const contradictionWeight = contradictions.reduce((sum, c) => {
-    const sev = c.severity === "high" ? 1 : c.severity === "medium" ? 0.7 : 0.45;
+    const sev = c.severity === "high"
+      ? calibration.contradiction_severity_weight.high
+      : c.severity === "medium"
+        ? calibration.contradiction_severity_weight.medium
+        : calibration.contradiction_severity_weight.low;
     return sum + sev;
   }, 0);
   const contradictionSignal = clamp01(contradictionWeight / 4);
   const contradictionCoverage = clamp01(contradictions.length > 0 ? 0.85 : 0.2);
+
+  const contradictionConfidenceProxy = clamp01(
+    asNumber(scoreExplanation?.totals?.confidence_score)
+    ?? asNumber(scoreExplanation?.totals?.evidence_factor)
+    ?? 0.6,
+  );
 
   const familyInputs: ConvictionInputsV1 = {
     financial_truth: mkFamily(
@@ -508,13 +550,19 @@ export function buildConvictionV1(args: {
   const positiveIndex = weightedAverage(positiveFamilies, (f) => buildFamilyScore(f.signal_strength, f.confidence, f.coverage));
 
   const dragIndex = weightedAverage(dragFamilies, (f) => {
-    if (f.family === "coverage") return clamp01(1 - f.signal_strength);
-    if (f.family === "evidence_quality") return clamp01(1 - f.signal_strength);
-    if (f.family === "financial_truth") {
-      if (f.status === "unknown") return 0.18;
-      return familyDragScore(f.status, 1 - f.signal_strength, f.confidence);
+    if (f.family === "coverage") {
+      return clamp01((1 - f.signal_strength) * calibration.coverage_drag_scale * calibration.stage_profile.coverage_drag_multiplier);
     }
-    return familyDragScore(f.status, f.signal_strength, f.confidence);
+    if (f.family === "evidence_quality") {
+      return clamp01((1 - f.signal_strength) * calibration.evidence_quality_drag_scale * calibration.stage_profile.coverage_drag_multiplier);
+    }
+    if (f.family === "financial_truth") {
+      if (f.status === "unknown") {
+        return clamp01(calibration.financial_unknown_drag * calibration.stage_profile.unknown_drag_multiplier);
+      }
+      return familyDragScore(f.status, 1 - f.signal_strength, f.confidence, calibration.unknown_drag_base, calibration.contradicted_drag_base, calibration.stage_profile.unknown_drag_multiplier);
+    }
+    return familyDragScore(f.status, f.signal_strength, f.confidence, calibration.unknown_drag_base, calibration.contradicted_drag_base, calibration.stage_profile.unknown_drag_multiplier);
   });
 
   const coverageRatio = weightedAverage(
@@ -545,21 +593,45 @@ export function buildConvictionV1(args: {
     (f) => f.confidence,
   );
 
-  const contradictionIndex = clamp01(
-    0.75 * contradictionSignal + 0.25 * (contradictions.length > 0 ? 1 : 0),
+  const contradictionConfidenceMultiplier = contradictionConfidenceProxy < calibration.contradiction_low_confidence_threshold
+    ? 0.70
+    : 1;
+  const contradictionIndexRaw = clamp01(
+    (0.80 * contradictionSignal + 0.20 * (contradictions.length > 0 ? 1 : 0))
+    * contradictionConfidenceMultiplier,
+  );
+  const contradictionIndex = contradictionConfidenceProxy < calibration.contradiction_low_confidence_threshold
+    ? Math.min(contradictionIndexRaw, calibration.contradiction_low_confidence_cap)
+    : contradictionIndexRaw;
+
+  const baseScore = clampScore(
+    100 * (calibration.base_intercept + (calibration.positive_weight * positiveIndex) - (calibration.drag_weight * dragIndex)),
+  );
+  const modulation = clamp01(
+    (calibration.confidence_modulation_floor + (1 - calibration.confidence_modulation_floor) * confidence)
+    * (calibration.coverage_modulation_floor + (1 - calibration.coverage_modulation_floor) * coverageRatio),
   );
 
-  const baseScore = clampScore(100 * (0.14 + (0.80 * positiveIndex) - (0.52 * dragIndex)));
-  const modulation = clamp01((0.60 + 0.40 * confidence) * (0.72 + 0.28 * coverageRatio));
+  let convictionScore = clampScore(
+    (baseScore * modulation)
+    - (contradictionIndex * calibration.contradiction_penalty_weight * calibration.stage_profile.contradiction_penalty_multiplier),
+  );
 
-  let convictionScore = clampScore((baseScore * modulation) - (contradictionIndex * 18));
-
-  if (contradictionIndex >= 0.70) convictionScore = Math.min(convictionScore, 54);
+  if (contradictionIndex >= 0.82) convictionScore = Math.min(convictionScore, 46);
   if (familyInputs.risk_dependencies.status === "contradicted" && familyInputs.risk_dependencies.signal_strength >= 0.70) {
-    convictionScore = Math.min(convictionScore, 49);
+    convictionScore = Math.min(convictionScore, 45);
   }
-  if (familyInputs.financial_truth.status === "unknown" && coverageRatio < 0.35) {
-    convictionScore = Math.min(convictionScore, 64);
+  if (familyInputs.financial_truth.status === "unknown" && coverageRatio < 0.25 && contradictionIndex > 0.45) {
+    convictionScore = Math.min(convictionScore, 58);
+  }
+
+  const qualifiesForPlausibleFloor =
+    positiveIndex >= calibration.stage_profile.floor_positive_index_min
+    && contradictionIndex <= calibration.stage_profile.floor_max_contradiction_index
+    && !(familyInputs.risk_dependencies.status === "contradicted" && familyInputs.risk_dependencies.signal_strength >= 0.70);
+
+  if (qualifiesForPlausibleFloor) {
+    convictionScore = Math.max(convictionScore, calibration.stage_profile.plausible_score_floor);
   }
 
   const band = getScoreBandV2(convictionScore);
@@ -573,7 +645,17 @@ export function buildConvictionV1(args: {
     let delta = (positiveContribution - 0.5) * (w * 100);
 
     if (key === "risk_dependencies" || key === "contradictions") {
-      delta = -1 * (familyDragScore(f.status, f.signal_strength, f.confidence) * (w * 100));
+      delta = -1 * (
+        familyDragScore(
+          f.status,
+          f.signal_strength,
+          f.confidence,
+          calibration.unknown_drag_base,
+          calibration.contradicted_drag_base,
+          calibration.stage_profile.unknown_drag_multiplier,
+        )
+        * (w * 100)
+      );
     }
     if (key === "coverage" || key === "evidence_quality") {
       delta = (f.signal_strength - 0.5) * (w * 80);
@@ -834,9 +916,16 @@ const buildPolicyFamilyWeights = (policyId: string | null, stage: "pre_seed" | "
 const buildFamilyScore = (signalStrength: number, confidence: number, coverage: number): number =>
   clamp01(0.55 * signalStrength + 0.25 * confidence + 0.20 * coverage);
 
-const familyDragScore = (status: ConvictionInputFamilyV1["status"], strength: number, confidence: number): number => {
-  if (status === "contradicted") return clamp01(0.55 + 0.45 * strength);
-  if (status === "unknown") return clamp01(0.08 + 0.12 * (1 - confidence));
+const familyDragScore = (
+  status: ConvictionInputFamilyV1["status"],
+  strength: number,
+  confidence: number,
+  unknownDragBase: number,
+  contradictedDragBase: number,
+  unknownDragMultiplier: number,
+): number => {
+  if (status === "contradicted") return clamp01(contradictedDragBase + ((1 - contradictedDragBase) * strength));
+  if (status === "unknown") return clamp01((unknownDragBase * (1.15 - confidence)) * unknownDragMultiplier);
   return 0;
 };
 

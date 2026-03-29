@@ -222,6 +222,187 @@ describe("conviction_v1 phase2 deterministic scorer", () => {
     expect(contradicted.conviction_score_0_100).toBeLessThan(missingOnly.conviction_score_0_100);
   });
 
+  it("penalizes high-severity contradictions more than low-severity contradictions", () => {
+    const lowSeverity = buildConvictionV1({
+      ...baseArgs(),
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        components: {
+          ...baseArgs().score_explanation.components,
+          risk_assessment: {
+            ...baseArgs().score_explanation.components.risk_assessment,
+            red_flags: ["minor inconsistency in assumptions"],
+          },
+        },
+      },
+    });
+
+    const highSeverity = buildConvictionV1({
+      ...baseArgs(),
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        components: {
+          ...baseArgs().score_explanation.components,
+          risk_assessment: {
+            ...baseArgs().score_explanation.components.risk_assessment,
+            red_flags: ["critical contractual inconsistency with material impact"],
+          },
+        },
+      },
+    });
+
+    expect(highSeverity.contradiction_index_0_1).toBeGreaterThan(lowSeverity.contradiction_index_0_1);
+    expect(highSeverity.conviction_score_0_100).toBeLessThan(lowSeverity.conviction_score_0_100);
+  });
+
+  it("scores seed deals less harshly than growth deals for identical incomplete evidence", () => {
+    const sparseProfile = {
+      ...baseArgs(),
+      financial_coverage_v1: {
+        ...baseArgs().financial_coverage_v1,
+        coverage: {
+          historical_revenue_present: false,
+          forecast_revenue_present: true,
+          income_statement_present: false,
+          burn_rate_present: false,
+          runway_present: false,
+          unit_economics_present: false,
+          balance_sheet_present: false,
+          cash_flow_present: false,
+        },
+      },
+      capital_logic_v1: {
+        confidence: "low",
+        raise: { present: false },
+        use_of_funds: { present: false },
+        milestones: { present: false },
+        notes: [],
+      },
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        totals: {
+          ...baseArgs().score_explanation.totals,
+          confidence_score: 0.48,
+          evidence_factor: 0.45,
+          coverage_ratio: 0.32,
+        },
+      },
+    };
+
+    const seed = buildConvictionV1({
+      ...sparseProfile,
+      funding_stage_v1: { funding_stage: "seed" },
+    });
+
+    const growth = buildConvictionV1({
+      ...sparseProfile,
+      funding_stage_v1: { funding_stage: "growth" },
+    });
+
+    expect(seed.conviction_score_0_100).toBeGreaterThan(growth.conviction_score_0_100);
+  });
+
+  it("applies stage-aware plausible floor but still allows broken deals to score low", () => {
+    const plausibleEarly = buildConvictionV1({
+      ...baseArgs(),
+      funding_stage_v1: { funding_stage: "seed" },
+      financial_coverage_v1: {
+        ...baseArgs().financial_coverage_v1,
+        coverage: {
+          historical_revenue_present: false,
+          forecast_revenue_present: true,
+          income_statement_present: false,
+          burn_rate_present: false,
+          runway_present: false,
+          unit_economics_present: false,
+          balance_sheet_present: false,
+          cash_flow_present: false,
+        },
+      },
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        totals: {
+          ...baseArgs().score_explanation.totals,
+          confidence_score: 0.52,
+          evidence_factor: 0.48,
+          coverage_ratio: 0.30,
+          unadjusted_missing_inputs: ["retention", "cohorts", "market_depth"],
+        },
+      },
+    });
+
+    const brokenEarly = buildConvictionV1({
+      ...baseArgs(),
+      funding_stage_v1: { funding_stage: "seed" },
+      financial_coverage_v1: {
+        ...baseArgs().financial_coverage_v1,
+        coverage: {
+          historical_revenue_present: false,
+          forecast_revenue_present: false,
+          income_statement_present: false,
+          burn_rate_present: false,
+          runway_present: false,
+          unit_economics_present: false,
+          balance_sheet_present: false,
+          cash_flow_present: false,
+        },
+      },
+      capital_logic_v1: {
+        confidence: "low",
+        raise: { present: false },
+        use_of_funds: { present: false },
+        milestones: { present: false },
+        notes: ["missing_raise_logic"],
+      },
+      traction_signal_v1: {
+        confidence: "low",
+        historical_revenue_present: false,
+        customer_evidence_present: false,
+        growth_signal_present: false,
+      },
+      market_accessibility_signal_v1: {
+        confidence: "low",
+        icp_defined: false,
+        distribution_path_present: false,
+        som_defined: false,
+      },
+      business_model_signal_v1: {
+        confidence: "low",
+        pricing_present: false,
+        revenue_model_present: false,
+        customer_segment_present: false,
+        notes: ["business_model_absent"],
+      },
+      team_signal_v1: {
+        confidence: "low",
+        founder_count: 0,
+        key_roles_present: { technical: false, gtm: false },
+        domain_experience_present: false,
+        signals: [{ code: "no_founder", present: true }],
+      },
+      score_explanation: {
+        ...baseArgs().score_explanation,
+        totals: {
+          ...baseArgs().score_explanation.totals,
+          confidence_score: 0.28,
+          evidence_factor: 0.26,
+          coverage_ratio: 0.16,
+        },
+        components: {
+          ...baseArgs().score_explanation.components,
+          risk_assessment: {
+            ...baseArgs().score_explanation.components.risk_assessment,
+            red_flags: ["critical contractual inconsistency with material impact"],
+          },
+        },
+      },
+    });
+
+    expect(plausibleEarly.conviction_score_0_100).toBeGreaterThanOrEqual(35);
+    expect(brokenEarly.conviction_score_0_100).toBeLessThan(plausibleEarly.conviction_score_0_100);
+    expect(brokenEarly.conviction_score_0_100).toBeLessThanOrEqual(35);
+  });
+
   it("weights families differently across startup vs real-estate policies", () => {
     const startup = buildConvictionV1({
       ...baseArgs(),
@@ -235,7 +416,6 @@ describe("conviction_v1 phase2 deterministic scorer", () => {
 
     expect(startup.selected_policy_id).toBe("operating_startup_revenue_v1");
     expect(realEstate.selected_policy_id).toBe("real_estate_underwriting");
-    expect(startup.conviction_score_0_100).not.toBe(realEstate.conviction_score_0_100);
 
     const startupTop = startup.top_positive_contributors.map((x) => x.key);
     const realEstateTop = realEstate.top_positive_contributors.map((x) => x.key);

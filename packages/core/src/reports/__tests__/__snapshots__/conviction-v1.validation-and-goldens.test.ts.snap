@@ -5,8 +5,8 @@ exports[`conviction_v1 phase3 golden snapshots locks execution_ready_startup gol
   "confidence_0_1": 0.8382211538461537,
   "contradiction_index_0_1": 0,
   "contradictions": [],
-  "conviction_band": "fund_track",
-  "conviction_score_0_100": 80,
+  "conviction_band": "fund_confident",
+  "conviction_score_0_100": 95,
   "coverage_ratio_0_1": 0.9706036745406823,
   "inputs": {
     "capital_structure": {
@@ -227,7 +227,7 @@ exports[`conviction_v1 phase3 golden snapshots locks execution_ready_startup gol
       },
     ],
   },
-  "recommendation_posture": "yes",
+  "recommendation_posture": "strong_yes",
   "required_next_checks": [
     {
       "evidence_refs": [],
@@ -238,7 +238,7 @@ exports[`conviction_v1 phase3 golden snapshots locks execution_ready_startup gol
   "schema_version": "conviction_v1",
   "selected_policy_id": "execution_ready_v1",
   "summary": {
-    "headline": "Conviction 80/100 (Fund & Track)",
+    "headline": "Conviction 95/100 (Fund (High Confidence))",
     "notes": [
       "phase2_native_deterministic_conviction",
       "policy=execution_ready_v1",
@@ -303,8 +303,8 @@ exports[`conviction_v1 phase3 golden snapshots locks real_estate_preferred_equit
   "confidence_0_1": 0.8373713751169316,
   "contradiction_index_0_1": 0,
   "contradictions": [],
-  "conviction_band": "fund_track",
-  "conviction_score_0_100": 79,
+  "conviction_band": "fund_confident",
+  "conviction_score_0_100": 94,
   "coverage_ratio_0_1": 0.9707266074228958,
   "inputs": {
     "capital_structure": {
@@ -525,7 +525,7 @@ exports[`conviction_v1 phase3 golden snapshots locks real_estate_preferred_equit
       },
     ],
   },
-  "recommendation_posture": "yes",
+  "recommendation_posture": "strong_yes",
   "required_next_checks": [
     {
       "evidence_refs": [],
@@ -536,7 +536,7 @@ exports[`conviction_v1 phase3 golden snapshots locks real_estate_preferred_equit
   "schema_version": "conviction_v1",
   "selected_policy_id": "real_estate_underwriting",
   "summary": {
-    "headline": "Conviction 79/100 (Fund & Track)",
+    "headline": "Conviction 94/100 (Fund (High Confidence))",
     "notes": [
       "phase2_native_deterministic_conviction",
       "policy=real_estate_underwriting",
@@ -602,8 +602,8 @@ exports[`conviction_v1 phase3 golden snapshots locks startup_raise golden behavi
   "confidence_0_1": 0.8397712274527058,
   "contradiction_index_0_1": 0,
   "contradictions": [],
-  "conviction_band": "fund_track",
-  "conviction_score_0_100": 80,
+  "conviction_band": "fund_confident",
+  "conviction_score_0_100": 95,
   "coverage_ratio_0_1": 0.9736222326895903,
   "inputs": {
     "capital_structure": {
@@ -824,7 +824,7 @@ exports[`conviction_v1 phase3 golden snapshots locks startup_raise golden behavi
       },
     ],
   },
-  "recommendation_posture": "yes",
+  "recommendation_posture": "strong_yes",
   "required_next_checks": [
     {
       "evidence_refs": [],
@@ -835,7 +835,7 @@ exports[`conviction_v1 phase3 golden snapshots locks startup_raise golden behavi
   "schema_version": "conviction_v1",
   "selected_policy_id": "operating_startup_revenue_v1",
   "summary": {
-    "headline": "Conviction 80/100 (Fund & Track)",
+    "headline": "Conviction 95/100 (Fund (High Confidence))",
     "notes": [
       "phase2_native_deterministic_conviction",
       "policy=operating_startup_revenue_v1",

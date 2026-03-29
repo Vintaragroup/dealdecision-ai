@@ -3970,21 +3970,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return { product, market, businessModel, raise, realEstateSemanticDiagnostics: null };
     }
 
-    const assetFacilitySelection = selectBestRealEstateSemanticField('asset_facility', [
+    const assetFacilityCandidates = [
       { value: ovFacts?.product_solution?.value ?? null, source: 'governed_ui_copy.product_solution', lane: 'governed' },
       { value: authoritativeProductTextV1, source: 'report.structured_summary.product_summary_v1', lane: 'deterministic' },
       { value: canonicalProduct, source: 'report.deal_summary_v1.product.text', lane: 'deterministic' },
       { value: overviewProductCanonical, source: 'overview.product.canonical', lane: 'deterministic' },
       { value: product.value, source: 'governedKeyFacts.product', lane: product.provenance.source === 'governed' ? 'governed' : 'deterministic' },
-    ]);
+    ] as const;
 
-    const submarketDemandSelection = selectBestRealEstateSemanticField('submarket_demand', [
+    const assetFacilitySelection = selectBestRealEstateSemanticField('asset_facility', [...assetFacilityCandidates]);
+
+    const submarketDemandCandidates = [
       { value: ovFacts?.market_icp?.value ?? null, source: 'governed_ui_copy.market_icp', lane: 'governed' },
       { value: authoritativeMarketTextV1, source: 'report.structured_summary.market_summary_v1', lane: 'deterministic' },
       { value: canonicalMarket, source: 'report.deal_summary_v1.market_target.text', lane: 'deterministic' },
       { value: overviewMarketIcpCanonical, source: 'overview.market.canonical', lane: 'deterministic' },
       { value: market.value, source: 'governedKeyFacts.market', lane: market.provenance.source === 'governed' ? 'governed' : 'deterministic' },
-    ]);
+    ] as const;
+
+    // Prevent duplicated top-line semantics where Asset/Facility and Submarket/Demand
+    // resolve to the same normalized text.
+    const submarketDemandSelection = selectBestRealEstateSemanticField('submarket_demand', [...submarketDemandCandidates], {
+      excludeValues: assetFacilitySelection.value ? [assetFacilitySelection.value] : [],
+    });
 
     const dealStructureSelection = selectBestRealEstateSemanticField('deal_structure', [
       { value: ovFacts?.raise?.value ?? null, source: 'governed_ui_copy.raise', lane: 'governed' },
@@ -4046,6 +4054,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         assetFacility: assetFacilitySelection,
         submarketDemand: submarketDemandSelection,
         dealStructure: dealStructureSelection,
+        duplicateSuppression: {
+          applied: Boolean(assetFacilitySelection.value),
+          excludedFromSubmarket: assetFacilitySelection.value ? [assetFacilitySelection.value] : [],
+        },
       },
     };
   }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, selectedHeader.business_model.value, selectedHeader.raise.value, authoritativeProductTextV1, authoritativeMarketTextV1, canonicalProduct, canonicalMarket, investorInsights.report, looksRealEstate, reportView.businessModel]);
@@ -7319,9 +7331,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 });
 
                 // Key facts (authoritative deterministic view)
+                const keyFactsProductLabel = looksRealEstate ? 'Asset / Facility (key facts)' : 'Product (key facts)';
+                const keyFactsMarketLabel = looksRealEstate ? 'Submarket / Demand (key facts)' : 'Market / ICP (key facts)';
+
                 push({
                   key: 'keyFacts.product',
-                  label: 'Product (key facts)',
+                  label: keyFactsProductLabel,
                   status: workspaceOverviewModel.keyFacts.product.origin === 'missing'
                     ? 'missing'
                     : hasText(workspaceOverviewModel.keyFacts.product.value)
@@ -7336,7 +7351,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
                 push({
                   key: 'keyFacts.market',
-                  label: 'Market / ICP (key facts)',
+                  label: keyFactsMarketLabel,
                   status: workspaceOverviewModel.keyFacts.market.origin === 'missing'
                     ? 'missing'
                     : hasText(workspaceOverviewModel.keyFacts.market.value)

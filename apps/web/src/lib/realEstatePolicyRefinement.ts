@@ -28,9 +28,22 @@ const isNonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim(
 
 const wordCount = (value: string): number => value.trim().split(/\s+/).filter(Boolean).length;
 
+const normalizeForComparison = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
 function laneBonus(lane: RealEstateSemanticCandidate['lane']): number {
   if (lane === 'governed') return 8;
   if (lane === 'deterministic') return 5;
+  return 1;
+}
+
+function lanePriority(lane: RealEstateSemanticCandidate['lane']): number {
+  if (lane === 'governed') return 3;
+  if (lane === 'deterministic') return 2;
   return 1;
 }
 
@@ -76,20 +89,36 @@ function scoreCandidate(kind: RealEstateSemanticKind, candidate: RealEstateSeman
 export function selectBestRealEstateSemanticField(
   kind: RealEstateSemanticKind,
   candidates: RealEstateSemanticCandidate[],
+  options?: { excludeValues?: string[] },
 ): RealEstateSemanticSelection {
   const rejected: Array<{ source: string; reason: string }> = [];
+  const excluded = new Set(
+    (options?.excludeValues ?? [])
+      .filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      .map((x) => normalizeForComparison(x)),
+  );
 
   const scored = candidates
     .filter((c) => isNonEmpty(c.value))
-    .map((c) => {
+    .map((c, index) => {
+      const normalized = normalizeForComparison(String(c.value ?? ''));
+      if (normalized && excluded.has(normalized)) {
+        rejected.push({ source: c.source, reason: 'duplicate_value' });
+        return { c, index, score: -999, rejectReason: 'duplicate_value' as string | null };
+      }
       const scoredCandidate = scoreCandidate(kind, c);
       if (scoredCandidate.rejectReason) {
         rejected.push({ source: c.source, reason: scoredCandidate.rejectReason });
       }
-      return { c, ...scoredCandidate };
+      return { c, index, ...scoredCandidate };
     })
     .filter((x) => x.rejectReason == null)
-    .sort((a, b) => b.score - a.score);
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const laneDelta = lanePriority(b.c.lane) - lanePriority(a.c.lane);
+      if (laneDelta !== 0) return laneDelta;
+      return a.index - b.index;
+    });
 
   if (scored.length === 0) {
     return {

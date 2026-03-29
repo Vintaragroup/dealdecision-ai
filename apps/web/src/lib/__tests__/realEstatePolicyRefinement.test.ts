@@ -48,6 +48,41 @@ describe('selectBestRealEstateSemanticField', () => {
     expect(result.value).toBeNull();
     expect(result.lane).toBe('missing');
   });
+
+  test('suppresses duplicates when excluded values are provided', () => {
+    const result = selectBestRealEstateSemanticField(
+      'submarket_demand',
+      [
+        {
+          value: 'Build-to-suit 48-bed inpatient rehabilitation facility in Albuquerque',
+          source: 'market-candidate-duplicate',
+          lane: 'governed',
+        },
+        {
+          value: 'Under-supplied submarket with strong referral demand from nearby hospitals',
+          source: 'market-candidate-unique',
+          lane: 'deterministic',
+        },
+      ],
+      {
+        excludeValues: ['Build-to-suit 48-bed inpatient rehabilitation facility in Albuquerque'],
+      },
+    );
+
+    expect(result.value).toContain('Under-supplied submarket');
+    expect(result.rejected.some((r) => r.source === 'market-candidate-duplicate' && r.reason === 'duplicate_value')).toBe(true);
+  });
+
+  test('uses lane and input order as deterministic tie-breaks', () => {
+    const result = selectBestRealEstateSemanticField('asset_facility', [
+      { value: 'Single-tenant healthcare facility with long-term lease', source: 'det-a', lane: 'deterministic' },
+      { value: 'Single-tenant healthcare facility with long-term lease', source: 'gov-b', lane: 'governed' },
+      { value: 'Single-tenant healthcare facility with long-term lease', source: 'gov-c', lane: 'governed' },
+    ]);
+
+    expect(result.source).toBe('gov-b');
+    expect(result.lane).toBe('governed');
+  });
 });
 
 describe('applyPolicyAwareAdvisoryAsks', () => {

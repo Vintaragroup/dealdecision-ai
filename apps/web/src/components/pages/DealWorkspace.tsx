@@ -46,6 +46,7 @@ import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, a
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
+import { getPolicyFamily, getPolicyScoreSectionLabel, resolveSelectedPolicyIdFromAny } from '@dealdecision/core';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { derivePhaseBInsights } from '../../lib/phaseb-findings';
@@ -1349,6 +1350,50 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const executiveSummaryV1 = (dealFromApi as any)?.ui?.executiveSummary as any;
 	const dealSummaryV2 = (dealFromApi as any)?.ui?.dealSummaryV2 as any;
   const fundabilityV1 = (dealFromApi as any)?.fundability_v1 as any;
+  const selectedPolicyResolution = useMemo(() => {
+    const fromDeal = resolveSelectedPolicyIdFromAny(dealFromApi as any);
+    if (fromDeal.policyId) return { ...fromDeal, payload: 'deal' as const };
+    const fromReport = resolveSelectedPolicyIdFromAny(reportFromApi as any);
+    if (fromReport.policyId) return { ...fromReport, payload: 'report' as const };
+    const fromEnvelope = resolveSelectedPolicyIdFromAny(reportEnvelope as any);
+    if (fromEnvelope.policyId) return { ...fromEnvelope, payload: 'report_envelope' as const };
+    return { ...fromEnvelope, payload: 'none' as const };
+  }, [dealFromApi, reportFromApi, reportEnvelope]);
+  const selectedPolicyId = selectedPolicyResolution.policyId;
+
+  useEffect(() => {
+    if (selectedPolicyResolution.source === 'not_found') {
+      debugLogger.logFallbackData(
+        'DealWorkspace',
+        'selectedPolicyId',
+        null,
+        'No deterministic selected policy field found in deal/report/report_envelope payloads'
+      );
+      return;
+    }
+    if (selectedPolicyResolution.usedFallback) {
+      debugLogger.logFallbackData(
+        'DealWorkspace',
+        'selectedPolicyId',
+        selectedPolicyResolution.policyId,
+        `Resolved via fallback source ${selectedPolicyResolution.source} from ${selectedPolicyResolution.payload}`
+      );
+      return;
+    }
+    debugLogger.logComputedData(
+      'DealWorkspace',
+      'selectedPolicyId',
+      selectedPolicyResolution.policyId,
+      `Resolved from ${selectedPolicyResolution.source} in ${selectedPolicyResolution.payload}`
+    );
+  }, [
+    selectedPolicyResolution.policyId,
+    selectedPolicyResolution.source,
+    selectedPolicyResolution.payload,
+    selectedPolicyResolution.usedFallback,
+  ]);
+  const policyFamily = useMemo(() => getPolicyFamily(selectedPolicyId), [selectedPolicyId]);
+  const isStartupPolicySchema = policyFamily === 'startup' || policyFamily === 'other';
 
   // Canonical Phase 1 signals source
   const phase1Signals = ((dealFromApi as any)?.phase1?.executive_summary_v2?.signals
@@ -1382,9 +1427,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         case 'icp':
           return 'ICP';
         case 'business_model':
-          return 'Business model';
+          return getPolicyScoreSectionLabel(selectedPolicyId, 'business_model');
         case 'traction':
-          return 'Traction';
+          return getPolicyScoreSectionLabel(selectedPolicyId, 'traction');
         case 'risks':
           return 'Risks';
         case 'team':
@@ -2799,6 +2844,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const metricText = collectMetricText();
   const archetypeValue = typeof businessArchetypeV1?.value === 'string' ? businessArchetypeV1.value.toLowerCase() : '';
   const looksRealEstate =
+    policyFamily === 'real_estate' ||
     archetypeValue.includes('real_estate') ||
     /\breal\s+estate\b/i.test(String(authoritativeBusinessModel.value ?? '')) ||
     /\b(real_estate|preferred\s+equity|offering\s+memorandum|cap\s*rate|noi|ltv|dscr)\b/i.test(metricText);
@@ -3006,7 +3052,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const topSectionRaise = pickMoney();
   const topSectionRevenue = looksRealEstate
-    ? '—'
+    ? pickValue(/\bnoi\b[^\d\$]{0,24}\$?([\d,]+(?:\.\d+)?)/i, (m) => `$${m[1]}`)
     : pickValue(/\b(revenue|arr|mrr)\b[\s:,-]{0,12}(\$?\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?)\b/i, (m) => m[2].replace(/\s+/g, ' ').trim());
   const topSectionGrowth = looksRealEstate
     ? pickValue(/\b(?:target\s+)?irr\b[^\d]{0,24}(\d{1,2}(?:\.\d+)?)\s*%/i, (m) => `${m[1]}%`)
@@ -4770,6 +4816,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     confidenceBand: decisionTileConfidenceBand,
     coverageRatio: scoreExplanationV1?.coverage_ratio ?? null,
     evidenceCoverage: vmEvidenceCoverage,
+    selectedPolicyId,
     governedDealOneLiner: governedDealOneLinerDisplay,
     governedProduct: governedKeyFacts.product.value,
     governedMarket: governedKeyFacts.market.value,
@@ -4778,13 +4825,23 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     selectedHeaderReady: selectedHeader.ready,
     raiseValue: selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null,
     raiseLabel: selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null,
-    revenueValue: selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null,
+    revenueValue: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null)
+      : (topSectionRevenue !== '—' ? topSectionRevenue : null),
     revenueTileLabel: revenueCoveragePolicy.kpiTileLabel,
     revenueAllowed: revenueCoveragePolicy.allow,
-    growthValue: selectedHeader.ready ? (selectedHeader.growth.value ?? null) : null,
-    growthLabel: selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null,
-    customersValue: selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null,
-    customersLabel: selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null,
+    growthValue: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.growth.value ?? null) : null)
+      : (topSectionGrowth !== '—' ? topSectionGrowth : null),
+    growthLabel: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null)
+      : (looksRealEstate ? 'Target IRR' : policyFamily === 'fund' ? 'Target return' : null),
+    customersValue: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null)
+      : (topSectionCustomers !== '—' ? topSectionCustomers : null),
+    customersLabel: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null)
+      : (looksRealEstate ? 'Term' : policyFamily === 'fund' ? 'Vehicle term' : null),
     businessModelValue: (selectedHeader.ready ? selectedHeader.business_model.value : null)
       || authoritativeBusinessModel.value
       || workspaceOverviewModel.keyFacts.business_model.value
@@ -4818,6 +4875,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     governedKeyFacts, selectedHeader, revenueCoveragePolicy, runwayTileValue,
     burnTileValue, reportStructuredGrowthValue, overviewV2, authoritativeBusinessModel,
     workspaceOverviewModel, topSectionDealType, vmPipelineStatus, vmDiligencePhase,
+    selectedPolicyId, isStartupPolicySchema, topSectionRevenue, topSectionGrowth, topSectionCustomers, looksRealEstate, policyFamily,
     canonicalScoreView, topSectionConfidence,
   ]);
 
@@ -8198,8 +8256,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                   key_risks_detected: 'Key risks',
                                   coverage_missing_sections: 'Missing sections',
                                   raise: 'Raise',
-                                  business_model: 'Business model',
-                                  traction: 'Traction',
+                                  business_model: getPolicyScoreSectionLabel(selectedPolicyId, 'business_model'),
+                                  traction: getPolicyScoreSectionLabel(selectedPolicyId, 'traction'),
                                   team: 'Team',
                                   terms: 'Terms',
                                 };
@@ -8287,10 +8345,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                     const missingReasons = Array.isArray(section?.missing_reasons) ? section.missing_reasons : [];
                                     const hint = typeof section?.hint === 'string' ? section.hint : null;
                                     const labelMap: Record<string, string> = {
-                                      market: 'Market',
+                                      market: getPolicyScoreSectionLabel(selectedPolicyId, 'market'),
                                       product: 'Product',
-                                      business_model: 'Business model',
-                                      traction: 'Traction',
+                                      business_model: getPolicyScoreSectionLabel(selectedPolicyId, 'business_model'),
+                                      traction: getPolicyScoreSectionLabel(selectedPolicyId, 'traction'),
                                       risks: 'Risks',
                                       team: 'Team',
                                     };

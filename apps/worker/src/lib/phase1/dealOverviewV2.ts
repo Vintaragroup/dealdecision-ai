@@ -1301,6 +1301,9 @@ function findFirstLineMatchWithPage(params: {
 
 function detectBusinessModelFromText(text: string): string | null {
 	const lower = text.toLowerCase();
+	if (/\bpreferred\s+equity\b/i.test(text)) return 'Real estate investment (preferred equity)';
+	if (/\b(real\s+estate|multifamily|noi|cap\s*rate|dscr|ltv|offering\s+memorandum)\b/i.test(text)) return 'Real estate structured investment';
+	if (/\b(aum|assets\s+under\s+management|limited\s+partner|\blp\b|\bgp\b|fund\s+vehicle|spv)\b/i.test(text)) return 'Fund / SPV investment vehicle';
 	const patterns: Array<{ re: RegExp; label: string }> = [
 		{ re: /\bsaas\b|\bsubscription\b|\barr\b|\bmrr\b/i, label: 'SaaS / subscription' },
 		{ re: /\bmarketplace\b/i, label: 'Marketplace' },

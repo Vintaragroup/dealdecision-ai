@@ -23,6 +23,7 @@
 
 import type { WorkspaceViewModel, WorkspaceHeaderVM, WorkspaceOverviewVM } from '../contracts/workspaceViewModel';
 import { buildSignalCards, toOverviewSignalData } from './buildSignalCards';
+import { getPolicyFamily } from '@dealdecision/core';
 
 // ─── Input contract ──────────────────────────────────────────────────────────
 
@@ -100,6 +101,9 @@ export interface WorkspaceViewModelInputs {
   // ── Investor insights entry ──────────────────────────────────────────────
   insightsScore: number;
   insightsConfidence: 'High' | 'Medium' | 'Low';
+
+  // ── Policy routing ────────────────────────────────────────────────────────
+  selectedPolicyId?: string | null;
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
@@ -235,6 +239,7 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     diligencePhase,
     insightsScore,
     insightsConfidence,
+    selectedPolicyId,
   } = inputs;
 
   // ── Derived values ────────────────────────────────────────────────────────
@@ -260,34 +265,79 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
 
   // ── KPI tiles ─────────────────────────────────────────────────────────────
 
+  const policyFamily = getPolicyFamily(selectedPolicyId ?? null);
+  const isStartupSchema = policyFamily === 'startup' || policyFamily === 'other';
+  const isRealEstateSchema = policyFamily === 'real_estate';
+  const isFundSchema = policyFamily === 'fund';
+
   const raiseDisplay = selectedHeaderReady ? asDisplayValue(raiseValue) : DASH;
-  const revDisplay = selectedHeaderReady && revenueAllowed ? asDisplayValue(revenueValue) : DASH;
+  const revDisplay = selectedHeaderReady && revenueAllowed && isStartupSchema ? asDisplayValue(revenueValue) : DASH;
   // Growth: prefer structured report value (numeric); fall back to header value.
   // If neither is numeric, show 'Mentioned' — qualitative evidence still informs investors.
   const growthDisplay = selectedHeaderReady
-    ? asTractionDisplay(
-        asDisplayValue(reportStructuredGrowthValue) !== DASH
-          ? (reportStructuredGrowthValue as string)
-          : (growthValue ?? null),
-      )
+    ? (
+      isStartupSchema
+        ? asTractionDisplay(
+            asDisplayValue(reportStructuredGrowthValue) !== DASH
+              ? (reportStructuredGrowthValue as string)
+              : (growthValue ?? null),
+          )
+        : asDisplayValue(growthValue)
+    )
     : DASH;
-  // Customers: same rule — show 'Mentioned' when evidence is qualitative only.
-  const customersDisplay = selectedHeaderReady ? asTractionDisplay(customersValue ?? null) : DASH;
+  // Customers: startup schema keeps the qualitative fallback; non-startup keeps raw mapped metric.
+  const customersDisplay = selectedHeaderReady
+    ? (
+      isStartupSchema
+        ? asTractionDisplay(customersValue ?? null)
+        : asDisplayValue(customersValue)
+    )
+    : DASH;
 
-  const financialTiles = [
-    { label: selectedHeaderReady ? (raiseLabel ?? 'Raise') : 'Raise', value: raiseDisplay },
-    { label: revenueTileLabel, value: revDisplay },
-    { label: 'Runway', value: asDisplayValue(runwayTileValue) },
-    { label: 'Burn', value: asDisplayValue(burnTileValue) },
-  ];
+  const financialTiles = isRealEstateSchema
+    ? [
+        { label: selectedHeaderReady ? (raiseLabel ?? 'Raise / terms') : 'Raise / terms', value: raiseDisplay },
+        { label: 'NOI', value: revDisplay },
+        { label: 'Runway', value: asDisplayValue(runwayTileValue) },
+        { label: 'Burn', value: asDisplayValue(burnTileValue) },
+      ]
+    : isFundSchema
+      ? [
+          { label: selectedHeaderReady ? (raiseLabel ?? 'Fund size / raise') : 'Fund size / raise', value: raiseDisplay },
+          { label: 'Revenue', value: DASH },
+          { label: 'Runway', value: asDisplayValue(runwayTileValue) },
+          { label: 'Burn', value: asDisplayValue(burnTileValue) },
+        ]
+      : [
+          { label: selectedHeaderReady ? (raiseLabel ?? 'Raise') : 'Raise', value: raiseDisplay },
+          { label: revenueTileLabel, value: revDisplay },
+          { label: 'Runway', value: asDisplayValue(runwayTileValue) },
+          { label: 'Burn', value: asDisplayValue(burnTileValue) },
+        ];
 
-  const tractionTiles = [
-    { label: selectedHeaderReady ? (growthLabel ?? 'Growth') : 'Growth', value: growthDisplay },
-    {
-      label: selectedHeaderReady ? (customersLabel ?? 'Customers') : 'Customers',
-      value: customersDisplay,
-    },
-  ];
+  const tractionTiles = isRealEstateSchema
+    ? [
+        { label: 'Target IRR', value: growthDisplay },
+        {
+          label: 'Term',
+          value: customersDisplay,
+        },
+      ]
+    : isFundSchema
+      ? [
+          { label: 'Target return', value: growthDisplay },
+          {
+            label: 'Vehicle term',
+            value: customersDisplay,
+          },
+        ]
+      : [
+          { label: selectedHeaderReady ? (growthLabel ?? 'Growth') : 'Growth', value: growthDisplay },
+          {
+            label: selectedHeaderReady ? (customersLabel ?? 'Customers') : 'Customers',
+            value: customersDisplay,
+          },
+        ];
 
   const dealTiles = [
     { label: 'Stage', value: dealStageLabel },
@@ -297,7 +347,13 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
 
   const bmTiles = [
     {
-      label: selectedHeaderReady ? (businessModelLabel ?? 'Model') : 'Model',
+      label: selectedHeaderReady
+        ? (isRealEstateSchema
+          ? 'Deal structure'
+          : isFundSchema
+            ? 'Fund strategy'
+            : (businessModelLabel ?? 'Model'))
+        : (isRealEstateSchema ? 'Deal structure' : isFundSchema ? 'Fund strategy' : 'Model'),
       value: asDisplayValue(businessModelValue) !== DASH ? (businessModelValue as string) : 'Unknown',
     },
   ];
@@ -344,7 +400,7 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     companyDescription: governedDealOneLiner,
     snapshotFacts: {
       raise: raiseDisplay,
-      arr: revDisplay,
+      arr: isStartupSchema ? revDisplay : DASH,
       growth: growthDisplay,
       customers: customersDisplay,
       tam,

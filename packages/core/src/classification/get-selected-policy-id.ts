@@ -1,30 +1,60 @@
-export function getSelectedPolicyIdFromAny(dioLike: any): string | null {
-  const isNonEmptyString = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
+export type SelectedPolicyResolutionSource =
+  | "selectedPolicyId"
+  | "selected_policy"
+  | "policy_id"
+  | "deal_classification_v1.selected_policy"
+  | "dio.deal_classification_v1.selected_policy"
+  | "dio.dio.deal_classification_v1.selected_policy"
+  | "phase1.deal_classification_v1.selected_policy"
+  | "dio.phase1.deal_classification_v1.selected_policy"
+  | "deep_search.deal_classification_v1.selected_policy"
+  | "not_found";
 
-  // IMPORTANT: ordered lookup to handle nesting drift across persisted DIOs and in-flight DIO-like objects.
-  const candidates: unknown[] = [
-    // 1) Persisted DIO canonical shape (observed in Postgres): dio_data.dio.deal_classification_v1.selected_policy
-    dioLike?.dio?.deal_classification_v1?.selected_policy,
+export type SelectedPolicyResolution = {
+  policyId: string | null;
+  source: SelectedPolicyResolutionSource;
+  usedFallback: boolean;
+};
 
-    // 2) In-flight analyzer input / older DIO-like shape
-    dioLike?.deal_classification_v1?.selected_policy,
+function asNonEmptyPolicy(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const s = value.trim();
+  return s.length > 0 ? s : null;
+}
 
-    // 3) Legacy drift
-    dioLike?.dio?.dio?.deal_classification_v1?.selected_policy,
+export function resolveSelectedPolicyIdFromAny(dioLike: any): SelectedPolicyResolution {
+  // Deterministic priority order for API/web integration payloads.
+  const orderedCandidates: Array<{ source: SelectedPolicyResolutionSource; value: unknown }> = [
+    // 1) Explicitly passed selectedPolicyId (often passed by web call sites)
+    { source: "selectedPolicyId", value: dioLike?.selectedPolicyId },
 
-    // 4) Phase 1 mirrors
-    dioLike?.phase1?.deal_classification_v1?.selected_policy,
+    // 2) Top-level aliases from mapped API payloads
+    { source: "selected_policy", value: dioLike?.selected_policy },
+    { source: "policy_id", value: dioLike?.policy_id },
 
-    // 5) Nested phase1 mirrors
-    dioLike?.dio?.phase1?.deal_classification_v1?.selected_policy,
+    // 3) Classification object on the current node
+    { source: "deal_classification_v1.selected_policy", value: dioLike?.deal_classification_v1?.selected_policy },
+
+    // 4+) Existing nested payload paths observed across DIO/report/envelope shapes
+    { source: "dio.deal_classification_v1.selected_policy", value: dioLike?.dio?.deal_classification_v1?.selected_policy },
+    { source: "dio.dio.deal_classification_v1.selected_policy", value: dioLike?.dio?.dio?.deal_classification_v1?.selected_policy },
+    { source: "phase1.deal_classification_v1.selected_policy", value: dioLike?.phase1?.deal_classification_v1?.selected_policy },
+    { source: "dio.phase1.deal_classification_v1.selected_policy", value: dioLike?.dio?.phase1?.deal_classification_v1?.selected_policy },
   ];
 
-  for (const c of candidates) {
-    if (isNonEmptyString(c)) return c.trim();
+  for (const candidate of orderedCandidates) {
+    const policyId = asNonEmptyPolicy(candidate.value);
+    if (policyId) {
+      return {
+        policyId,
+        source: candidate.source,
+        usedFallback: false,
+      };
+    }
   }
 
-  // Fallback: deep search for deal_classification_v1.selected_policy anywhere in the object.
-  // This protects against unexpected nesting drift (e.g., wrappers like { dio: { dio: ... } } or other containers).
+  // Final fallback: deep-search only structured classification path.
+  // We intentionally avoid any inference from labels/text/LLM output.
   try {
     const seen = new Set<any>();
     const stack: any[] = [dioLike];
@@ -35,20 +65,33 @@ export function getSelectedPolicyIdFromAny(dioLike: any): string | null {
       if (seen.has(cur)) continue;
       seen.add(cur);
 
-      const v = (cur as any)?.deal_classification_v1?.selected_policy;
-      if (isNonEmptyString(v)) return v.trim();
+      const policyId = asNonEmptyPolicy((cur as any)?.deal_classification_v1?.selected_policy);
+      if (policyId) {
+        return {
+          policyId,
+          source: "deep_search.deal_classification_v1.selected_policy",
+          usedFallback: true,
+        };
+      }
 
-      // push children
       for (const key of Object.keys(cur)) {
         const child = (cur as any)[key];
         if (child && typeof child === "object") stack.push(child);
       }
     }
   } catch {
-    // ignore and fall through
+    // ignore and return not_found
   }
 
-  return null;
+  return {
+    policyId: null,
+    source: "not_found",
+    usedFallback: true,
+  };
+}
+
+export function getSelectedPolicyIdFromAny(dioLike: any): string | null {
+  return resolveSelectedPolicyIdFromAny(dioLike).policyId;
 }
 
 // Backward-compatible alias (older call sites/tests may still import this).

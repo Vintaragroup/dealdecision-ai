@@ -1,11 +1,17 @@
 import type { Pool } from "pg";
-import { containsMarketSizingLanguage, inferIsRaiseAskSlide } from "@dealdecision/core";
+import {
+	containsMarketSizingLanguage,
+	inferIsRaiseAskSlide,
+	toPolicyAwareBusinessModelDisplay,
+	getSelectedPolicyIdFromAny,
+} from "@dealdecision/core";
 
 export type PromoteSlideFactsParams = {
 	dealId: string;
 	documentId: string;
 	pageStart: number;
 	pageEnd: number;
+	selectedPolicyId?: string | null;
 	version?: string;
 	runId?: string | null;
 	stepRunId?: string | null;
@@ -62,6 +68,25 @@ function toIsoDate(v: unknown): string {
 		// ignore
 	}
 	return new Date().toISOString();
+}
+
+async function loadSelectedPolicyId(pool: Pool, dealId: string): Promise<string | null> {
+	if (!dealId) return null;
+	try {
+		const res = await pool.query(
+			`SELECT dio_data
+			   FROM public.deal_intelligence_objects
+			  WHERE deal_id = $1::uuid
+			  ORDER BY created_at DESC
+			  LIMIT 1`,
+			[dealId],
+		);
+		const row = (res.rows ?? [])[0] as any;
+		if (!row || !row.dio_data || typeof row.dio_data !== "object") return null;
+		return getSelectedPolicyIdFromAny(row.dio_data);
+	} catch {
+		return null;
+	}
 }
 
 type Money = { amount: number; currency: "USD" | "EUR" | "GBP" | null };
@@ -278,7 +303,7 @@ function inferBusinessModelFromText(text: string): { value_json: Record<string, 
 			page_index: null,
 			extracted_at: new Date().toISOString(),
 		},
-	]);
+	], null);
 	if (!resolved) return null;
 	return { value_json: resolved.value_json, confidence: resolved.confidence };
 }
@@ -477,9 +502,22 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 	};
 }
 
-function resolveBusinessModelFromSlides(slides: BusinessModelSlideInput[]): { value_json: Record<string, any>; confidence: number; extracted_at: string; best: BusinessModelSlideScore } | null {
+function looksLikeBoilerplateBusinessModelText(text: string): boolean {
+	const t = normalizeText(text).toLowerCase();
+	if (!t) return true;
+	if (t.length < 24) return true;
+	if (/\b(this\s+presentation|confidential|forward[-\s]?looking|not\s+an\s+offer|terms\s+and\s+conditions)\b/i.test(t)) return true;
+	if (/\ball\s+rights\s+reserved\b/i.test(t)) return true;
+	return false;
+}
+
+function resolveBusinessModelFromSlides(
+	slides: BusinessModelSlideInput[],
+	policyId: string | null,
+): { value_json: Record<string, any>; confidence: number; extracted_at: string; best: BusinessModelSlideScore } | null {
 	const scored: BusinessModelSlideScore[] = [];
 	for (const s of slides) {
+		if (looksLikeBoilerplateBusinessModelText(s.text)) continue;
 		const row = scoreBusinessModelSlide(s);
 		if (row) scored.push(row);
 	}
@@ -487,6 +525,9 @@ function resolveBusinessModelFromSlides(slides: BusinessModelSlideInput[]): { va
 
 	const has_media_signals = scored.some((r) => r.signals.has_media_signals);
 	const has_ecom_mechanics = scored.some((r) => r.signals.has_ecom_mechanics);
+	const has_real_estate_signals = scored.some((r) => /\b(real\s+estate|preferred\s+equity|multifamily|noi|cap\s*rate|dscr|ltv|offering\s+memorandum)\b/i.test(r.input.text));
+	const has_fund_signals = scored.some((r) => /\b(aum|assets\s+under\s+management|limited\s+partner|\blp\b|\bgp\b|fund\s+vehicle|fund\s+size|spv)\b/i.test(r.input.text));
+	const is_preferred_equity = scored.some((r) => /\bpreferred\s+equity\b/i.test(r.input.text));
 	const dtc_hits = Array.from(new Set(scored.flatMap((r) => r.signals.dtc_hits))).slice().sort().slice(0, 24);
 	const media_hits = Array.from(new Set(scored.flatMap((r) => r.signals.media_hits))).slice().sort().slice(0, 24);
 	const applied_guards: string[] = [];
@@ -581,6 +622,17 @@ function resolveBusinessModelFromSlides(slides: BusinessModelSlideInput[]): { va
 
 	if (!primaryLabel) return null;
 
+	const displayMapping = toPolicyAwareBusinessModelDisplay({
+		policyId,
+		rawLabel: primaryLabel,
+		hasRealEstateSignals: has_real_estate_signals,
+		hasFundSignals: has_fund_signals,
+		isPreferredEquity: is_preferred_equity,
+	});
+	const displayLabel = displayMapping.display;
+	if (!displayLabel) return null;
+	for (const reason of displayMapping.suppressedReasons) applied_guards.push(reason);
+
 	const supportsPrimary = (row: BusinessModelSlideScore): boolean => {
 		if (primaryLabel === 'Licensing') return row.scores.licensing_raw > 0;
 		if (primaryLabel === 'Subscription/SaaS') return row.scores.saas > 0;
@@ -659,6 +711,7 @@ function resolveBusinessModelFromSlides(slides: BusinessModelSlideInput[]): { va
 
 	const value_json: Record<string, any> = {
 		primary_label: primaryLabel,
+		display_label_raw: primaryLabel,
 		secondary_tags: secondaryTags,
 		scores: {
 			dtc: Math.round(dtc * 100) / 100,
@@ -667,15 +720,20 @@ function resolveBusinessModelFromSlides(slides: BusinessModelSlideInput[]): { va
 			licensing: Math.round(licensing * 100) / 100,
 		},
 		sources: topSources,
-		display: primaryLabel,
+		display: displayLabel,
 		note_snippet: best.snippet,
 		diagnostics: {
+			policy_id: policyId,
+			routing_mode: "deterministic_policy_aware_v1",
 			has_media_signals,
 			has_ecom_mechanics,
+			has_real_estate_signals,
+			has_fund_signals,
+			is_preferred_equity,
 			dtc_hits,
 			media_hits,
 			applied_guards,
-			decision_reason: `totals(dtc=${Math.round(dtc * 100) / 100}, wholesale=${Math.round(wholesale * 100) / 100}, saas=${Math.round(saas * 100) / 100}, licensing=${Math.round(licensing * 100) / 100}) label=${primaryLabel}`,
+			decision_reason: `totals(dtc=${Math.round(dtc * 100) / 100}, wholesale=${Math.round(wholesale * 100) / 100}, saas=${Math.round(saas * 100) / 100}, licensing=${Math.round(licensing * 100) / 100}) raw_label=${primaryLabel} display=${displayLabel}`,
 		},
 	};
 
@@ -858,6 +916,10 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 	const version = (params.version ?? "page_understanding_v1").trim();
 	const dealId = String(params.dealId ?? "").trim();
 	const documentId = String(params.documentId ?? "").trim();
+	const paramPolicyId = typeof params.selectedPolicyId === "string" && params.selectedPolicyId.trim().length > 0
+		? params.selectedPolicyId.trim()
+		: null;
+	const selectedPolicyId = paramPolicyId ?? (await loadSelectedPolicyId(pool, dealId));
 	const pageStart = Math.max(0, Math.floor(params.pageStart ?? 0));
 	let pageEnd = Math.max(pageStart, Math.floor(params.pageEnd ?? pageStart));
 
@@ -982,7 +1044,7 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 	}
 
 	// Business model: resolve across all slides in this chunk.
-	const resolvedModel = resolveBusinessModelFromSlides(businessModelSlides);
+	const resolvedModel = resolveBusinessModelFromSlides(businessModelSlides, selectedPolicyId);
 	if (resolvedModel) {
 		const bestMeta = {
 			deal_id: dealId,

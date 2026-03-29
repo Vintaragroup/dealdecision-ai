@@ -221,6 +221,9 @@ export async function registerDealCoreRoutes(
       overall_score_resolved: number | null;
       last_analyzed_at: string | null;
       run_count: number | null;
+		selected_policy: string | null;
+		policy_id: string | null;
+		deal_classification_v1: any | null;
 		executive_summary_v1: any | null;
 		executive_summary_v2: any | null;
 		decision_summary_v1: any | null;
@@ -242,6 +245,9 @@ export async function registerDealCoreRoutes(
               latest.overall_score,
               latest.overall_score_resolved,
               latest.updated_at as last_analyzed_at,
+          latest.selected_policy,
+          latest.policy_id,
+          latest.deal_classification_v1,
 				  latest.executive_summary_v1,
 				  latest.executive_summary_v2,
 				  latest.decision_summary_v1,
@@ -266,6 +272,9 @@ export async function registerDealCoreRoutes(
                     NULLIF((dio_data #>> '{overall_score}'), '')::double precision,
                     NULLIF((dio_data #>> '{score_explanation,totals,overall_score}'), '')::double precision
                   ) AS overall_score_resolved,
+				  NULLIF((dio_data #>> '{dio,deal_classification_v1,selected_policy}'), '') AS selected_policy,
+				  NULLIF((dio_data #>> '{dio,deal_classification_v1,selected_policy}'), '') AS policy_id,
+				  (dio_data #> '{dio,deal_classification_v1}') AS deal_classification_v1,
                   updated_at,
 					  (dio_data #> '{dio,phase1,executive_summary_v1}') AS executive_summary_v1
 					, (dio_data #> '{dio,phase1,executive_summary_v2}') AS executive_summary_v2
@@ -345,6 +354,9 @@ export async function registerDealCoreRoutes(
       overall_score: parseNullableNumber((row as any).overall_score_resolved) ?? row.overall_score,
       last_analyzed_at: row.last_analyzed_at,
       run_count: row.run_count,
+    selected_policy: (row as any).selected_policy ?? null,
+    policy_id: (row as any).policy_id ?? null,
+    deal_classification_v1: (row as any).deal_classification_v1 ?? null,
 		executive_summary_v1: row.executive_summary_v1,
     executive_summary_v2: row.executive_summary_v2,
 		decision_summary_v1: row.decision_summary_v1,
@@ -467,6 +479,9 @@ export async function registerDealCoreRoutes(
         recommendation: latest.recommendation,
         overall_score: latest.overall_score,
         overall_score_resolved: overallScoreResolved,
+    selected_policy: (dioData as any)?.dio?.deal_classification_v1?.selected_policy ?? null,
+    policy_id: (dioData as any)?.dio?.deal_classification_v1?.selected_policy ?? null,
+    deal_classification_v1: (dioData as any)?.dio?.deal_classification_v1 ?? null,
 		analysis_foundation_spec_version: (dioData as any)?.dio?.spec_versions?.analysis_foundation ?? null,
 		phase_inference_v1: (dioData as any)?.dio?.phase_inference_v1 ?? null,
 		fundability_assessment_v1: (dioData as any)?.dio?.fundability_assessment_v1 ?? null,

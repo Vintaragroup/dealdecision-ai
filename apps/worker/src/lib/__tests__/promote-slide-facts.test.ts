@@ -57,6 +57,63 @@ describe("promote slide facts", () => {
 		}
 	});
 
+	it("real_estate_underwriting maps channel language to preferred-equity real-estate model", async () => {
+		const { promoteSlideFactsFromDocumentPageUnderstanding } = await import("../promote-slide-facts.js");
+
+		const pool: any = {
+			query: async (sql: string) => {
+				const q = String(sql);
+				if (q.includes("SELECT 1 FROM evidence_items")) {
+					return { rows: [{ ok: 1 }], rowCount: 1 };
+				}
+				if (q.includes("FROM public.document_page_understanding")) {
+					return {
+						rows: [
+							{
+								page_index: 1,
+								payload: {
+									source: { extracted_at: "2026-02-01T00:00:00.000Z" },
+									structured: {
+										kind: "powerpoint_slide",
+										title: "Business Model",
+										segment_key: "business_model",
+										bullets: [
+											"Preferred equity in multifamily assets",
+											"DTC outreach and retail partner updates",
+										],
+									},
+									page_text: "Preferred equity in multifamily assets with NOI and cap rate focus",
+								},
+							},
+						],
+					};
+				}
+				if (q.includes("INSERT INTO evidence_items")) {
+					return { rows: [{ inserted: true }], rowCount: 1 };
+				}
+				return { rows: [], rowCount: 0 };
+			},
+		};
+
+		const res = await promoteSlideFactsFromDocumentPageUnderstanding(pool, {
+			dealId: "11111111-1111-1111-1111-111111111111",
+			documentId: "22222222-2222-2222-2222-222222222222",
+			pageStart: 0,
+			pageEnd: 5,
+			version: "page_understanding_v1",
+			selectedPolicyId: "real_estate_underwriting",
+		});
+
+		expect(res.ok).toBe(true);
+		const bmFact = res.facts.find((f: any) => f?.fact_type === "business_model_v1");
+		expect(bmFact).toBeTruthy();
+		expect(String((bmFact as any).value_json?.display ?? "")).toBe("Real estate investment (preferred equity)");
+		expect(String((bmFact as any).value_json?.display ?? "")).not.toContain("Omnichannel");
+		expect(((bmFact as any).value_json?.diagnostics?.applied_guards ?? [])).toContain(
+			"startup_channel_label_suppressed_for_real_estate",
+		);
+	});
+
 	it("resolves primary business model as DTC + Wholesale and keeps Licensing secondary", async () => {
 		const { promoteSlideFactsFromDocumentPageUnderstanding } = await import("../promote-slide-facts.js");
 

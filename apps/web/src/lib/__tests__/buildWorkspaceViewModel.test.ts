@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { getPolicyScoreSectionLabel, getSelectedPolicyIdFromAny } from '@dealdecision/core';
 
 import { buildWorkspaceViewModel } from '../../components/workspace/builders/buildWorkspaceViewModel';
 import type { WorkspaceViewModelInputs } from '../../components/workspace/builders/buildWorkspaceViewModel';
@@ -312,6 +313,69 @@ describe('snapshotFacts KPIs', () => {
       growthValue: '40% MoM',
     });
     expect(vm.overview.snapshotFacts.growth).toBe('55% YoY');
+  });
+});
+
+describe('policy-aware metric schema', () => {
+  test('real_estate_underwriting hides ARR and relabels traction metrics', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      revenueValue: '$1.2M NOI',
+      growthValue: '17%',
+      customersValue: '36 months',
+    });
+
+    expect(vm.overview.snapshotFacts.arr).toBe('—');
+    expect(vm.header.metrics.traction[0]?.label).toBe('Target IRR');
+    expect(vm.header.metrics.traction[1]?.label).toBe('Term');
+    expect(vm.header.metrics.businessModel[0]?.label).toBe('Deal structure');
+  });
+
+  test('startup policy keeps ARR/customers schema', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'enterprise_saas_b2b_v1',
+    });
+
+    expect(vm.overview.snapshotFacts.arr).toBe('$850K ARR');
+    expect(vm.header.metrics.traction[0]?.label).toBe('Growth');
+    expect(vm.header.metrics.traction[1]?.label).toBe('Customers');
+  });
+
+  test('API-mapped real-estate preferred-equity payload keeps non-startup schema in workspace VM', () => {
+    const apiMappedDeal = {
+      selected_policy: 'real_estate_underwriting',
+      policy_id: 'real_estate_underwriting',
+      deal_classification_v1: {
+        selected_policy: 'real_estate_underwriting',
+        selected: {
+          asset_class: 'real_estate',
+          deal_structure: 'preferred_equity',
+          strategy_subtype: 'real_estate_preferred_equity',
+        },
+      },
+    };
+
+    const resolvedPolicyId = getSelectedPolicyIdFromAny(apiMappedDeal);
+    expect(resolvedPolicyId).toBe('real_estate_underwriting');
+
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: resolvedPolicyId,
+      revenueValue: '$1.2M NOI',
+      growthValue: '17%',
+      customersValue: '36 months',
+      businessModelValue: 'Real estate investment (preferred equity)',
+    });
+
+    expect(vm.overview.snapshotFacts.arr).toBe('—');
+    expect(vm.header.metrics.traction[0]?.label).toBe('Target IRR');
+    expect(vm.header.metrics.traction[1]?.label).toBe('Term');
+    expect(vm.header.metrics.businessModel[0]?.label).toBe('Deal structure');
+    expect(vm.header.metrics.businessModel[0]?.value).not.toContain('Omnichannel');
+    expect(getPolicyScoreSectionLabel(resolvedPolicyId, 'business_model')).toBe('Deal structure');
+    expect(getPolicyScoreSectionLabel(resolvedPolicyId, 'traction')).toBe('Underwriting metrics');
   });
 });
 

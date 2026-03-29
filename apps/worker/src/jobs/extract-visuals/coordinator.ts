@@ -3984,7 +3984,7 @@ export async function runExtractVisualsCoordinator(job: Job) {
 			analysisBlockedBy = "document_intelligence_batch";
 		} else {
 			try {
-				await enqueueAnalyzeDeal({
+				const analyzeEnqueue = await enqueueAnalyzeDeal({
 					dealId: dealIdForAudit ?? "",
 					reason: "extract_visuals_complete",
 					triggerJobId: job.id ? String(job.id) : null,
@@ -4004,7 +4004,37 @@ export async function runExtractVisualsCoordinator(job: Job) {
 						},
 					},
 				});
+				if (!analyzeEnqueue.enqueued) {
+					analysisBlockedBy = analysisBlockedBy ?? "analyze_not_enqueued";
+				}
+				console.log(
+					JSON.stringify({
+						event: "EXTRACT_VISUALS_ANALYZE_ENQUEUE_STATE",
+						deal_id: dealIdForAudit ?? null,
+						trigger_job_id: job.id ? String(job.id) : null,
+						enqueued: analyzeEnqueue.enqueued,
+						analyze_job_id: analyzeEnqueue.jobId,
+						analysis_blocked_by: analysisBlockedBy,
+						finalize_status: finalStatus,
+						should_finalize: shouldFinalize,
+						chunk_is_last: chunkJobIsLastChunk,
+					})
+				);
 			} catch {
+				analysisBlockedBy = analysisBlockedBy ?? "analyze_enqueue_exception";
+				console.warn(
+					JSON.stringify({
+						event: "EXTRACT_VISUALS_ANALYZE_ENQUEUE_STATE",
+						deal_id: dealIdForAudit ?? null,
+						trigger_job_id: job.id ? String(job.id) : null,
+						enqueued: false,
+						analyze_job_id: null,
+						analysis_blocked_by: analysisBlockedBy,
+						finalize_status: finalStatus,
+						should_finalize: shouldFinalize,
+						chunk_is_last: chunkJobIsLastChunk,
+					})
+				);
 				// never block extraction completion
 			}
 		}

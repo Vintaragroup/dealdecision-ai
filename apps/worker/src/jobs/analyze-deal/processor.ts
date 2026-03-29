@@ -45,6 +45,11 @@ import { OpenAIGPT4oProvider } from "../../lib/llm/providers/openai-provider";
 import type { ProviderConfig } from "../../lib/llm/types";
 import type { JobStatus } from "@dealdecision/contracts";
 import { applySlideUnderstandingV1Shadow } from "../../lib/pdf_v2/slide-understanding-v1";
+import {
+	composePolicyAwareSystemPrompt,
+	getSelectedPolicyIdFromAnyLike,
+	validatePolicyAwareOutputTemplateV2,
+} from "../../lib/policy-aware-prompt-runtime";
 import { getFinancialFactsForDeal, getDocumentsForReport, FINANCIAL_FACTS_ANALYSIS_LIMIT } from "../../lib/db/financial-facts-db";
 import { populatePageRegistryV1 } from "../../lib/page-registry/populate-page-registry-v1";
 import { populateDealFactRegistryV1 } from "../../lib/deal-facts/populate-deal-fact-registry-v1";
@@ -263,6 +268,7 @@ async function generateDealSummaryV2FromPhase1(input: {
 	nowIso: string;
 	dealId: string;
 	dealName?: string | null;
+	selected_policy_id?: string | null;
 	phase1_deal_overview_v2: unknown;
 	phase1_business_archetype_v1: unknown;
 	phase1_update_report_v1: unknown;
@@ -282,6 +288,18 @@ async function generateDealSummaryV2FromPhase1(input: {
 		};
 		duration_ms: number;
 		success: boolean;
+		selected_policy_id?: string;
+		prompt_runtime?: {
+			template_version: string;
+			prompt_artifacts: Array<{ id: string; file: string; version: string; sha256: string }>;
+		};
+		output_validation?: {
+			ok: boolean;
+			degraded: boolean;
+			missing_sections: string[];
+			policy_mapping_valid: boolean;
+			warnings: string[];
+		};
 		error?: string;
 	};
 } | null> {
@@ -309,21 +327,21 @@ async function generateDealSummaryV2FromPhase1(input: {
 
 	const provider = new OpenAIGPT4oProvider(providerConfig);
 
-	const system =
-		"You are a deal analyst writing for professional investors. " +
-		"Use ONLY the provided Phase 1 artifacts and document metadata. Do not invent facts or numbers. " +
-		"If a detail is missing, state it explicitly as a gap (e.g., 'Raise/terms not provided'). " +
-		"Output MUST be valid JSON only (no markdown, no backticks, no extra text). " +
-		"Return JSON with EXACT schema and keys: {" +
-		"\"generated_at\": string, " +
-		"\"model\": \"gpt-4o-mini\", " +
-		"\"summary\": {\"one_liner\": string, \"paragraphs\": [string,string,string]}, " +
-		"\"strengths\": string[], \"risks\": string[], \"open_questions\": string[]" +
-		"}. " +
-		"Requirements: summary.paragraphs MUST be exactly 3 paragraphs. " +
-		"Each paragraph MUST be 2–4 sentences and at least 60 words. " +
-		"No bullet points in paragraphs. Use investor-grade, neutral language. " +
-		"Prefer deal_overview_v2 for product/ICP/model and executive_summary_v2.signals for recommendation/score/confidence.";
+	const promptRuntime = composePolicyAwareSystemPrompt({
+		kind: "deal_summary_v2",
+		selectedPolicyId: input.selected_policy_id,
+		additionalInstructions: [
+			"Use ONLY the provided Phase 1 artifacts and document metadata. Do not invent facts or numbers.",
+			"If a detail is missing, state it explicitly as a gap (e.g., 'Raise/terms not provided').",
+			"Output MUST be valid JSON only (no markdown, no backticks, no extra text).",
+			"Return JSON with EXACT schema and keys: {\"generated_at\": string, \"model\": \"gpt-4o-mini\", \"summary\": {\"one_liner\": string, \"paragraphs\": [string,string,string]}, \"strengths\": string[], \"risks\": string[], \"open_questions\": string[]}.",
+			"Requirements: summary.paragraphs MUST be exactly 3 paragraphs.",
+			"Each paragraph MUST be 2–4 sentences and at least 60 words.",
+			"No bullet points in paragraphs. Use investor-grade, neutral language.",
+			"Prefer deal_overview_v2 for product/ICP/model and executive_summary_v2.signals for recommendation/score/confidence.",
+		],
+	});
+	const system = promptRuntime.systemPrompt;
 
 	const payload = {
 		deal: {
@@ -355,6 +373,11 @@ async function generateDealSummaryV2FromPhase1(input: {
 	const baseCallLog = {
 		purpose: "narrative_synthesis" as const,
 		called_at: input.nowIso,
+		selected_policy_id: promptRuntime.runtimeMetadata.selected_policy_id,
+		prompt_runtime: {
+			template_version: promptRuntime.runtimeMetadata.template_version,
+			prompt_artifacts: promptRuntime.runtimeMetadata.prompt_artifacts,
+		},
 		token_usage: {
 			input_tokens: Number(response?.usage?.prompt_tokens ?? 0),
 			output_tokens: Number(response?.usage?.completion_tokens ?? 0),
@@ -393,6 +416,23 @@ async function generateDealSummaryV2FromPhase1(input: {
 		);
 		return { summary: fallback, llm_call: { ...baseCallLog, success: false, error: "json_parse_failed" } };
 	}
+	const outputValidation = validatePolicyAwareOutputTemplateV2({
+		kind: "deal_summary_v2",
+		selectedPolicyId: promptRuntime.runtimeMetadata.selected_policy_id,
+		output: parsed,
+	});
+	if (!outputValidation.ok) {
+		console.warn(
+			JSON.stringify({
+				event: "phase1_deal_summary_v2_policy_template_invalid",
+				deal_id: input.dealId,
+				selected_policy_id: promptRuntime.runtimeMetadata.selected_policy_id,
+				missing_sections: outputValidation.missing_sections,
+				policy_mapping_valid: outputValidation.policy_mapping_valid,
+				warnings: outputValidation.warnings,
+			})
+		);
+	}
 	const padSentences = [
 		`What it is: ${typeof (input.phase1_deal_overview_v2 as any)?.product_solution === "string" ? (input.phase1_deal_overview_v2 as any).product_solution : "not provided"}`,
 		`Target customer / ICP: ${typeof (input.phase1_deal_overview_v2 as any)?.market_icp === "string" ? (input.phase1_deal_overview_v2 as any).market_icp : "not provided"}`,
@@ -425,7 +465,21 @@ async function generateDealSummaryV2FromPhase1(input: {
 				paragraph_words: fallback.summary.paragraphs.map((p) => countWords(p)),
 			})
 		);
-		return { summary: fallback, llm_call: { ...baseCallLog, success: false, error: "schema_coercion_failed" } };
+		return {
+			summary: fallback,
+			llm_call: {
+				...baseCallLog,
+				success: false,
+				error: "schema_coercion_failed",
+				output_validation: {
+					ok: outputValidation.ok,
+					degraded: outputValidation.degraded,
+					missing_sections: outputValidation.missing_sections,
+					policy_mapping_valid: outputValidation.policy_mapping_valid,
+					warnings: outputValidation.warnings,
+				},
+			},
+		};
 	}
 	// Ensure model matches the required one even if the model omits it.
 	coerced.model = "gpt-4o-mini";
@@ -441,7 +495,19 @@ async function generateDealSummaryV2FromPhase1(input: {
 			open_questions: coerced.open_questions.length,
 		})
 	);
-	return { summary: coerced, llm_call: baseCallLog };
+	return {
+		summary: coerced,
+		llm_call: {
+			...baseCallLog,
+			output_validation: {
+				ok: outputValidation.ok,
+				degraded: outputValidation.degraded,
+				missing_sections: outputValidation.missing_sections,
+				policy_mapping_valid: outputValidation.policy_mapping_valid,
+				warnings: outputValidation.warnings,
+			},
+		},
+	};
 }
 
 // -- getDealIdForJob
@@ -1154,6 +1220,10 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 		let phase1_deal_summary_v2: DealSummaryV2 | null = null;
 		const llm_calls: any[] = [];
 		try {
+			const selectedPolicyId =
+				getSelectedPolicyIdFromAnyLike(previousDio as any) ??
+				getSelectedPolicyIdFromAnyLike(currentPhase1 as any) ??
+				getSelectedPolicyIdFromAnyLike(phase1_business_archetype_v1 as any);
 			const dealName =
 				(typeof (previousDio as any)?.deal?.name === "string" ? (previousDio as any).deal.name : undefined) ??
 				(typeof phase1_deal_overview_v2.deal_name === "string" ? phase1_deal_overview_v2.deal_name : undefined) ??
@@ -1162,6 +1232,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 				nowIso,
 				dealId,
 				dealName,
+				selected_policy_id: selectedPolicyId,
 				phase1_deal_overview_v2,
 				phase1_business_archetype_v1,
 				phase1_update_report_v1,
@@ -1674,11 +1745,17 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 
 		let overview: Awaited<ReturnType<typeof generateAndPersistGovernedLlmOverviewBestEffort>> | null = null;
 		try {
+			const selectedPolicyIdForOverview =
+				getSelectedPolicyIdFromAnyLike((result as any)?.dio) ??
+				getSelectedPolicyIdFromAnyLike((result as any)?.storage_result?.dio_data) ??
+				getSelectedPolicyIdFromAnyLike(previousDio as any) ??
+				null;
 			overview = await generateAndPersistGovernedLlmOverviewBestEffort({
 				pool: getPool(),
 				dealId,
 				runId: job.id ? String(job.id) : null,
 				stepRunId: null,
+				selectedPolicyId: selectedPolicyIdForOverview,
 				dealName:
 					(typeof (previousDio as any)?.deal?.name === "string" ? (previousDio as any).deal.name : undefined) ??
 					(typeof phase1_deal_overview_v2.deal_name === "string" ? phase1_deal_overview_v2.deal_name : undefined) ??

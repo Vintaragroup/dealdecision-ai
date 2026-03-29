@@ -5908,8 +5908,48 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       }
 
       if (!analyzeTerminal || analyzeTerminal.timedOut) {
-        addToast('error', 'Analyze did not start', 'Timed out waiting for backend to enqueue analyze job');
-        updateFullStep('analyze_deal', { status: 'failed', message: 'Timed out waiting for analyze to start' });
+        let timeoutReason: 'extract_not_finalized' | 'analyze_not_enqueued' | 'analyze_queued_but_failed' = 'analyze_not_enqueued';
+        let timeoutDetail = 'Timed out waiting for backend to enqueue analyze job';
+        try {
+          const rows = await apiGetDealJobs(dealId, { limit: 250 });
+          const inWindow = (Array.isArray(rows) ? rows : []).filter((r) => {
+            const t = parseIsoMs((r as any)?.created_at ?? (r as any)?.updated_at ?? null);
+            return t != null && t >= runWindow.startMs && t <= runWindow.endMs;
+          });
+
+          const extractRows = inWindow.filter((r) => String((r as any)?.type ?? '') === 'extract_visuals');
+          const latestExtract = extractRows.sort((a, b) => (parseIsoMs(b.updated_at ?? b.created_at ?? null) ?? 0) - (parseIsoMs(a.updated_at ?? a.created_at ?? null) ?? 0))[0] ?? null;
+          const latestExtractStatus = latestExtract ? normalizeJobStatus((latestExtract as any).status as any) : null;
+
+          const analyzeRows = inWindow.filter((r) => String((r as any)?.type ?? '') === 'analyze_deal');
+          const latestAnalyze = analyzeRows.sort((a, b) => (parseIsoMs(b.updated_at ?? b.created_at ?? null) ?? 0) - (parseIsoMs(a.updated_at ?? a.created_at ?? null) ?? 0))[0] ?? null;
+          const latestAnalyzeStatus = latestAnalyze ? normalizeJobStatus((latestAnalyze as any).status as any) : null;
+
+          if (latestAnalyzeStatus === 'failed' || latestAnalyzeStatus === 'cancelled') {
+            timeoutReason = 'analyze_queued_but_failed';
+            timeoutDetail = `Analyze was queued but ${latestAnalyzeStatus}.`;
+          } else if (latestExtractStatus === 'queued' || latestExtractStatus === 'running' || latestExtractStatus === 'retrying' || latestExtractStatus === 'blocked') {
+            timeoutReason = 'extract_not_finalized';
+            timeoutDetail = 'Extraction did not finalize in time, so analyze was never enqueued.';
+          } else {
+            timeoutReason = 'analyze_not_enqueued';
+            timeoutDetail = 'Extraction appears finalized, but no analyze job was enqueued in the run window.';
+          }
+
+          console.warn('[DDAI][runFullProcess] analyze-timeout-diagnosis', {
+            dealId,
+            timeoutReason,
+            latestExtractStatus,
+            latestAnalyzeStatus,
+            runWindow,
+          });
+        } catch {
+          timeoutReason = 'analyze_not_enqueued';
+          timeoutDetail = 'Timed out waiting for backend to enqueue analyze job';
+        }
+
+        addToast('error', 'Analyze did not start', timeoutDetail);
+        updateFullStep('analyze_deal', { status: 'failed', message: `Timed out (${timeoutReason})` });
         setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Analyze did not start' } : prev));
         setAnalyzing(false);
         return;

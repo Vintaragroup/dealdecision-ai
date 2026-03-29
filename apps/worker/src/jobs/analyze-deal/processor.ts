@@ -200,6 +200,52 @@ function coerceDealSummaryV2(parsed: Record<string, unknown>, nowIso: string, pa
 	};
 }
 
+function isRealEstatePolicyId(policyId: string | null | undefined): boolean {
+	const v = typeof policyId === "string" ? policyId.trim().toLowerCase() : "";
+	return v === "real_estate_underwriting" || v.includes("real_estate");
+}
+
+const STARTUP_BUSINESS_MODEL_RE = /\b(omnichannel|dtc|wholesale|retail|consumer|subscription|saas|ecommerce)\b/i;
+const PLACEHOLDER_BUSINESS_MODEL_RE = /^(unknown|n\/a|na|none|tbd)$/i;
+
+export function resolvePromotedBusinessModelForPolicy(input: {
+	selectedPolicyId: string | null;
+	promotedDisplay: string;
+	promotedRawText?: string | null;
+	currentDisplay?: string | null;
+}): { action: "accept" | "replace" | "suppress"; display: string | null; reason: string } {
+	const promoted = String(input.promotedDisplay ?? "").trim();
+	if (!promoted) return { action: "suppress", display: null, reason: "empty_promoted_display" };
+
+	if (PLACEHOLDER_BUSINESS_MODEL_RE.test(promoted)) {
+		return { action: "suppress", display: null, reason: "placeholder_promoted_display" };
+	}
+
+	if (!isRealEstatePolicyId(input.selectedPolicyId)) {
+		return { action: "accept", display: promoted, reason: "policy_non_real_estate" };
+	}
+
+	if (!STARTUP_BUSINESS_MODEL_RE.test(promoted)) {
+		return { action: "accept", display: promoted, reason: "already_policy_compatible" };
+	}
+
+	const context = [promoted, input.promotedRawText ?? "", input.currentDisplay ?? ""].join(" ");
+	const preferredEquity = /\bpreferred\s+equity\b/i.test(context);
+	if (preferredEquity) {
+		return {
+			action: "replace",
+			display: "Real estate investment (preferred equity)",
+			reason: "startup_label_replaced_for_real_estate_preferred_equity",
+		};
+	}
+
+	return {
+		action: "replace",
+		display: "Real estate structured investment",
+		reason: "startup_label_replaced_for_real_estate",
+	};
+}
+
 function buildDeterministicDealSummaryV2Fallback(nowIso: string, input: {
 	dealId: string;
 	dealName?: string | null;
@@ -872,6 +918,8 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 		// This keeps Phase 1 consistent with /report structured_summary and provides page-level citations.
 		try {
 			const pool = getPool();
+			const selectedPolicyIdForPromotedFacts =
+				getSelectedPolicyIdFromAnyLike(previousDio as any) ?? null;
 			type EvidenceRow = {
 				source_document_id: string | null;
 				source_path: string | null;
@@ -880,7 +928,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 				content_json: any;
 				meta: any;
 			};
-			const loadPromoted = async (factType: "raise_terms_v1" | "business_model_v1"): Promise<{ display: string; docId: string | null; pageIndex: number | null } | null> => {
+			const loadPromoted = async (factType: "raise_terms_v1" | "business_model_v1"): Promise<{ display: string; rawText: string | null; docId: string | null; pageIndex: number | null } | null> => {
 				const evidenceId = `deal:${dealId}:fact:${factType}`;
 				let row: EvidenceRow | null = null;
 				try {
@@ -909,6 +957,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						? vj.raw_text.trim()
 						: null;
 				if (!display) return null;
+				const rawText = typeof vj?.raw_text === "string" && vj.raw_text.trim() ? vj.raw_text.trim() : null;
 				const prov = (row.content_json as any)?.provenance ?? null;
 				const pageIndex = typeof prov?.page_index === "number" && Number.isFinite(prov.page_index)
 					? Math.floor(prov.page_index)
@@ -916,7 +965,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						? Math.floor(row.meta.page_index)
 						: null;
 				const docId = typeof row.source_document_id === "string" && row.source_document_id.trim() ? row.source_document_id.trim() : null;
-				return { display, docId, pageIndex };
+				return { display, rawText, docId, pageIndex };
 			};
 
 			const mergeSources = (
@@ -960,6 +1009,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 							pageStart: 0,
 							// Allow promotion to infer page range if page_count is missing.
 							pageEnd: pageCount > 0 ? pageCount : 0,
+							selectedPolicyId: selectedPolicyIdForPromotedFacts,
 							version: dpuVersion,
 							runId,
 							stepRunId: null,
@@ -987,17 +1037,40 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 			}
 
 			if (promotedModel && typeof promotedModel.display === "string" && promotedModel.display.trim()) {
-				phase1_deal_overview_v2 = {
-					...phase1_deal_overview_v2,
-					business_model: promotedModel.display,
-					sources: mergeSources((phase1_deal_overview_v2 as any)?.sources, [
-						{
-							document_id: promotedModel.docId ?? (phase1Documents[0]?.document_id ?? "unknown"),
-							...(typeof promotedModel.pageIndex === "number" ? { page_range: [promotedModel.pageIndex + 1, promotedModel.pageIndex + 1] as [number, number] } : {}),
-							note: typeof promotedModel.pageIndex === "number" ? `promoted business_model_v1 (dpu page_index=${promotedModel.pageIndex})` : "promoted business_model_v1",
-						},
-					]),
-				};
+				const policyResolution = resolvePromotedBusinessModelForPolicy({
+					selectedPolicyId: selectedPolicyIdForPromotedFacts,
+					promotedDisplay: promotedModel.display,
+					promotedRawText: promotedModel.rawText,
+					currentDisplay: (phase1_deal_overview_v2 as any)?.business_model,
+				});
+
+				console.log(
+					JSON.stringify({
+						event: "phase1_promoted_business_model_policy_guard",
+						deal_id: dealId,
+						selected_policy_id: selectedPolicyIdForPromotedFacts,
+						action: policyResolution.action,
+						reason: policyResolution.reason,
+						promoted_head: promotedModel.display.slice(0, 140),
+						resolved_head: typeof policyResolution.display === "string" ? policyResolution.display.slice(0, 140) : null,
+					})
+				);
+
+				if (policyResolution.display) {
+					phase1_deal_overview_v2 = {
+						...phase1_deal_overview_v2,
+						business_model: policyResolution.display,
+						sources: mergeSources((phase1_deal_overview_v2 as any)?.sources, [
+							{
+								document_id: promotedModel.docId ?? (phase1Documents[0]?.document_id ?? "unknown"),
+								...(typeof promotedModel.pageIndex === "number" ? { page_range: [promotedModel.pageIndex + 1, promotedModel.pageIndex + 1] as [number, number] } : {}),
+								note: typeof promotedModel.pageIndex === "number"
+									? `promoted business_model_v1 (${policyResolution.action}; dpu page_index=${promotedModel.pageIndex})`
+									: `promoted business_model_v1 (${policyResolution.action})`,
+							},
+						]),
+					};
+				}
 			}
 		} catch {
 			// Never fail analysis due to promoted fact hydration.

@@ -367,6 +367,8 @@ const REJECT_BLOCK_RE: RegExp[] = [
 	/\b(financials?|income\s+statement|balance\s+sheet|cash\s*flow|p\s*&\s*l)\b/i,
 ];
 
+const LEGAL_DISCLAIMER_BLOCK_RE = /\b(for\s+informational\s+purposes\s+only|not\s+(?:an\s+offer|a\s+solicitation)|does\s+not\s+constitute\s+an\s+offer|offer\s+to\s+sell|private\s+placement\s+memorandum|forward[-\s]*looking\s+statements?|accredited\s+investors?|securities\s+act|investment\s+advice|past\s+performance|risk\s+factors?)\b/i;
+
 type CandidateSourceType = 'anchored' | 'tagline' | 'definition';
 type OverviewCandidate = {
 	page: number;
@@ -387,6 +389,7 @@ function isBlockedCandidate(value: string): { blocked: boolean; reasons: string[
 	if (!s) return { blocked: true, reasons: ['empty'] };
 
 	if (hasAny(METAPHOR_PHRASES, s)) reasons.push('metaphor');
+	if (LEGAL_DISCLAIMER_BLOCK_RE.test(s)) reasons.push('legal_disclaimer_boilerplate');
 	for (const re of REJECT_BLOCK_RE) {
 		if (re.test(s)) {
 			reasons.push('blocked_keyword');
@@ -453,6 +456,7 @@ function collectCandidatesFromPages(params: {
 	maxPages: number;
 	mode: 'product' | 'market';
 }): OverviewCandidate[] {
+	const debug = isDevOverviewDebugEnabled();
 	const pages = params.pages.slice(0, params.maxPages);
 	const out: OverviewCandidate[] = [];
 	const anchors = params.mode === 'product' ? PRODUCT_ANCHOR_HEADINGS : MARKET_ANCHOR_HEADINGS;
@@ -500,6 +504,20 @@ function collectCandidatesFromPages(params: {
 						note: `anchored:'${sanitizeInlineText(line).slice(0, 60)}'`,
 					},
 				});
+
+				if (debug && rejected_reasons.length > 0) {
+					console.log(
+						JSON.stringify({
+							event: 'phase1_deal_overview_v2_candidate_rejected',
+							mode: params.mode,
+							source_type: 'anchored',
+							document_id: params.docId,
+							page: p.page,
+							candidate_head: cleaned.slice(0, 160),
+							rejected_reasons,
+						})
+					);
+				}
 			}
 		}
 
@@ -528,6 +546,20 @@ function collectCandidatesFromPages(params: {
 				accepted: rejected_reasons.length === 0,
 				source: { document_id: params.docId, page_range: [p.page, p.page], note: 'tagline:verb_pattern' },
 			});
+
+			if (debug && rejected_reasons.length > 0) {
+				console.log(
+					JSON.stringify({
+						event: 'phase1_deal_overview_v2_candidate_rejected',
+						mode: params.mode,
+						source_type: 'tagline',
+						document_id: params.docId,
+						page: p.page,
+						candidate_head: cleaned.slice(0, 160),
+						rejected_reasons,
+					})
+				);
+			}
 		}
 	}
 
@@ -1362,6 +1394,7 @@ function evaluateFallbackCandidate(raw: string): { ok: boolean; score: number; r
 	const s = sanitizeInlineText(raw);
 	let score = 0;
 	if (!s) return { ok: false, score, rejected_reason: 'empty' };
+	if (LEGAL_DISCLAIMER_BLOCK_RE.test(s)) return { ok: false, score, rejected_reason: 'legal_disclaimer_boilerplate' };
 
 	// Reject OCR logo artifacts and short cover taglines (common on title slides).
 	if (looksLikeSpacedLogoArtifact(s)) return { ok: false, score, rejected_reason: 'spaced_logo_artifact' };

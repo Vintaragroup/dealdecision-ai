@@ -109,6 +109,21 @@ describe("analyzeDealProcessor", () => {
     expect(typeof analyzeDealProcessor).toBe("function");
   });
 
+  it("replaces startup-style promoted business model under real-estate policy", async () => {
+    const { resolvePromotedBusinessModelForPolicy } = await import("../processor.js");
+
+    const out = resolvePromotedBusinessModelForPolicy({
+      selectedPolicyId: "real_estate_underwriting",
+      promotedDisplay: "Omnichannel (DTC + Wholesale/Retail)",
+      promotedRawText: "Preferred equity strategy with asset-backed downside protection.",
+      currentDisplay: null,
+    });
+
+    expect(out.action).toBe("replace");
+    expect(out.reason).toMatch(/real_estate/i);
+    expect(out.display).toBe("Real estate investment (preferred equity)");
+  });
+
   it("early-exits with ok: false when deal_id is absent and DB lookup returns null", async () => {
     const { analyzeDealProcessor } = await import("../processor.js");
     // no deal_id in data; pool query returns no rows → getDealIdForJob returns null

@@ -79,6 +79,25 @@ describe('buildPhase1DealOverviewV2 (product_solution / market_icp extraction)',
 		expect(out.product_solution).toBeNull();
 	});
 
+	it('hard-rejects legal disclaimer boilerplate in product/market candidates', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-legal-1', [
+				{
+					text: [
+						'OVERVIEW',
+						'This presentation is for informational purposes only and does not constitute an offer to sell securities.',
+						'WHO WE SERVE',
+						'Not an offer or solicitation to any prospective investor.',
+					].join('\n'),
+				},
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution).toBeNull();
+		expect(out.market_icp).toBeNull();
+	});
+
 	it("accepts anchored 'WHO WE SERVE' within next 6 lines", () => {
 		const docs: OverviewDocumentInput[] = [
 			docWithPages('doc1', [

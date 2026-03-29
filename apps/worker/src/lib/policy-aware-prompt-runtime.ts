@@ -70,6 +70,12 @@ const ARTIFACT_SPECS: ArtifactSpec[] = [
 
 let cachedRuntimePacket: PolicyPromptRuntimePacket | null = null;
 
+type ArtifactProbe = {
+  path: string;
+  exists: boolean;
+  hasAllRequiredArtifacts: boolean;
+};
+
 function parseSections(markdown: string): Array<{ title: string; body: string }> {
   const lines = String(markdown ?? "").split(/\r?\n/);
   const sections: Array<{ title: string; body: string }> = [];
@@ -108,23 +114,52 @@ function computeSha256(value: string): string {
 export function loadPolicyPromptRuntimePacket(opts?: { forceReload?: boolean }): PolicyPromptRuntimePacket {
   if (cachedRuntimePacket && opts?.forceReload !== true) return cachedRuntimePacket;
 
-  const findArtifactsDir = (): string => {
+  const findArtifactsDir = (): { artifactsDir: string; probes: ArtifactProbe[] } => {
     const start = process.cwd();
-    const probes = [
+    const roots = [
       start,
       path.resolve(start, ".."),
       path.resolve(start, "../.."),
       path.resolve(start, "../../.."),
       path.resolve(start, "../../../.."),
     ];
-    for (const p of probes) {
-      const candidate = path.join(p, "artifacts");
-      if (existsSync(candidate)) return candidate;
+
+    const envRootsRaw = [process.env.POLICY_PROMPT_ARTIFACTS_ROOTS, process.env.POLICY_PROMPT_ARTIFACTS_ROOT]
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .join(path.delimiter);
+    const envRoots = envRootsRaw
+      .split(path.delimiter)
+      .map((v) => v.trim())
+      .filter(Boolean)
+      .flatMap((v) => [path.resolve(v), path.resolve(v, "artifacts")]);
+
+    const probeCandidates = Array.from(
+      new Set([
+        ...envRoots,
+        ...roots.map((r) => path.join(r, "artifacts")),
+      ])
+    );
+
+    const probes: ArtifactProbe[] = [];
+    let firstExistingDir: string | null = null;
+
+    for (const candidate of probeCandidates) {
+      const exists = existsSync(candidate);
+      const hasAllRequiredArtifacts = exists
+        ? ARTIFACT_SPECS.every((spec) => existsSync(path.join(candidate, spec.fileName)))
+        : false;
+      probes.push({ path: candidate, exists, hasAllRequiredArtifacts });
+      if (exists && !firstExistingDir) firstExistingDir = candidate;
+      if (hasAllRequiredArtifacts) return { artifactsDir: candidate, probes };
     }
-    return path.resolve(start, "artifacts");
+
+    return {
+      artifactsDir: firstExistingDir ?? path.resolve(start, "artifacts"),
+      probes,
+    };
   };
 
-  const artifactsDir = findArtifactsDir();
+  const { artifactsDir, probes } = findArtifactsDir();
 
   const artifacts = {} as Record<PolicyPromptArtifactId, LoadedPolicyPromptArtifact>;
   for (const spec of ARTIFACT_SPECS) {
@@ -134,7 +169,9 @@ export function loadPolicyPromptRuntimePacket(opts?: { forceReload?: boolean }):
       content = readFileSync(filePath, "utf8");
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      throw new Error(`policy_prompt_artifact_missing:${spec.fileName}:${msg}`);
+      throw new Error(
+        `policy_prompt_artifact_missing:${spec.fileName}:artifacts_dir=${artifactsDir}:probe_count=${probes.length}:error=${msg}`
+      );
     }
 
     const version = parseVersionFromFileName(spec.fileName);
@@ -166,6 +203,9 @@ export function loadPolicyPromptRuntimePacket(opts?: { forceReload?: boolean }):
       JSON.stringify({
         event: "POLICY_PROMPT_ARTIFACTS_LOADED",
         loaded_at: packet.loaded_at,
+        artifacts_dir: artifactsDir,
+        probe_count: probes.length,
+        probes,
         artifacts: ARTIFACT_SPECS.map((s) => ({
           id: s.id,
           file: packet.artifacts[s.id].fileName,

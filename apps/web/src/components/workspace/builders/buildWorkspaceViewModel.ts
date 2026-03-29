@@ -109,10 +109,33 @@ export interface WorkspaceViewModelInputs {
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
 const DASH = '—';
+const MISSING_EVIDENCE_TEXT = 'Not extracted from evidence';
+
+const STARTUP_TAXONOMY_RE = /\b(omnichannel|d2c|dtc|b2c|b2b|saas|subscription|marketplace|arr|mrr|customers?|users?)\b/i;
+const REAL_ESTATE_SEMANTICS_RE = /\b(real\s*estate|asset|property|facility|submarket|occupan|noi|irr|cap\s*rate|ltv|dscr|preferred\s+equity|debt|equity|term)\b/i;
 
 function asDisplayValue(v: string | null | undefined): string {
   if (!v || v.trim() === '' || v === DASH) return DASH;
   return v.trim();
+}
+
+function sanitizeEvidenceText(value: string | null | undefined, opts: { isRealEstateSchema: boolean }): string {
+  const display = asDisplayValue(value);
+  if (display === DASH) return MISSING_EVIDENCE_TEXT;
+
+  if (opts.isRealEstateSchema) {
+    const startupTaxonomyLeak = STARTUP_TAXONOMY_RE.test(display) && !REAL_ESTATE_SEMANTICS_RE.test(display);
+    if (startupTaxonomyLeak) return MISSING_EVIDENCE_TEXT;
+  }
+
+  return display;
+}
+
+function isRealEstateBusinessModelDisplaySafe(value: string | null | undefined): boolean {
+  const display = asDisplayValue(value);
+  if (display === DASH) return false;
+  if (REAL_ESTATE_SEMANTICS_RE.test(display)) return true;
+  return !STARTUP_TAXONOMY_RE.test(display);
 }
 
 /**
@@ -271,35 +294,61 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
   const isFundSchema = policyFamily === 'fund';
 
   const raiseDisplay = selectedHeaderReady ? asDisplayValue(raiseValue) : DASH;
-  const revDisplay = selectedHeaderReady && revenueAllowed && isStartupSchema ? asDisplayValue(revenueValue) : DASH;
+  const revDisplay = isRealEstateSchema
+    ? asDisplayValue(revenueValue)
+    : selectedHeaderReady && revenueAllowed && isStartupSchema
+      ? asDisplayValue(revenueValue)
+      : DASH;
   // Growth: prefer structured report value (numeric); fall back to header value.
   // If neither is numeric, show 'Mentioned' — qualitative evidence still informs investors.
-  const growthDisplay = selectedHeaderReady
-    ? (
-      isStartupSchema
-        ? asTractionDisplay(
-            asDisplayValue(reportStructuredGrowthValue) !== DASH
-              ? (reportStructuredGrowthValue as string)
-              : (growthValue ?? null),
-          )
-        : asDisplayValue(growthValue)
-    )
-    : DASH;
+  const growthDisplay = isRealEstateSchema
+    ? asDisplayValue(growthValue)
+    : selectedHeaderReady
+      ? (
+        isStartupSchema
+          ? asTractionDisplay(
+              asDisplayValue(reportStructuredGrowthValue) !== DASH
+                ? (reportStructuredGrowthValue as string)
+                : (growthValue ?? null),
+            )
+          : asDisplayValue(growthValue)
+      )
+      : DASH;
   // Customers: startup schema keeps the qualitative fallback; non-startup keeps raw mapped metric.
-  const customersDisplay = selectedHeaderReady
-    ? (
-      isStartupSchema
-        ? asTractionDisplay(customersValue ?? null)
-        : asDisplayValue(customersValue)
-    )
-    : DASH;
+  const customersDisplay = isRealEstateSchema
+    ? asDisplayValue(customersValue)
+    : selectedHeaderReady
+      ? (
+        isStartupSchema
+          ? asTractionDisplay(customersValue ?? null)
+          : asDisplayValue(customersValue)
+      )
+      : DASH;
+
+  const businessModelDisplay = (() => {
+    if (isRealEstateSchema) {
+      if (isRealEstateBusinessModelDisplaySafe(governedBusinessModel)) {
+        return asDisplayValue(governedBusinessModel);
+      }
+      if (isRealEstateBusinessModelDisplaySafe(businessModelValue)) {
+        return asDisplayValue(businessModelValue);
+      }
+      const governedFallback = asDisplayValue(governedBusinessModel);
+      return governedFallback !== DASH ? governedFallback : DASH;
+    }
+
+    const fromSelected = asDisplayValue(businessModelValue);
+    if (fromSelected !== DASH) return fromSelected;
+    const fromGoverned = asDisplayValue(governedBusinessModel);
+    return fromGoverned !== DASH ? fromGoverned : 'Unknown';
+  })();
 
   const financialTiles = isRealEstateSchema
     ? [
         { label: selectedHeaderReady ? (raiseLabel ?? 'Raise / terms') : 'Raise / terms', value: raiseDisplay },
         { label: 'NOI', value: revDisplay },
-        { label: 'Runway', value: asDisplayValue(runwayTileValue) },
-        { label: 'Burn', value: asDisplayValue(burnTileValue) },
+        { label: 'Target IRR', value: growthDisplay },
+        { label: 'Term', value: customersDisplay },
       ]
     : isFundSchema
       ? [
@@ -354,9 +403,39 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
             ? 'Fund strategy'
             : (businessModelLabel ?? 'Model'))
         : (isRealEstateSchema ? 'Deal structure' : isFundSchema ? 'Fund strategy' : 'Model'),
-      value: asDisplayValue(businessModelValue) !== DASH ? (businessModelValue as string) : 'Unknown',
+      value: businessModelDisplay !== DASH ? businessModelDisplay : 'Unknown',
     },
   ];
+
+  const snapshotFactLabels = isRealEstateSchema
+    ? {
+        raise: selectedHeaderReady ? (raiseLabel ?? 'Raise / Terms') : 'Raise / Terms',
+        arr: 'NOI',
+        growth: 'Target IRR',
+        customers: 'Term',
+        tam: 'Submarket',
+      }
+    : {
+        raise: selectedHeaderReady ? (raiseLabel ?? 'Raise') : 'Raise',
+        arr: revenueTileLabel,
+        growth: selectedHeaderReady ? (growthLabel ?? 'Growth') : 'Growth',
+        customers: selectedHeaderReady ? (customersLabel ?? 'Customers') : 'Customers',
+        tam: 'TAM',
+      };
+
+  const evidenceLabels = isRealEstateSchema
+    ? {
+        product: 'Asset / Facility',
+        market: 'Submarket / Demand',
+        businessModel: 'Deal Structure',
+        raise: 'Raise / Terms',
+      }
+    : {
+        product: 'Product',
+        market: 'Market',
+        businessModel: 'Business Model',
+        raise: 'Raise / Terms',
+      };
 
   // ── Pipeline status derived from stage ───────────────────────────────────
   // (Already computed by DealWorkspace — passed through here for completeness.)
@@ -398,9 +477,10 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
   const overview: WorkspaceOverviewVM = {
     companyName: displayName,
     companyDescription: governedDealOneLiner,
+    snapshotFactLabels,
     snapshotFacts: {
       raise: raiseDisplay,
-      arr: isStartupSchema ? revDisplay : DASH,
+      arr: isRealEstateSchema ? revDisplay : (isStartupSchema ? revDisplay : DASH),
       growth: growthDisplay,
       customers: customersDisplay,
       tam,
@@ -411,10 +491,11 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     traction: tractionTiles,
     deal: dealTiles,
     businessModel: bmTiles,
-    productSummary: governedProduct,
-    marketSummary: governedMarket,
-    businessModelSummary: governedBusinessModel,
-    raiseTerms: governedRaise,
+    evidenceLabels,
+    productSummary: sanitizeEvidenceText(governedProduct, { isRealEstateSchema }),
+    marketSummary: sanitizeEvidenceText(governedMarket, { isRealEstateSchema }),
+    businessModelSummary: sanitizeEvidenceText(governedBusinessModel, { isRealEstateSchema }),
+    raiseTerms: sanitizeEvidenceText(governedRaise, { isRealEstateSchema: false }),
     insightsScore,
     insightsConfidence,
   };

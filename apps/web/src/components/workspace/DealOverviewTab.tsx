@@ -25,6 +25,13 @@ interface DealOverviewTabProps {
   // Company Snapshot
   companyName: string;
   companyDescription: string;
+  snapshotFactLabels: {
+    raise: string;
+    arr: string;
+    growth: string;
+    customers: string;
+    tam: string;
+  };
   snapshotFacts: {
     raise: string;
     arr: string;
@@ -41,6 +48,13 @@ interface DealOverviewTabProps {
   traction: { label: string; value: string }[];
   deal: { label: string; value: string }[];
   businessModel: { label: string; value: string }[];
+
+  evidenceLabels: {
+    product: string;
+    market: string;
+    businessModel: string;
+    raise: string;
+  };
   
   // Structured Evidence
   productSummary: string;
@@ -58,12 +72,14 @@ export function DealOverviewTab({
   darkMode,
   companyName,
   companyDescription,
+  snapshotFactLabels,
   snapshotFacts,
   signals,
   financials,
   traction,
   deal,
   businessModel,
+  evidenceLabels,
   productSummary,
   marketSummary,
   businessModelSummary,
@@ -121,11 +137,11 @@ export function DealOverviewTab({
         {/* Compact Fact Row */}
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
           {[
-            { label: 'Raise', value: snapshotFacts.raise },
-            { label: 'ARR', value: snapshotFacts.arr },
-            { label: 'Growth', value: snapshotFacts.growth },
-            { label: 'Customers', value: snapshotFacts.customers },
-            { label: 'TAM', value: snapshotFacts.tam }
+            { label: snapshotFactLabels.raise, value: snapshotFacts.raise },
+            { label: snapshotFactLabels.arr, value: snapshotFacts.arr },
+            { label: snapshotFactLabels.growth, value: snapshotFacts.growth },
+            { label: snapshotFactLabels.customers, value: snapshotFacts.customers },
+            { label: snapshotFactLabels.tam, value: snapshotFacts.tam }
           ].map((fact, idx) => (
             <div
               key={idx}
@@ -316,7 +332,7 @@ export function DealOverviewTab({
             darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
           }`}>
             <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-              Product
+              {evidenceLabels.product}
             </h3>
             <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
               {productSummary}
@@ -328,7 +344,7 @@ export function DealOverviewTab({
             darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
           }`}>
             <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-              Market
+              {evidenceLabels.market}
             </h3>
             <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
               {marketSummary}
@@ -340,7 +356,7 @@ export function DealOverviewTab({
             darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
           }`}>
             <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-              Business Model
+              {evidenceLabels.businessModel}
             </h3>
             <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
               {businessModelSummary}
@@ -352,7 +368,7 @@ export function DealOverviewTab({
             darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
           }`}>
             <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-              Raise / Terms
+              {evidenceLabels.raise}
             </h3>
             <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
               {raiseTerms}

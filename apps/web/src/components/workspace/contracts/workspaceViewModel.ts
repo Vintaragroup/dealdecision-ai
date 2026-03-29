@@ -94,6 +94,13 @@ export type WorkspaceHeaderVM = {
 export type WorkspaceOverviewVM = {
   companyName: string;
   companyDescription: string;
+  snapshotFactLabels: {
+    raise: string;
+    arr: string;
+    growth: string;
+    customers: string;
+    tam: string;
+  };
   snapshotFacts: {
     raise: string;
     arr: string;
@@ -118,6 +125,12 @@ export type WorkspaceOverviewVM = {
   traction: KpiTile[];
   deal: KpiTile[];
   businessModel: KpiTile[];
+  evidenceLabels: {
+    product: string;
+    market: string;
+    businessModel: string;
+    raise: string;
+  };
   productSummary: string;
   marketSummary: string;
   businessModelSummary: string;

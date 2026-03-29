@@ -3933,8 +3933,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const businessModel = chooseGovernedFirst({
       deterministic: overviewBusinessModelCanonical,
       overlay: ovFacts ? { value: ovFacts.business_model?.value ?? null, quality: ovFacts.business_model?.quality, source: ovFacts.business_model?.source } : null,
-      // When report is ready, keep Business Model consistent with /report (overlay can still render narrative).
-      preferDeterministic: selectedHeader.ready,
+      // Real-estate display is policy-governed first to avoid startup taxonomy leaks.
+      // Startup/fund schemas keep deterministic report-first behavior when ready.
+      preferDeterministic: selectedHeader.ready && !looksRealEstate,
     });
     const raise = chooseGovernedFirst({
       deterministic: overviewRaiseTermsCanonical,
@@ -3944,7 +3945,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
 
     return { product, market, businessModel, raise };
-  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1, investorInsights.report]);
+  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1, investorInsights.report, looksRealEstate]);
 
   const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -4843,6 +4844,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       ? (selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null)
       : (looksRealEstate ? 'Term' : policyFamily === 'fund' ? 'Vehicle term' : null),
     businessModelValue: (selectedHeader.ready ? selectedHeader.business_model.value : null)
+      || (looksRealEstate ? governedKeyFacts.businessModel.value : null)
       || authoritativeBusinessModel.value
       || workspaceOverviewModel.keyFacts.business_model.value
       || null,
@@ -4878,6 +4880,45 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     selectedPolicyId, isStartupPolicySchema, topSectionRevenue, topSectionGrowth, topSectionCustomers, looksRealEstate, policyFamily,
     canonicalScoreView, topSectionConfidence,
   ]);
+
+  const lastPolicyOverviewLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const key = [
+      dealId ?? '',
+      policyFamily,
+      String(looksRealEstate),
+      governedKeyFacts.product.provenance.source,
+      governedKeyFacts.market.provenance.source,
+      governedKeyFacts.businessModel.provenance.source,
+      vm.overview.snapshotFacts.arr,
+      vm.overview.snapshotFacts.growth,
+      vm.overview.snapshotFacts.customers,
+    ].join('|');
+    if (lastPolicyOverviewLogRef.current === key) return;
+    lastPolicyOverviewLogRef.current = key;
+
+    console.info('[DDAI][policy_overview_binding]', {
+      dealId,
+      policyFamily,
+      looksRealEstate,
+      keyFacts: {
+        product: governedKeyFacts.product,
+        market: governedKeyFacts.market,
+        businessModel: governedKeyFacts.businessModel,
+        raise: governedKeyFacts.raise,
+      },
+      snapshotFactLabels: vm.overview.snapshotFactLabels,
+      snapshotFacts: vm.overview.snapshotFacts,
+      evidenceLabels: vm.overview.evidenceLabels,
+      evidenceFacts: {
+        product: vm.overview.productSummary,
+        market: vm.overview.marketSummary,
+        businessModel: vm.overview.businessModelSummary,
+        raise: vm.overview.raiseTerms,
+      },
+    });
+  }, [dealId, policyFamily, looksRealEstate, governedKeyFacts, vm.overview]);
 
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {
@@ -8086,12 +8127,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 darkMode={darkMode}
                 companyName={vm.overview.companyName}
                 companyDescription={vm.overview.companyDescription}
+                snapshotFactLabels={vm.overview.snapshotFactLabels}
                 snapshotFacts={vm.overview.snapshotFacts}
                 signals={vm.overview.signalData}
                 financials={vm.overview.financials}
                 traction={vm.overview.traction}
                 deal={vm.overview.deal}
                 businessModel={vm.overview.businessModel}
+                evidenceLabels={vm.overview.evidenceLabels}
                 productSummary={vm.overview.productSummary}
                 marketSummary={vm.overview.marketSummary}
                 businessModelSummary={vm.overview.businessModelSummary}

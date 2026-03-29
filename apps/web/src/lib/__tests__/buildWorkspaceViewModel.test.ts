@@ -326,7 +326,9 @@ describe('policy-aware metric schema', () => {
       customersValue: '36 months',
     });
 
-    expect(vm.overview.snapshotFacts.arr).toBe('—');
+    expect(vm.overview.snapshotFactLabels.arr).toBe('NOI');
+    expect(vm.overview.snapshotFacts.arr).toBe('$1.2M NOI');
+    expect(vm.header.metrics.financials.map((x) => x.label)).toEqual(['Seed', 'NOI', 'Target IRR', 'Term']);
     expect(vm.header.metrics.traction[0]?.label).toBe('Target IRR');
     expect(vm.header.metrics.traction[1]?.label).toBe('Term');
     expect(vm.header.metrics.businessModel[0]?.label).toBe('Deal structure');
@@ -369,13 +371,53 @@ describe('policy-aware metric schema', () => {
       businessModelValue: 'Real estate investment (preferred equity)',
     });
 
-    expect(vm.overview.snapshotFacts.arr).toBe('—');
+    expect(vm.overview.snapshotFactLabels.arr).toBe('NOI');
+    expect(vm.overview.snapshotFacts.arr).toBe('$1.2M NOI');
     expect(vm.header.metrics.traction[0]?.label).toBe('Target IRR');
     expect(vm.header.metrics.traction[1]?.label).toBe('Term');
     expect(vm.header.metrics.businessModel[0]?.label).toBe('Deal structure');
     expect(vm.header.metrics.businessModel[0]?.value).not.toContain('Omnichannel');
     expect(getPolicyScoreSectionLabel(resolvedPolicyId, 'business_model')).toBe('Deal structure');
     expect(getPolicyScoreSectionLabel(resolvedPolicyId, 'traction')).toBe('Underwriting metrics');
+  });
+
+  test('real-estate business model prefers governed policy-safe phrasing over startup taxonomy', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      businessModelValue: 'Omnichannel DTC subscription',
+      governedBusinessModel: 'Preferred equity structure with debt service coverage covenant',
+    });
+
+    expect(vm.header.metrics.businessModel[0]?.value).toBe('Preferred equity structure with debt service coverage covenant');
+  });
+
+  test('real-estate extracted evidence relabels sections and gates startup-style text', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      governedProduct: 'Omnichannel DTC platform with subscription checkout',
+      governedMarket: 'B2C users and customer cohorts',
+      governedBusinessModel: 'Preferred equity structure',
+    });
+
+    expect(vm.overview.evidenceLabels.product).toBe('Asset / Facility');
+    expect(vm.overview.evidenceLabels.market).toBe('Submarket / Demand');
+    expect(vm.overview.productSummary).toBe('Not extracted from evidence');
+    expect(vm.overview.marketSummary).toBe('Not extracted from evidence');
+    expect(vm.overview.businessModelSummary).toBe('Preferred equity structure');
+  });
+
+  test('startup policy retains startup snapshot and evidence labeling', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'enterprise_saas_b2b_v1',
+    });
+
+    expect(vm.overview.snapshotFactLabels.arr).toBe('ARR');
+    expect(vm.overview.evidenceLabels.product).toBe('Product');
+    expect(vm.overview.evidenceLabels.market).toBe('Market');
+    expect(vm.overview.productSummary).toBe(BASE.governedProduct);
   });
 });
 

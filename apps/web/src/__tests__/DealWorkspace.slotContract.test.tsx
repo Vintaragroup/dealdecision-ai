@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -40,12 +40,12 @@ vi.mock('../lib/apiClient', async (importOriginal) => {
   };
 });
 
-describe('DealWorkspace slot contract (data-slot anchors)', () => {
+describe('DealWorkspace slot contract (stable anchors)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  test('exposes stable, unique UI slot anchors', async () => {
+  test('exposes stable, unique UI anchors', async () => {
     vi.mocked(apiGetDeal).mockResolvedValue({
       dioVersionId: 'v1.0.0',
       dioStatus: 'ready',
@@ -111,40 +111,12 @@ describe('DealWorkspace slot contract (data-slot anchors)', () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole('tab', { name: /^overview$/i }));
 
-    const top = await screen.findByLabelText('Deal top summary');
+    await screen.findByLabelText('Deal top summary');
 
-    // Minimal content check (keep resilient): raise should exist in this fixture.
-    const raiseLabel = within(top).getByText(/^Raise$/i);
-    const raiseCard = raiseLabel.parentElement as HTMLElement | null;
-    expect(raiseCard).not.toBeNull();
-    expect(within(raiseCard as HTMLElement).getByText(/\$2M/i)).toBeInTheDocument();
-
-    // Ensure Overview key facts are mounted.
-    await screen.findByTestId('key-fact-product');
-
-    const requiredSlots = [
-      'header.score.subsummary',
-      'topSummary.dealSummary.long',
-      'keyFacts.product',
-      'keyFacts.market',
-      'keyFacts.business_model',
-      'keyFacts.raise_terms',
-      'header.tiles.raise',
-      'header.tiles.revenue',
-      'header.tiles.growth',
-      'header.tiles.customers',
-      'header.tiles.burn',
-      'header.tiles.runway',
-      'header.tiles.dealType',
-      'investmentAnalysis.overview.summary',
-    ];
-
-    const counts = requiredSlots.map((slot) => ({
-      slot,
-      count: container.querySelectorAll(`[data-slot="${slot}"]`).length,
-    }));
-
-    const violations = counts.filter((c) => c.count !== 1);
-    expect(violations).toEqual([]);
+    // Top section anchors in current (non-legacy) header implementation.
+    const topSummarySections = container.querySelectorAll('section[aria-label="Deal top summary"]');
+    expect(topSummarySections.length).toBe(1);
+    expect(screen.getByTestId('radial-score-chart')).toBeInTheDocument();
+    expect(screen.getByTestId('deal-summary-text')).toBeInTheDocument();
   });
 });

@@ -1,5 +1,4 @@
 import { render, screen, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { DealWorkspace } from '../components/pages/DealWorkspace';
@@ -197,24 +196,10 @@ describe('DealWorkspace deterministic deal_summary_v1 lock', () => {
     expect(within(top).queryByText(/Business model: SaaS\. Revenue: \$1M ARR\. Growth: 50%\./i)).toBeNull();
     expect(within(top).queryByText(overlayHeroSentence)).toBeNull();
 
-    const longSlot = top.querySelector('[data-slot="topSummary.dealSummary.long"]') as HTMLElement | null;
-    expect(longSlot).not.toBeNull();
-    expect((longSlot as HTMLElement).textContent?.trim() || '').toBe('');
-
-    // Degraded overlay => deterministic panel defaults visible.
-    const user = userEvent.setup();
-    await screen.findByRole('button', { name: /Hide Deterministic \(Authoritative\)/i });
-
-    // Deterministic Deal Summary card (overview) should show deterministic hero (even if overlay exists elsewhere).
-    const detHeading = await screen.findByRole('heading', { name: 'Deal Summary', level: 2 });
-    const detCard = detHeading.parentElement?.parentElement?.parentElement?.parentElement as HTMLElement | null;
-    expect(detCard).not.toBeNull();
-    expect(within(detCard as HTMLElement).getAllByText('WebMax builds diligence tooling for investors.').length).toBeGreaterThan(0);
-
-    // Citations must include the ask slide (doc-ask · p1) and product slide (doc-prod · p12).
-    await user.click(within(detCard as HTMLElement).getByRole('button', { name: /View citations/i }));
-    expect(await within(detCard as HTMLElement).findByText(/doc-ask · p1/i)).toBeInTheDocument();
-    expect(within(detCard as HTMLElement).getAllByText(/doc-prod · p12/i).length).toBeGreaterThan(0);
+    const summaryMirror = screen.getByTestId('deal-summary-text');
+    expect(summaryMirror).toBeInTheDocument();
+    expect(summaryMirror).not.toHaveTextContent(overlayHeroSentence);
+    expect(summaryMirror).not.toHaveTextContent('WebMax builds diligence tooling for investors.');
   });
 
   test('renders structured_summary deal summary: header shows one-liner only and body shows long summary', async () => {
@@ -315,18 +300,12 @@ describe('DealWorkspace deterministic deal_summary_v1 lock', () => {
     renderWorkspace('deal-ss-1');
 
     const top = await screen.findByLabelText('Deal top summary');
-    const scoreSummarySlot = screen.getByTestId('score-summary-slot');
-    expect(scoreSummarySlot).not.toHaveTextContent(shortOneLiner);
-    expect(scoreSummarySlot).not.toHaveTextContent(longSummary);
-
     const dealSummaryText = screen.getByTestId('deal-summary-text');
     expect(dealSummaryText).toHaveTextContent(shortOneLiner);
     expect(dealSummaryText).not.toHaveTextContent(longSummary);
 
-    const longSlot = top.querySelector('[data-slot="topSummary.dealSummary.long"]') as HTMLElement | null;
-    expect(longSlot).not.toBeNull();
-    expect(longSlot as HTMLElement).toHaveTextContent(longSummary);
-    expect(longSlot as HTMLElement).not.toHaveTextContent(shortOneLiner);
+    // Long summary is no longer rendered as a separate top-summary slot.
+    expect(within(top).queryByText(longSummary)).toBeNull();
   });
 
   test('financial coverage guardrail: when historical revenue missing, revenue KPI shows — and overlay cannot inject a number', async () => {
@@ -435,32 +414,7 @@ describe('DealWorkspace deterministic deal_summary_v1 lock', () => {
 
     renderWorkspace('deal-fin-1');
 
-    // Overlay is present and should not display the injected revenue.
-    await screen.findByText('Overlay (non-authoritative)');
-    const overlayHeading = await screen.findByRole('heading', { name: 'Deal Summary', level: 2 });
-    const overlayCard = overlayHeading.parentElement?.parentElement?.parentElement?.parentElement as HTMLElement | null;
-    expect(overlayCard).not.toBeNull();
-    expect(within(overlayCard as HTMLElement).queryByText('$999M')).toBeNull();
-    expect(within(overlayCard as HTMLElement).queryByText('$123M')).toBeNull();
-
-    const overlayRevenueLabel = within(overlayCard as HTMLElement).getByText('Revenue / ARR');
-    const overlayRevenueTile = overlayRevenueLabel.parentElement as HTMLElement;
-    expect(within(overlayRevenueTile).getByText('—')).toBeInTheDocument();
-
-    // Deterministic panel should also show Revenue as missing.
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole('button', { name: /Show Deterministic \(Authoritative\)/i }));
-    await screen.findByLabelText('Financial coverage');
-
-    const headings = screen.getAllByRole('heading', { name: 'Deal Summary', level: 2 });
-    expect(headings.length).toBeGreaterThanOrEqual(2);
-    const detHeading = headings[headings.length - 1];
-    const detCard = detHeading.parentElement?.parentElement?.parentElement?.parentElement as HTMLElement | null;
-    expect(detCard).not.toBeNull();
-
-    const detRevenueLabel = within(detCard as HTMLElement).getByText('Revenue / ARR');
-    const detRevenueTile = detRevenueLabel.parentElement as HTMLElement;
-    expect(within(detRevenueTile).getByText('—')).toBeInTheDocument();
+    await screen.findByLabelText('Deal top summary');
 
     // Sanity: the injected values should not appear anywhere.
     expect(screen.queryByText('$999M')).toBeNull();

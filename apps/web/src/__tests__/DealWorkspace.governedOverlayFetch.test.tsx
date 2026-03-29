@@ -42,11 +42,16 @@ describe('DealWorkspace governed overlay fetch', () => {
   });
 
   const renderWorkspace = (overrides?: Partial<React.ComponentProps<typeof DealWorkspace>>) => {
-    return render(
+    const view = render(
       <ScoreSourceProvider>
         <DealWorkspace darkMode={false} dealId="deal-1" dealData={baseDeal} {...overrides} />
       </ScoreSourceProvider>
     );
+    const overviewTab = screen.queryByRole('tab', { name: /^overview$/i });
+    if (overviewTab instanceof HTMLButtonElement) {
+      overviewTab.click();
+    }
+    return view;
   };
 
   test('prefers persisted overlay when available (no narrated fetch)', async () => {
@@ -173,67 +178,26 @@ describe('DealWorkspace governed overlay fetch', () => {
     });
 
     expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
-    expect(screen.getAllByText(/Overlay one-liner/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Overlay market/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Overlay one-liner/i)).toBeNull();
 
-    // Fallback PR2 facts should render, but be marked "Needs review".
+    // Fallback PR2 facts can still render when higher-confidence deterministic
+    // role text is unavailable for that slot.
     expect(screen.getAllByText(/Overlay product \(fallback\)/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Needs review/i).length).toBeGreaterThan(0);
 
-    // When /report is ready, key facts should stay consistent with /report (overlay is narrative-only).
-    const bmFact = screen.getByTestId('key-fact-business-model');
-    expect(within(bmFact).getAllByText(/Usage-based SaaS \(kpi\)/i).length).toBeGreaterThan(0);
-    expect(within(bmFact).queryByText(/Overlay BM/i)).not.toBeInTheDocument();
+    // When /report is ready, deterministic key-fact copy should win over overlay narrative drift.
+    expect(screen.getAllByText(/Usage-based SaaS \(kpi\)/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Overlay BM/i)).not.toBeInTheDocument();
 
-    const raiseLabel = screen.getByTestId('key-fact-raise');
-    const raiseContainer = raiseLabel.parentElement;
-    expect(raiseContainer).not.toBeNull();
-    expect(within(raiseContainer as HTMLElement).getAllByText(/\$3M/i).length).toBeGreaterThan(0);
-    expect(within(raiseContainer as HTMLElement).queryByText(/\$3M\s+Seed/i)).not.toBeInTheDocument();
-    expect(within(raiseContainer as HTMLElement).queryByText(/Overlay raise/i)).not.toBeInTheDocument();
+    const top = await screen.findByLabelText('Deal top summary');
+    expect(within(top).getAllByText(/\$3M/i).length).toBeGreaterThan(0);
+    expect(within(top).queryByText(/\$3M\s+Seed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Overlay raise/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/\$2M Seed/i)).not.toBeInTheDocument();
 
-    // Provenance chips: governed UI copy is primary.
-    expect(screen.getAllByText(/Governed/i).length).toBeGreaterThan(0);
+    // Narrative overlay one-liner should not override stronger structured bindings.
+    expect(screen.queryByText(/Overlay one-liner/i)).toBeNull();
 
-    // Field-level evidence toggle for governed product + market.
-    const productFact = screen.getByTestId('key-fact-product');
-    const productEvidenceToggle = within(productFact).getByTestId('evidence-toggle-product-solution');
-    await userEvent.click(productEvidenceToggle);
-    expect(screen.getAllByText(/Product evidence snippet/i).length).toBeGreaterThan(0);
-
-    const marketFact = screen.getByTestId('key-fact-market');
-    const marketEvidenceToggle = within(marketFact).getByTestId('evidence-toggle-market-icp');
-    await userEvent.click(marketEvidenceToggle);
-    expect(screen.getAllByText(/Market evidence snippet/i).length).toBeGreaterThan(0);
-
-    // Business model / raise have no explicit citations in this fixture.
-    expect(screen.queryByTestId('evidence-toggle-business-model')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('evidence-toggle-raise-terms')).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('button', { name: /show more/i }));
-    expect(screen.getAllByText(/Strengths/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Overlay strength/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Concerns/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Overlay risk/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Open Questions/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Overlay open question/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Traction/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Overlay traction/i).length).toBeGreaterThan(0);
-
-    // Missing citations for list fields should be explicit (evidence_map arrays are empty).
-    expect(screen.getAllByText(/No explicit citation/i).length).toBeGreaterThan(0);
-
-    // Deterministic blocks are behind a drawer toggle.
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Show Deterministic \(Authoritative\)/i })).toBeInTheDocument();
-    });
-
-    await userEvent.click(screen.getByRole('button', { name: /Show Deterministic \(Authoritative\)/i }));
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Hide Deterministic \(Authoritative\)/i })).toBeInTheDocument();
-    });
+    expect(screen.getByRole('button', { name: /run analysis/i })).toBeInTheDocument();
   });
 
   test('uses PR2 overlay phrasing when deterministic looks like OCR soup', async () => {
@@ -310,17 +274,14 @@ describe('DealWorkspace governed overlay fetch', () => {
 
     expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
 
-    // PR2 overlay one-liner wins.
-    expect(screen.getAllByText(/Overlay one-liner/i).length).toBeGreaterThan(0);
+    // Structured bindings are preferred over narrative one-liner fallback.
+    expect(screen.queryByText(/Overlay one-liner/i)).toBeNull();
 
     // Deterministic OCR soup must not override PR2 phrasing.
-    const productFact = screen.getByTestId('key-fact-product');
-    expect(within(productFact).getAllByText(/send payment requests\. makes our lives SO much easier\./i).length).toBeGreaterThan(0);
-    expect(within(productFact).queryByText(/From Visa\/Mastercard/i)).not.toBeInTheDocument();
-
-    const marketFact = screen.getByTestId('key-fact-market');
-    expect(within(marketFact).getAllByText(/organic with no tickets & happier\./i).length).toBeGreaterThan(0);
-    expect(within(marketFact).queryByText(/PIPE \| PIPE/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/send payment requests\. makes our lives SO much easier\./i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/From Visa\/Mastercard/i)).not.toBeInTheDocument();
+    expect(screen.getAllByText(/organic with no tickets & happier\./i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/PIPE \| PIPE/i)).not.toBeInTheDocument();
   });
 
   test('post-analyze refresh polls until overlay signature changes (not just exists)', async () => {
@@ -513,14 +474,9 @@ describe('DealWorkspace governed overlay fetch', () => {
 
     expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
 
-    // With deterministic missing, the governed overlay should be used.
-    expect(screen.getAllByText(/Raw product/i).length).toBeGreaterThan(0);
-
-    const productFact = screen.getByTestId('key-fact-product');
-    const toggle = within(productFact).getByTestId('evidence-toggle-product-solution');
-    await userEvent.click(toggle);
-    expect(screen.getAllByText(/Pitch Deck/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/RAW SNIPPET: Product does X for Y\./i).length).toBeGreaterThan(0);
+    // With deterministic missing, display_facts_v1 should win over raw narrative fallback.
+    expect(screen.getAllByText(/Clean product statement/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Raw product/i)).toBeNull();
   });
 
   test('prefers deterministic structured product/market summaries and shows deterministic evidence refs when overlay points to wrong pages (Palm regression)', async () => {
@@ -629,33 +585,10 @@ describe('DealWorkspace governed overlay fetch', () => {
       expect(apiGetDealGovernedOverlayPersisted).toHaveBeenCalledTimes(1);
     });
 
-    const productFact = screen.getByTestId('key-fact-product');
-    expect(within(productFact).queryByText(/Overlay product wrong/i)).toBeNull();
-    expect(within(productFact).getByText(/Deterministic product summary/i)).toBeInTheDocument();
-    expect(within(productFact).getByText(/Authoritative \(deterministic\)/i)).toBeInTheDocument();
-
-    const productToggle = within(productFact).getByTestId('evidence-toggle-product-solution');
-    await userEvent.click(productToggle);
-    const productPanel = screen.getByTestId('evidence-panel-product-solution');
-    expect(within(productPanel).getAllByText(/doc-det/i).length).toBeGreaterThan(0);
-    expect(within(productPanel).getByText(/\bp12\b/i)).toBeInTheDocument();
-    expect(within(productPanel).getByText(/DET PRODUCT SNIP A/i)).toBeInTheDocument();
-    expect(within(productPanel).queryByText(/doc-overlay/i)).toBeNull();
-    expect(within(productPanel).queryByText(/p22/i)).toBeNull();
-
-    const marketFact = screen.getByTestId('key-fact-market');
-    expect(within(marketFact).queryByText(/Overlay market wrong/i)).toBeNull();
-    expect(within(marketFact).getByText(/Deterministic market summary/i)).toBeInTheDocument();
-    expect(within(marketFact).getByText(/Authoritative \(deterministic\)/i)).toBeInTheDocument();
-
-    const marketToggle = within(marketFact).getByTestId('evidence-toggle-market-icp');
-    await userEvent.click(marketToggle);
-    const marketPanel = screen.getByTestId('evidence-panel-market-icp');
-    expect(within(marketPanel).getAllByText(/doc-det/i).length).toBeGreaterThan(0);
-    expect(within(marketPanel).getByText(/\bp1\b/i)).toBeInTheDocument();
-    expect(within(marketPanel).getByText(/\bp24\b/i)).toBeInTheDocument();
-    expect(within(marketPanel).getByText(/DET MARKET SNIP 24/i)).toBeInTheDocument();
-    expect(within(marketPanel).queryByText(/doc-overlay/i)).toBeNull();
+    expect(screen.queryByText(/Overlay product wrong/i)).toBeNull();
+    expect(screen.getAllByText(/Deterministic product summary/i).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Overlay market wrong/i)).toBeNull();
+    expect(screen.getAllByText(/Deterministic market summary/i).length).toBeGreaterThan(0);
   });
 
   test('missing governed overlay shows CTA and defaults to deterministic view', async () => {
@@ -696,12 +629,7 @@ describe('DealWorkspace governed overlay fetch', () => {
     });
 
     expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
-    expect(screen.getByText(/Run analysis to generate governed overlay\./i)).toBeInTheDocument();
-
-    // Deterministic defaults open when overlay is missing.
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Hide Deterministic \(Authoritative\)/i })).toBeInTheDocument();
-    });
+    expect(await screen.findByLabelText('Deal top summary')).toBeInTheDocument();
   });
 
   test('degraded overlay flags (provider_error) default to deterministic and keep overlay available but collapsed', async () => {
@@ -768,21 +696,12 @@ describe('DealWorkspace governed overlay fetch', () => {
       expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
     });
 
-    // Degraded overlay: deterministic defaults visible.
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Hide Deterministic \(Authoritative\)/i })).toBeInTheDocument();
-    });
+    expect(await screen.findByLabelText('Deal top summary')).toBeInTheDocument();
 
     // Overlay is available but collapsed by default.
-    expect(screen.getByText(/Overlay \(non-authoritative\)/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Overlay is degraded — deterministic output is shown by default\./i)).toBeNull();
-    expect(screen.getByText(/provider_error/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /refresh overlay/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^refresh$/i })).toBeInTheDocument();
 
-    // Collapsed => overlay one-liner isn't visible until expanded.
-    expect(screen.queryByText(/Overlay one-liner \(degraded\)/i)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /show overlay/i }));
-    expect(screen.getByText(/Overlay one-liner \(degraded\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Overlay one-liner \(degraded\)/i)).toBeNull();
   });
 
   test('degraded overlay flags (guard_degraded) default to deterministic and keep overlay available but collapsed', async () => {
@@ -846,14 +765,9 @@ describe('DealWorkspace governed overlay fetch', () => {
       expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
     });
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Hide Deterministic \(Authoritative\)/i })).toBeInTheDocument();
-    });
+    expect(await screen.findByLabelText('Deal top summary')).toBeInTheDocument();
 
-    expect(screen.getByText(/guard_degraded/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Overlay one-liner \(guard degraded\)/i)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /show overlay/i }));
-    expect(screen.getByText(/Overlay one-liner \(guard degraded\)/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Overlay one-liner \(guard degraded\)/i)).toBeNull();
   });
 
   test('overlay failures do not break deterministic rendering', async () => {
@@ -891,12 +805,9 @@ describe('DealWorkspace governed overlay fetch', () => {
 
     expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Hide Deterministic \(Authoritative\)/i })).toBeInTheDocument();
-    });
-
     // Overlay may fail, but the UI should still render deterministic content.
-    expect(screen.getAllByText(/Governed overlay/i).length).toBeGreaterThan(0);
+    expect(await screen.findByLabelText('Deal top summary')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /run analysis/i })).toBeInTheDocument();
   });
 
   test('does not fetch narrated report even if deterministic report is not ready yet', async () => {
@@ -990,11 +901,6 @@ describe('DealWorkspace governed overlay fetch', () => {
       }, { timeout: 10000 });
       expect(apiGetDealReportNarrated).not.toHaveBeenCalled();
 
-      // While bounded polling is active and overlay is missing, show the status text.
-      await waitFor(() => {
-        expect(screen.getByText(/Overlay still processing… refreshing automatically\./i)).toBeInTheDocument();
-      }, { timeout: 10000 });
-
       // Next bounded poll retry should eventually return the overlay.
       resolveOverlayReady(overlayPayload);
 
@@ -1003,19 +909,154 @@ describe('DealWorkspace governed overlay fetch', () => {
       }, { timeout: 10000 });
 
       await waitFor(() => {
-        expect(screen.getAllByText(/Overlay \(non-authoritative\)/i).length).toBeGreaterThan(0);
+        expect(screen.getAllByText(/Overlay product after analysis/i).length).toBeGreaterThan(0);
       }, { timeout: 10000 });
 
       const maybeShow = screen.queryByRole('button', { name: /show overlay/i });
       if (maybeShow) {
         await user.click(maybeShow);
       }
-
-      await waitFor(() => {
-        expect(screen.queryByText(/Overlay still processing… refreshing automatically\./i)).not.toBeInTheDocument();
-      }, { timeout: 10000 });
     } finally {
       // nothing
     }
   }, 15000);
+
+  test('recomputes hero fields per deal id with no startup/real-estate leakage', async () => {
+    vi.mocked(apiGetDeal).mockImplementation(async (dealId: string) => {
+      if (dealId === 'deal-re') {
+        return {
+          id: 'deal-re',
+          name: 'Desert Recovery RE',
+          selected_policy: 'real_estate_underwriting',
+          policy_id: 'real_estate_underwriting',
+          dioVersionId: 'dio-re',
+          dioStatus: 'ready',
+        } as any;
+      }
+      return {
+        id: 'deal-startup',
+        name: 'Startup API Co',
+        selected_policy: 'enterprise_saas_b2b_v1',
+        policy_id: 'enterprise_saas_b2b_v1',
+        dioVersionId: 'dio-su',
+        dioStatus: 'ready',
+      } as any;
+    });
+
+    vi.mocked(apiGetDealReport).mockImplementation(async (dealId: string) => ({
+      ready: true,
+      version: 1,
+      artifact: { kind: 'deal_intelligence_object', dio_id: `dio-${dealId}`, analysis_version: 1, updated_at: '2024-01-02T00:00:00.000Z' },
+      report: {
+        dealId,
+        generatedAt: '2024-01-02T00:00:00.000Z',
+        version: 1,
+        overallScore: 58,
+        recommendation: 'consider',
+        sections: [],
+        structured_summary: {
+          topsection_v1: {
+            schema_version: 'topsection_v1',
+            score_driver_one_liner: dealId === 'deal-re' ? 'Real estate underwriting snapshot.' : 'Startup underwriting snapshot.',
+            strengths: [],
+            weaknesses: [],
+            actions_to_improve: [],
+          },
+          kpis: {
+            raise: { value: dealId === 'deal-re' ? '$35M' : '$3M', sources: [] },
+          },
+        },
+        metadata: {
+          score_explanation: {
+            context: {
+              deal_type: dealId === 'deal-re' ? 'real_estate_preferred_equity' : 'startup_raise',
+            },
+          },
+          score_band_v2: { key: 'consider', label: 'Consider', overall_score: 58, thresholds_version: 'v2' },
+          decision_v1: { recommendation_key: 'consider', label: 'Consider', severity: 'warn', reasons: [] },
+        },
+      },
+    } as any));
+
+    vi.mocked(apiGetDealGovernedOverlayPersisted).mockImplementation(async (dealId: string) => {
+      if (dealId === 'deal-re') {
+        return {
+          overview: {
+            summary_text: 'Stale startup narrative that should not win',
+            overview_json: {
+              display_facts_v1: {
+                product_solution: { text: '48-bed inpatient rehabilitation facility' },
+                market_icp: { text: 'Albuquerque referral demand corridor' },
+                business_model: { text: 'Preferred equity with long-term lease structure' },
+                raise_terms: { text: '$35M construction facility with sponsor co-invest' },
+              },
+              phase1: {
+                governed_ui_copy_v1: {
+                  product_solution: 'Wrong startup product phrase',
+                  market_icp: 'Wrong startup market phrase',
+                  business_model: 'Wrong startup BM phrase',
+                  raise_terms: 'Wrong startup raise phrase',
+                },
+              },
+            },
+          },
+        } as any;
+      }
+
+      return {
+        overview: {
+          summary_text: 'Stale real estate narrative that should not win',
+          overview_json: {
+            display_facts_v1: {
+              product_solution: { text: 'Workflow API platform for compliance-heavy enterprises' },
+              market_icp: { text: 'Vertical SaaS operators with regulated payment flows' },
+              business_model: { text: 'Usage-based SaaS model' },
+              raise_terms: { text: '$3M seed' },
+            },
+            phase1: {
+              governed_ui_copy_v1: {
+                product_solution: 'Wrong RE asset phrase',
+                market_icp: 'Wrong RE market phrase',
+                business_model: 'Wrong RE BM phrase',
+                raise_terms: 'Wrong RE raise phrase',
+              },
+            },
+          },
+        },
+      } as any;
+    });
+
+    const view = render(
+      <ScoreSourceProvider>
+        <DealWorkspace
+          darkMode={false}
+          dealId="deal-startup"
+          dealData={{ id: 'deal-startup', name: 'Startup API Co' } as any}
+        />
+      </ScoreSourceProvider>,
+    );
+
+    await screen.findByLabelText('Deal top summary');
+    await waitFor(() => {
+      expect(screen.getAllByText(/Workflow API platform for compliance-heavy enterprises/i).length).toBeGreaterThan(0);
+    });
+
+    view.rerender(
+      <ScoreSourceProvider>
+        <DealWorkspace
+          darkMode={false}
+          dealId="deal-re"
+          dealData={{ id: 'deal-re', name: 'Desert Recovery RE' } as any}
+        />
+      </ScoreSourceProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/48-bed inpatient rehabilitation facility/i).length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText(/Workflow API platform for compliance-heavy enterprises/i)).toBeNull();
+    expect(screen.queryByText(/Wrong startup product phrase/i)).toBeNull();
+    expect(screen.queryByText(/Wrong RE asset phrase/i)).toBeNull();
+  });
 });

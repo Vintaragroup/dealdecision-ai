@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { getPolicyScoreSectionLabel, getSelectedPolicyIdFromAny } from '@dealdecision/core';
 
 import { buildWorkspaceViewModel } from '../../components/workspace/builders/buildWorkspaceViewModel';
 import type { WorkspaceViewModelInputs } from '../../components/workspace/builders/buildWorkspaceViewModel';
@@ -312,6 +313,173 @@ describe('snapshotFacts KPIs', () => {
       growthValue: '40% MoM',
     });
     expect(vm.overview.snapshotFacts.growth).toBe('55% YoY');
+  });
+});
+
+describe('policy-aware metric schema', () => {
+  test('real_estate_underwriting hides ARR and relabels traction metrics', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      revenueValue: '$1.2M NOI',
+      growthValue: '17%',
+      customersValue: '36 months',
+    });
+
+    expect(vm.overview.snapshotFactLabels.arr).toBe('NOI');
+    expect(vm.overview.snapshotFacts.arr).toBe('$1.2M');
+    expect(vm.header.metrics.financials.map((x) => x.label)).toEqual(['Seed', 'NOI', 'Target IRR', 'Term']);
+    expect(vm.header.metrics.traction[0]?.label).toBe('Target IRR');
+    expect(vm.header.metrics.traction[1]?.label).toBe('Term');
+    expect(vm.header.metrics.businessModel[0]?.label).toBe('Deal structure');
+  });
+
+  test('startup policy keeps ARR/customers schema', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'enterprise_saas_b2b_v1',
+    });
+
+    expect(vm.overview.snapshotFacts.arr).toBe('$850K ARR');
+    expect(vm.header.metrics.traction[0]?.label).toBe('Growth');
+    expect(vm.header.metrics.traction[1]?.label).toBe('Customers');
+  });
+
+  test('API-mapped real-estate preferred-equity payload keeps non-startup schema in workspace VM', () => {
+    const apiMappedDeal = {
+      selected_policy: 'real_estate_underwriting',
+      policy_id: 'real_estate_underwriting',
+      deal_classification_v1: {
+        selected_policy: 'real_estate_underwriting',
+        selected: {
+          asset_class: 'real_estate',
+          deal_structure: 'preferred_equity',
+          strategy_subtype: 'real_estate_preferred_equity',
+        },
+      },
+    };
+
+    const resolvedPolicyId = getSelectedPolicyIdFromAny(apiMappedDeal);
+    expect(resolvedPolicyId).toBe('real_estate_underwriting');
+
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: resolvedPolicyId,
+      revenueValue: '$1.2M NOI',
+      growthValue: '17%',
+      customersValue: '36 months',
+      businessModelValue: 'Real estate investment (preferred equity)',
+    });
+
+    expect(vm.overview.snapshotFactLabels.arr).toBe('NOI');
+    expect(vm.overview.snapshotFacts.arr).toBe('$1.2M');
+    expect(vm.header.metrics.traction[0]?.label).toBe('Target IRR');
+    expect(vm.header.metrics.traction[1]?.label).toBe('Term');
+    expect(vm.header.metrics.businessModel[0]?.label).toBe('Deal structure');
+    expect(vm.header.metrics.businessModel[0]?.value).not.toContain('Omnichannel');
+    expect(getPolicyScoreSectionLabel(resolvedPolicyId, 'business_model')).toBe('Deal structure');
+    expect(getPolicyScoreSectionLabel(resolvedPolicyId, 'traction')).toBe('Underwriting metrics');
+  });
+
+  test('real-estate business model prefers governed policy-safe phrasing over startup taxonomy', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      businessModelValue: 'Omnichannel DTC subscription',
+      governedBusinessModel: 'Preferred equity structure with debt service coverage covenant',
+    });
+
+    expect(vm.header.metrics.businessModel[0]?.value).toBe('Preferred equity structure with debt service coverage covenant');
+  });
+
+  test('real-estate extracted evidence relabels sections and gates startup-style text', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      governedProduct: 'Omnichannel DTC platform with subscription checkout',
+      governedMarket: 'B2C users and customer cohorts',
+      governedBusinessModel: 'Preferred equity structure',
+    });
+
+    expect(vm.overview.evidenceLabels.product).toBe('Asset / Facility');
+    expect(vm.overview.evidenceLabels.market).toBe('Submarket / Demand');
+    expect(vm.overview.productSummary).toBe('Not extracted from evidence');
+    expect(vm.overview.marketSummary).toBe('Not extracted from evidence');
+    expect(vm.overview.businessModelSummary).toBe('Preferred equity structure');
+  });
+
+  test('real-estate raise falls back to governed raise summary when header raise is missing', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      raiseValue: null,
+      governedRaise: '$35.6M construction loan + $11.9M equity',
+    });
+
+    expect(vm.overview.snapshotFacts.raise).toBe('$35.6M + $11.9M');
+    expect(vm.header.raiseAmount).toBe('$35.6M + $11.9M');
+  });
+
+  test('real-estate malformed NOI placeholders are suppressed', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      revenueValue: '$,',
+    });
+
+    expect(vm.overview.snapshotFacts.arr).toBe('—');
+    const noiTile = vm.header.metrics.financials.find((x) => x.label === 'NOI');
+    expect(noiTile?.value).toBe('—');
+  });
+
+  test('malformed Raise short values are hidden instead of rendered', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'enterprise_saas_b2b_v1',
+      raiseValue: '$,',
+      governedRaise: '$,',
+    });
+
+    expect(vm.overview.snapshotFacts.raise).toBe('—');
+    expect(vm.header.raiseAmount).toBe('—');
+  });
+
+  test('startup growth falls back to Mentioned for qualitative non-numeric values', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'enterprise_saas_b2b_v1',
+      reportStructuredGrowthValue: 'Strong pipeline momentum',
+      growthValue: 'Growing quickly',
+    });
+
+    expect(vm.overview.snapshotFacts.growth).toBe('Mentioned');
+  });
+
+  test('real-estate hides Raise / Terms when it collides with Deal structure wording', () => {
+    const sameText = 'Preferred equity structure with sponsor equity and lease-backed investment terms';
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'real_estate_underwriting',
+      raiseValue: sameText,
+      governedRaise: sameText,
+      businessModelValue: sameText,
+      governedBusinessModel: sameText,
+    });
+
+    expect(vm.overview.snapshotFacts.raise).toBe('—');
+    expect(vm.overview.businessModelSummary).toBe(sameText);
+  });
+
+  test('startup policy retains startup snapshot and evidence labeling', () => {
+    const vm = buildWorkspaceViewModel({
+      ...BASE,
+      selectedPolicyId: 'enterprise_saas_b2b_v1',
+    });
+
+    expect(vm.overview.snapshotFactLabels.arr).toBe('ARR');
+    expect(vm.overview.evidenceLabels.product).toBe('Product');
+    expect(vm.overview.evidenceLabels.market).toBe('Market');
+    expect(vm.overview.productSummary).toBe(BASE.governedProduct);
   });
 });
 

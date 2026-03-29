@@ -23,6 +23,7 @@
 
 import type { WorkspaceViewModel, WorkspaceHeaderVM, WorkspaceOverviewVM } from '../contracts/workspaceViewModel';
 import { buildSignalCards, toOverviewSignalData } from './buildSignalCards';
+import { getPolicyFamily } from '../../../lib/policyUtils';
 
 // ─── Input contract ──────────────────────────────────────────────────────────
 
@@ -100,15 +101,95 @@ export interface WorkspaceViewModelInputs {
   // ── Investor insights entry ──────────────────────────────────────────────
   insightsScore: number;
   insightsConfidence: 'High' | 'Medium' | 'Low';
+
+  // ── Policy routing ────────────────────────────────────────────────────────
+  selectedPolicyId?: string | null;
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
 
 const DASH = '—';
+const MISSING_EVIDENCE_TEXT = 'Not extracted from evidence';
+
+const STARTUP_TAXONOMY_RE = /\b(omnichannel|d2c|dtc|b2c|b2b|saas|subscription|marketplace|arr|mrr|customers?|users?)\b/i;
+const REAL_ESTATE_SEMANTICS_RE = /\b(real\s*estate|asset|property|facility|submarket|occupan|noi|irr|cap\s*rate|ltv|dscr|preferred\s+equity|debt|equity|term)\b/i;
 
 function asDisplayValue(v: string | null | undefined): string {
   if (!v || v.trim() === '' || v === DASH) return DASH;
   return v.trim();
+}
+
+function sanitizeShortDisplayValue(v: string | null | undefined): string {
+  const s = asDisplayValue(v);
+  if (s === DASH) return DASH;
+  if (/^\$\s*[,.-]*\s*$/i.test(s)) return DASH;
+  if (/[\d]/.test(s) === false && /^[-,./\s$%]+$/.test(s)) return DASH;
+  if (/\$/.test(s) && /\d/.test(s) === false) return DASH;
+  return s;
+}
+
+function normalizeSemanticText(value: string | null | undefined): string {
+  const s = asDisplayValue(value);
+  if (s === DASH) return '';
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function extractMoneyTokens(value: string | null | undefined): string[] {
+  const s = asDisplayValue(value);
+  if (s === DASH) return [];
+  const matches = s.match(/\$\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?/gi) ?? [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of matches) {
+    const cleaned = raw.replace(/\s+/g, ' ').trim();
+    if (!/\d/.test(cleaned)) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(cleaned);
+  }
+  return out;
+}
+
+function toConciseRaiseTerms(value: string | null | undefined): string {
+  const tokens = extractMoneyTokens(value);
+  if (tokens.length === 0) return DASH;
+  return tokens.slice(0, 2).join(' + ');
+}
+
+function sanitizeRealEstateNoi(value: string | null | undefined): string {
+  const s = asDisplayValue(value);
+  if (s === DASH) return DASH;
+  if (!/\d/.test(s)) return DASH;
+  if (/^\$\s*[,.-]*\s*$/i.test(s)) return DASH;
+  const directMoney = s.match(/\$\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?/i);
+  if (directMoney) return directMoney[0].replace(/\s+/g, ' ').trim();
+  const num = s.match(/[\d,]+(?:\.\d+)?/);
+  if (!num) return DASH;
+  return `$${num[0]}`;
+}
+
+function sanitizeEvidenceText(value: string | null | undefined, opts: { isRealEstateSchema: boolean }): string {
+  const display = asDisplayValue(value);
+  if (display === DASH) return MISSING_EVIDENCE_TEXT;
+
+  if (opts.isRealEstateSchema) {
+    const startupTaxonomyLeak = STARTUP_TAXONOMY_RE.test(display) && !REAL_ESTATE_SEMANTICS_RE.test(display);
+    if (startupTaxonomyLeak) return MISSING_EVIDENCE_TEXT;
+  }
+
+  return display;
+}
+
+function isRealEstateBusinessModelDisplaySafe(value: string | null | undefined): boolean {
+  const display = asDisplayValue(value);
+  if (display === DASH) return false;
+  if (REAL_ESTATE_SEMANTICS_RE.test(display)) return true;
+  return !STARTUP_TAXONOMY_RE.test(display);
 }
 
 /**
@@ -235,6 +316,7 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     diligencePhase,
     insightsScore,
     insightsConfidence,
+    selectedPolicyId,
   } = inputs;
 
   // ── Derived values ────────────────────────────────────────────────────────
@@ -260,34 +342,129 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
 
   // ── KPI tiles ─────────────────────────────────────────────────────────────
 
-  const raiseDisplay = selectedHeaderReady ? asDisplayValue(raiseValue) : DASH;
-  const revDisplay = selectedHeaderReady && revenueAllowed ? asDisplayValue(revenueValue) : DASH;
+  const policyFamily = getPolicyFamily(selectedPolicyId ?? null);
+  const isStartupSchema = policyFamily === 'startup' || policyFamily === 'other';
+  const isRealEstateSchema = policyFamily === 'real_estate';
+  const isFundSchema = policyFamily === 'fund';
+
+  const raiseDisplayRaw = (() => {
+    const fromHeader = selectedHeaderReady ? sanitizeShortDisplayValue(raiseValue) : DASH;
+    if (fromHeader !== DASH) return fromHeader;
+    if (isRealEstateSchema) {
+      const fromGoverned = sanitizeShortDisplayValue(governedRaise);
+      if (fromGoverned !== DASH) return fromGoverned;
+      const fromBusinessModel = sanitizeShortDisplayValue(governedBusinessModel);
+      if (fromBusinessModel !== DASH) return fromBusinessModel;
+    }
+    return DASH;
+  })();
+
+  const raiseDisplay = isRealEstateSchema
+    ? (() => {
+      const concise = toConciseRaiseTerms(raiseDisplayRaw);
+      return concise !== DASH ? concise : raiseDisplayRaw;
+    })()
+    : raiseDisplayRaw;
+
+  const revDisplay = isRealEstateSchema
+    ? sanitizeRealEstateNoi(revenueValue)
+    : selectedHeaderReady && revenueAllowed && isStartupSchema
+      ? asDisplayValue(revenueValue)
+      : DASH;
   // Growth: prefer structured report value (numeric); fall back to header value.
   // If neither is numeric, show 'Mentioned' — qualitative evidence still informs investors.
-  const growthDisplay = selectedHeaderReady
-    ? asTractionDisplay(
-        asDisplayValue(reportStructuredGrowthValue) !== DASH
-          ? (reportStructuredGrowthValue as string)
-          : (growthValue ?? null),
+  const growthDisplay = isRealEstateSchema
+    ? sanitizeShortDisplayValue(growthValue)
+    : selectedHeaderReady
+      ? (
+        isStartupSchema
+          ? asTractionDisplay(
+              sanitizeShortDisplayValue(reportStructuredGrowthValue) !== DASH
+                ? (reportStructuredGrowthValue as string)
+                : (growthValue ?? null),
+            )
+          : sanitizeShortDisplayValue(growthValue)
       )
-    : DASH;
-  // Customers: same rule — show 'Mentioned' when evidence is qualitative only.
-  const customersDisplay = selectedHeaderReady ? asTractionDisplay(customersValue ?? null) : DASH;
+      : DASH;
+  // Customers: startup schema keeps the qualitative fallback; non-startup keeps raw mapped metric.
+  const customersDisplay = isRealEstateSchema
+    ? sanitizeShortDisplayValue(customersValue)
+    : selectedHeaderReady
+      ? (
+        isStartupSchema
+          ? asTractionDisplay(customersValue ?? null)
+          : sanitizeShortDisplayValue(customersValue)
+      )
+      : DASH;
 
-  const financialTiles = [
-    { label: selectedHeaderReady ? (raiseLabel ?? 'Raise') : 'Raise', value: raiseDisplay },
-    { label: revenueTileLabel, value: revDisplay },
-    { label: 'Runway', value: asDisplayValue(runwayTileValue) },
-    { label: 'Burn', value: asDisplayValue(burnTileValue) },
-  ];
+  const businessModelDisplay = (() => {
+    if (isRealEstateSchema) {
+      if (isRealEstateBusinessModelDisplaySafe(governedBusinessModel)) {
+        return asDisplayValue(governedBusinessModel);
+      }
+      if (isRealEstateBusinessModelDisplaySafe(businessModelValue)) {
+        return asDisplayValue(businessModelValue);
+      }
+      const governedFallback = asDisplayValue(governedBusinessModel);
+      return governedFallback !== DASH ? governedFallback : DASH;
+    }
 
-  const tractionTiles = [
-    { label: selectedHeaderReady ? (growthLabel ?? 'Growth') : 'Growth', value: growthDisplay },
-    {
-      label: selectedHeaderReady ? (customersLabel ?? 'Customers') : 'Customers',
-      value: customersDisplay,
-    },
-  ];
+    const fromSelected = asDisplayValue(businessModelValue);
+    if (fromSelected !== DASH) return fromSelected;
+    const fromGoverned = asDisplayValue(governedBusinessModel);
+    return fromGoverned !== DASH ? fromGoverned : 'Unknown';
+  })();
+
+  const raiseAndBusinessModelCollide = isRealEstateSchema
+    && normalizeSemanticText(raiseDisplay) !== ''
+    && normalizeSemanticText(raiseDisplay) === normalizeSemanticText(businessModelDisplay);
+
+  const raiseDisplayFinal = raiseAndBusinessModelCollide ? DASH : raiseDisplay;
+
+  const financialTiles = isRealEstateSchema
+    ? [
+        { label: selectedHeaderReady ? (raiseLabel ?? 'Raise / terms') : 'Raise / terms', value: raiseDisplayFinal },
+        { label: 'NOI', value: revDisplay },
+        { label: 'Target IRR', value: growthDisplay },
+        { label: 'Term', value: customersDisplay },
+      ]
+    : isFundSchema
+      ? [
+          { label: selectedHeaderReady ? (raiseLabel ?? 'Fund size / raise') : 'Fund size / raise', value: raiseDisplay },
+          { label: 'Revenue', value: DASH },
+          { label: 'Runway', value: asDisplayValue(runwayTileValue) },
+          { label: 'Burn', value: asDisplayValue(burnTileValue) },
+        ]
+      : [
+          { label: selectedHeaderReady ? (raiseLabel ?? 'Raise') : 'Raise', value: raiseDisplay },
+          { label: revenueTileLabel, value: revDisplay },
+          { label: 'Runway', value: asDisplayValue(runwayTileValue) },
+          { label: 'Burn', value: asDisplayValue(burnTileValue) },
+        ];
+
+  const tractionTiles = isRealEstateSchema
+    ? [
+        { label: 'Target IRR', value: growthDisplay },
+        {
+          label: 'Term',
+          value: customersDisplay,
+        },
+      ]
+    : isFundSchema
+      ? [
+          { label: 'Target return', value: growthDisplay },
+          {
+            label: 'Vehicle term',
+            value: customersDisplay,
+          },
+        ]
+      : [
+          { label: selectedHeaderReady ? (growthLabel ?? 'Growth') : 'Growth', value: growthDisplay },
+          {
+            label: selectedHeaderReady ? (customersLabel ?? 'Customers') : 'Customers',
+            value: customersDisplay,
+          },
+        ];
 
   const dealTiles = [
     { label: 'Stage', value: dealStageLabel },
@@ -297,10 +474,46 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
 
   const bmTiles = [
     {
-      label: selectedHeaderReady ? (businessModelLabel ?? 'Model') : 'Model',
-      value: asDisplayValue(businessModelValue) !== DASH ? (businessModelValue as string) : 'Unknown',
+      label: selectedHeaderReady
+        ? (isRealEstateSchema
+          ? 'Deal structure'
+          : isFundSchema
+            ? 'Fund strategy'
+            : (businessModelLabel ?? 'Model'))
+        : (isRealEstateSchema ? 'Deal structure' : isFundSchema ? 'Fund strategy' : 'Model'),
+      value: businessModelDisplay !== DASH ? businessModelDisplay : 'Unknown',
     },
   ];
+
+  const snapshotFactLabels = isRealEstateSchema
+    ? {
+        raise: selectedHeaderReady ? (raiseLabel ?? 'Raise / Terms') : 'Raise / Terms',
+        arr: 'NOI',
+        growth: 'Target IRR',
+        customers: 'Term',
+        tam: 'Submarket',
+      }
+    : {
+        raise: selectedHeaderReady ? (raiseLabel ?? 'Raise') : 'Raise',
+        arr: revenueTileLabel,
+        growth: selectedHeaderReady ? (growthLabel ?? 'Growth') : 'Growth',
+        customers: selectedHeaderReady ? (customersLabel ?? 'Customers') : 'Customers',
+        tam: 'TAM',
+      };
+
+  const evidenceLabels = isRealEstateSchema
+    ? {
+        product: 'Asset / Facility',
+        market: 'Submarket / Demand',
+        businessModel: 'Deal Structure',
+        raise: 'Raise / Terms',
+      }
+    : {
+        product: 'Product',
+        market: 'Market',
+        businessModel: 'Business Model',
+        raise: 'Raise / Terms',
+      };
 
   // ── Pipeline status derived from stage ───────────────────────────────────
   // (Already computed by DealWorkspace — passed through here for completeness.)
@@ -314,7 +527,7 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     dealName: displayName,
     dealDescription,
     stage: dealStageLabel,
-    raiseAmount: raiseDisplay,
+    raiseAmount: raiseDisplayFinal,
     industry,
     score: reportViewScore,
     verdict,
@@ -342,9 +555,10 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
   const overview: WorkspaceOverviewVM = {
     companyName: displayName,
     companyDescription: governedDealOneLiner,
+    snapshotFactLabels,
     snapshotFacts: {
-      raise: raiseDisplay,
-      arr: revDisplay,
+      raise: raiseDisplayFinal,
+      arr: isRealEstateSchema ? revDisplay : (isStartupSchema ? revDisplay : DASH),
       growth: growthDisplay,
       customers: customersDisplay,
       tam,
@@ -355,10 +569,11 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     traction: tractionTiles,
     deal: dealTiles,
     businessModel: bmTiles,
-    productSummary: governedProduct,
-    marketSummary: governedMarket,
-    businessModelSummary: governedBusinessModel,
-    raiseTerms: governedRaise,
+    evidenceLabels,
+    productSummary: sanitizeEvidenceText(governedProduct, { isRealEstateSchema }),
+    marketSummary: sanitizeEvidenceText(governedMarket, { isRealEstateSchema }),
+    businessModelSummary: sanitizeEvidenceText(governedBusinessModel, { isRealEstateSchema }),
+    raiseTerms: sanitizeEvidenceText(governedRaise, { isRealEstateSchema: false }),
     insightsScore,
     insightsConfidence,
   };

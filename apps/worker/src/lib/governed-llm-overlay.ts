@@ -19,6 +19,11 @@ import {
   computeOverlayGovernanceMetrics,
   type DocumentIndexLite,
 } from "./analysis-diagnostics";
+import {
+  composePolicyAwareSystemPrompt,
+  getSelectedPolicyIdFromAnyLike,
+  validatePolicyAwareOutputTemplateV2,
+} from "./policy-aware-prompt-runtime";
 
 const SCHEMA_VERSION = "governed_llm_overview_v1" as const;
 
@@ -1742,6 +1747,7 @@ async function generateDisplayFactsV1BestEffort(args: {
   dealId: string;
   nowIso: string;
   llm_phase_mode: LLMPhaseMode;
+  selected_policy_id?: string | null;
   phase1_deal_overview_v2?: unknown;
   /** Broad coverage sources from gatherGlobalSummarySources; extends per-field evidence pool. */
   global_summary_sources?: GlobalSummarySource[];
@@ -1852,8 +1858,32 @@ async function generateDisplayFactsV1BestEffort(args: {
       modelEvidence.push(...phasebItems.business_model.map(phasebItemToDisplayFactEv));
   }
 
+  const promptRuntime = composePolicyAwareSystemPrompt({
+    kind: "display_facts_v1",
+    selectedPolicyId: args.selected_policy_id,
+    additionalInstructions: [
+      "Convert noisy deterministic OCR snippets into clean, investor-readable short statements.",
+      "Use ONLY the provided snippets. Do not invent facts or numbers.",
+      "IMPORTANT: evidence_ids MUST be chosen ONLY from the allowed IDs for that field.",
+      "Allowed IDs for each field are provided as allowed_evidence_ids.<field> and also appear as fields.<field>[].evidence_id.",
+      "Never output evidence_ids that are not in the allowed list for that field.",
+      "If snippets are insufficient for a field, set text=null, evidence_ids=[], evidence_basis=\"no_evidence\".",
+      "Output MUST be valid JSON only (no markdown).",
+      "Return JSON with EXACT keys: product_solution, market_icp, business_model, raise_terms.",
+      "Each value MUST be an object {text: string|null, evidence_ids: string[], evidence_basis: \"direct_snippet\"|\"no_evidence\"}.",
+      "If evidence_ids is non-empty, evidence_basis MUST be \"direct_snippet\" and text MUST be non-empty.",
+      "Keep each text under 220 characters. Remove OCR artifacts.",
+    ],
+  });
+
   const deterministic_input = {
     schema_version: "display_facts_v1_input_v1",
+    selected_policy_id: promptRuntime.runtimeMetadata.selected_policy_id,
+    prompt_runtime: {
+      template_version: promptRuntime.runtimeMetadata.template_version,
+      prompt_artifacts: promptRuntime.runtimeMetadata.prompt_artifacts,
+      policy_requirements: promptRuntime.runtimeMetadata.policy_requirements,
+    },
     product_solution: productEvidence.map((e) => ({ evidence_id: e.evidence_id, document_id: e.document_id, page_index: e.page_index, snippet_head: e.snippet.slice(0, 120) })),
     market_icp: marketEvidence.map((e) => ({ evidence_id: e.evidence_id, document_id: e.document_id, page_index: e.page_index, snippet_head: e.snippet.slice(0, 120) })),
     business_model: modelEvidence.map((e) => ({ evidence_id: e.evidence_id, document_id: e.document_id, page_index: e.page_index, snippet_head: e.snippet.slice(0, 120) })),
@@ -1936,18 +1966,7 @@ async function generateDisplayFactsV1BestEffort(args: {
 
   const provider = new OpenAIGPT4oProvider(providerConfig);
 
-  const system =
-    "You are a deal analyst. Convert noisy deterministic OCR snippets into clean, investor-readable short statements. " +
-    "Use ONLY the provided snippets. Do not invent facts or numbers. " +
-    "IMPORTANT: evidence_ids MUST be chosen ONLY from the allowed IDs for that field. " +
-    "Allowed IDs for each field are provided as allowed_evidence_ids.<field> and also appear as fields.<field>[].evidence_id. " +
-    "Never output evidence_ids that are not in the allowed list for that field. " +
-    "If the snippets are insufficient for a field, set text=null, evidence_ids=[], evidence_basis=\"no_evidence\". " +
-    "Output MUST be valid JSON only (no markdown). " +
-    "Return JSON with EXACT keys: product_solution, market_icp, business_model, raise_terms. " +
-    "Each value MUST be an object {text: string|null, evidence_ids: string[], evidence_basis: \"direct_snippet\"|\"no_evidence\"}. " +
-    "If evidence_ids is non-empty, evidence_basis MUST be \"direct_snippet\" and text MUST be non-empty. " +
-    "Keep each text under 220 characters. Remove OCR artifacts (duplicated spaces, broken words, stray punctuation).";
+  const system = promptRuntime.systemPrompt;
 
   const payload = {
     deal_id: args.dealId,
@@ -1983,6 +2002,30 @@ async function generateDisplayFactsV1BestEffort(args: {
     return {
       display_facts_v1: null,
       quality: { ...qualityBase, model: "gpt-4o-mini", ok: false, guard_degraded: false, errors: ["model_output_not_json"] },
+      deterministic_input,
+      providerMeta: { model: "gpt-4o-mini" },
+    };
+  }
+
+  const outputValidation = validatePolicyAwareOutputTemplateV2({
+    kind: "display_facts_v1",
+    selectedPolicyId: promptRuntime.runtimeMetadata.selected_policy_id,
+    output: parsed,
+  });
+  if (!outputValidation.ok) {
+    return {
+      display_facts_v1: null,
+      quality: {
+        ...qualityBase,
+        model: "gpt-4o-mini",
+        ok: false,
+        guard_degraded: true,
+        errors: [
+          "policy_template_v2_validation_failed",
+          ...outputValidation.missing_sections.map((s) => `missing_${s}`),
+          ...outputValidation.warnings,
+        ],
+      },
       deterministic_input,
       providerMeta: { model: "gpt-4o-mini" },
     };
@@ -2209,6 +2252,7 @@ async function generateGovernedUiCopyV1BestEffort(args: {
   dealId: string;
   nowIso: string;
   llm_phase_mode: LLMPhaseMode;
+  selected_policy_id?: string | null;
   display_facts_v1: DisplayFactsV1 | null;
   display_facts_v1_input_v1: any | null;
   phase1_deal_summary_v2?: unknown;
@@ -2299,10 +2343,31 @@ async function generateGovernedUiCopyV1BestEffort(args: {
   const concerns = sanitizeGovernedListField(rawConcerns);
   const open_questions = sanitizeGovernedListField(rawOpenQuestions);
 
+  const promptRuntime = composePolicyAwareSystemPrompt({
+    kind: "governed_ui_copy_v1",
+    selectedPolicyId: args.selected_policy_id,
+    additionalInstructions: [
+      "Rewrite ONLY the provided basis texts.",
+      "DO NOT invent facts, numbers, features, customers, or claims not present in the basis.",
+      "Use any number ONLY if it appears verbatim in basis texts or traction_signals.",
+      "If a basis field has text=null, return null for that field.",
+      "Output MUST be valid JSON only (no markdown, no explanation).",
+      "Return JSON with EXACT keys: hero_summary, product_solution, market_icp, business_model, raise_terms.",
+      "Each value MUST be a string or null.",
+      "Keep each field under 320 characters.",
+    ],
+  });
+
   const deterministic_input = {
     schema_version: "governed_ui_copy_v1_input_v1",
     deal_id: args.dealId,
     llm_phase_mode: args.llm_phase_mode,
+    selected_policy_id: promptRuntime.runtimeMetadata.selected_policy_id,
+    prompt_runtime: {
+      template_version: promptRuntime.runtimeMetadata.template_version,
+      prompt_artifacts: promptRuntime.runtimeMetadata.prompt_artifacts,
+      policy_requirements: promptRuntime.runtimeMetadata.policy_requirements,
+    },
     basis,
     evidence_map_basis_v1: {
       deal_summary_mid: deal_summary_mid_refs,
@@ -2380,43 +2445,7 @@ async function generateGovernedUiCopyV1BestEffort(args: {
   };
   const provider = new OpenAIGPT4oProvider(providerConfig);
 
-  const system =
-    "You are a deal analyst writing investor-grade UI copy. " +
-    "Rewrite ONLY the provided basis texts. DO NOT invent facts, numbers, features, customers, or claims not present in the basis. " +
-    "Use any number ONLY if it appears verbatim in the basis texts or traction_signals. " +
-    "If a basis field has text=null, return null for that field. " +
-    "Output MUST be valid JSON only (no markdown, no explanation). " +
-    "Return JSON with EXACT keys: hero_summary, product_solution, market_icp, business_model, raise_terms. " +
-    "Each value MUST be a string or null. " +
-    // ── hero_summary ──────────────────────────────────────────────────────
-    "hero_summary MUST follow this 2–4 sentence composition contract: " +
-    "[S1] What the company does and who it serves — combine product_solution + market_icp into one sentence. " +
-    "[S2] How it makes money — from business_model; OMIT if business_model is null. " +
-    "[S3, optional] One traction fact — use FIRST item from traction_signals verbatim ONLY if non-empty; otherwise omit. " +
-    "[S4, optional] Raise context — one brief sentence from raise_terms ONLY if it has text; otherwise omit. " +
-    "hero_summary must be 2–4 sentences total. " +
-    // ── product_solution ─────────────────────────────────────────────────
-    "product_solution MUST be exactly 2 sentences: " +
-    "Sentence 1: what the product or service is AND who it serves (combine both into one sentence). " +
-    "Sentence 2: the differentiation, positioning, or delivery model as stated in the basis — " +
-    "if neither differentiation nor positioning is present, state the delivery mode or category context. " +
-    "Do NOT mention raise, funding, or investment. Do NOT speculate. " +
-    // ── market_icp ───────────────────────────────────────────────────────
-    "market_icp MUST be exactly 2 sentences: " +
-    "Sentence 1: define the ICP — who buys or uses the product (be specific, not generic). " +
-    "Sentence 2: industry context, TAM, competitive environment, or growth signal — ONLY if that evidence is present in the basis; " +
-    "if no TAM or industry-sizing evidence exists, write exactly: " +
-    "'Market size and growth dynamics are not quantified in the provided materials.' " +
-    "Do NOT write 'The market is growing' or similar unless the basis explicitly states it. " +
-    // ── business_model ───────────────────────────────────────────────────
-    "business_model MUST be 1–2 sentences: " +
-    "Sentence 1: state the revenue mechanism (subscription, licensing, wholesale, transaction fee, etc.) from the basis. " +
-    "Sentence 2 (optional): pricing tier, margin structure, or distribution channel — ONLY if evidence is present. " +
-    "If no business model information is present in the basis (business_model basis text is null), return null for that field. " +
-    // ── quality guards ───────────────────────────────────────────────────
-    "NEVER mention internal scoring, confidence levels, or narrative pacing in any field. " +
-    "NEVER use vague filler phrases such as 'strong presence', 'significant opportunity', or 'robust growth' unless the basis explicitly uses that language. " +
-    "Keep each field under 320 characters.";
+  const system = promptRuntime.systemPrompt;
 
   const payload = {
     deal_id: args.dealId,
@@ -2443,6 +2472,29 @@ async function generateGovernedUiCopyV1BestEffort(args: {
     return {
       governed_ui_copy_v1: null,
       quality: { ...qualityBase, model: "gpt-4o-mini", ok: false, guard_degraded: false, errors: ["model_output_not_json"] },
+      deterministic_input,
+    };
+  }
+
+  const outputValidation = validatePolicyAwareOutputTemplateV2({
+    kind: "governed_ui_copy_v1",
+    selectedPolicyId: promptRuntime.runtimeMetadata.selected_policy_id,
+    output: parsed,
+  });
+  if (!outputValidation.ok) {
+    return {
+      governed_ui_copy_v1: null,
+      quality: {
+        ...qualityBase,
+        model: "gpt-4o-mini",
+        ok: false,
+        guard_degraded: true,
+        errors: [
+          "policy_template_v2_validation_failed",
+          ...outputValidation.missing_sections.map((s) => `missing_${s}`),
+          ...outputValidation.warnings,
+        ],
+      },
       deterministic_input,
     };
   }
@@ -2584,6 +2636,7 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
   dealId: string;
   runId?: string | null;
   stepRunId?: string | null;
+  selectedPolicyId?: string | null;
   dealName?: string | null;
   phase1_deal_overview_v2?: unknown;
   phase1_business_archetype_v1?: unknown;
@@ -2689,12 +2742,18 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
       let display_facts_v1: DisplayFactsV1 | null = null;
       let display_facts_v1_quality: DisplayFactsQualityV1 | null = null;
       let display_facts_v1_input: unknown = null;
+      const selectedPolicyId =
+        args.selectedPolicyId ??
+        getSelectedPolicyIdFromAnyLike(args.phase1_business_archetype_v1 as any) ??
+        getSelectedPolicyIdFromAnyLike(args.phase1_deal_overview_v2 as any) ??
+        "unknown_generic";
       try {
         const out = await generateDisplayFactsV1BestEffort({
           pool,
           dealId: args.dealId,
           nowIso,
           llm_phase_mode,
+          selected_policy_id: selectedPolicyId,
           phase1_deal_overview_v2: args.phase1_deal_overview_v2 ?? null,
           global_summary_sources: globalSummarySources,
         });
@@ -2726,6 +2785,7 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
           dealId: args.dealId,
           nowIso,
           llm_phase_mode,
+          selected_policy_id: selectedPolicyId,
           display_facts_v1,
           display_facts_v1_input_v1: display_facts_v1_input && typeof display_facts_v1_input === "object" ? display_facts_v1_input : null,
           phase1_deal_summary_v2: args.phase1_deal_summary_v2 ?? null,
@@ -2782,6 +2842,7 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
         schema_version: SCHEMA_VERSION,
         deal_id: args.dealId,
         llm_phase_mode,
+        selected_policy_id: selectedPolicyId,
         phase1: {
           deal_overview_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_overview_v2 ?? null),
           business_archetype_v1: stripNonDeterministicFieldsDeep(args.phase1_business_archetype_v1 ?? null),
@@ -2900,6 +2961,11 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
       };
 
       const overview_json = {
+        prompt_runtime: {
+          selected_policy_id: selectedPolicyId,
+          display_facts_prompt_runtime: (display_facts_v1_input as any)?.prompt_runtime ?? null,
+          governed_ui_copy_prompt_runtime: (governed_ui_copy_v1_input as any)?.prompt_runtime ?? null,
+        },
         phase1: {
           deal_overview_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_overview_v2 ?? null),
           deal_summary_v2: stripNonDeterministicFieldsDeep(args.phase1_deal_summary_v2 ?? null),
@@ -2961,6 +3027,7 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
           deal_id: args.dealId,
           schema_version: SCHEMA_VERSION,
           llm_phase_mode,
+          selected_policy_id: selectedPolicyId,
           input_hash,
           inserted: persisted.inserted,
           claims_count: Array.isArray(toPersist.claims) ? toPersist.claims.length : 0,

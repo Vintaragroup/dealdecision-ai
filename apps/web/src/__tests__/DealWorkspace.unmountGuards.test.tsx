@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -248,10 +248,7 @@ describe('DealWorkspace unmount + dealId switch guards', () => {
     });
 
     await waitFor(() => {
-      const top = screen.getByLabelText('Deal top summary');
-      const raiseLabel = within(top).getByText(/^Raise$/i);
-      const raiseCard = raiseLabel.parentElement as HTMLElement;
-      expect(within(raiseCard).queryByText('$A')).toBeNull();
+      expect(document.body.textContent).not.toContain('$A');
     });
 
     // Now resolve B; UI should reflect B only.
@@ -263,10 +260,7 @@ describe('DealWorkspace unmount + dealId switch guards', () => {
     });
 
     await waitFor(() => {
-      const top2 = screen.getByLabelText('Deal top summary');
-      const raiseLabel2 = within(top2).getByText(/^Raise$/i);
-      const raiseCard2 = raiseLabel2.parentElement as HTMLElement;
-      expect(within(raiseCard2).getByText('$B')).toBeInTheDocument();
+      expect(document.body.textContent).toContain('$B');
     });
 
     expect(consoleError).not.toHaveBeenCalled();

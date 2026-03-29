@@ -46,6 +46,7 @@ import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, a
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
+import { getPolicyFamily, getPolicyScoreSectionLabel, resolveSelectedPolicyIdFromAny } from '../../lib/policyUtils';
 import { debugLogger } from '../../lib/debugLogger';
 import { debugApiGetEntries, debugApiIsEnabled, debugApiSubscribe, type DebugApiEntry } from '../../lib/debugApi';
 import { derivePhaseBInsights } from '../../lib/phaseb-findings';
@@ -53,6 +54,7 @@ import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
 import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
 import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
 import { chooseGovernedKeyFact } from '../../lib/chooseGovernedKeyFact';
+import { applyPolicyAwareAdvisoryAsks, getRealEstateDealStructureFallback, selectBestRealEstateSemanticField } from '../../lib/realEstatePolicyRefinement';
 import { CanonicalIdentityRenameBanner } from '../deal/CanonicalIdentityRenameBanner';
 import { deriveGatingState, shouldSuppressNeedsReview } from '../../lib/badgePolicy';
 import { useAsyncStaleGuard } from '../../lib/hooks/useAsyncStaleGuard';
@@ -1349,6 +1351,50 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const executiveSummaryV1 = (dealFromApi as any)?.ui?.executiveSummary as any;
 	const dealSummaryV2 = (dealFromApi as any)?.ui?.dealSummaryV2 as any;
   const fundabilityV1 = (dealFromApi as any)?.fundability_v1 as any;
+  const selectedPolicyResolution = useMemo(() => {
+    const fromDeal = resolveSelectedPolicyIdFromAny(dealFromApi as any);
+    if (fromDeal.policyId) return { ...fromDeal, payload: 'deal' as const };
+    const fromReport = resolveSelectedPolicyIdFromAny(reportFromApi as any);
+    if (fromReport.policyId) return { ...fromReport, payload: 'report' as const };
+    const fromEnvelope = resolveSelectedPolicyIdFromAny(reportEnvelope as any);
+    if (fromEnvelope.policyId) return { ...fromEnvelope, payload: 'report_envelope' as const };
+    return { ...fromEnvelope, payload: 'none' as const };
+  }, [dealFromApi, reportFromApi, reportEnvelope]);
+  const selectedPolicyId = selectedPolicyResolution.policyId;
+
+  useEffect(() => {
+    if (selectedPolicyResolution.source === 'not_found') {
+      debugLogger.logFallbackData(
+        'DealWorkspace',
+        'selectedPolicyId',
+        null,
+        'No deterministic selected policy field found in deal/report/report_envelope payloads'
+      );
+      return;
+    }
+    if (selectedPolicyResolution.usedFallback) {
+      debugLogger.logFallbackData(
+        'DealWorkspace',
+        'selectedPolicyId',
+        selectedPolicyResolution.policyId,
+        `Resolved via fallback source ${selectedPolicyResolution.source} from ${selectedPolicyResolution.payload}`
+      );
+      return;
+    }
+    debugLogger.logComputedData(
+      'DealWorkspace',
+      'selectedPolicyId',
+      selectedPolicyResolution.policyId,
+      `Resolved from ${selectedPolicyResolution.source} in ${selectedPolicyResolution.payload}`
+    );
+  }, [
+    selectedPolicyResolution.policyId,
+    selectedPolicyResolution.source,
+    selectedPolicyResolution.payload,
+    selectedPolicyResolution.usedFallback,
+  ]);
+  const policyFamily = useMemo(() => getPolicyFamily(selectedPolicyId), [selectedPolicyId]);
+  const isStartupPolicySchema = policyFamily === 'startup' || policyFamily === 'other';
 
   // Canonical Phase 1 signals source
   const phase1Signals = ((dealFromApi as any)?.phase1?.executive_summary_v2?.signals
@@ -1382,9 +1428,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         case 'icp':
           return 'ICP';
         case 'business_model':
-          return 'Business model';
+          return getPolicyScoreSectionLabel(selectedPolicyId, 'business_model');
         case 'traction':
-          return 'Traction';
+          return getPolicyScoreSectionLabel(selectedPolicyId, 'traction');
         case 'risks':
           return 'Risks';
         case 'team':
@@ -2409,6 +2455,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     supportsProceeding: string[];
     diligenceItems: string[];
     scoreRationale: string;
+    advisoryRefinement: {
+      source: 'original' | 'real_estate_refined';
+      replacementApplied: boolean;
+      suppressedStartupAsks: string[];
+      injectedRealEstateAsks: string[];
+    };
   } => {
     const safeNonEmpty = (v: unknown): string | null => {
       if (typeof v !== 'string') return null;
@@ -2443,10 +2495,90 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return false;
     };
 
-    const product = safeNonEmpty(canonicalDealSummaryReady && canonicalProduct ? canonicalProduct : overviewProduct);
-    const market = safeNonEmpty(canonicalDealSummaryReady && canonicalMarket ? canonicalMarket : overviewMarketIcp);
-    const businessModel = safeNonEmpty(overviewBusinessModel);
-    const raise = safeNonEmpty(reportCanonicalRaise.value || overviewRaiseTerms);
+    const normalizeSemantic = (value: string): string =>
+      value
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const hasRealEstateLeakTerms = (value: string): boolean =>
+      /\b(yield|cap\s*rate|noi|ltc|dscr|budget-based)\b/i.test(value);
+
+    const localHasMalformedNumericPlaceholder = (value: string): boolean => {
+      const s = value.trim();
+      if (!s) return true;
+      if (/^\$\s*[,.-]*\s*$/i.test(s)) return true;
+      if (/^\$\s*[,.-]+\s*[kmbn]*$/i.test(s)) return true;
+      return false;
+    };
+
+    const dealTypeRaw = safeText(overviewV2?.deal_type) || safeText((executiveSummaryV1 as any)?.deal_type) || '';
+    const dealTypeNorm = dealTypeRaw.toLowerCase();
+    const isStartupDealType = dealTypeNorm === 'startup_raise';
+    const isRealEstateDealType = dealTypeNorm === 'real_estate_preferred_equity' || dealTypeNorm === 'real_estate' || policyFamily === 'real_estate';
+
+    type LocalCandidate = { sourcePath: string; value: string };
+    const pickLocal = (candidates: LocalCandidate[]): { value: string; sourcePath: string } => {
+      for (const c of candidates) {
+        const v = safeText(c.value);
+        if (!v) continue;
+        if (c.sourcePath.includes('raise') && localHasMalformedNumericPlaceholder(v)) continue;
+        return { value: v, sourcePath: c.sourcePath };
+      }
+      return { value: '', sourcePath: 'missing' };
+    };
+
+    const dfv1Local = (governedOverview as any)?.overview?.overview_json?.display_facts_v1 ?? null;
+    const phase1Local = (governedOverview as any)?.overview?.overview_json?.phase1 ?? null;
+
+    // Hard source binding for hero summary semantics.
+    const productPick = pickLocal([
+      { sourcePath: 'overview_json.display_facts_v1.product_solution.text', value: safeText(dfv1Local?.product_solution?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.product.text', value: safeText(dfv1Local?.product?.text) },
+      { sourcePath: 'overview_json.phase1.deal_overview_v2.product_solution', value: safeText(overviewV2?.product_solution) },
+      { sourcePath: 'overview_json.phase1.deal_summary_v2.product.text', value: safeText((phase1Local?.deal_summary_v2 as any)?.product?.text) || safeText((dealSummaryV2 as any)?.product?.text) },
+    ]);
+    const marketPick = pickLocal([
+      { sourcePath: 'overview_json.display_facts_v1.market_icp.text', value: safeText(dfv1Local?.market_icp?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.market.text', value: safeText(dfv1Local?.market?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.submarket.text', value: safeText(dfv1Local?.submarket?.text) },
+      { sourcePath: 'overview_json.phase1.deal_overview_v2.market_icp', value: safeText(overviewV2?.market_icp) },
+      { sourcePath: 'overview_json.phase1.deal_summary_v2.market.text', value: safeText((phase1Local?.deal_summary_v2 as any)?.market?.text) || safeText((dealSummaryV2 as any)?.market?.text) },
+    ]);
+    const businessModelPick = pickLocal([
+      { sourcePath: 'overview_json.display_facts_v1.business_model.text', value: safeText(dfv1Local?.business_model?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.deal_structure.text', value: safeText(dfv1Local?.deal_structure?.text) },
+      { sourcePath: 'overview_json.phase1.deal_overview_v2.business_model', value: safeText(overviewV2?.business_model) },
+      { sourcePath: 'overview_json.phase1.deal_summary_v2.business_model', value: safeText((phase1Local?.deal_summary_v2 as any)?.business_model) || safeText((dealSummaryV2 as any)?.business_model) },
+      { sourcePath: 'policy_resolved.overviewBusinessModel', value: safeText(overviewBusinessModel) },
+    ]);
+    const raisePick = pickLocal([
+      { sourcePath: 'overview_json.display_facts_v1.raise_terms.text', value: safeText(dfv1Local?.raise_terms?.text) },
+      { sourcePath: 'overview_json.display_facts_v1.raise.text', value: safeText(dfv1Local?.raise?.text) },
+      { sourcePath: 'policy_resolved.reportCanonicalRaise', value: safeText(reportCanonicalRaise.value) },
+      { sourcePath: 'overview_json.phase1.deal_overview_v2.raise', value: safeText(overviewV2?.raise) },
+      { sourcePath: 'overview_json.phase1.deal_summary_v2.raise', value: safeText((phase1Local?.deal_summary_v2 as any)?.raise) || safeText((dealSummaryV2 as any)?.raise) },
+      { sourcePath: 'policy_resolved.overviewRaiseTerms', value: safeText(overviewRaiseTerms) },
+    ]);
+
+    let productSolutionHero = productPick.value;
+    let marketIcpHero = marketPick.value;
+
+    if (isStartupDealType) {
+      if (productSolutionHero && hasRealEstateLeakTerms(productSolutionHero)) productSolutionHero = '';
+      if (marketIcpHero && hasRealEstateLeakTerms(marketIcpHero)) marketIcpHero = '';
+    }
+
+    if (productSolutionHero && marketIcpHero && normalizeSemantic(productSolutionHero) === normalizeSemantic(marketIcpHero)) {
+      marketIcpHero = '';
+    }
+
+    const product = safeNonEmpty(productSolutionHero);
+    const market = safeNonEmpty(marketIcpHero);
+
+    const businessModel = safeNonEmpty(businessModelPick.value || overviewBusinessModel);
+    const raise = safeNonEmpty(raisePick.value || reportCanonicalRaise.value || overviewRaiseTerms);
 
     const kpis: any[] = deterministicScoreInputsV1 && Array.isArray(deterministicScoreInputsV1.kpis)
       ? deterministicScoreInputsV1.kpis
@@ -2470,9 +2602,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
 
     const snapshotSentences: string[] = [];
-    if (product && market) snapshotSentences.push(`Company sells ${product} and targets ${market}.`);
-    else if (product) snapshotSentences.push(`Company sells ${product}.`);
-    else if (market) snapshotSentences.push(`Target market / ICP: ${market}.`);
+    if (isRealEstateDealType) {
+      if (product) snapshotSentences.push(`Asset / facility: ${product}.`);
+      if (market) snapshotSentences.push(`Submarket / demand: ${market}.`);
+    } else {
+      if (product && market) snapshotSentences.push(`Company sells ${product} and targets ${market}.`);
+      else if (product) snapshotSentences.push(`Company sells ${product}.`);
+      else if (market) snapshotSentences.push(`Target market / ICP: ${market}.`);
+    }
 
     if (businessModel) snapshotSentences.push(`Business model: ${businessModel}.`);
     if (raise) snapshotSentences.push(`Raise / terms: ${raise}.`);
@@ -2492,8 +2629,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     // What supports proceeding: evidence-backed bullets only.
     const supports: string[] = [];
-    if (product) supports.push(`Product is explicitly described: ${product}.`);
-    if (market) supports.push(`Target market / ICP is explicitly described: ${market}.`);
+    if (isRealEstateDealType) {
+      if (product) supports.push(`Asset / facility is explicitly described: ${product}.`);
+      if (market) supports.push(`Submarket / demand is explicitly described: ${market}.`);
+    } else {
+      if (product) supports.push(`Product is explicitly described: ${product}.`);
+      if (market) supports.push(`Target market / ICP is explicitly described: ${market}.`);
+    }
     if (businessModel) supports.push(`Business model is stated: ${businessModel}.`);
     if (raise) supports.push(`Raise / terms are stated: ${raise}.`);
 
@@ -2620,11 +2762,36 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       ]).join(' ');
     })();
 
+    const refinedDiligence = applyPolicyAwareAdvisoryAsks({
+      policyFamily,
+      asks: uniq(diligence).slice(0, 12),
+    });
+
+    if (import.meta.env.DEV) {
+      console.log('HERO_BINDING_DEBUG', {
+        deal_id: dealId ?? null,
+        selected_policy_id: selectedPolicyId ?? null,
+        deal_type: dealTypeRaw || null,
+        fields: {
+          product: { sourcePath: productPick.sourcePath, value: productSolutionHero || null },
+          market: { sourcePath: marketPick.sourcePath, value: marketIcpHero || null },
+          business_model: { sourcePath: businessModelPick.sourcePath, value: businessModel || null },
+          raise: { sourcePath: raisePick.sourcePath, value: raise || null, hidden: localHasMalformedNumericPlaceholder(raisePick.value || '') },
+        },
+      });
+    }
+
     return {
       snapshot: snapshot || 'Company snapshot is pending: structured facts were not extracted from the materials.',
       supportsProceeding: uniq(supports).slice(0, 6),
-      diligenceItems: uniq(diligence).slice(0, 12),
+      diligenceItems: refinedDiligence.asks,
       scoreRationale,
+      advisoryRefinement: {
+        source: refinedDiligence.source,
+        replacementApplied: refinedDiligence.replacementApplied,
+        suppressedStartupAsks: refinedDiligence.suppressedStartupAsks,
+        injectedRealEstateAsks: refinedDiligence.injectedRealEstateAsks,
+      },
     };
   };
 
@@ -2799,6 +2966,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const metricText = collectMetricText();
   const archetypeValue = typeof businessArchetypeV1?.value === 'string' ? businessArchetypeV1.value.toLowerCase() : '';
   const looksRealEstate =
+    policyFamily === 'real_estate' ||
     archetypeValue.includes('real_estate') ||
     /\breal\s+estate\b/i.test(String(authoritativeBusinessModel.value ?? '')) ||
     /\b(real_estate|preferred\s+equity|offering\s+memorandum|cap\s*rate|noi|ltv|dscr)\b/i.test(metricText);
@@ -2818,21 +2986,51 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return v.length > 0 ? v : '—';
   };
 
+  const hasNumericToken = (v: string): boolean => /\d/.test(v);
+  const isMalformedCurrency = (v: string): boolean => /^\$\s*[,.-]*\s*$/i.test(v);
+
+  const pickValueChecked = (
+    re: RegExp,
+    format: (m: RegExpMatchArray) => string,
+    isValid: (value: string) => boolean,
+  ): string => {
+    const v = pickValue(re, format);
+    if (v === '—') return v;
+    return isValid(v) ? v : '—';
+  };
+
+  const pickMoneyLike = (input: string): string | null => {
+    const matches = input.match(/\$\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?/gi) ?? [];
+    const cleaned = matches
+      .map((m) => m.replace(/\s+/g, ' ').trim())
+      .filter((m) => hasNumericToken(m) && !isMalformedCurrency(m));
+    if (cleaned.length === 0) return null;
+    return cleaned.slice(0, 2).join(' + ');
+  };
+
   const pickMoney = (): string => {
     if (reportReady) {
       // Canonical: amount-only from report.structured_summary.raise.value_json.amount.amount.
       const fromReport = safeText(reportCanonicalRaise.value);
-      if (fromReport) return fromReport;
+      if (fromReport) {
+        const compact = pickMoneyLike(fromReport);
+        if (compact) return compact;
+        if (hasNumericToken(fromReport) && !isMalformedCurrency(fromReport)) return fromReport;
+      }
     }
     const direct = safeText(overviewV2?.raise);
-    if (direct) return direct;
+    if (direct) {
+      const compact = pickMoneyLike(direct);
+      if (compact) return compact;
+      if (hasNumericToken(direct) && !isMalformedCurrency(direct)) return direct;
+    }
     // Look for $ amounts (supports $11.7M, $46.7MM, $1,200,000)
-    return pickValue(/\$\s*([\d,]+(?:\.\d+)?)\s*(m|mm|million|b|bn|billion)?/i, (m) => {
+    return pickValueChecked(/\$\s*([\d,]+(?:\.\d+)?)\s*(m|mm|million|b|bn|billion)?/i, (m) => {
       const num = m[1];
       const suf = (m[2] ?? '').toLowerCase();
       const suffix = suf ? suf.replace(/^mm$/, 'M').replace(/^m$/, 'M').replace(/^million$/, 'M').replace(/^bn$/, 'B').replace(/^billion$/, 'B').toUpperCase() : '';
       return `$${num}${suffix}`;
-    });
+    }, (v) => hasNumericToken(v) && !isMalformedCurrency(v));
   };
 
   type MetricCard = { label: string; value: string; change: string };
@@ -2996,7 +3194,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const topSectionStrengths: string[] = scoreExplanationV1?.primary_strengths ?? [];
   const topSectionWeaknesses: string[] = scoreExplanationV1?.primary_constraints ?? [];
   // Actions = verb-led diligence items + execution dependencies from scoreExplanationV1.
-  const topSectionActionsToImprove: string[] = scoreExplanationV1?.action_recommendations ?? [];
+  const topSectionActionRefinement = applyPolicyAwareAdvisoryAsks({
+    policyFamily,
+    asks: scoreExplanationV1?.action_recommendations ?? [],
+  });
+  const topSectionActionsToImprove: string[] = topSectionActionRefinement.asks;
 
   const topSectionConfidence: 'High' | 'Medium' | 'Low' = decisionTileConfidenceBand === 'high'
     ? 'High'
@@ -3006,7 +3208,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const topSectionRaise = pickMoney();
   const topSectionRevenue = looksRealEstate
-    ? '—'
+    ? pickValueChecked(/\b(?:noi|year\s*[-\s]?1\s*(?:noi|rent))\b[^\d\$]{0,24}\$?([\d,]+(?:\.\d+)?)/i, (m) => `$${m[1]}`, (v) => hasNumericToken(v) && !isMalformedCurrency(v))
     : pickValue(/\b(revenue|arr|mrr)\b[\s:,-]{0,12}(\$?\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?)\b/i, (m) => m[2].replace(/\s+/g, ' ').trim());
   const topSectionGrowth = looksRealEstate
     ? pickValue(/\b(?:target\s+)?irr\b[^\d]{0,24}(\d{1,2}(?:\.\d+)?)\s*%/i, (m) => `${m[1]}%`)
@@ -3158,6 +3360,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       source: reportReady ? 'report' : 'fallback',
     } as const;
   }, [
+    dealId,
     reportReady,
     reportFromApi,
     reportEnvelope,
@@ -3538,6 +3741,27 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     || deterministicOverviewSlots.business_model?.value
     || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
   const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
+
+  const displayFactsV1 = useMemo(() => {
+    const dfv1 = (governedOverview as any)?.overview?.overview_json?.display_facts_v1;
+    if (!dfv1 || typeof dfv1 !== 'object') return null;
+    return dfv1 as any;
+  }, [governedOverview]);
+
+  const normalizeHeroText = (value: string): string =>
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const hasMalformedNumericPlaceholder = (value: string): boolean => {
+    const s = value.trim();
+    if (!s) return true;
+    if (/^\$\s*[,.-]*\s*$/i.test(s)) return true;
+    if (/^\$\s*[,.-]+\s*[kmbn]*$/i.test(s)) return true;
+    return false;
+  };
   const splitTierDeepToParagraphs = (raw: string): string[] => {
     const normalized = String(raw ?? '')
       .replace(/\r\n/g, '\n')
@@ -3887,8 +4111,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const businessModel = chooseGovernedFirst({
       deterministic: overviewBusinessModelCanonical,
       overlay: ovFacts ? { value: ovFacts.business_model?.value ?? null, quality: ovFacts.business_model?.quality, source: ovFacts.business_model?.source } : null,
-      // When report is ready, keep Business Model consistent with /report (overlay can still render narrative).
-      preferDeterministic: selectedHeader.ready,
+      // Real-estate display is policy-governed first to avoid startup taxonomy leaks.
+      // Startup/fund schemas keep deterministic report-first behavior when ready.
+      preferDeterministic: selectedHeader.ready && !looksRealEstate,
     });
     const raise = chooseGovernedFirst({
       deterministic: overviewRaiseTermsCanonical,
@@ -3897,8 +4122,309 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       preferDeterministic: selectedHeader.ready,
     });
 
-    return { product, market, businessModel, raise };
-  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, authoritativeProductTextV1, authoritativeMarketTextV1, investorInsights.report]);
+    if (!looksRealEstate) {
+      return { product, market, businessModel, raise, realEstateSemanticDiagnostics: null };
+    }
+
+    const assetFacilityCandidates = [
+      { value: ovFacts?.product_solution?.value ?? null, source: 'governed_ui_copy.product_solution', lane: 'governed' },
+      { value: authoritativeProductTextV1, source: 'report.structured_summary.product_summary_v1', lane: 'deterministic' },
+      { value: canonicalProduct, source: 'report.deal_summary_v1.product.text', lane: 'deterministic' },
+      { value: overviewProductCanonical, source: 'overview.product.canonical', lane: 'deterministic' },
+      { value: product.value, source: 'governedKeyFacts.product', lane: product.provenance.source === 'governed' ? 'governed' : 'deterministic' },
+    ] as const;
+
+    const assetFacilitySelection = selectBestRealEstateSemanticField('asset_facility', [...assetFacilityCandidates]);
+
+    const submarketDemandCandidates = [
+      { value: ovFacts?.market_icp?.value ?? null, source: 'governed_ui_copy.market_icp', lane: 'governed' },
+      { value: authoritativeMarketTextV1, source: 'report.structured_summary.market_summary_v1', lane: 'deterministic' },
+      { value: canonicalMarket, source: 'report.deal_summary_v1.market_target.text', lane: 'deterministic' },
+      { value: overviewMarketIcpCanonical, source: 'overview.market.canonical', lane: 'deterministic' },
+      { value: market.value, source: 'governedKeyFacts.market', lane: market.provenance.source === 'governed' ? 'governed' : 'deterministic' },
+    ] as const;
+
+    // Prevent duplicated top-line semantics where Asset/Facility and Submarket/Demand
+    // resolve to the same normalized text.
+    const submarketDemandSelection = selectBestRealEstateSemanticField('submarket_demand', [...submarketDemandCandidates], {
+      excludeValues: assetFacilitySelection.value ? [assetFacilitySelection.value] : [],
+    });
+
+    const dealStructureSelection = selectBestRealEstateSemanticField('deal_structure', [
+      { value: ovFacts?.raise?.value ?? null, source: 'governed_ui_copy.raise', lane: 'governed' },
+      { value: ovFacts?.business_model?.value ?? null, source: 'governed_ui_copy.business_model', lane: 'governed' },
+      { value: selectedHeader.business_model.value ?? null, source: 'report.header.business_model', lane: 'deterministic' },
+      { value: selectedHeader.raise.value ?? null, source: 'report.header.raise', lane: 'deterministic' },
+      { value: overviewRaiseTermsCanonical, source: 'overview.raise_terms.canonical', lane: 'deterministic' },
+      { value: overviewBusinessModelCanonical, source: 'overview.business_model.canonical', lane: 'deterministic' },
+      { value: reportView.businessModel, source: 'reportView.businessModel', lane: 'deterministic' },
+      { value: businessModel.value, source: 'governedKeyFacts.businessModel', lane: businessModel.provenance.source === 'governed' ? 'governed' : 'deterministic' },
+      { value: raise.value, source: 'governedKeyFacts.raise', lane: raise.provenance.source === 'governed' ? 'governed' : 'deterministic' },
+    ]);
+
+    const toProvenance = (lane: 'governed' | 'deterministic' | 'fallback' | 'missing'): 'governed' | 'deterministic' | 'missing' => {
+      if (lane === 'governed') return 'governed';
+      if (lane === 'missing') return 'missing';
+      return 'deterministic';
+    };
+
+    const normalizeForCollision = (value: string | null | undefined): string =>
+      String(value ?? '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    const extractConciseRaise = (value: string | null | undefined): string | null => {
+      const s = String(value ?? '').trim();
+      if (!s) return null;
+      const parts = s.match(/\$\s*[\d,]+(?:\.\d+)?\s*(?:k|m|mm|million|b|bn|billion)?/gi) ?? [];
+      const compact = parts
+        .map((p) => p.replace(/\s+/g, ' ').trim())
+        .filter((p) => /\d/.test(p));
+      if (compact.length === 0) return null;
+      return compact.slice(0, 2).join(' + ');
+    };
+
+    const productRefined = assetFacilitySelection.value
+      ? {
+          ...product,
+          value: assetFacilitySelection.value,
+          provenance: { source: toProvenance(assetFacilitySelection.lane) },
+          fromOverlay: assetFacilitySelection.lane === 'governed',
+        }
+      : { ...product, value: keyFactMissingText, provenance: { source: 'missing' as const }, fromOverlay: false };
+
+    const marketRefined = submarketDemandSelection.value
+      ? {
+          ...market,
+          value: submarketDemandSelection.value,
+          provenance: { source: toProvenance(submarketDemandSelection.lane) },
+          fromOverlay: submarketDemandSelection.lane === 'governed',
+        }
+      : { ...market, value: keyFactMissingText, provenance: { source: 'missing' as const }, fromOverlay: false };
+
+    const dealStructureFallback = getRealEstateDealStructureFallback([
+      selectedHeader.business_model.value,
+      selectedHeader.raise.value,
+      overviewRaiseTermsCanonical,
+      overviewBusinessModelCanonical,
+      reportView.businessModel,
+    ].filter((v): v is string => typeof v === 'string').join(' '));
+
+    const businessModelRefined = {
+      ...businessModel,
+      value: dealStructureSelection.value || dealStructureFallback,
+      provenance: { source: dealStructureSelection.value ? toProvenance(dealStructureSelection.lane) : 'deterministic' as const },
+      fromOverlay: dealStructureSelection.lane === 'governed',
+    };
+
+    const raiseCandidatesForConcise = [
+      selectedHeader.raise.value,
+      reportCanonicalRaise.value,
+      overviewRaiseTermsCanonical,
+      raise.value,
+    ];
+    const conciseRaise = raiseCandidatesForConcise
+      .map((v) => extractConciseRaise(v))
+      .find((v): v is string => typeof v === 'string' && v.trim().length > 0);
+
+    const raiseCollidesWithDealStructure = normalizeForCollision(raise.value) !== ''
+      && normalizeForCollision(raise.value) === normalizeForCollision(businessModelRefined.value);
+
+    const raiseRefined = raiseCollidesWithDealStructure
+      ? {
+          ...raise,
+          value: conciseRaise && normalizeForCollision(conciseRaise) !== normalizeForCollision(businessModelRefined.value)
+            ? conciseRaise
+            : keyFactMissingText,
+          provenance: {
+            source: conciseRaise && normalizeForCollision(conciseRaise) !== normalizeForCollision(businessModelRefined.value)
+              ? ('deterministic' as const)
+              : ('missing' as const),
+          },
+          fromOverlay: false,
+        }
+      : raise;
+
+    return {
+      product: productRefined,
+      market: marketRefined,
+      businessModel: businessModelRefined,
+      raise: raiseRefined,
+      realEstateSemanticDiagnostics: {
+        assetFacility: assetFacilitySelection,
+        submarketDemand: submarketDemandSelection,
+        dealStructure: dealStructureSelection,
+        duplicateSuppression: {
+          applied: Boolean(assetFacilitySelection.value),
+          excludedFromSubmarket: assetFacilitySelection.value ? [assetFacilitySelection.value] : [],
+        },
+        raiseBusinessModelCollision: {
+          suppressed: raiseCollidesWithDealStructure,
+          conciseRaiseCandidate: conciseRaise,
+        },
+      },
+    };
+  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, selectedHeader.business_model.value, selectedHeader.raise.value, authoritativeProductTextV1, authoritativeMarketTextV1, canonicalProduct, canonicalMarket, investorInsights.report, looksRealEstate, reportView.businessModel, reportCanonicalRaise.value]);
+
+  type HeroFieldRole = 'product' | 'market' | 'business_model' | 'raise';
+  type HeroSourceTier =
+    | 'display_facts_v1'
+    | 'policy_resolved'
+    | 'governed_ui_copy_v1'
+    | 'deal_overview_v2'
+    | 'deal_summary_v2'
+    | 'summary_text';
+
+  type HeroFieldCandidate = {
+    tier: HeroSourceTier;
+    sourcePath: string;
+    value: string;
+  };
+
+  type HeroFieldBinding = {
+    role: HeroFieldRole;
+    value: string | null;
+    sourcePathUsed: string;
+    sourceTierUsed: HeroSourceTier;
+    fallbackUsed: boolean;
+    hiddenDueToFormatting: boolean;
+    hiddenDueToDedupe: boolean;
+    rejectedSources: Array<{ sourcePath: string; reason: string; value: string }>;
+    rawCandidates: HeroFieldCandidate[];
+  };
+
+  const chooseHeroFieldByPrecedence = (
+    role: HeroFieldRole,
+    candidates: HeroFieldCandidate[],
+  ): HeroFieldBinding => {
+    const cleaned = candidates
+      .map((c) => ({ ...c, value: safeText(c.value) }))
+      .filter((c) => c.value.length > 0);
+
+    const rejected: Array<{ sourcePath: string; reason: string; value: string }> = [];
+    for (const c of cleaned) {
+      const malformed = role === 'raise' ? hasMalformedNumericPlaceholder(c.value) : false;
+      if (malformed) {
+        rejected.push({ sourcePath: c.sourcePath, reason: 'malformed_or_placeholder', value: c.value });
+        continue;
+      }
+      return {
+        role,
+        value: c.value,
+        sourcePathUsed: c.sourcePath,
+        sourceTierUsed: c.tier,
+        fallbackUsed: c.tier !== 'display_facts_v1' && c.tier !== 'policy_resolved',
+        hiddenDueToFormatting: false,
+        hiddenDueToDedupe: false,
+        rejectedSources: rejected,
+        rawCandidates: cleaned,
+      };
+    }
+
+    return {
+      role,
+      value: null,
+      sourcePathUsed: 'missing',
+      sourceTierUsed: 'summary_text',
+      fallbackUsed: false,
+      hiddenDueToFormatting: cleaned.length > 0,
+      hiddenDueToDedupe: false,
+      rejectedSources: rejected,
+      rawCandidates: cleaned,
+    };
+  };
+
+  const heroFieldBindings = useMemo(() => {
+    // Universal precedence for hero/header binding:
+    // display_facts_v1 -> policy_resolved -> governed_ui_copy_v1 -> deal_overview_v2 -> deal_summary_v2 -> summary_text.
+    const ovFacts = workspaceMirrorVM.missing ? null : (workspaceMirrorVM.facts as any);
+    const phase1 = (governedOverview as any)?.overview?.overview_json?.phase1 ?? null;
+    const phase1DealSummaryV2 = phase1?.deal_summary_v2 ?? null;
+
+    const buildRoleCandidates = (role: HeroFieldRole): HeroFieldCandidate[] => {
+      if (role === 'product') {
+        return [
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.product_solution.text', value: safeText(displayFactsV1?.product_solution?.text) },
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.product.text', value: safeText(displayFactsV1?.product?.text) },
+          { tier: 'policy_resolved', sourcePath: 'policy_resolved.product', value: safeText(governedKeyFacts.product.value) },
+          { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.product_solution', value: safeText(ovFacts?.product_solution?.value) },
+          { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.product_solution', value: safeText(overviewV2?.product_solution) },
+          { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.product.text', value: safeText((phase1DealSummaryV2 as any)?.product?.text) || safeText((dealSummaryV2 as any)?.product?.text) },
+        ];
+      }
+      if (role === 'market') {
+        return [
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.market_icp.text', value: safeText(displayFactsV1?.market_icp?.text) },
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.market.text', value: safeText(displayFactsV1?.market?.text) },
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.submarket.text', value: safeText(displayFactsV1?.submarket?.text) },
+          { tier: 'policy_resolved', sourcePath: 'policy_resolved.market', value: safeText(governedKeyFacts.market.value) },
+          { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.market_icp', value: safeText(ovFacts?.market_icp?.value) },
+          { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.market_icp', value: safeText(overviewV2?.market_icp) },
+          { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.market.text', value: safeText((phase1DealSummaryV2 as any)?.market?.text) || safeText((dealSummaryV2 as any)?.market?.text) },
+        ];
+      }
+      if (role === 'business_model') {
+        return [
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.business_model.text', value: safeText(displayFactsV1?.business_model?.text) },
+          { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.deal_structure.text', value: safeText(displayFactsV1?.deal_structure?.text) },
+          { tier: 'policy_resolved', sourcePath: 'policy_resolved.business_model', value: safeText(governedKeyFacts.businessModel.value) },
+          { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.business_model', value: safeText(ovFacts?.business_model?.value) },
+          { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.business_model', value: safeText(overviewV2?.business_model) },
+          { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.business_model', value: safeText((phase1DealSummaryV2 as any)?.business_model) || safeText((dealSummaryV2 as any)?.business_model) },
+        ];
+      }
+      return [
+        { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.raise_terms.text', value: safeText(displayFactsV1?.raise_terms?.text) },
+        { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.raise.text', value: safeText(displayFactsV1?.raise?.text) },
+        { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.terms.text', value: safeText(displayFactsV1?.terms?.text) },
+        { tier: 'policy_resolved', sourcePath: 'policy_resolved.raise', value: safeText(governedKeyFacts.raise.value) },
+        { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.raise_terms', value: safeText(ovFacts?.raise?.value) },
+        { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.raise', value: safeText(overviewV2?.raise) },
+        { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.raise', value: safeText((phase1DealSummaryV2 as any)?.raise) || safeText((dealSummaryV2 as any)?.raise) },
+      ];
+    };
+
+    const product = chooseHeroFieldByPrecedence('product', buildRoleCandidates('product'));
+    const market = chooseHeroFieldByPrecedence('market', buildRoleCandidates('market'));
+    const businessModel = chooseHeroFieldByPrecedence('business_model', buildRoleCandidates('business_model'));
+    const raise = chooseHeroFieldByPrecedence('raise', buildRoleCandidates('raise'));
+
+    if (product.value && market.value && normalizeHeroText(product.value) === normalizeHeroText(market.value)) {
+      market.hiddenDueToDedupe = true;
+      market.rejectedSources.push({ sourcePath: market.sourcePathUsed, reason: 'duplicate_with_product', value: market.value });
+      market.value = null;
+      market.sourcePathUsed = 'suppressed.duplicate_with_product';
+    }
+
+    const policySummary = (() => {
+      const p = safeText(product.value);
+      const m = safeText(market.value);
+      const bm = safeText(businessModel.value);
+      if (looksRealEstate) {
+        if (p && m) return `Asset / facility: ${p}. Submarket / demand: ${m}.`;
+        if (p) return `Asset / facility: ${p}.`;
+        if (m) return `Submarket / demand: ${m}.`;
+      }
+      if (p && m) return `Company sells ${p} and targets ${m}.`;
+      if (p) return `Company sells ${p}.`;
+      if (m) return `Target market / ICP: ${m}.`;
+      if (bm) return `Business model: ${bm}.`;
+      return '';
+    })();
+
+    const oneLiner = chooseHeroFieldByPrecedence('product', [
+      { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.hero_summary.text', value: safeText(displayFactsV1?.hero_summary?.text) },
+      { tier: 'policy_resolved', sourcePath: 'policy_resolved.hero_summary', value: policySummary },
+      { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.hero_summary', value: safeText(ovFacts?.deal_summary_mid?.value) },
+      { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.summary_text', value: safeText((phase1?.deal_overview_v2 as any)?.summary_text) },
+      { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.summary.one_liner', value: safeText((phase1DealSummaryV2 as any)?.summary?.one_liner) || safeText((dealSummaryV2 as any)?.summary?.one_liner) },
+      { tier: 'summary_text', sourcePath: 'overview.summary_text', value: safeText((governedOverview.overview as any)?.summary_text) },
+    ]);
+
+    return { product, market, businessModel, raise, oneLiner };
+  }, [workspaceMirrorVM, governedOverview, overviewV2, dealSummaryV2, governedKeyFacts, looksRealEstate, displayFactsV1]);
 
   const lastWorkspaceSourcesLogRef = useRef<string | null>(null);
   useEffect(() => {
@@ -3953,7 +4479,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const listsFromGovernedUiCopy = !workspaceMirrorVM.missing && Boolean((workspaceMirrorVM as any)?.facts?.product_solution?.evidence_refs);
 
     return {
-      'deal-one-liner': `src=overview_json.phase1.governed_ui_copy_v1.hero_summary (fallbacks: deal_summary_v2.summary.one_liner, overview.summary_text) ${overlaySig}`,
+      'deal-one-liner': `src=display_facts_v1.hero_summary -> policy_resolved -> governed_ui_copy_v1.hero_summary -> deal_overview_v2 -> deal_summary_v2.summary.one_liner -> overview.summary_text ${overlaySig}`,
       'product-solution': srcKeyFact(
         governedKeyFacts.product.provenance,
         canonicalDealSummaryReady ? 'deal_summary_v2.product (canonical)' : 'deal_summary_v2.product (canonical/fallback)',
@@ -4072,23 +4598,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [workspaceMirrorVM, governedKeyFacts, authoritativeProductSummaryV1.sources, authoritativeMarketSummaryV1.sources]);
 
   const governedDealOneLinerDisplay = useMemo(() => {
-    // Priority:
-    // 1) PR2 deal_summary_v2.summary.one_liner (via workspaceMirrorVM.one_liner)
-    // 2) PR2 summary_text (top-level persisted field)
-    // 3) deterministic deal_summary_v1.tiers.overview (preferred display text)
-    // 4) deterministic deal_summary_v1.tiers.hero
-    const pr2 = !workspaceMirrorVM.missing ? (workspaceMirrorVM.one_liner ?? null) : null;
-    if (pr2 && pr2.trim().length > 0) return pr2;
-
-    const pr2SummaryText = typeof (governedOverview.overview as any)?.summary_text === 'string'
-      ? safeText((governedOverview.overview as any).summary_text)
-      : '';
-    if (pr2SummaryText) return pr2SummaryText;
+    const fromContract = safeText(heroFieldBindings.oneLiner.value);
+    if (fromContract) return fromContract;
 
     if (canonicalTierOverview) return canonicalTierOverview;
     if (canonicalTierHero) return canonicalTierHero;
     return 'Not extracted';
-  }, [workspaceMirrorVM, governedOverview.overview, canonicalTierOverview, canonicalTierHero]);
+  }, [heroFieldBindings, canonicalTierOverview, canonicalTierHero]);
 
   const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Authoritative (deterministic)' : 'Legacy';
 
@@ -4756,7 +5272,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const vm = useMemo(() => buildWorkspaceViewModel({
     displayName,
-    dealDescription: (dealInfo as any)?.description || topSectionScoreDriverOneLiner || '',
+    dealDescription: governedDealOneLinerDisplay || topSectionScoreDriverOneLiner || (dealInfo as any)?.description || '',
     dealStageLabel,
     dealStageRaw: dealStageRaw ?? '',
     industry: profileEdits.industry ?? '—',
@@ -4770,22 +5286,34 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     confidenceBand: decisionTileConfidenceBand,
     coverageRatio: scoreExplanationV1?.coverage_ratio ?? null,
     evidenceCoverage: vmEvidenceCoverage,
+    selectedPolicyId,
     governedDealOneLiner: governedDealOneLinerDisplay,
-    governedProduct: governedKeyFacts.product.value,
-    governedMarket: governedKeyFacts.market.value,
-    governedBusinessModel: governedKeyFacts.businessModel.value,
-    governedRaise: governedKeyFacts.raise.value,
+    governedProduct: heroFieldBindings.product.value || governedKeyFacts.product.value,
+    governedMarket: heroFieldBindings.market.value || governedKeyFacts.market.value,
+    governedBusinessModel: heroFieldBindings.businessModel.value || governedKeyFacts.businessModel.value,
+    governedRaise: heroFieldBindings.raise.value || governedKeyFacts.raise.value,
     selectedHeaderReady: selectedHeader.ready,
     raiseValue: selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null,
     raiseLabel: selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null,
-    revenueValue: selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null,
+    revenueValue: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null)
+      : (topSectionRevenue !== '—' ? topSectionRevenue : null),
     revenueTileLabel: revenueCoveragePolicy.kpiTileLabel,
     revenueAllowed: revenueCoveragePolicy.allow,
-    growthValue: selectedHeader.ready ? (selectedHeader.growth.value ?? null) : null,
-    growthLabel: selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null,
-    customersValue: selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null,
-    customersLabel: selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null,
+    growthValue: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.growth.value ?? null) : null)
+      : (topSectionGrowth !== '—' ? topSectionGrowth : null),
+    growthLabel: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null)
+      : (looksRealEstate ? 'Target IRR' : policyFamily === 'fund' ? 'Target return' : null),
+    customersValue: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null)
+      : (topSectionCustomers !== '—' ? topSectionCustomers : null),
+    customersLabel: isStartupPolicySchema
+      ? (selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null)
+      : (looksRealEstate ? 'Term' : policyFamily === 'fund' ? 'Vehicle term' : null),
     businessModelValue: (selectedHeader.ready ? selectedHeader.business_model.value : null)
+      || (looksRealEstate ? governedKeyFacts.businessModel.value : null)
       || authoritativeBusinessModel.value
       || workspaceOverviewModel.keyFacts.business_model.value
       || null,
@@ -4811,15 +5339,140 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     insightsScore: canonicalScoreView.score0_100 ?? 0,
     insightsConfidence: topSectionConfidence,
   }), [
-    displayName, dealInfo, topSectionScoreDriverOneLiner, dealStageLabel, dealStageRaw,
+    displayName, dealInfo, topSectionScoreDriverOneLiner, governedDealOneLinerDisplay, dealStageLabel, dealStageRaw,
     profileEdits.industry, analyzing, reportView.score, vmVerdict, blockersCount,
     filteredStrengths, filteredWeaknesses, decisionTileConfidenceBand,
     scoreExplanationV1, vmEvidenceCoverage, governedDealOneLinerDisplay,
-    governedKeyFacts, selectedHeader, revenueCoveragePolicy, runwayTileValue,
+    governedKeyFacts, heroFieldBindings, selectedHeader, revenueCoveragePolicy, runwayTileValue,
     burnTileValue, reportStructuredGrowthValue, overviewV2, authoritativeBusinessModel,
     workspaceOverviewModel, topSectionDealType, vmPipelineStatus, vmDiligencePhase,
+    selectedPolicyId, isStartupPolicySchema, topSectionRevenue, topSectionGrowth, topSectionCustomers, looksRealEstate, policyFamily,
     canonicalScoreView, topSectionConfidence,
   ]);
+
+  const lastPolicyOverviewLogRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+
+    const topFieldDiagnostics = looksRealEstate
+      ? [
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'Raise / Terms',
+            sourcePathUsed: selectedHeader.ready && selectedHeader.raise.value
+              ? 'report.header.raise.value'
+              : governedKeyFacts.raise.provenance.source === 'governed'
+                ? 'overview_json.phase1.governed_ui_copy_v1.raise'
+                : 'governedKeyFacts.raise',
+            rawValue: selectedHeader.raise.value ?? governedKeyFacts.raise.value ?? null,
+            formattedValue: vm.overview.snapshotFacts.raise,
+            hidden: vm.overview.snapshotFacts.raise === '—',
+            hiddenReason: vm.overview.snapshotFacts.raise === '—' ? 'missing_or_collision_suppressed' : null,
+            dedupeOrCollisionSuppressed: Boolean((governedKeyFacts as any)?.realEstateSemanticDiagnostics?.raiseBusinessModelCollision?.suppressed),
+          },
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'NOI',
+            sourcePathUsed: 'topSectionRevenue -> WorkspaceViewModel.revenueValue',
+            rawValue: topSectionRevenue,
+            formattedValue: vm.overview.snapshotFacts.arr,
+            hidden: vm.overview.snapshotFacts.arr === '—',
+            hiddenReason: vm.overview.snapshotFacts.arr === '—' ? 'malformed_or_missing_numeric' : null,
+            dedupeOrCollisionSuppressed: false,
+          },
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'Target IRR',
+            sourcePathUsed: 'topSectionGrowth -> WorkspaceViewModel.growthValue',
+            rawValue: topSectionGrowth,
+            formattedValue: vm.overview.snapshotFacts.growth,
+            hidden: vm.overview.snapshotFacts.growth === '—',
+            hiddenReason: vm.overview.snapshotFacts.growth === '—' ? 'missing' : null,
+            dedupeOrCollisionSuppressed: false,
+          },
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'Term',
+            sourcePathUsed: 'topSectionCustomers -> WorkspaceViewModel.customersValue',
+            rawValue: topSectionCustomers,
+            formattedValue: vm.overview.snapshotFacts.customers,
+            hidden: vm.overview.snapshotFacts.customers === '—',
+            hiddenReason: vm.overview.snapshotFacts.customers === '—' ? 'missing' : null,
+            dedupeOrCollisionSuppressed: false,
+          },
+          {
+            selectedPolicy: selectedPolicyId ?? null,
+            field: 'Submarket / Demand',
+            sourcePathUsed: (governedKeyFacts as any)?.realEstateSemanticDiagnostics?.submarketDemand?.source ?? 'missing',
+            rawValue: vm.overview.marketSummary,
+            formattedValue: vm.overview.marketSummary,
+            hidden: vm.overview.marketSummary === keyFactMissingText,
+            hiddenReason: vm.overview.marketSummary === keyFactMissingText ? 'weak_or_missing_role_match' : null,
+            dedupeOrCollisionSuppressed: Boolean((governedKeyFacts as any)?.realEstateSemanticDiagnostics?.duplicateSuppression?.applied),
+          },
+        ]
+      : null;
+
+    const key = [
+      dealId ?? '',
+      policyFamily,
+      String(looksRealEstate),
+      governedKeyFacts.product.provenance.source,
+      governedKeyFacts.market.provenance.source,
+      governedKeyFacts.businessModel.provenance.source,
+      vm.overview.snapshotFacts.arr,
+      vm.overview.snapshotFacts.growth,
+      vm.overview.snapshotFacts.customers,
+      heroFieldBindings.product.sourcePathUsed,
+      heroFieldBindings.market.sourcePathUsed,
+      heroFieldBindings.businessModel.sourcePathUsed,
+      heroFieldBindings.raise.sourcePathUsed,
+    ].join('|');
+    if (lastPolicyOverviewLogRef.current === key) return;
+    lastPolicyOverviewLogRef.current = key;
+
+    console.info('[DDAI][policy_overview_binding]', {
+      dealId,
+      policyFamily,
+      looksRealEstate,
+      keyFacts: {
+        product: governedKeyFacts.product,
+        market: governedKeyFacts.market,
+        businessModel: governedKeyFacts.businessModel,
+        raise: governedKeyFacts.raise,
+      },
+      snapshotFactLabels: vm.overview.snapshotFactLabels,
+      snapshotFacts: vm.overview.snapshotFacts,
+      evidenceLabels: vm.overview.evidenceLabels,
+      evidenceFacts: {
+        product: vm.overview.productSummary,
+        market: vm.overview.marketSummary,
+        businessModel: vm.overview.businessModelSummary,
+        raise: vm.overview.raiseTerms,
+      },
+      heroBindings: {
+        selectedPolicyId: selectedPolicyId ?? null,
+        product: heroFieldBindings.product,
+        market: heroFieldBindings.market,
+        businessModel: heroFieldBindings.businessModel,
+        raise: heroFieldBindings.raise,
+        oneLiner: heroFieldBindings.oneLiner,
+      },
+      semanticRanking: governedKeyFacts.realEstateSemanticDiagnostics ?? null,
+      topFieldDiagnostics,
+      heroSuppression: {
+        productServesSuppressed: looksRealEstate,
+      },
+      advisoryRefinement: {
+        diligenceSource: icMemo.advisoryRefinement.source,
+        diligenceReplacementApplied: icMemo.advisoryRefinement.replacementApplied,
+        diligenceSuppressedStartupAsks: icMemo.advisoryRefinement.suppressedStartupAsks.slice(0, 6),
+        diligenceInjectedRealEstateAsks: icMemo.advisoryRefinement.injectedRealEstateAsks.slice(0, 6),
+        topSectionSource: topSectionActionRefinement.source,
+        topSectionSuppressedStartupAsks: topSectionActionRefinement.suppressedStartupAsks.slice(0, 6),
+      },
+    });
+  }, [dealId, policyFamily, selectedPolicyId, looksRealEstate, governedKeyFacts, vm.overview, icMemo, topSectionActionRefinement, selectedHeader.ready, selectedHeader.raise.value, topSectionRevenue, topSectionGrowth, topSectionCustomers, heroFieldBindings]);
 
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {
@@ -5908,8 +6561,48 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       }
 
       if (!analyzeTerminal || analyzeTerminal.timedOut) {
-        addToast('error', 'Analyze did not start', 'Timed out waiting for backend to enqueue analyze job');
-        updateFullStep('analyze_deal', { status: 'failed', message: 'Timed out waiting for analyze to start' });
+        let timeoutReason: 'extract_not_finalized' | 'analyze_not_enqueued' | 'analyze_queued_but_failed' = 'analyze_not_enqueued';
+        let timeoutDetail = 'Timed out waiting for backend to enqueue analyze job';
+        try {
+          const rows = await apiGetDealJobs(dealId, { limit: 250 });
+          const inWindow = (Array.isArray(rows) ? rows : []).filter((r) => {
+            const t = parseIsoMs((r as any)?.created_at ?? (r as any)?.updated_at ?? null);
+            return t != null && t >= runWindow.startMs && t <= runWindow.endMs;
+          });
+
+          const extractRows = inWindow.filter((r) => String((r as any)?.type ?? '') === 'extract_visuals');
+          const latestExtract = extractRows.sort((a, b) => (parseIsoMs(b.updated_at ?? b.created_at ?? null) ?? 0) - (parseIsoMs(a.updated_at ?? a.created_at ?? null) ?? 0))[0] ?? null;
+          const latestExtractStatus = latestExtract ? normalizeJobStatus((latestExtract as any).status as any) : null;
+
+          const analyzeRows = inWindow.filter((r) => String((r as any)?.type ?? '') === 'analyze_deal');
+          const latestAnalyze = analyzeRows.sort((a, b) => (parseIsoMs(b.updated_at ?? b.created_at ?? null) ?? 0) - (parseIsoMs(a.updated_at ?? a.created_at ?? null) ?? 0))[0] ?? null;
+          const latestAnalyzeStatus = latestAnalyze ? normalizeJobStatus((latestAnalyze as any).status as any) : null;
+
+          if (latestAnalyzeStatus === 'failed' || latestAnalyzeStatus === 'cancelled') {
+            timeoutReason = 'analyze_queued_but_failed';
+            timeoutDetail = `Analyze was queued but ${latestAnalyzeStatus}.`;
+          } else if (latestExtractStatus === 'queued' || latestExtractStatus === 'running' || latestExtractStatus === 'retrying' || latestExtractStatus === 'blocked') {
+            timeoutReason = 'extract_not_finalized';
+            timeoutDetail = 'Extraction did not finalize in time, so analyze was never enqueued.';
+          } else {
+            timeoutReason = 'analyze_not_enqueued';
+            timeoutDetail = 'Extraction appears finalized, but no analyze job was enqueued in the run window.';
+          }
+
+          console.warn('[DDAI][runFullProcess] analyze-timeout-diagnosis', {
+            dealId,
+            timeoutReason,
+            latestExtractStatus,
+            latestAnalyzeStatus,
+            runWindow,
+          });
+        } catch {
+          timeoutReason = 'analyze_not_enqueued';
+          timeoutDetail = 'Timed out waiting for backend to enqueue analyze job';
+        }
+
+        addToast('error', 'Analyze did not start', timeoutDetail);
+        updateFullStep('analyze_deal', { status: 'failed', message: `Timed out (${timeoutReason})` });
         setFullProcessUi((prev) => (prev ? { ...prev, ok: false, error: 'Analyze did not start' } : prev));
         setAnalyzing(false);
         return;
@@ -7068,9 +7761,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 });
 
                 // Key facts (authoritative deterministic view)
+                const keyFactsProductLabel = looksRealEstate ? 'Asset / Facility (key facts)' : 'Product (key facts)';
+                const keyFactsMarketLabel = looksRealEstate ? 'Submarket / Demand (key facts)' : 'Market / ICP (key facts)';
+
                 push({
                   key: 'keyFacts.product',
-                  label: 'Product (key facts)',
+                  label: keyFactsProductLabel,
                   status: workspaceOverviewModel.keyFacts.product.origin === 'missing'
                     ? 'missing'
                     : hasText(workspaceOverviewModel.keyFacts.product.value)
@@ -7085,7 +7781,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
                 push({
                   key: 'keyFacts.market',
-                  label: 'Market / ICP (key facts)',
+                  label: keyFactsMarketLabel,
                   status: workspaceOverviewModel.keyFacts.market.origin === 'missing'
                     ? 'missing'
                     : hasText(workspaceOverviewModel.keyFacts.market.value)
@@ -7988,12 +8684,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 darkMode={darkMode}
                 companyName={vm.overview.companyName}
                 companyDescription={vm.overview.companyDescription}
+                snapshotFactLabels={vm.overview.snapshotFactLabels}
                 snapshotFacts={vm.overview.snapshotFacts}
                 signals={vm.overview.signalData}
                 financials={vm.overview.financials}
                 traction={vm.overview.traction}
                 deal={vm.overview.deal}
                 businessModel={vm.overview.businessModel}
+                evidenceLabels={vm.overview.evidenceLabels}
                 productSummary={vm.overview.productSummary}
                 marketSummary={vm.overview.marketSummary}
                 businessModelSummary={vm.overview.businessModelSummary}
@@ -8158,8 +8856,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                   key_risks_detected: 'Key risks',
                                   coverage_missing_sections: 'Missing sections',
                                   raise: 'Raise',
-                                  business_model: 'Business model',
-                                  traction: 'Traction',
+                                  business_model: getPolicyScoreSectionLabel(selectedPolicyId, 'business_model'),
+                                  traction: getPolicyScoreSectionLabel(selectedPolicyId, 'traction'),
                                   team: 'Team',
                                   terms: 'Terms',
                                 };
@@ -8247,10 +8945,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                     const missingReasons = Array.isArray(section?.missing_reasons) ? section.missing_reasons : [];
                                     const hint = typeof section?.hint === 'string' ? section.hint : null;
                                     const labelMap: Record<string, string> = {
-                                      market: 'Market',
+                                      market: getPolicyScoreSectionLabel(selectedPolicyId, 'market'),
                                       product: 'Product',
-                                      business_model: 'Business model',
-                                      traction: 'Traction',
+                                      business_model: getPolicyScoreSectionLabel(selectedPolicyId, 'business_model'),
+                                      traction: getPolicyScoreSectionLabel(selectedPolicyId, 'traction'),
                                       risks: 'Risks',
                                       team: 'Team',
                                     };

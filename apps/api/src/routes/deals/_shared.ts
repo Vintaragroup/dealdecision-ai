@@ -1194,6 +1194,9 @@ export type DIOAggregateRow = {
   phase1_score_evidence?: any;
   phase_b_latest_run?: any | null;
   phase_b_history?: any | null;
+  selected_policy?: string | null;
+  policy_id?: string | null;
+  deal_classification_v1?: any;
 
   // Additive: Analysis Foundation (fundability) slices from dio_data
   analysis_foundation_spec_version?: string | null;
@@ -2447,6 +2450,18 @@ export function mapDeal(
   const updateReportV1 = (dio as any)?.phase1_update_report_v1;
 	const dealSummaryV2 = (dio as any)?.phase1_deal_summary_v2;
   const nodeEvidenceGateV1 = (dio as any)?.phase1_node_evidence_gate_v1;
+  const selectedPolicyRaw =
+    (dio as any)?.selected_policy ??
+    (dio as any)?.policy_id ??
+    (dio as any)?.deal_classification_v1?.selected_policy ??
+    null;
+  const selectedPolicy = typeof selectedPolicyRaw === "string" && selectedPolicyRaw.trim().length > 0
+    ? selectedPolicyRaw.trim()
+    : null;
+  const classificationV1 =
+    (dio as any)?.deal_classification_v1 && typeof (dio as any).deal_classification_v1 === "object"
+      ? (dio as any).deal_classification_v1
+      : null;
   const topClaims = stripEvidenceFromClaims((dio as any)?.phase1_claims).slice(0, 8);
 
   const analysisFoundationSpecVersion = (dio as any)?.analysis_foundation_spec_version;
@@ -2528,6 +2543,17 @@ export function mapDeal(
 	// Additive field: UI can render summary without extra calls.
 	if (safeExec) out.executive_summary_v1 = safeExec;
   if (execV2 && typeof execV2 === "object") out.executive_summary_v2 = execV2;
+  if (selectedPolicy) {
+    // Explicit aliases for web consumers to avoid payload-shape drift.
+    (out as any).selected_policy = selectedPolicy;
+    (out as any).policy_id = selectedPolicy;
+  }
+  if (classificationV1) {
+    (out as any).deal_classification_v1 = {
+      ...classificationV1,
+      ...(selectedPolicy ? { selected_policy: selectedPolicy } : {}),
+    };
+  }
 	if (scoreEvidence && typeof scoreEvidence === "object") (out as any).phase1_score_evidence = scoreEvidence;
 	if (businessArchetypeV1 && typeof businessArchetypeV1 === "object") out.business_archetype_v1 = businessArchetypeV1;
   if (dealOverviewV2 && typeof dealOverviewV2 === "object") out.deal_overview_v2 = dealOverviewV2;

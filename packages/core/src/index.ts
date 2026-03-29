@@ -28,6 +28,8 @@ export * from './scoring/score-bands-v2';
 export * from './scoring/decision-v1';
 export * from './classification/content-archetypes';
 export * from './classification/business-model-arbitrator';
+export * from './classification/policy-aware-schema';
+export * from './classification/get-selected-policy-id';
 export * from "./classifiers/raise-detector";
 
 // ============================================================================

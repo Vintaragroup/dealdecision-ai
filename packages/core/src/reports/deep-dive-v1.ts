@@ -61,6 +61,32 @@ const asNonEmptyString = (value: unknown): string | null => {
   return out.length > 0 ? out : null;
 };
 
+const humanizeFieldKey = (value: string): string => {
+  const key = value.trim().toLowerCase();
+  if (key === "raise") return "fundraising terms";
+  if (key === "business_model") return "business model clarity";
+  if (key === "revenue") return "revenue visibility";
+  if (key === "customers") return "customer evidence";
+  if (key === "growth") return "growth evidence";
+  return key.replace(/_/g, " ");
+};
+
+const implicationForMissingField = (value: string): string => {
+  const key = value.trim().toLowerCase();
+  if (key === "revenue") return "Without verified revenue, scale and commercial maturity are difficult to assess.";
+  if (key === "growth") return "Without growth evidence, momentum and trajectory remain uncertain.";
+  if (key === "customers") return "Without customer evidence, demand durability is difficult to validate.";
+  if (key === "raise") return "Without clear raise terms, dilution and financing risk cannot be evaluated reliably.";
+  if (key === "business_model") return "Without business model clarity, unit economics and scalability remain unclear.";
+  return "This limits confidence in the current underwriting view.";
+};
+
+const summarizeEvidenceStrength = (count: number): string => {
+  if (count >= 3) return "Evidence coverage is relatively strong across multiple source anchors.";
+  if (count >= 1) return "Evidence exists, but corroboration depth is still limited.";
+  return "Evidence support is limited and key claims should be treated as provisional.";
+};
+
 const hasFiniteNumber = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value);
 
 const toEvidenceRefs = (values: unknown[]): string[] => toUniqueStrings(values).slice(0, 16);
@@ -237,7 +263,12 @@ export function generateDeepDiveMarketSectionV1(args: {
     tam_reasoning: {
       status: hasTamSignal ? "supported" : (market ? "partial" : "missing"),
       notes: toUniqueStrings([
-        hasTamSignal ? "TAM/SAM/SOM-like KPI evidence detected." : "No explicit TAM KPI evidence found.",
+        hasTamSignal
+          ? "The market view includes explicit TAM/SAM/SOM-style signals, which supports a directional sizing case. This improves confidence in the opportunity framing, though assumptions still require periodic validation as the market evolves."
+          : market
+            ? "The materials do not provide a clearly supported TAM estimate. Without quantified market sizing, it is harder to test whether growth assumptions are realistic at the proposed scale."
+            : "Market sizing evidence is limited in the current materials. As a result, upside potential and addressable demand should be treated as provisional until stronger support is provided.",
+        summarizeEvidenceStrength(evidenceRefs.length),
         asNonEmptyString(market?.narrative) ?? "",
       ]),
       evidence_refs: evidenceRefs,
@@ -246,8 +277,10 @@ export function generateDeepDiveMarketSectionV1(args: {
     timing_logic: {
       status: market ? (hasTimingSignal ? "supported" : "partial") : "missing",
       notes: toUniqueStrings([
-        hasTimingSignal ? "No market timing gaps reported in market missing_inputs." : "Market timing assumptions are partially specified.",
-        ...((Array.isArray(market?.missing_inputs) ? market.missing_inputs : []).map((x: any) => String(x))),
+        hasTimingSignal
+          ? "Market timing assumptions are generally coherent in the current evidence set. This supports a near-term execution case, provided demand and competitive dynamics remain stable."
+          : "Market timing assumptions are only partially specified. This creates uncertainty around how quickly the company can convert market opportunity into reliable execution outcomes.",
+        ...((Array.isArray(market?.missing_inputs) ? market.missing_inputs : []).map((x: any) => `Timing dependency: ${String(x)}`)),
       ]),
       evidence_refs: evidenceRefs,
       evidence_strength: evidenceStrengthFromSignals({ evidence_refs: evidenceRefs, supporting_signals: hasTimingSignal ? 2 : (market ? 1 : 0) }),
@@ -268,8 +301,12 @@ export function generateDeepDiveProductSectionV1(args: {
     differentiation_detection: {
       status: hasDifferentiation ? "clear" : (profile ? "mixed" : "unclear"),
       notes: toUniqueStrings([
-        hasDifferentiation ? "Differentiation claims are present in product profile." : "Differentiation claims are sparse or absent.",
-        ...(Array.isArray(profile?.differentiation_claims) ? profile.differentiation_claims : []),
+        hasDifferentiation
+          ? "The company presents specific differentiation claims, which indicates a potentially defensible position in the near term. The key diligence question is whether these claims are durable as competitors respond."
+          : profile
+            ? "Differentiation is not yet clearly supported in the available materials. Without clearer separation from alternatives, pricing power and win-rate durability are harder to underwrite."
+            : "Product differentiation evidence is limited, so competitive advantage should be treated as unproven at this stage.",
+        ...(Array.isArray(profile?.differentiation_claims) ? profile.differentiation_claims.map((claim: string) => `Claim surfaced: ${claim}`) : []),
       ]),
       evidence_refs: evidenceRefs,
       evidence_strength: evidenceStrengthFromSignals({ evidence_refs: evidenceRefs, supporting_signals: hasDifferentiation ? 2 : (profile ? 1 : 0) }),
@@ -277,8 +314,11 @@ export function generateDeepDiveProductSectionV1(args: {
     defensibility_logic: {
       status: hasDefensibility ? "clear" : (profile ? "partial" : "unclear"),
       notes: toUniqueStrings([
-        asNonEmptyString(profile?.ai_defensibility_notes) ?? "No explicit defensibility note present.",
-        profile?.ai_claims_present === true ? "AI claims are present and included in product profile." : "AI defensibility evidence is limited.",
+        hasDefensibility
+          ? "There are signs of potential defensibility (for example data, integrations, or workflow depth), which can support retention and switching-cost dynamics. Durability still depends on continued execution and product velocity."
+          : "Long-term defensibility is only partially evidenced. This increases the risk that early product advantages compress as the category matures.",
+        asNonEmptyString(profile?.ai_defensibility_notes) ?? "Defensibility detail is limited in the current evidence set.",
+        profile?.ai_claims_present === true ? "AI positioning is present in claims and should be validated against repeatable customer outcomes." : "AI-related differentiation is not yet strongly supported by corroborating evidence.",
       ]),
       evidence_refs: evidenceRefs,
       evidence_strength: evidenceStrengthFromSignals({ evidence_refs: evidenceRefs, supporting_signals: hasDefensibility ? 2 : (profile ? 1 : 0) }),
@@ -311,8 +351,12 @@ export function generateDeepDiveBusinessModelSectionV1(args: {
     scaling_logic: {
       status: hasScaleSignals ? "supported" : (model ? "partial" : "missing"),
       notes: toUniqueStrings([
-        ...(Array.isArray(market?.strengths) ? market.strengths : []),
-        hasScaleSignals ? "Market strengths indicate scaling pathways." : "Scaling logic requires stronger route-to-scale evidence.",
+        hasScaleSignals
+          ? "The materials include signals that support a plausible route to scale, which strengthens the business model narrative. Execution quality remains the key determinant of whether this scaling pathway is realized."
+          : model
+            ? "A business model is present, but evidence for how it scales is still limited. This leaves uncertainty around operating leverage and repeatability beyond early growth."
+            : "Business model scaling logic is not yet sufficiently evidenced, limiting confidence in long-term economics.",
+        ...(Array.isArray(market?.strengths) ? market.strengths.map((s: string) => `Scale signal: ${s}`) : []),
       ]),
       evidence_refs: evidenceRefs,
       evidence_strength: evidenceStrengthFromSignals({ evidence_refs: evidenceRefs, supporting_signals: hasScaleSignals ? 2 : (model ? 1 : 0) }),
@@ -339,8 +383,13 @@ export function generateDeepDiveTractionSectionV1(args: {
     growth_validation: {
       status: hasGrowth && hasCustomers ? "validated" : (hasGrowth || hasCustomers ? "partial" : "unvalidated"),
       notes: toUniqueStrings([
-        hasGrowth ? "Growth metric is present in structured summary." : "Growth metric is missing from structured summary.",
-        hasCustomers ? "Customer metric is present in structured summary." : "Customer metric is missing from structured summary.",
+        hasGrowth && hasCustomers
+          ? "Both growth and customer signals are present, providing a stronger basis for early traction interpretation. This supports a more confident view of commercial momentum than narrative-only claims."
+          : hasGrowth || hasCustomers
+            ? "Only partial traction evidence is available. This supports directional progress but is not yet sufficient for a high-confidence momentum view."
+            : "Traction evidence is limited in the current dataset. Commercial momentum should be treated as unproven until stronger metrics are provided.",
+        hasGrowth ? "Growth evidence is present in structured materials." : "Growth evidence is currently missing from structured materials.",
+        hasCustomers ? "Customer evidence is present in structured materials." : "Customer evidence is currently missing from structured materials.",
       ]),
       evidence_refs: tractionEvidenceRefs,
       evidence_strength: evidenceStrengthFromSignals({ evidence_refs: tractionEvidenceRefs, supporting_signals: proofCount }),
@@ -348,8 +397,13 @@ export function generateDeepDiveTractionSectionV1(args: {
     proof_vs_promise_detection: {
       status: proofVsPromise,
       notes: toUniqueStrings([
-        `proof_signals=${proofCount}`,
-        `promise_signals=${promiseCount}`,
+        proofVsPromise === "proof_heavy"
+          ? "Available evidence is weighted toward demonstrated proof points, which improves confidence in near-term execution claims."
+          : proofVsPromise === "mixed"
+            ? "The evidence set includes both proof points and unresolved assumptions, indicating moderate confidence with clear diligence dependencies."
+            : "The current story is more promise-heavy than proof-heavy, so key claims require stronger corroboration before conviction should increase.",
+        `Proof points identified: ${proofCount}.`,
+        `Open assumptions requiring verification: ${promiseCount}.`,
       ]),
       evidence_refs: tractionEvidenceRefs,
       evidence_strength: evidenceStrengthFromSignals({ evidence_refs: tractionEvidenceRefs, supporting_signals: proofCount }),
@@ -362,22 +416,26 @@ export function generateDeepDiveFinancialsSectionV1(args: {
 }): DeepDiveFinancialsSectionV1 {
   const breakdown = args.normalized.report?.financial_breakdown_v1;
   const evidenceRefs = args.normalized.signals.financial_evidence_refs;
-  const currentSignals = toUniqueStrings([
-    ...(Array.isArray(breakdown?.current_state?.summary) ? breakdown.current_state.summary : [breakdown?.current_state?.summary]),
-    args.normalized.facts.revenue_amount_present ? "Revenue value present." : "Revenue value missing.",
-  ]);
-  const forwardSignals = toUniqueStrings([
-    ...(Array.isArray(breakdown?.projections?.periods) && breakdown.projections.periods.length > 0
-      ? ["Projected periods available in financial breakdown."]
-      : ["Projected periods are limited or missing."]),
-    asNonEmptyString(breakdown?.projections?.path_to_profitability_label) ?? "",
-  ]);
-
   const supportCount = [
     Boolean(breakdown),
     Array.isArray(breakdown?.projections?.periods) && breakdown.projections.periods.length > 0,
     args.normalized.facts.revenue_amount_present,
   ].filter(Boolean).length;
+  const currentSignals = toUniqueStrings([
+    supportCount >= 3
+      ? "Current-state financial signals are sufficiently populated to support a grounded operating read."
+      : supportCount >= 1
+        ? "Current-state financial signals are partially available, so interpretation should be treated as directional."
+        : "Current-state financial visibility is limited, constraining underwriting confidence.",
+    ...(Array.isArray(breakdown?.current_state?.summary) ? breakdown.current_state.summary : [breakdown?.current_state?.summary]),
+    args.normalized.facts.revenue_amount_present ? "Revenue data is present in structured sources." : "Revenue data is missing from structured sources.",
+  ]);
+  const forwardSignals = toUniqueStrings([
+    ...(Array.isArray(breakdown?.projections?.periods) && breakdown.projections.periods.length > 0
+      ? ["Forward projections are present, enabling a directional view of future operating trajectory."]
+      : ["Forward projections are limited or missing, reducing confidence in long-range planning assumptions."]),
+    asNonEmptyString(breakdown?.projections?.path_to_profitability_label) ?? "",
+  ]);
 
   return {
     section: "financials",
@@ -415,7 +473,17 @@ export function generateDeepDiveTeamSectionV1(args: {
     section: "team",
     capability_inference: {
       status: capabilities.length > 0 ? "supported" : (teamRisks.length > 0 ? "partial" : "missing"),
-      inferred_capabilities: capabilities.length > 0 ? capabilities : teamRisks,
+      inferred_capabilities: capabilities.length > 0
+        ? [
+            "The team profile includes evidence of execution capability in core operating areas.",
+            ...capabilities,
+          ]
+        : teamRisks.length > 0
+          ? [
+              "Team-related execution risk is present and should be monitored during diligence.",
+              ...teamRisks,
+            ]
+          : ["Team capability evidence is limited in the current materials."],
       evidence_refs: evidenceRefs,
       evidence_strength: evidenceStrengthFromSignals({ evidence_refs: evidenceRefs, supporting_signals: supportCount }),
     },
@@ -539,11 +607,12 @@ const mapGapsToActions = (args: {
   const actions: DeepDiveImplementationActionV1[] = [];
 
   for (const missingField of args.gap.missing_critical_facts.slice(0, 6)) {
+    const label = humanizeFieldKey(missingField);
     actions.push({
       action_id: `critical_fact:${missingField}`,
       priority: "high",
-      title: `Backfill ${missingField} with evidence-backed data`,
-      rationale: `Critical field ${missingField} is missing and blocks deterministic interpretation coverage.`,
+      title: `Establish verified ${label}`,
+      rationale: `${implicationForMissingField(missingField)} Confirm this input with primary-source evidence before drawing stronger conclusions.`,
       source: "structured_summary",
     });
   }
@@ -553,7 +622,7 @@ const mapGapsToActions = (args: {
       action_id: `underwriting_gap:${underwritingGap}`,
       priority: "high",
       title: `Resolve underwriting gap: ${underwritingGap}`,
-      rationale: `underwriting_readiness_v1 indicates ${underwritingGap}; address with source-backed facts.`,
+      rationale: `Underwriting readiness indicates "${underwritingGap}" as a blocker. Resolve with auditable, source-backed documentation.`,
       source: "underwriting_readiness_v1",
     });
   }
@@ -562,8 +631,8 @@ const mapGapsToActions = (args: {
     actions.push({
       action_id: `red_flag:${redFlag.contradiction_type}:${redFlag.flag.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`,
       priority: "medium",
-      title: "Resolve contradiction before synthesis",
-      rationale: redFlag.flag,
+      title: "Resolve evidence contradiction",
+      rationale: `${redFlag.flag} This inconsistency should be reconciled before increasing conviction.`,
       source: "orchestrator_report_v1",
     });
   }
@@ -572,8 +641,8 @@ const mapGapsToActions = (args: {
     actions.push({
       action_id: `question:${question.priority}:${question.question.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`,
       priority: question.priority === "p0" ? "high" : (question.priority === "p1" ? "medium" : "low"),
-      title: "Answer prioritized open question",
-      rationale: `${question.question} (${question.reason})`,
+      title: "Close prioritized diligence question",
+      rationale: `${question.question} ${question.reason}`,
       source: "score_explanation",
     });
   }

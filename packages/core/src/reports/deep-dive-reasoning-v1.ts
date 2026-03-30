@@ -11,6 +11,33 @@ const asNonEmptyString = (value: unknown): string | null => {
   return out.length > 0 ? out : null;
 };
 
+const humanizeFactKey = (value: string): string => {
+  const key = value.trim().toLowerCase();
+  if (key === "raise") return "fundraising terms";
+  if (key === "business_model") return "business model clarity";
+  if (key === "revenue") return "revenue visibility";
+  if (key === "customers") return "customer base visibility";
+  if (key === "growth") return "growth evidence";
+  return key.replace(/_/g, " ");
+};
+
+const implicationForMissingFact = (value: string): string => {
+  const key = value.trim().toLowerCase();
+  if (key === "revenue") return "without verified revenue, scale and maturity are difficult to assess";
+  if (key === "growth") return "without growth evidence, momentum and trajectory remain uncertain";
+  if (key === "customers") return "without customer visibility, demand durability is hard to validate";
+  if (key === "raise") return "without clear raise terms, dilution and financing risk remain unclear";
+  if (key === "business_model") return "without business model clarity, unit economics and scalability are uncertain";
+  return "this limits confidence in underwriting conclusions";
+};
+
+const investorReasonForQuestionSource = (source: "missing" | "verification" | "diligence" | "executive"): string => {
+  if (source === "missing") return "This is a core underwriting dependency and should be resolved before conviction increases.";
+  if (source === "verification") return "This resolves an evidence conflict and improves reliability of the investment case.";
+  if (source === "diligence") return "This is a diligence dependency that materially affects execution confidence.";
+  return "This improves context but is lower urgency than core underwriting dependencies.";
+};
+
 export const toUniqueStrings = (values: unknown[]): string[] => {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -65,7 +92,7 @@ export const detectDeepDiveContradictionsV1 = (args: {
   const modelMismatch = structuredModel && productType && !structuredModel.includes(productType) && !productType.includes(structuredModel);
   if (modelMismatch) {
     redFlags.push({
-      flag: "Business model differs between structured summary and product profile classification.",
+      flag: "Business model characterization is inconsistent across structured summary and product profile outputs.",
       contradiction_type: "semantic_divergence",
       evidence_refs: [],
     });
@@ -79,7 +106,7 @@ export const detectDeepDiveContradictionsV1 = (args: {
 
   if (revenueAmount != null && financialBenchmarks.length === 0) {
     redFlags.push({
-      flag: "Revenue exists in structured summary but no financial benchmark evidence is attached in orchestrator output.",
+      flag: "Revenue is stated, but benchmark-level corroboration is limited in the available financial evidence.",
       contradiction_type: "source_divergence",
       evidence_refs: [],
     });
@@ -89,10 +116,11 @@ export const detectDeepDiveContradictionsV1 = (args: {
     ? (orchestrator.segments.risk_verification.data_issues.conflicts as any[])
     : [];
   for (const conflict of conflicts.slice(0, 6)) {
+    const field = asNonEmptyString(conflict?.field);
     redFlags.push({
-      flag: asNonEmptyString(conflict?.field)
-        ? `Conflicting values detected for ${String(conflict.field)}.`
-        : "Conflicting values detected across sources.",
+      flag: field
+        ? `Conflicting values were detected for ${field}, which weakens confidence in this input.`
+        : "Conflicting values were detected across sources, reducing reliability of the current evidence set.",
       contradiction_type: "numeric_divergence",
       evidence_refs: toUniqueStrings(Array.isArray(conflict?.evidence_refs) ? conflict.evidence_refs : []),
     });
@@ -101,7 +129,7 @@ export const detectDeepDiveContradictionsV1 = (args: {
   const missingCriticalFacts = Array.isArray(args.missing_critical_facts) ? args.missing_critical_facts : [];
   for (const field of missingCriticalFacts.slice(0, 6)) {
     redFlags.push({
-      flag: `Missing critical field: ${field}.`,
+      flag: `${humanizeFactKey(field)} is missing; ${implicationForMissingFact(field)}.`,
       contradiction_type: "missing_critical",
       evidence_refs: [],
     });
@@ -133,10 +161,11 @@ export const prioritizeDeepDiveQuestionsV1 = (args: {
   const out: DeepDiveOpenQuestionV1[] = [];
 
   for (const field of args.missing_critical_facts.slice(0, 6)) {
+    const label = humanizeFactKey(field);
     out.push({
-      question: `What verified evidence can establish ${field}?`,
+      question: `What verified evidence can establish ${label}?`,
       priority: "p0",
-      reason: "Critical underwriting input is missing.",
+      reason: investorReasonForQuestionSource("missing"),
       evidence_refs: [],
     });
   }
@@ -145,7 +174,7 @@ export const prioritizeDeepDiveQuestionsV1 = (args: {
     out.push({
       question: item,
       priority: "p1",
-      reason: "Verification request generated by deterministic risk verification.",
+      reason: investorReasonForQuestionSource("verification"),
       evidence_refs: [],
     });
   }
@@ -154,7 +183,7 @@ export const prioritizeDeepDiveQuestionsV1 = (args: {
     out.push({
       question: item,
       priority: "p1",
-      reason: "Open diligence item from score explanation understanding layer.",
+      reason: investorReasonForQuestionSource("diligence"),
       evidence_refs: [],
     });
   }
@@ -163,7 +192,7 @@ export const prioritizeDeepDiveQuestionsV1 = (args: {
     out.push({
       question,
       priority: "p2",
-      reason: "Open question surfaced in executive summary synthesis.",
+      reason: investorReasonForQuestionSource("executive"),
       evidence_refs: [],
     });
   }

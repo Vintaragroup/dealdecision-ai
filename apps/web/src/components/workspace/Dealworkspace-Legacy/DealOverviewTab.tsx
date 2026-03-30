@@ -10,7 +10,7 @@ import {
   Zap,
   BarChart3
 } from 'lucide-react';
-import { Button } from '../ui/button';
+import { Button } from '../../ui/button';
 
 interface SignalData {
   name: string;

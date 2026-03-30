@@ -8752,27 +8752,29 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
             {/* Overview Tab — fully sourced from WorkspaceViewModel. */}
             {activeTab === 'overview' && (
-              <div className="space-y-6">
-                <DealOverviewTab
-                  darkMode={darkMode}
-                  companyName={vm.overview.companyName}
-                  companyDescription={vm.overview.companyDescription}
-                  snapshotFactLabels={vm.overview.snapshotFactLabels}
-                  snapshotFacts={vm.overview.snapshotFacts}
-                  signals={vm.overview.signalData}
-                  financials={vm.overview.financials}
-                  traction={vm.overview.traction}
-                  deal={vm.overview.deal}
-                  businessModel={vm.overview.businessModel}
-                  evidenceLabels={vm.overview.evidenceLabels}
-                  productSummary={vm.overview.productSummary}
-                  marketSummary={vm.overview.marketSummary}
-                  businessModelSummary={vm.overview.businessModelSummary}
-                  raiseTerms={vm.overview.raiseTerms}
-                  insightsScore={vm.overview.insightsScore}
-                  insightsConfidence={vm.overview.insightsConfidence}
-                  onOpenInsights={() => setActiveTab('investor-insights')}
-                />
+              <div className="w-full max-w-none space-y-6">
+                <div className="w-full max-w-none">
+                  <DealOverviewTab
+                    darkMode={darkMode}
+                    companyName={vm.overview.companyName}
+                    companyDescription={vm.overview.companyDescription}
+                    snapshotFactLabels={vm.overview.snapshotFactLabels}
+                    snapshotFacts={vm.overview.snapshotFacts}
+                    signals={vm.overview.signalData}
+                    financials={vm.overview.financials}
+                    traction={vm.overview.traction}
+                    deal={vm.overview.deal}
+                    businessModel={vm.overview.businessModel}
+                    evidenceLabels={vm.overview.evidenceLabels}
+                    productSummary={vm.overview.productSummary}
+                    marketSummary={vm.overview.marketSummary}
+                    businessModelSummary={vm.overview.businessModelSummary}
+                    raiseTerms={vm.overview.raiseTerms}
+                    insightsScore={vm.overview.insightsScore}
+                    insightsConfidence={vm.overview.insightsConfidence}
+                    onOpenInsights={() => setActiveTab('investor-insights')}
+                  />
+                </div>
 
                 <section
                   data-testid="conviction-panel"
@@ -9515,6 +9517,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 deepDiveResponse={deepDiveResponse}
                 loading={deepDiveLoading}
                 error={deepDiveError}
+                darkMode={darkMode}
                 debugEnabled={workspaceDebugEnabled}
               />
             )}

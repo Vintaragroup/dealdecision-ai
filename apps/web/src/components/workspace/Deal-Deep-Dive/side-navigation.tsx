@@ -3,9 +3,10 @@ import { TrendingUp, Package, DollarSign, Users, PieChart, Briefcase, AlertTrian
 interface SideNavigationProps {
   activeSection?: string;
   onSectionClick?: (sectionId: string) => void;
+  darkMode?: boolean;
 }
 
-export function SideNavigation({ activeSection, onSectionClick }: SideNavigationProps) {
+export function SideNavigation({ activeSection, onSectionClick, darkMode = true }: SideNavigationProps) {
   const sections = [
     { id: 'framing', label: 'Deal Framing', icon: Briefcase },
     { id: 'market', label: 'Market', icon: TrendingUp },
@@ -21,8 +22,8 @@ export function SideNavigation({ activeSection, onSectionClick }: SideNavigation
 
   return (
     <div className="sticky top-8 w-56">
-      <div className="bg-zinc-800/40 border border-zinc-700/30 rounded-lg p-3">
-        <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-3 px-2">Jump To</div>
+      <div className={`rounded-xl border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
+        <div className={`text-[10px] uppercase tracking-wider mb-3 px-2 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Jump To</div>
         <nav className="space-y-0.5">
           {sections.map((section) => {
             const Icon = section.icon;
@@ -34,7 +35,9 @@ export function SideNavigation({ activeSection, onSectionClick }: SideNavigation
                 className={`w-full flex items-center gap-2.5 px-2 py-2 rounded-md text-sm transition-colors ${
                   isActive
                     ? 'bg-blue-500/20 text-blue-400'
-                    : 'text-zinc-400 hover:bg-zinc-700/50 hover:text-zinc-300'
+                    : darkMode
+                      ? 'text-gray-400 hover:bg-white/10 hover:text-gray-300'
+                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-800'
                 }`}
               >
                 <Icon className="w-3.5 h-3.5 flex-shrink-0" />

@@ -5,10 +5,11 @@ interface RedFlagCardProps {
   description: string;
   impact: 'medium' | 'high' | 'critical';
   source: string;
+  darkMode?: boolean;
   isContradiction?: boolean;
 }
 
-export function RedFlagCard({ title, description, impact, source, isContradiction = false }: RedFlagCardProps) {
+export function RedFlagCard({ title, description, impact, source, darkMode = true, isContradiction = false }: RedFlagCardProps) {
   const impactConfig = {
     medium: {
       borderClass: 'border-red-500/40',
@@ -39,7 +40,7 @@ export function RedFlagCard({ title, description, impact, source, isContradictio
   const config = impactConfig[impact];
 
   return (
-    <div className={`rounded-lg ${config.borderWidth} ${config.borderClass} ${config.bgClass} ${config.ringClass} p-5`}>
+    <div className={`rounded-lg ${config.borderWidth} ${config.borderClass} ${config.bgClass} ${config.ringClass} p-5 ${darkMode ? '' : 'bg-white'}`}>
       <div className="flex items-start justify-between gap-4 mb-3">
         <div className="flex items-start gap-3 flex-1">
           <AlertOctagon className={`w-5 h-5 ${config.textClass} mt-0.5 flex-shrink-0`} />
@@ -60,11 +61,11 @@ export function RedFlagCard({ title, description, impact, source, isContradictio
         </span>
       </div>
       
-      <p className="text-sm text-zinc-300 leading-relaxed mb-3 ml-8">{description}</p>
+      <p className={`text-sm leading-relaxed mb-3 ml-8 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{description}</p>
       
       <div className="ml-8">
-        <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1 font-semibold">Source</div>
-        <div className="text-xs text-zinc-400">{source}</div>
+        <div className={`text-[10px] uppercase tracking-wider mb-1 font-semibold ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Source</div>
+        <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{source}</div>
       </div>
     </div>
   );

@@ -5,10 +5,11 @@ interface RiskCardProps {
   severity: 'low' | 'medium' | 'high';
   description: string;
   evidence: string;
+  darkMode?: boolean;
   mitigation?: string;
 }
 
-export function RiskCard({ type, severity, description, evidence, mitigation }: RiskCardProps) {
+export function RiskCard({ type, severity, description, evidence, darkMode = true, mitigation }: RiskCardProps) {
   const severityStyles = {
     low: {
       bg: 'bg-emerald-500/10 border-emerald-500/30',
@@ -30,25 +31,25 @@ export function RiskCard({ type, severity, description, evidence, mitigation }: 
   const style = severityStyles[severity];
 
   return (
-    <div className={`${style.bg} border rounded-lg p-4`}>
+    <div className={`${style.bg} border rounded-lg p-4 ${darkMode ? '' : 'bg-white border-gray-200'}`}>
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2">
           <AlertTriangle className={`w-4 h-4 ${style.text}`} />
-          <h4 className="text-sm text-white">{type}</h4>
+          <h4 className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>{type}</h4>
         </div>
         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs uppercase ${style.badge}`}>
           {severity}
         </span>
       </div>
-      <p className="text-sm text-zinc-300 mb-3">{description}</p>
+      <p className={`text-sm mb-3 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{description}</p>
       <div className="mb-2">
-        <span className="text-xs text-zinc-400">Evidence: </span>
-        <span className="text-xs text-zinc-300">{evidence}</span>
+        <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Evidence: </span>
+        <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{evidence}</span>
       </div>
       {mitigation && (
         <div>
-          <span className="text-xs text-zinc-400">Mitigation: </span>
-          <span className="text-xs text-zinc-300">{mitigation}</span>
+          <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Mitigation: </span>
+          <span className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{mitigation}</span>
         </div>
       )}
     </div>

@@ -4,6 +4,7 @@ interface SubSectionProps {
   title: string;
   summary: string;
   evidenceStrength?: 'strong' | 'moderate' | 'weak' | 'missing';
+  darkMode?: boolean;
   strengths?: string[];
   weaknesses?: string[];
   evidence?: string[];
@@ -14,6 +15,7 @@ export function SubSection({
   title,
   summary,
   evidenceStrength = 'moderate',
+  darkMode = true,
   strengths = [],
   weaknesses = [],
   evidence = [],
@@ -29,15 +31,15 @@ export function SubSection({
   const config = evidenceConfig[evidenceStrength];
 
   return (
-    <div className="bg-zinc-800/50 rounded-lg p-6 mb-4 last:mb-0">
+    <div className={`rounded-lg border p-6 mb-4 last:mb-0 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
       <div className="flex items-start justify-between mb-4">
-        <h4 className="text-[15px] text-white font-medium">{title}</h4>
+        <h4 className={`text-[15px] font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{title}</h4>
         <div className={`px-3 py-1.5 rounded-full text-[10px] uppercase tracking-wider font-semibold border ${config.bgClass} ${config.textClass} ${config.borderClass} whitespace-nowrap`}>
           {config.label}
         </div>
       </div>
       
-      <p className="text-[15px] text-zinc-300 leading-relaxed mb-5">{summary}</p>
+      <p className={`text-[15px] leading-relaxed mb-5 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{summary}</p>
 
       {/* Strengths */}
       {strengths.length > 0 && (
@@ -78,7 +80,7 @@ export function SubSection({
         <div className="mb-4">
           <div className="flex items-center gap-1.5 mb-2.5">
             <FileText className="w-3.5 h-3.5 text-blue-400" />
-            <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">Evidence</span>
+            <span className={`text-[11px] uppercase tracking-wider font-semibold ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Evidence</span>
           </div>
           <div className="flex flex-wrap gap-2">
             {evidence.map((item, index) => (
@@ -97,12 +99,12 @@ export function SubSection({
       {openQuestions.length > 0 && (
         <div>
           <div className="flex items-center gap-1.5 mb-2.5">
-            <HelpCircle className="w-3.5 h-3.5 text-zinc-500" />
-            <span className="text-[11px] uppercase tracking-wider text-zinc-500 font-semibold">Open Questions</span>
+            <HelpCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`} />
+            <span className={`text-[11px] uppercase tracking-wider font-semibold ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>Open Questions</span>
           </div>
           <ul className="space-y-2 ml-1">
             {openQuestions.map((question, index) => (
-              <li key={index} className="text-xs text-zinc-400 ml-4 list-disc leading-relaxed">
+              <li key={index} className={`text-xs ml-4 list-disc leading-relaxed ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
                 {question}
               </li>
             ))}

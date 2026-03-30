@@ -82,6 +82,7 @@ const iconForSignal = (name: string) => {
 };
 
 export function DealOverviewTab({
+  darkMode,
   companyName,
   companyDescription,
   snapshotFactLabels,
@@ -97,61 +98,67 @@ export function DealOverviewTab({
   const stageValue = firstValueForLabel(deal, /stage|phase|status/i);
   const tractionValue = firstValueForLabel(traction, /customer|client|account/i);
   const signalCards = topSignals(signals);
+  const surfaceClass = darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200';
+  const cardClass = darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200';
+  const titleClass = darkMode ? 'text-white' : 'text-gray-900';
+  const bodyClass = darkMode ? 'text-gray-300' : 'text-gray-700';
+  const mutedClass = darkMode ? 'text-gray-400' : 'text-gray-600';
+  const subtleClass = darkMode ? 'text-gray-500' : 'text-gray-500';
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950 p-8">
-      <div className="max-w-4xl mx-auto space-y-8">
-        <div className="rounded-[18px] bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] p-8 border border-zinc-800/50">
+    <div className="w-full max-w-none">
+      <div className="w-full max-w-none space-y-6">
+        <div className={`rounded-xl border p-8 ${surfaceClass}`}>
           <div className="flex items-start justify-between gap-4 mb-6">
             <div>
               <div className="flex items-center gap-3 mb-3">
                 <span className="bg-blue-500/20 text-blue-400 rounded-full px-3 py-1 text-xs font-medium">
                   {snapshotFactLabels.tam || 'Market'}
                 </span>
-                <div className="flex items-center gap-1.5 text-zinc-400 text-sm">
+                <div className={`flex items-center gap-1.5 text-sm ${mutedClass}`}>
                   <MapPin className="w-4 h-4" strokeWidth={1.5} />
                   <span>{snapshotFacts.customers || 'Unknown location'}</span>
                 </div>
               </div>
-              <h1 className="text-white text-2xl mb-1">{companyName || 'Company'}</h1>
+              <h1 className={`text-2xl mb-1 ${titleClass}`}>{companyName || 'Company'}</h1>
             </div>
           </div>
 
-          <p className="text-zinc-200 text-lg leading-relaxed">
+          <p className={`text-lg leading-relaxed ${bodyClass}`}>
             {companyDescription || 'No company description available.'}
           </p>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div className="rounded-[14px] bg-gradient-to-br from-zinc-800/70 to-zinc-900/70 border border-zinc-800/50 p-5">
-            <div className="text-zinc-400 text-xs mb-2">{snapshotFactLabels.raise}</div>
-            <div className="text-white text-xl font-medium">{snapshotFacts.raise || '—'}</div>
-            <div className="text-zinc-500 text-xs mt-1">{stageValue}</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          <div className={`rounded-xl border p-5 ${cardClass}`}>
+            <div className={`text-xs mb-2 ${mutedClass}`}>{snapshotFactLabels.raise}</div>
+            <div className={`text-xl font-medium ${titleClass}`}>{snapshotFacts.raise || '—'}</div>
+            <div className={`text-xs mt-1 ${subtleClass}`}>{stageValue}</div>
           </div>
 
-          <div className="rounded-[14px] bg-gradient-to-br from-zinc-800/70 to-zinc-900/70 border border-zinc-800/50 p-5">
-            <div className="text-zinc-400 text-xs mb-2">{snapshotFactLabels.arr}</div>
-            <div className="text-white text-xl font-medium">{snapshotFacts.arr || '—'}</div>
-            <div className="text-zinc-500 text-xs mt-1">{snapshotFacts.growth || '—'}</div>
+          <div className={`rounded-xl border p-5 ${cardClass}`}>
+            <div className={`text-xs mb-2 ${mutedClass}`}>{snapshotFactLabels.arr}</div>
+            <div className={`text-xl font-medium ${titleClass}`}>{snapshotFacts.arr || '—'}</div>
+            <div className={`text-xs mt-1 ${subtleClass}`}>{snapshotFacts.growth || '—'}</div>
           </div>
 
-          <div className="rounded-[14px] bg-gradient-to-br from-zinc-800/70 to-zinc-900/70 border border-zinc-800/50 p-5">
-            <div className="text-zinc-400 text-xs mb-2">Stage</div>
-            <div className="text-white text-xl font-medium">{stageValue}</div>
-            <div className="text-zinc-500 text-xs mt-1">{tractionValue}</div>
+          <div className={`rounded-xl border p-5 ${cardClass}`}>
+            <div className={`text-xs mb-2 ${mutedClass}`}>Stage</div>
+            <div className={`text-xl font-medium ${titleClass}`}>{stageValue}</div>
+            <div className={`text-xs mt-1 ${subtleClass}`}>{tractionValue}</div>
           </div>
 
-          <div className="rounded-[14px] bg-gradient-to-br from-zinc-800/70 to-zinc-900/70 border border-zinc-800/50 p-5">
-            <div className="text-zinc-400 text-xs mb-2">{snapshotFactLabels.tam}</div>
-            <div className="text-white text-xl font-medium">{snapshotFacts.tam || '—'}</div>
-            <div className="text-zinc-500 text-xs mt-1">{snapshotFactLabels.growth}</div>
+          <div className={`rounded-xl border p-5 ${cardClass}`}>
+            <div className={`text-xs mb-2 ${mutedClass}`}>{snapshotFactLabels.tam}</div>
+            <div className={`text-xl font-medium ${titleClass}`}>{snapshotFacts.tam || '—'}</div>
+            <div className={`text-xs mt-1 ${subtleClass}`}>{snapshotFactLabels.growth}</div>
           </div>
         </div>
 
-        <div className="rounded-[18px] bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)] p-8 border border-zinc-800/50">
-          <h2 className="text-white text-lg mb-4">Investment Snapshot</h2>
-          <p className="text-zinc-200 text-base leading-relaxed">
-            <strong className="text-white">{businessModelSummary || 'Business model context unavailable.'}</strong>
+        <div className={`rounded-xl border p-8 ${surfaceClass}`}>
+          <h2 className={`text-sm uppercase tracking-wide mb-4 ${mutedClass}`}>Investment Snapshot</h2>
+          <p className={`text-base leading-relaxed ${bodyClass}`}>
+            <strong className={titleClass}>{businessModelSummary || 'Business model context unavailable.'}</strong>
             {' '}
             {marketSummary || 'Market summary unavailable.'}
             {' '}
@@ -161,39 +168,43 @@ export function DealOverviewTab({
 
         <div className="grid md:grid-cols-3 gap-4">
           {signalCards.map((signal, index) => (
-            <div key={`${signal.name}-${index}`} className="rounded-[14px] bg-gradient-to-br from-zinc-800/70 to-zinc-900/70 border border-zinc-800/50 p-5">
+            <div key={`${signal.name}-${index}`} className={`rounded-xl border p-5 ${cardClass}`}>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   {iconForSignal(signal.name)}
-                  <span className="text-zinc-300 text-sm font-medium">{signal.name}</span>
+                  <span className={`text-sm font-medium ${bodyClass}`}>{signal.name}</span>
                 </div>
                 <span className={`text-sm font-semibold ${scoreColorClass(signal.score)}`}>{signal.score}</span>
               </div>
-              <p className="text-zinc-400 text-sm leading-relaxed">
+              <p className={`text-sm leading-relaxed ${mutedClass}`}>
                 {signal.explanation || 'No explanation available.'}
               </p>
             </div>
           ))}
         </div>
 
-        <div className="rounded-[14px] bg-zinc-900/40 border border-zinc-800/30 p-4">
+        <div className={`rounded-xl border p-4 ${surfaceClass}`}>
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-4">
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" strokeWidth={1.5} />
-                <span className="text-zinc-300 text-sm">Analysis complete</span>
+                <span className={`text-sm ${bodyClass}`}>Analysis complete</span>
               </div>
-              <div className="w-px h-4 bg-zinc-700"></div>
-              <span className="text-zinc-500 text-xs">{snapshotFacts.growth || 'Updated recently'}</span>
+              <div className={`w-px h-4 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}></div>
+              <span className={`text-xs ${subtleClass}`}>{snapshotFacts.growth || 'Updated recently'}</span>
             </div>
 
             <button
               type="button"
               onClick={onOpenInsights}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-zinc-800/60 hover:bg-zinc-800 border border-zinc-700/50 hover:border-zinc-600 transition-colors"
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors ${
+                darkMode
+                  ? 'bg-white/5 hover:bg-white/10 border-white/10 hover:border-white/20'
+                  : 'bg-white hover:bg-gray-50 border-gray-200 hover:border-gray-300'
+              }`}
             >
               <PlayCircle className="w-4 h-4 text-blue-400" strokeWidth={1.5} />
-              <span className="text-zinc-300 text-sm">Open Investor Insights</span>
+              <span className={`text-sm ${bodyClass}`}>Open Investor Insights</span>
             </button>
           </div>
         </div>

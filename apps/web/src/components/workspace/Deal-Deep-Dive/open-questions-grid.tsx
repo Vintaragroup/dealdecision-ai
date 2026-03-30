@@ -10,9 +10,10 @@ interface OpenQuestionsGridProps {
     title: string;
     questions: Question[];
   }[];
+  darkMode?: boolean;
 }
 
-export function OpenQuestionsGrid({ categories }: OpenQuestionsGridProps) {
+export function OpenQuestionsGrid({ categories, darkMode = true }: OpenQuestionsGridProps) {
   const priorityConfig = {
     critical: {
       icon: AlertCircle,
@@ -32,11 +33,11 @@ export function OpenQuestionsGrid({ categories }: OpenQuestionsGridProps) {
   };
 
   return (
-    <div className="bg-zinc-800/50 rounded-lg p-6">
+    <div className={`rounded-lg border p-6 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
       <div className="grid md:grid-cols-2 gap-10">
         {categories.map((category, catIndex) => (
           <div key={catIndex}>
-            <h4 className="text-sm text-white mb-4 font-medium">{category.title}</h4>
+            <h4 className={`text-sm mb-4 font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{category.title}</h4>
             <ul className="space-y-3.5">
               {category.questions.map((question, qIndex) => {
                 const config = priorityConfig[question.priority];
@@ -46,7 +47,7 @@ export function OpenQuestionsGrid({ categories }: OpenQuestionsGridProps) {
                     <Icon className={`w-4 h-4 mt-0.5 flex-shrink-0 ${config.color}`} />
                     <div className="flex-1">
                       <div className="flex items-start gap-2.5 flex-wrap">
-                        <span className="text-sm text-zinc-300 flex-1 leading-relaxed">{question.text}</span>
+                        <span className={`text-sm flex-1 leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{question.text}</span>
                         {question.priority !== 'low' && (
                           <span className={`px-2 py-0.5 rounded-md text-[9px] uppercase tracking-wider border font-semibold ${config.badge} whitespace-nowrap`}>
                             {question.priority}

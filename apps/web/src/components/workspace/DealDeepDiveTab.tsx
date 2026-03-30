@@ -20,6 +20,7 @@ type DealDeepDiveTabProps = {
   deepDiveResponse: DealDeepDiveResponse | null;
   loading: boolean;
   error: string | null;
+  darkMode?: boolean;
   debugEnabled?: boolean;
 };
 
@@ -83,7 +84,7 @@ const dedupeByText = <T extends { text: string }>(items: T[]): T[] => {
   return out;
 };
 
-export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled = false }: DealDeepDiveTabProps) {
+export function DealDeepDiveTab({ deepDiveResponse, loading, error, darkMode = true, debugEnabled = false }: DealDeepDiveTabProps) {
   const [activeSection, setActiveSection] = useState('market');
 
   const deepDive = deepDiveResponse?.deep_dive ?? null;
@@ -174,65 +175,72 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
     .slice(0, 3)
     .join(', ');
 
+  const surfaceClass = darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200';
+  const titleClass = darkMode ? 'text-white' : 'text-gray-900';
+  const bodyClass = darkMode ? 'text-gray-300' : 'text-gray-700';
+  const mutedClass = darkMode ? 'text-gray-400' : 'text-gray-600';
+  const subtleClass = darkMode ? 'text-gray-500' : 'text-gray-500';
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950 p-8 rounded-xl">
-      <div className="max-w-[1600px] mx-auto">
-        <div className="mb-8">
+    <div className="w-full max-w-none space-y-6">
+      <div className={`rounded-xl border p-6 ${surfaceClass}`}>
+        <div className="mb-1">
           <div className="flex items-center gap-3 mb-2">
             <FileText className="w-6 h-6 text-blue-400" />
-            <h1 className="text-2xl text-white">{headerTitle}</h1>
+            <h1 className={`text-2xl ${titleClass}`}>{headerTitle}</h1>
           </div>
-          <p className="text-sm text-zinc-400">
+          <p className={`text-sm ${mutedClass}`}>
             Investor-facing diligence synthesis from structured and extracted evidence.
           </p>
           {debugEnabled && deepDive && (
-            <p className="text-xs text-zinc-500 mt-2">
+            <p className={`text-xs mt-2 ${subtleClass}`}>
               Debug metadata: schema {deepDive.schema_version} · analysis version {deepDive.analysis_version ?? 'N/A'} · generated {new Date(deepDive.generated_at).toLocaleString()}.
             </p>
           )}
         </div>
+      </div>
 
-        {loading && (
-          <div className="bg-zinc-800/40 border border-zinc-700/40 rounded-lg p-6 mb-6 flex items-center gap-3 text-zinc-300">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            Loading deep-dive analysis...
+      {loading && (
+        <div className={`rounded-xl border p-6 flex items-center gap-3 ${surfaceClass} ${bodyClass}`}>
+          <Loader2 className="w-4 h-4 animate-spin" />
+          Loading deep-dive analysis...
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-6 flex items-center gap-3 text-red-300">
+          <AlertCircle className="w-4 h-4" />
+          {error}
+        </div>
+      )}
+
+      {!loading && !error && !deepDive && (
+        <div className={`rounded-xl border p-6 ${surfaceClass}`}>
+          <div className={`font-medium mb-1 ${titleClass}`}>Deep dive is not available yet</div>
+          <div className={`text-sm ${mutedClass}`}>
+            {deepDiveResponse?.reason === 'analysis_not_started'
+              ? 'Run deal analysis first to generate deterministic deep-dive output.'
+              : 'No deep-dive payload was returned for this deal.'}
           </div>
-        )}
+        </div>
+      )}
 
-        {error && (
-          <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-6 mb-6 flex items-center gap-3 text-red-200">
-            <AlertCircle className="w-4 h-4" />
-            {error}
-          </div>
-        )}
-
-        {!loading && !error && !deepDive && (
-          <div className="bg-zinc-800/40 border border-zinc-700/40 rounded-lg p-6 mb-6 text-zinc-300">
-            <div className="font-medium mb-1">Deep dive is not available yet</div>
-            <div className="text-sm text-zinc-400">
-              {deepDiveResponse?.reason === 'analysis_not_started'
-                ? 'Run deal analysis first to generate deterministic deep-dive output.'
-                : 'No deep-dive payload was returned for this deal.'}
-            </div>
-          </div>
-        )}
-
-        {deepDive && (
-          <>
-            <div id="framing" className="bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 rounded-[14px] p-8 mb-6">
-              <h2 className="text-xl text-white mb-3">Deal Framing</h2>
+      {deepDive && (
+        <>
+          <div id="framing" className={`rounded-xl border p-6 ${surfaceClass}`}>
+              <h2 className={`text-sm uppercase tracking-wide mb-4 ${mutedClass}`}>Deal Framing</h2>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <div>
-                  <div className="text-zinc-500">Open diligence items</div>
-                  <div className="text-zinc-300">{deepDive.gap.diligence_open_items.length}</div>
+                  <div className={subtleClass}>Open diligence items</div>
+                  <div className={bodyClass}>{deepDive.gap.diligence_open_items.length}</div>
                 </div>
                 <div>
-                  <div className="text-zinc-500">Verification requests</div>
-                  <div className="text-zinc-300">{deepDive.gap.verification_requests.length}</div>
+                  <div className={subtleClass}>Verification requests</div>
+                  <div className={bodyClass}>{deepDive.gap.verification_requests.length}</div>
                 </div>
                 <div>
-                  <div className="text-zinc-500">Missing key inputs</div>
-                  <div className="text-zinc-300">{criticalFactSummary || 'No critical gaps detected'}</div>
+                  <div className={subtleClass}>Missing key inputs</div>
+                  <div className={bodyClass}>{criticalFactSummary || 'No critical gaps detected'}</div>
                 </div>
               </div>
             </div>
@@ -242,6 +250,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                 title="0. Discovery"
                 id="discovery"
                 defaultOpen={true}
+                darkMode={darkMode}
               >
                 <SubSection
                   title="Source Availability"
@@ -252,6 +261,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                     `Underwriting readiness: ${deepDive.discovery.sources.underwriting_readiness_present ? 'present' : 'missing'}`,
                   ]}
                   weaknesses={deepDive.gap.missing_critical_facts.map((k) => `Missing key input: ${humanizeCriticalFieldName(k)}`)}
+                  darkMode={darkMode}
                 />
 
                 <SubSection
@@ -260,77 +270,86 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                   evidenceStrength={deepDive.gap.missing_critical_facts.length > 0 ? 'weak' : 'moderate'}
                   weaknesses={deepDive.gap.missing_critical_facts.map((k) => `Missing key input: ${humanizeCriticalFieldName(k)}`)}
                   openQuestions={deepDive.gap.verification_requests.map((v) => normalizeDeepDiveText(v))}
+                  darkMode={darkMode}
                 />
               </CollapsibleSection>
             )}
 
-            <div className="flex gap-8">
+            <div className="flex gap-6">
               <aside className="hidden lg:block">
-                <SideNavigation activeSection={activeSection} onSectionClick={handleSectionClick} />
+                <SideNavigation activeSection={activeSection} onSectionClick={handleSectionClick} darkMode={darkMode} />
               </aside>
 
               <main className="flex-1 min-w-0">
-                <CollapsibleSection title="1. Market" id="market" evidenceCoverage={sectionCoverage.market}>
+                <CollapsibleSection title="1. Market" id="market" evidenceCoverage={sectionCoverage.market} darkMode={darkMode}>
                   <SubSection
                     title="TAM Realism"
                     summary={normalizeDeepDiveText(firstText(deepDive.market.tam_reasoning.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.market.tam_reasoning.evidence_strength)}
                     evidence={humanizeEvidenceRefs(deepDive.market.tam_reasoning.evidence_refs)}
+                    darkMode={darkMode}
                   />
                   <SubSection
                     title="Market Timing"
                     summary={normalizeDeepDiveText(firstText(deepDive.market.timing_logic.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.market.timing_logic.evidence_strength)}
                     evidence={humanizeEvidenceRefs(deepDive.market.timing_logic.evidence_refs)}
+                    darkMode={darkMode}
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="2. Product" id="product" evidenceCoverage={sectionCoverage.product}>
+                <CollapsibleSection title="2. Product" id="product" evidenceCoverage={sectionCoverage.product} darkMode={darkMode}>
                   <SubSection
                     title="Differentiation Detection"
                     summary={normalizeDeepDiveText(firstText(deepDive.product.differentiation_detection.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.product.differentiation_detection.evidence_strength)}
                     evidence={humanizeEvidenceRefs(deepDive.product.differentiation_detection.evidence_refs)}
+                    darkMode={darkMode}
                   />
                   <SubSection
                     title="Defensibility Logic"
                     summary={normalizeDeepDiveText(firstText(deepDive.product.defensibility_logic.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.product.defensibility_logic.evidence_strength)}
                     evidence={humanizeEvidenceRefs(deepDive.product.defensibility_logic.evidence_refs)}
+                    darkMode={darkMode}
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="3. Business Model" id="business-model" evidenceCoverage={sectionCoverage.businessModel}>
+                <CollapsibleSection title="3. Business Model" id="business-model" evidenceCoverage={sectionCoverage.businessModel} darkMode={darkMode}>
                   <SubSection
                     title="Revenue Model Inference"
                     summary={normalizeDeepDiveText(deepDive.business_model.revenue_model_inference.inferred_model ?? 'The current materials do not provide a clearly supported revenue model.')}
                     evidenceStrength={toEvidenceStrength(deepDive.business_model.revenue_model_inference.evidence_strength)}
                     evidence={humanizeEvidenceRefs(deepDive.business_model.revenue_model_inference.evidence_refs)}
+                    darkMode={darkMode}
                   />
                   <SubSection
                     title="Scaling Logic"
                     summary={normalizeDeepDiveText(firstText(deepDive.business_model.scaling_logic.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.business_model.scaling_logic.evidence_strength)}
                     evidence={humanizeEvidenceRefs(deepDive.business_model.scaling_logic.evidence_refs)}
+                    darkMode={darkMode}
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="4. Traction" id="traction" evidenceCoverage={sectionCoverage.traction}>
+                <CollapsibleSection title="4. Traction" id="traction" evidenceCoverage={sectionCoverage.traction} darkMode={darkMode}>
                   <SubSection
                     title="Growth Validation"
                     summary={normalizeDeepDiveText(firstText(deepDive.traction.growth_validation.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.traction.growth_validation.evidence_strength)}
                     evidence={humanizeEvidenceRefs(deepDive.traction.growth_validation.evidence_refs)}
+                    darkMode={darkMode}
                   />
                   <SubSection
                     title="Proof vs Promise"
                     summary={normalizeDeepDiveText(firstText(deepDive.traction.proof_vs_promise_detection.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.traction.proof_vs_promise_detection.evidence_strength)}
                     evidence={humanizeEvidenceRefs(deepDive.traction.proof_vs_promise_detection.evidence_refs)}
+                    darkMode={darkMode}
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="5. Financials" id="financials" evidenceCoverage={sectionCoverage.financials}>
+                <CollapsibleSection title="5. Financials" id="financials" evidenceCoverage={sectionCoverage.financials} darkMode={darkMode}>
                   <SubSection
                     title="Interpretation Layer"
                     summary={
@@ -342,10 +361,11 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                     strengths={deepDive.financials.interpretation_layer.current_state_signals.map((s) => normalizeDeepDiveText(s))}
                     openQuestions={deepDive.financials.interpretation_layer.forward_view_signals.map((s) => normalizeDeepDiveText(s))}
                     evidence={humanizeEvidenceRefs(deepDive.financials.interpretation_layer.evidence_refs)}
+                    darkMode={darkMode}
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="6. Team" id="team" evidenceCoverage={sectionCoverage.team}>
+                <CollapsibleSection title="6. Team" id="team" evidenceCoverage={sectionCoverage.team} darkMode={darkMode}>
                   <SubSection
                     title="Capability Inference"
                     summary={
@@ -356,10 +376,11 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                     evidenceStrength={toEvidenceStrength(deepDive.team.capability_inference.evidence_strength)}
                     strengths={deepDive.team.capability_inference.inferred_capabilities.map((s) => normalizeDeepDiveText(s))}
                     evidence={humanizeEvidenceRefs(deepDive.team.capability_inference.evidence_refs)}
+                    darkMode={darkMode}
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="7. Risks" id="risks">
+                <CollapsibleSection title="7. Risks" id="risks" darkMode={darkMode}>
                   <div className="grid md:grid-cols-2 gap-4">
                     {deepDive.risks.classification.length > 0 ? deepDive.risks.classification.map((risk) => (
                       <RiskCard
@@ -368,14 +389,15 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                         severity={toSeverity(risk.severity)}
                         description={normalizeDeepDiveText(risk.risk)}
                         evidence={humanizeEvidenceRefs(risk.evidence_refs).join(' | ') || 'Source material'}
+                        darkMode={darkMode}
                       />
                     )) : (
-                      <div className="text-zinc-400 text-sm">No risk classifications were returned.</div>
+                      <div className={`text-sm ${mutedClass}`}>No risk classifications were returned.</div>
                     )}
                   </div>
                 </CollapsibleSection>
 
-                <CollapsibleSection title="8. Red Flags" id="red-flags">
+                <CollapsibleSection title="8. Red Flags" id="red-flags" darkMode={darkMode}>
                   <div className="space-y-4">
                     {deepDive.red_flags.items.length > 0 ? deepDive.red_flags.items.map((item, idx) => (
                       <RedFlagCard
@@ -385,14 +407,15 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                         impact={toImpact(item.contradiction_type)}
                         source={humanizeEvidenceRefs(item.evidence_refs).join(' | ') || 'Source material'}
                         isContradiction={true}
+                        darkMode={darkMode}
                       />
                     )) : (
-                      <div className="text-zinc-400 text-sm">No red flags were returned.</div>
+                      <div className={`text-sm ${mutedClass}`}>No red flags were returned.</div>
                     )}
                   </div>
                 </CollapsibleSection>
 
-                <CollapsibleSection title="9. Open Questions & Unknowns" id="open-questions">
+                <CollapsibleSection title="9. Open Questions & Unknowns" id="open-questions" darkMode={darkMode}>
                   <OpenQuestionsGrid
                     categories={[
                       {
@@ -404,13 +427,13 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                         questions: actionItems,
                       },
                     ]}
+                    darkMode={darkMode}
                   />
                 </CollapsibleSection>
               </main>
             </div>
-          </>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }

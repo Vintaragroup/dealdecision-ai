@@ -9516,6 +9516,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 deepDiveResponse={deepDiveResponse}
                 loading={deepDiveLoading}
                 error={deepDiveError}
+                debugEnabled={workspaceDebugEnabled}
               />
             )}
 

@@ -7,11 +7,20 @@ import { RedFlagCard } from './Deal-Deep-Dive/red-flag-card';
 import { OpenQuestionsGrid } from './Deal-Deep-Dive/open-questions-grid';
 import { SideNavigation } from './Deal-Deep-Dive/side-navigation';
 import type { DealDeepDiveResponse, DealDeepDiveV1 } from '../../lib/apiClient';
+import {
+  humanizeActionRationale,
+  humanizeActionTitle,
+  humanizeContradictionType,
+  humanizeCriticalFieldName,
+  humanizeEvidenceRefs,
+  normalizeDeepDiveText,
+} from '../../lib/deepDiveHumanization';
 
 type DealDeepDiveTabProps = {
   deepDiveResponse: DealDeepDiveResponse | null;
   loading: boolean;
   error: string | null;
+  debugEnabled?: boolean;
 };
 
 const toEvidenceStrength = (
@@ -46,7 +55,7 @@ const toQuestionPriority = (value: string): 'critical' | 'important' | 'low' => 
   return 'low';
 };
 
-export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDiveTabProps) {
+export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled = false }: DealDeepDiveTabProps) {
   const [activeSection, setActiveSection] = useState('market');
 
   const deepDive = deepDiveResponse?.deep_dive ?? null;
@@ -72,7 +81,12 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDi
     return { strong, moderate: 100 - strong, weak: 0 };
   }, [deepDive]);
 
-  const headerTitle = deepDive ? `Deal Deep Dive (${deepDive.schema_version})` : 'Deal Deep Dive';
+  const headerTitle = 'Deal Deep Dive';
+
+  const criticalFactSummary = deepDive?.gap.missing_critical_facts
+    .map((k) => humanizeCriticalFieldName(k))
+    .slice(0, 3)
+    .join(', ');
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-zinc-950 via-zinc-900 to-zinc-950 p-8 rounded-xl">
@@ -83,8 +97,13 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDi
             <h1 className="text-2xl text-white">{headerTitle}</h1>
           </div>
           <p className="text-sm text-zinc-400">
-            Deterministic deep-dive output from /api/v1/deals/:deal_id/deep-dive.
+            Investor-facing diligence synthesis from structured and extracted evidence.
           </p>
+          {debugEnabled && deepDive && (
+            <p className="text-xs text-zinc-500 mt-2">
+              Debug metadata: schema {deepDive.schema_version} · analysis version {deepDive.analysis_version ?? 'N/A'} · generated {new Date(deepDive.generated_at).toLocaleString()}.
+            </p>
+          )}
         </div>
 
         {loading && (
@@ -115,50 +134,50 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDi
         {deepDive && (
           <>
             <div id="framing" className="bg-gradient-to-br from-zinc-800/90 to-zinc-900/90 rounded-[14px] p-8 mb-6">
-              <h2 className="text-xl text-white mb-3">{deepDive.deal_id}</h2>
+              <h2 className="text-xl text-white mb-3">Deal Framing</h2>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
                 <div>
-                  <div className="text-zinc-500">Analysis Version</div>
-                  <div className="text-zinc-300">{deepDive.analysis_version ?? 'N/A'}</div>
+                  <div className="text-zinc-500">Open diligence items</div>
+                  <div className="text-zinc-300">{deepDive.gap.diligence_open_items.length}</div>
                 </div>
                 <div>
-                  <div className="text-zinc-500">Generated At</div>
-                  <div className="text-zinc-300">{new Date(deepDive.generated_at).toLocaleString()}</div>
+                  <div className="text-zinc-500">Verification requests</div>
+                  <div className="text-zinc-300">{deepDive.gap.verification_requests.length}</div>
                 </div>
                 <div>
-                  <div className="text-zinc-500">Missing Critical Facts</div>
-                  <div className="text-zinc-300">{deepDive.gap.missing_critical_facts.length}</div>
+                  <div className="text-zinc-500">Missing key inputs</div>
+                  <div className="text-zinc-300">{criticalFactSummary || 'No critical gaps detected'}</div>
                 </div>
               </div>
             </div>
 
-            <CollapsibleSection
-              title="0. Discovery"
-              id="discovery"
-              defaultOpen={true}
-              evidenceCoverage={sourceCoverage}
-            >
-              <SubSection
-                title="Source Availability"
-                summary={`DIO: ${deepDive.discovery.sources.dio_present ? 'present' : 'missing'}; report: ${deepDive.discovery.sources.report_present ? 'present' : 'missing'}; investor orchestrator: ${deepDive.discovery.sources.investor_orchestrator_present ? 'present' : 'missing'}.`}
-                evidenceStrength={sourceCoverage.strong >= 80 ? 'strong' : sourceCoverage.strong >= 40 ? 'moderate' : 'weak'}
-                strengths={[
-                  `Financial breakdown: ${deepDive.discovery.sources.financial_breakdown_present ? 'present' : 'missing'}`,
-                  `Underwriting readiness: ${deepDive.discovery.sources.underwriting_readiness_present ? 'present' : 'missing'}`,
-                ]}
-                weaknesses={[
-                  ...deepDive.gap.missing_critical_facts.slice(0, 2),
-                ]}
-              />
+            {debugEnabled && (
+              <CollapsibleSection
+                title="0. Discovery"
+                id="discovery"
+                defaultOpen={true}
+                evidenceCoverage={sourceCoverage}
+              >
+                <SubSection
+                  title="Source Availability"
+                  summary={`DIO: ${deepDive.discovery.sources.dio_present ? 'present' : 'missing'}; report: ${deepDive.discovery.sources.report_present ? 'present' : 'missing'}; investor orchestrator: ${deepDive.discovery.sources.investor_orchestrator_present ? 'present' : 'missing'}.`}
+                  evidenceStrength={sourceCoverage.strong >= 80 ? 'strong' : sourceCoverage.strong >= 40 ? 'moderate' : 'weak'}
+                  strengths={[
+                    `Financial breakdown: ${deepDive.discovery.sources.financial_breakdown_present ? 'present' : 'missing'}`,
+                    `Underwriting readiness: ${deepDive.discovery.sources.underwriting_readiness_present ? 'present' : 'missing'}`,
+                  ]}
+                  weaknesses={deepDive.gap.missing_critical_facts.map((k) => `Missing key input: ${humanizeCriticalFieldName(k)}`)}
+                />
 
-              <SubSection
-                title="Gap Summary"
-                summary="Critical data and diligence gaps that block stronger underwriting confidence."
-                evidenceStrength={deepDive.gap.missing_critical_facts.length > 0 ? 'weak' : 'moderate'}
-                weaknesses={deepDive.gap.missing_critical_facts}
-                openQuestions={deepDive.gap.verification_requests}
-              />
-            </CollapsibleSection>
+                <SubSection
+                  title="Gap Summary"
+                  summary="Critical data and diligence gaps that block stronger underwriting confidence."
+                  evidenceStrength={deepDive.gap.missing_critical_facts.length > 0 ? 'weak' : 'moderate'}
+                  weaknesses={deepDive.gap.missing_critical_facts.map((k) => `Missing key input: ${humanizeCriticalFieldName(k)}`)}
+                  openQuestions={deepDive.gap.verification_requests.map((v) => normalizeDeepDiveText(v))}
+                />
+              </CollapsibleSection>
+            )}
 
             <div className="flex gap-8">
               <aside className="hidden lg:block">
@@ -169,60 +188,60 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDi
                 <CollapsibleSection title="1. Market" id="market" evidenceCoverage={sourceCoverage}>
                   <SubSection
                     title="TAM Realism"
-                    summary={firstText(deepDive.market.tam_reasoning.notes)}
+                    summary={normalizeDeepDiveText(firstText(deepDive.market.tam_reasoning.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.market.tam_reasoning.evidence_strength)}
-                    evidence={deepDive.market.tam_reasoning.evidence_refs}
+                    evidence={humanizeEvidenceRefs(deepDive.market.tam_reasoning.evidence_refs)}
                   />
                   <SubSection
                     title="Market Timing"
-                    summary={firstText(deepDive.market.timing_logic.notes)}
+                    summary={normalizeDeepDiveText(firstText(deepDive.market.timing_logic.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.market.timing_logic.evidence_strength)}
-                    evidence={deepDive.market.timing_logic.evidence_refs}
+                    evidence={humanizeEvidenceRefs(deepDive.market.timing_logic.evidence_refs)}
                   />
                 </CollapsibleSection>
 
                 <CollapsibleSection title="2. Product" id="product" evidenceCoverage={sourceCoverage}>
                   <SubSection
                     title="Differentiation Detection"
-                    summary={firstText(deepDive.product.differentiation_detection.notes)}
+                    summary={normalizeDeepDiveText(firstText(deepDive.product.differentiation_detection.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.product.differentiation_detection.evidence_strength)}
-                    evidence={deepDive.product.differentiation_detection.evidence_refs}
+                    evidence={humanizeEvidenceRefs(deepDive.product.differentiation_detection.evidence_refs)}
                   />
                   <SubSection
                     title="Defensibility Logic"
-                    summary={firstText(deepDive.product.defensibility_logic.notes)}
+                    summary={normalizeDeepDiveText(firstText(deepDive.product.defensibility_logic.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.product.defensibility_logic.evidence_strength)}
-                    evidence={deepDive.product.defensibility_logic.evidence_refs}
+                    evidence={humanizeEvidenceRefs(deepDive.product.defensibility_logic.evidence_refs)}
                   />
                 </CollapsibleSection>
 
                 <CollapsibleSection title="3. Business Model" id="business-model" evidenceCoverage={sourceCoverage}>
                   <SubSection
                     title="Revenue Model Inference"
-                    summary={deepDive.business_model.revenue_model_inference.inferred_model ?? 'No inferred revenue model was provided.'}
+                    summary={normalizeDeepDiveText(deepDive.business_model.revenue_model_inference.inferred_model ?? 'The current materials do not provide a clearly supported revenue model.')}
                     evidenceStrength={toEvidenceStrength(deepDive.business_model.revenue_model_inference.evidence_strength)}
-                    evidence={deepDive.business_model.revenue_model_inference.evidence_refs}
+                    evidence={humanizeEvidenceRefs(deepDive.business_model.revenue_model_inference.evidence_refs)}
                   />
                   <SubSection
                     title="Scaling Logic"
-                    summary={firstText(deepDive.business_model.scaling_logic.notes)}
+                    summary={normalizeDeepDiveText(firstText(deepDive.business_model.scaling_logic.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.business_model.scaling_logic.evidence_strength)}
-                    evidence={deepDive.business_model.scaling_logic.evidence_refs}
+                    evidence={humanizeEvidenceRefs(deepDive.business_model.scaling_logic.evidence_refs)}
                   />
                 </CollapsibleSection>
 
                 <CollapsibleSection title="4. Traction" id="traction" evidenceCoverage={sourceCoverage}>
                   <SubSection
                     title="Growth Validation"
-                    summary={firstText(deepDive.traction.growth_validation.notes)}
+                    summary={normalizeDeepDiveText(firstText(deepDive.traction.growth_validation.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.traction.growth_validation.evidence_strength)}
-                    evidence={deepDive.traction.growth_validation.evidence_refs}
+                    evidence={humanizeEvidenceRefs(deepDive.traction.growth_validation.evidence_refs)}
                   />
                   <SubSection
                     title="Proof vs Promise"
-                    summary={firstText(deepDive.traction.proof_vs_promise_detection.notes)}
+                    summary={normalizeDeepDiveText(firstText(deepDive.traction.proof_vs_promise_detection.notes))}
                     evidenceStrength={toEvidenceStrength(deepDive.traction.proof_vs_promise_detection.evidence_strength)}
-                    evidence={deepDive.traction.proof_vs_promise_detection.evidence_refs}
+                    evidence={humanizeEvidenceRefs(deepDive.traction.proof_vs_promise_detection.evidence_refs)}
                   />
                 </CollapsibleSection>
 
@@ -231,13 +250,13 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDi
                     title="Interpretation Layer"
                     summary={
                       deepDive.financials.interpretation_layer.current_state_signals.length > 0
-                        ? deepDive.financials.interpretation_layer.current_state_signals.join(' ')
-                        : 'No current-state financial interpretation signals were produced.'
+                        ? normalizeDeepDiveText(deepDive.financials.interpretation_layer.current_state_signals.join(' '))
+                        : 'The current materials do not provide enough evidence to form a reliable current-state financial view.'
                     }
                     evidenceStrength={toEvidenceStrength(deepDive.financials.interpretation_layer.evidence_strength)}
-                    strengths={deepDive.financials.interpretation_layer.current_state_signals}
-                    openQuestions={deepDive.financials.interpretation_layer.forward_view_signals}
-                    evidence={deepDive.financials.interpretation_layer.evidence_refs}
+                    strengths={deepDive.financials.interpretation_layer.current_state_signals.map((s) => normalizeDeepDiveText(s))}
+                    openQuestions={deepDive.financials.interpretation_layer.forward_view_signals.map((s) => normalizeDeepDiveText(s))}
+                    evidence={humanizeEvidenceRefs(deepDive.financials.interpretation_layer.evidence_refs)}
                   />
                 </CollapsibleSection>
 
@@ -246,12 +265,12 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDi
                     title="Capability Inference"
                     summary={
                       deepDive.team.capability_inference.inferred_capabilities.length > 0
-                        ? deepDive.team.capability_inference.inferred_capabilities.join(' ')
-                        : 'No team capability inference was produced.'
+                        ? normalizeDeepDiveText(deepDive.team.capability_inference.inferred_capabilities.join(' '))
+                        : 'The current materials provide limited support for a strong team capability view.'
                     }
                     evidenceStrength={toEvidenceStrength(deepDive.team.capability_inference.evidence_strength)}
-                    strengths={deepDive.team.capability_inference.inferred_capabilities}
-                    evidence={deepDive.team.capability_inference.evidence_refs}
+                    strengths={deepDive.team.capability_inference.inferred_capabilities.map((s) => normalizeDeepDiveText(s))}
+                    evidence={humanizeEvidenceRefs(deepDive.team.capability_inference.evidence_refs)}
                   />
                 </CollapsibleSection>
 
@@ -262,8 +281,8 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDi
                         key={`${risk.category}:${risk.risk}`}
                         type={risk.category}
                         severity={toSeverity(risk.severity)}
-                        description={risk.risk}
-                        evidence={risk.evidence_refs.join(' | ') || 'No evidence refs'}
+                        description={normalizeDeepDiveText(risk.risk)}
+                        evidence={humanizeEvidenceRefs(risk.evidence_refs).join(' | ') || 'Source material'}
                       />
                     )) : (
                       <div className="text-zinc-400 text-sm">No risk classifications were returned.</div>
@@ -276,10 +295,10 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDi
                     {deepDive.red_flags.items.length > 0 ? deepDive.red_flags.items.map((item, idx) => (
                       <RedFlagCard
                         key={`${item.flag}:${idx}`}
-                        title={item.flag}
-                        description={`Contradiction type: ${item.contradiction_type.replace(/_/g, ' ')}`}
+                        title={normalizeDeepDiveText(item.flag)}
+                        description={humanizeContradictionType(item.contradiction_type)}
                         impact={toImpact(item.contradiction_type)}
-                        source={item.evidence_refs.join(' | ') || 'No evidence refs'}
+                        source={humanizeEvidenceRefs(item.evidence_refs).join(' | ') || 'Source material'}
                         isContradiction={true}
                       />
                     )) : (
@@ -294,14 +313,14 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error }: DealDeepDi
                       {
                         title: 'Prioritized Questions',
                         questions: deepDive.open_questions.prioritized.map((q) => ({
-                          text: q.question,
+                          text: normalizeDeepDiveText(q.question),
                           priority: toQuestionPriority(q.priority),
                         })),
                       },
                       {
                         title: 'Implementation Actions',
                         questions: deepDive.implementation.actions.map((a) => ({
-                          text: `${a.title} (${a.priority})`,
+                          text: `${humanizeActionTitle(a.title)} ${humanizeActionRationale(a.rationale)}`,
                           priority: a.priority === 'high' ? 'critical' : a.priority === 'medium' ? 'important' : 'low',
                         })),
                       },

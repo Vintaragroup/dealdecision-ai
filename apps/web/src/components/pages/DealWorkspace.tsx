@@ -26,6 +26,7 @@ import { CommentsPanel } from '../collaboration/CommentsPanel';
 import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceHeader } from '../workspace/DealWorkspaceTopSection';
 import { DealOverviewTab } from '../workspace/DealOverviewTab';
+import { DealDeepDiveTab } from '../workspace/DealDeepDiveTab';
 import { DealWorkspaceOverviewComp } from '../workspace/Dealworkspace-Legacy/dealworkspace_overview_comp';
 import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import UploadDocModal from '../upload_doc_modal';
@@ -42,7 +43,7 @@ import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthorita
 import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
 import { selectDeterministicOverviewSlotsV1 } from '../../lib/selectors/selectDeterministicOverviewSlotsV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDealDeepDive, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type DealDeepDiveResponse, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
@@ -234,6 +235,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 	const [analysisDiagnostics, setAnalysisDiagnostics] = useState<DealAnalysisDiagnosticsSnapshot | null>(null);
 	const [analysisDiagnosticsStatus, setAnalysisDiagnosticsStatus] = useState<'idle' | 'loading' | 'ready'>('idle');
 	const [analysisDiagnosticsError, setAnalysisDiagnosticsError] = useState<string | null>(null);
+  const [deepDiveResponse, setDeepDiveResponse] = useState<DealDeepDiveResponse | null>(null);
+  const [deepDiveLoading, setDeepDiveLoading] = useState(false);
+  const [deepDiveError, setDeepDiveError] = useState<string | null>(null);
+  const deepDiveLoadedDealIdRef = useRef<string | null>(null);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
   const [analystFocusNodeId, setAnalystFocusNodeId] = useState<string | null>(null);
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
@@ -5210,9 +5215,51 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
   }, [dealId, activeJobId]);
 
+  useEffect(() => {
+    deepDiveLoadedDealIdRef.current = null;
+    setDeepDiveResponse(null);
+    setDeepDiveLoading(false);
+    setDeepDiveError(null);
+  }, [dealId]);
+
+  useEffect(() => {
+    if (activeTab !== 'deal-deep-dive') return;
+    if (!dealId) {
+      setDeepDiveError('Deal id is required to load deep-dive analysis.');
+      return;
+    }
+    if (deepDiveLoadedDealIdRef.current === dealId && deepDiveResponse) return;
+
+    let cancelled = false;
+    setDeepDiveLoading(true);
+    setDeepDiveError(null);
+
+    void (async () => {
+      try {
+        const payload = await apiGetDealDeepDive(dealId);
+        if (cancelled) return;
+        setDeepDiveResponse(payload);
+        deepDiveLoadedDealIdRef.current = dealId;
+      } catch (err: any) {
+        if (cancelled) return;
+        const msg = typeof err?.message === 'string' && err.message.trim().length > 0
+          ? err.message
+          : 'Failed to load deep-dive analysis.';
+        setDeepDiveError(msg);
+      } finally {
+        if (!cancelled) setDeepDiveLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, dealId, deepDiveResponse]);
+
   // Primary tabs always visible in the nav bar.
   const primaryTabs = [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
+    { id: 'deal-deep-dive', label: 'Deal Deep Dive', icon: <FileText className="w-4 h-4" /> },
     { id: 'investor-insights', label: 'Investor Insights', icon: <Lightbulb className="w-4 h-4" /> },
     { id: 'financial-audit', label: 'Financial Audit', icon: <Clipboard className="w-4 h-4" /> },
     { id: 'analyst', label: 'Graph', icon: <Eye className="w-4 h-4" /> },
@@ -9461,6 +9508,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Data Tab */}
             {activeTab === 'data' && (
               <DataTab dealId={dealId || 'demo'} darkMode={darkMode} />
+            )}
+
+            {/* Investor Insights Tab */}
+            {activeTab === 'deal-deep-dive' && (
+              <DealDeepDiveTab
+                deepDiveResponse={deepDiveResponse}
+                loading={deepDiveLoading}
+                error={deepDiveError}
+              />
             )}
 
             {/* Investor Insights Tab */}

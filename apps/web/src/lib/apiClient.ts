@@ -1706,10 +1706,169 @@ export type DealAnalysisDiagnosticsSnapshot = {
   created_at: string;
 };
 
+export type DealDeepDiveEvidenceStrengthV1 = 'strong' | 'moderate' | 'weak' | 'none';
+
+export type DealDeepDiveV1 = {
+  schema_version: 'deal_deep_dive_v1';
+  deal_id: string;
+  analysis_version: number | null;
+  generated_at: string;
+  discovery: {
+    section: 'discovery';
+    sources: {
+      dio_present: boolean;
+      report_present: boolean;
+      investor_orchestrator_present: boolean;
+      financial_breakdown_present: boolean;
+      underwriting_readiness_present: boolean;
+    };
+    key_facts: {
+      raise_present: boolean;
+      business_model_present: boolean;
+      revenue_present: boolean;
+      customers_present: boolean;
+      growth_present: boolean;
+    };
+    diligence_open_items_count: number;
+    verification_requests_count: number;
+  };
+  gap: {
+    section: 'gap';
+    missing_critical_facts: string[];
+    underwriting_gaps: string[];
+    diligence_open_items: string[];
+    verification_requests: string[];
+  };
+  market: {
+    section: 'market';
+    tam_reasoning: {
+      status: 'supported' | 'partial' | 'missing';
+      notes: string[];
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+    timing_logic: {
+      status: 'supported' | 'partial' | 'missing';
+      notes: string[];
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+  };
+  product: {
+    section: 'product';
+    differentiation_detection: {
+      status: 'clear' | 'mixed' | 'unclear';
+      notes: string[];
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+    defensibility_logic: {
+      status: 'clear' | 'partial' | 'unclear';
+      notes: string[];
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+  };
+  business_model: {
+    section: 'business_model';
+    revenue_model_inference: {
+      inferred_model: string | null;
+      status: 'supported' | 'partial' | 'missing';
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+    scaling_logic: {
+      status: 'supported' | 'partial' | 'missing';
+      notes: string[];
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+  };
+  traction: {
+    section: 'traction';
+    growth_validation: {
+      status: 'validated' | 'partial' | 'unvalidated';
+      notes: string[];
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+    proof_vs_promise_detection: {
+      status: 'proof_heavy' | 'mixed' | 'promise_heavy';
+      notes: string[];
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+  };
+  financials: {
+    section: 'financials';
+    interpretation_layer: {
+      status: 'supported' | 'partial' | 'missing';
+      current_state_signals: string[];
+      forward_view_signals: string[];
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+  };
+  team: {
+    section: 'team';
+    capability_inference: {
+      status: 'supported' | 'partial' | 'missing';
+      inferred_capabilities: string[];
+      evidence_refs: string[];
+      evidence_strength: DealDeepDiveEvidenceStrengthV1;
+    };
+  };
+  risks: {
+    section: 'risks';
+    classification: Array<{
+      category: 'market' | 'product' | 'execution' | 'financial' | 'team' | 'other';
+      severity: 'critical' | 'high' | 'medium' | 'low';
+      risk: string;
+      evidence_refs: string[];
+    }>;
+  };
+  red_flags: {
+    section: 'red_flags';
+    items: Array<{
+      flag: string;
+      contradiction_type: 'numeric_divergence' | 'semantic_divergence' | 'source_divergence' | 'missing_critical';
+      evidence_refs: string[];
+    }>;
+  };
+  open_questions: {
+    section: 'open_questions';
+    prioritized: Array<{
+      question: string;
+      priority: 'p0' | 'p1' | 'p2';
+      reason: string;
+      evidence_refs: string[];
+    }>;
+  };
+  implementation: {
+    section: 'implementation';
+    actions: Array<{
+      action_id: string;
+      priority: 'high' | 'medium' | 'low';
+      title: string;
+      rationale: string;
+      source: 'structured_summary' | 'underwriting_readiness_v1' | 'score_explanation' | 'orchestrator_report_v1';
+    }>;
+  };
+};
+
+export type DealDeepDiveResponse = {
+  deep_dive: DealDeepDiveV1 | null;
+  reason?: string;
+};
+
 export async function apiGetDealAnalysisDiagnostics(
   dealId: string
 ): Promise<{ diagnostics: DealAnalysisDiagnosticsSnapshot | null }> {
   return request<{ diagnostics: DealAnalysisDiagnosticsSnapshot | null }>(`/api/v1/deals/${dealId}/analysis-diagnostics`);
+}
+
+export async function apiGetDealDeepDive(dealId: string): Promise<DealDeepDiveResponse> {
+  return request<DealDeepDiveResponse>(`/api/v1/deals/${dealId}/deep-dive`);
 }
 
 const inFlightDealReportRequests = new Map<string, Promise<DealReportEnvelope>>();

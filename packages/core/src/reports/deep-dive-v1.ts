@@ -36,6 +36,12 @@ type DeepDiveNormalizedInputsV1 = {
   report: any;
   orchestrator_report: any;
   classification: DeepDiveClassificationEnrichmentV1;
+  native: {
+    selected_policy_id: string | null;
+    selected_policy_confidence: number | null;
+    archetype_value: string | null;
+    archetype_confidence: number | null;
+  };
   facts: {
     raise_present: boolean;
     business_model: string | null;
@@ -91,6 +97,62 @@ const summarizeEvidenceStrength = (count: number): string => {
 };
 
 const hasFiniteNumber = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value);
+
+const asFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+};
+
+const isInsufficientBestFitLabel = (value: string | null | undefined): boolean => {
+  const label = asNonEmptyString(value);
+  if (!label) return true;
+  return /insufficient signal/i.test(label);
+};
+
+const hasStrongTaxonomyContext = (classification: DeepDiveClassificationEnrichmentV1): boolean => {
+  return classification.classificationConfidence === "strong" && !isInsufficientBestFitLabel(classification.bestFitLabel);
+};
+
+const hasHighConfidenceNativeAlignment = (normalized: DeepDiveNormalizedInputsV1): boolean => {
+  if (normalized.classification.classificationConflict) return false;
+  const policyStrong = (normalized.native.selected_policy_confidence ?? 0) >= 0.72;
+  const archetypeStrong = (normalized.native.archetype_confidence ?? 0) >= 0.72;
+  return policyStrong || archetypeStrong;
+};
+
+const countModelPathways = (value: string | null | undefined): number => {
+  const model = asNonEmptyString(value);
+  if (!model) return 0;
+  const cleaned = model.replace(/[()]/g, " ").replace(/\band\b/gi, "/").replace(/\+/g, "/");
+  const parts = cleaned
+    .split("/")
+    .map((part) => part.trim().toLowerCase())
+    .filter((part) => part.length > 0 && part !== "omnichannel" && part !== "hybrid");
+  return Array.from(new Set(parts)).length;
+};
+
+const shouldEmitHybridLanguage = (classification: DeepDiveClassificationEnrichmentV1, modelLabel: string | null | undefined): boolean => {
+  if (!classification.isHybrid) return false;
+  if (classification.classificationConfidence === "weak" || classification.classificationConfidence === "unknown") return false;
+  return countModelPathways(modelLabel) >= 2;
+};
+
+const policyIdToNativeLabel = (policyId: string | null): string | null => {
+  const p = asNonEmptyString(policyId)?.toLowerCase();
+  if (!p) return null;
+  if (p === "enterprise_saas_b2b_v1") return "B2B SaaS";
+  if (p === "consumer_fintech_platform_v1") return "Consumer Fintech Platform";
+  if (p === "consumer_ecommerce_brand_v1") return "Consumer Ecommerce Brand";
+  if (p === "physical_product_cpg_spirits_v1") return "Physical Product / CPG";
+  if (p === "healthcare_biotech_v1") return "Biotechnology";
+  if (p === "media_entertainment_ip_v1") return "Media and Entertainment IP";
+  if (p === "real_estate_underwriting") return "Real Estate Investment";
+  if (p === "fund_spv") return "Fund Vehicle";
+  if (p === "credit_memo") return "Credit Strategy";
+  if (p === "acquisition_memo") return "Acquisition Strategy";
+  if (p === "operating_startup_revenue_v1" || p === "execution_ready_v1" || p === "startup_raise") return "Operating Startup";
+  return null;
+};
 
 const toEvidenceRefs = (values: unknown[]): string[] => toUniqueStrings(values).slice(0, 16);
 
@@ -189,10 +251,40 @@ const buildNormalizedDeepDiveInputsV1 = (args: {
     orchestrator_report: orchestrator,
   });
 
+  const selectedPolicyId = asNonEmptyString(
+    args.dio?.phase1?.deal_classification_v1?.selected_policy ??
+      args.dio?.deal_classification_v1?.selected_policy ??
+      report?.selected_policy ??
+      report?.policy_id ??
+      report?.score_explanation?.aggregation?.policy_id ??
+      report?.metadata?.score_explanation?.aggregation?.policy_id
+  );
+
+  const selectedPolicyConfidence = asFiniteNumber(
+    args.dio?.phase1?.deal_classification_v1?.selected?.confidence ??
+      args.dio?.deal_classification_v1?.selected?.confidence
+  );
+
+  const archetypeValue = asNonEmptyString(
+    args.dio?.phase1?.business_archetype_v1?.value ??
+      args.dio?.business_archetype_v1?.value
+  );
+
+  const archetypeConfidence = asFiniteNumber(
+    args.dio?.phase1?.business_archetype_v1?.confidence ??
+      args.dio?.business_archetype_v1?.confidence
+  );
+
   return {
     report,
     orchestrator_report: orchestrator,
     classification,
+    native: {
+      selected_policy_id: selectedPolicyId,
+      selected_policy_confidence: selectedPolicyConfidence,
+      archetype_value: archetypeValue,
+      archetype_confidence: archetypeConfidence,
+    },
     facts: {
       raise_present: Boolean(asNonEmptyString(report?.structured_summary?.raise?.value)),
       business_model: asNonEmptyString(report?.structured_summary?.business_model?.value),
@@ -263,6 +355,8 @@ export function generateDeepDiveMarketSectionV1(args: {
 }): DeepDiveMarketSectionV1 {
   const market = args.normalized.orchestrator_report?.segments?.market;
   const classification = args.normalized.classification;
+  const taxonomyStrong = hasStrongTaxonomyContext(classification);
+  const classificationConflict = classification.classificationConflict;
   const evidenceRefs = args.normalized.signals.market_evidence_refs;
   const hasTamSignal = Array.isArray(market?.kpis) && market.kpis.some((kpi: any) => /tam|sam|som/i.test(String(kpi?.label ?? "")));
   const hasTimingSignal = Array.isArray(market?.missing_inputs)
@@ -280,9 +374,11 @@ export function generateDeepDiveMarketSectionV1(args: {
             ? "The materials do not provide a clearly supported TAM estimate. Without quantified market sizing, it is harder to test whether growth assumptions are realistic at the proposed scale."
             : "Market sizing evidence is limited in the current materials. As a result, upside potential and addressable demand should be treated as provisional until stronger support is provided.",
         summarizeEvidenceStrength(evidenceRefs.length),
-        classification.classificationConfidence !== "unknown"
+        classificationConflict
+          ? "Classification context is currently ambiguous, so market interpretation remains anchored to product-native evidence."
+          : taxonomyStrong
           ? `Best-fit industry category context points to ${classification.bestFitLabel ?? "a likely adjacent category"}; use this as directional validation rather than a replacement for product-native understanding.`
-          : "Industry taxonomy support is currently low-confidence and should not drive market conclusions on its own.",
+          : "Directional classification context is available, but remains provisional and should not drive market conclusions on its own.",
         asNonEmptyString(market?.narrative) ?? "",
       ]),
       evidence_refs: evidenceRefs,
@@ -294,8 +390,8 @@ export function generateDeepDiveMarketSectionV1(args: {
         hasTimingSignal
           ? "Market timing assumptions are generally coherent in the current evidence set. This supports a near-term execution case, provided demand and competitive dynamics remain stable."
           : "Market timing assumptions are only partially specified. This creates uncertainty around how quickly the company can convert market opportunity into reliable execution outcomes.",
-        ...(Array.isArray(classification.industryExpectations)
-          ? classification.industryExpectations.slice(0, 2).map((item) => `Industry expectation to validate: ${item}`)
+        ...(taxonomyStrong && !classificationConflict && Array.isArray(classification.industryExpectations)
+          ? classification.industryExpectations.slice(0, 1).map((item) => `Industry expectation to validate: ${item}`)
           : []),
         ...((Array.isArray(market?.missing_inputs) ? market.missing_inputs : []).map((x: any) => `Timing dependency: ${String(x)}`)),
       ]),
@@ -348,6 +444,12 @@ export function generateDeepDiveBusinessModelSectionV1(args: {
 }): DeepDiveBusinessModelSectionV1 {
   const model = args.normalized.facts.business_model;
   const classification = args.normalized.classification;
+  const taxonomyStrong = hasStrongTaxonomyContext(classification);
+  const classificationConflict = classification.classificationConflict;
+  const nativePriority = hasHighConfidenceNativeAlignment(args.normalized);
+  const policyNativeLabel = policyIdToNativeLabel(args.normalized.native.selected_policy_id);
+  const primaryModelLabel = model ?? (nativePriority ? policyNativeLabel ?? classification.inferredLabel : classification.inferredLabel);
+  const hybridSupported = shouldEmitHybridLanguage(classification, primaryModelLabel);
   const market = args.normalized.orchestrator_report?.segments?.market;
   const evidenceRefs = toEvidenceRefs([
     ...args.normalized.signals.market_evidence_refs,
@@ -361,31 +463,43 @@ export function generateDeepDiveBusinessModelSectionV1(args: {
   return {
     section: "business_model",
     revenue_model_inference: {
-      inferred_model: classification.inferredLabel ?? model,
-      status: classification.classificationConfidence === "unknown" ? (model ? "partial" : "missing") : "supported",
+      inferred_model: primaryModelLabel,
+      status: classificationConflict
+        ? (primaryModelLabel ? "partial" : "missing")
+        : classification.classificationConfidence === "unknown"
+          ? (primaryModelLabel ? "partial" : "missing")
+          : "supported",
       evidence_refs: evidenceRefs,
       evidence_strength: evidenceStrengthFromSignals({
         evidence_refs: evidenceRefs,
-        supporting_signals: classification.classificationConfidence === "strong" ? 3 : (classification.classificationConfidence === "moderate" ? 2 : (model ? 1 : 0)),
+        supporting_signals: classification.classificationConfidence === "strong" ? 3 : (classification.classificationConfidence === "moderate" ? 2 : (primaryModelLabel ? 1 : 0)),
       }),
     },
     scaling_logic: {
       status: hasScaleSignals
         ? "supported"
-        : (classification.classificationConfidence === "unknown" ? (model ? "partial" : "missing") : "partial"),
+        : (classification.classificationConfidence === "unknown" ? (primaryModelLabel ? "partial" : "missing") : "partial"),
       notes: toUniqueStrings([
         hasScaleSignals
           ? "The materials include signals that support a plausible route to scale, which strengthens the business model narrative. Execution quality remains the key determinant of whether this scaling pathway is realized."
-          : model
+          : primaryModelLabel
             ? "A business model is present, but evidence for how it scales is still limited. This leaves uncertainty around operating leverage and repeatability beyond early growth."
             : "Business model scaling logic is not yet sufficiently evidenced, limiting confidence in long-term economics.",
-        classification.classificationConfidence === "unknown"
+        classificationConflict
+          ? "Primary business model interpretation remains product-native while classification ambiguity is resolved."
+          : classification.classificationConfidence === "unknown"
           ? "Business classification confidence remains low; avoid overcommitting to one operating archetype until stronger evidence appears."
-          : `Appears to operate primarily as ${classification.inferredLabel}. Best-fit industry category context: ${classification.bestFitLabel ?? "not clearly resolved"}.`,
-        classification.isHybrid
+          : nativePriority
+            ? `Primary business model remains ${primaryModelLabel}. ${taxonomyStrong ? `Taxonomy context (${classification.bestFitLabel ?? "adjacent category"}) is secondary support.` : "Directional classification context remains secondary."}`
+            : taxonomyStrong
+              ? `Appears to operate primarily as ${primaryModelLabel}. Best-fit industry category context: ${classification.bestFitLabel ?? "not clearly resolved"}.`
+              : `Appears to operate primarily as ${primaryModelLabel}. Directional classification context is available, but remains provisional.`,
+        hybridSupported
           ? "Hybrid business signals are present; underwriting should evaluate multiple revenue and risk pathways rather than a single-model assumption."
-          : "Classification signal is relatively coherent across available business descriptors.",
-        classification.classificationConflict
+          : classification.isHybrid
+            ? "Hybrid interpretation is not asserted because multi-pathway support is currently limited."
+            : "Classification signal is relatively coherent across available business descriptors.",
+        classificationConflict
           ? `Classification conflict: ${classification.conflictReason ?? "taxonomy context and product-native signals disagree."}`
           : "No material classification conflict detected between native business description and taxonomy context.",
         ...(Array.isArray(market?.strengths) ? market.strengths.map((s: string) => `Scale signal: ${s}`) : []),
@@ -448,6 +562,8 @@ export function generateDeepDiveFinancialsSectionV1(args: {
 }): DeepDiveFinancialsSectionV1 {
   const breakdown = args.normalized.report?.financial_breakdown_v1;
   const classification = args.normalized.classification;
+  const taxonomyStrong = hasStrongTaxonomyContext(classification);
+  const classificationConflict = classification.classificationConflict;
   const evidenceRefs = args.normalized.signals.financial_evidence_refs;
   const supportCount = [
     Boolean(breakdown),
@@ -462,8 +578,11 @@ export function generateDeepDiveFinancialsSectionV1(args: {
         : "Current-state financial visibility is limited, constraining underwriting confidence.",
     ...(Array.isArray(breakdown?.current_state?.summary) ? breakdown.current_state.summary : [breakdown?.current_state?.summary]),
     args.normalized.facts.revenue_amount_present ? "Revenue data is present in structured sources." : "Revenue data is missing from structured sources.",
-    ...(Array.isArray(classification.industryExpectations)
-      ? classification.industryExpectations.slice(0, 2).map((item) => `Category expectation: ${item}`)
+    ...(taxonomyStrong && !classificationConflict && Array.isArray(classification.industryExpectations)
+      ? classification.industryExpectations.slice(0, 1).map((item) => `Category expectation: ${item}`)
+      : []),
+    ...(!taxonomyStrong && !classificationConflict
+      ? ["Directional classification context is available, but remains provisional."]
       : []),
   ]);
   const forwardSignals = toUniqueStrings([
@@ -471,9 +590,11 @@ export function generateDeepDiveFinancialsSectionV1(args: {
       ? ["Forward projections are present, enabling a directional view of future operating trajectory."]
       : ["Forward projections are limited or missing, reducing confidence in long-range planning assumptions."]),
     asNonEmptyString(breakdown?.projections?.path_to_profitability_label) ?? "",
-    classification.classificationConflict
-      ? `Financial interpretation should be stress-tested across classification scenarios: ${classification.conflictReason ?? "native signals conflict with taxonomy context."}`
-      : "Financial interpretation can use taxonomy context as a directional benchmark, while keeping product-native facts primary.",
+    classificationConflict
+      ? "Classification context is currently ambiguous; financial interpretation remains anchored to product-native and source-verified facts."
+      : taxonomyStrong
+        ? "Financial interpretation can use taxonomy context as a secondary benchmark, while keeping product-native facts primary."
+        : "Directional classification context can be noted, but remains provisional for financial interpretation.",
   ]);
 
   return {

@@ -103,4 +103,147 @@ describe("deep-dive v1 builder", () => {
     expect(deepDive.red_flags.items.some((x) => x.contradiction_type === "semantic_divergence")).toBe(true);
     expect(deepDive.implementation.actions.some((x) => x.source === "structured_summary")).toBe(true);
   });
+
+  it("suppresses explicit taxonomy assertions in market/business model/financials when classification conflicts", () => {
+    const deepDive = buildDealDeepDiveV1({
+      deal_id: "00000000-0000-4000-8000-00000000dd12",
+      dio: {
+        phase1: {
+          deal_classification_v1: {
+            selected_policy: "real_estate_underwriting",
+            selected: { confidence: 0.95 },
+          },
+          business_model_arbitration_v1: { business_model: "B2B SaaS", confidence: 0.9 },
+          business_archetype_v1: { value: "saas", confidence: 0.9 },
+        },
+      },
+      report: {
+        structured_summary: {
+          business_model: { value: "B2B SaaS" },
+          revenue: { value: { amount: 250000 } },
+          customers: { value: { count: 10 } },
+          growth: { value: { percent: 30 } },
+          raise: { value: "$1M" },
+        },
+        financial_breakdown_v1: {
+          current_state: { summary: "Financials partially available." },
+          projections: { periods: [], path_to_profitability_label: null },
+        },
+      },
+      orchestrator_report: {
+        segments: {
+          market: { kpis: [], strengths: [], missing_inputs: [], evidence_refs: [] },
+          product_profile_v1: { product_type: "SaaS", sources: [] },
+          financial: { benchmarks: [], reconciliation: { flags: [] } },
+          risk_verification: { top_risks: [], verification_requests: [], data_issues: { conflicts: [] } },
+          executive_summary: { strengths: [], open_questions: [] },
+        },
+      },
+    });
+
+    expect(
+      deepDive.market.tam_reasoning.notes.some((note) =>
+        note.includes("Best-fit industry category context points to")
+      )
+    ).toBe(false);
+    expect(
+      deepDive.business_model.scaling_logic.notes.some((note) =>
+        note.includes("Best-fit industry category context")
+      )
+    ).toBe(false);
+    expect(
+      deepDive.financials.interpretation_layer.forward_view_signals.some((note) =>
+        note.includes("secondary benchmark")
+      )
+    ).toBe(false);
+    expect(
+      deepDive.risks.classification.some((item) => item.risk.startsWith("Classification conflict:"))
+    ).toBe(true);
+    expect(
+      deepDive.red_flags.items.some((item) => item.flag.includes("Classification conflict detected"))
+    ).toBe(true);
+  });
+
+  it("uses provisional taxonomy wording when confidence is weak or unresolved", () => {
+    const deepDive = buildDealDeepDiveV1({
+      deal_id: "00000000-0000-4000-8000-00000000dd13",
+      report: {
+        structured_summary: {
+          business_model: { value: "Operating company" },
+          raise: { value: "$500k" },
+          revenue: { value: { amount: 1000 } },
+        },
+        financial_breakdown_v1: {
+          current_state: { summary: "Sparse current signals." },
+          projections: { periods: [], path_to_profitability_label: null },
+        },
+      },
+      orchestrator_report: {
+        segments: {
+          market: { kpis: [], strengths: [], missing_inputs: [], evidence_refs: [] },
+          product_profile_v1: { product_type: "unknown", sources: [] },
+          financial: { benchmarks: [], reconciliation: { flags: [] } },
+          risk_verification: { top_risks: [], verification_requests: [], data_issues: { conflicts: [] } },
+          executive_summary: { strengths: [], open_questions: [] },
+        },
+      },
+    });
+
+    expect(
+      deepDive.market.tam_reasoning.notes.some((note) =>
+        note.includes("Directional classification context is available, but remains provisional")
+      )
+    ).toBe(true);
+    expect(
+      deepDive.financials.interpretation_layer.forward_view_signals.some((note) =>
+        note.includes("remains provisional for financial interpretation")
+      )
+    ).toBe(true);
+  });
+
+  it("keeps native business model primary when native confidence is high and aligned", () => {
+    const deepDive = buildDealDeepDiveV1({
+      deal_id: "00000000-0000-4000-8000-00000000dd14",
+      dio: {
+        phase1: {
+          deal_classification_v1: {
+            selected_policy: "enterprise_saas_b2b_v1",
+            selected: { confidence: 0.92 },
+          },
+          business_model_arbitration_v1: { business_model: "B2B SaaS", confidence: 0.91 },
+          business_archetype_v1: { value: "saas", confidence: 0.9 },
+        },
+      },
+      report: {
+        structured_summary: {
+          business_model: { value: "B2B SaaS" },
+          raise: { value: "$2M" },
+          revenue: { value: { amount: 2000000 } },
+          customers: { value: { count: 20 } },
+          growth: { value: { percent: 40 } },
+        },
+      },
+      orchestrator_report: {
+        segments: {
+          market: {
+            kpis: [{ label: "TAM", value: "$5B", evidence_refs: ["ev1"] }],
+            strengths: ["Enterprise expansion"],
+            missing_inputs: [],
+            evidence_refs: ["ev2"],
+          },
+          product_profile_v1: { product_type: "SaaS", sources: [] },
+          financial: { benchmarks: [{ evidence_refs: ["ev3"] }], reconciliation: { flags: [] } },
+          risk_verification: { top_risks: [], verification_requests: [], data_issues: { conflicts: [] } },
+          executive_summary: { strengths: [], open_questions: [] },
+        },
+      },
+    });
+
+    expect(deepDive.business_model.revenue_model_inference.inferred_model).toBe("B2B SaaS");
+    expect(
+      deepDive.business_model.scaling_logic.notes.some((note) =>
+        note.includes("Primary business model remains B2B SaaS")
+      )
+    ).toBe(true);
+  });
 });

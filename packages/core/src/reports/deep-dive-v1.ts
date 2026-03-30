@@ -14,7 +14,9 @@ import type {
   DeepDiveTeamSectionV1,
   DeepDiveTractionSectionV1,
 } from "../models/deep-dive-v1.js";
+import type { DeepDiveClassificationEnrichmentV1 } from "../models/deep-dive-classification-v1.js";
 import { DealDeepDiveV1Schema } from "./deep-dive-v1.schema.js";
+import { deriveDeepDiveClassificationEnrichmentV1 } from "./deep-dive-classification-context-v1.js";
 import {
   detectDeepDiveContradictionsV1,
   evidenceStrengthFromSignals,
@@ -33,6 +35,7 @@ type BuildDealDeepDiveV1Args = {
 type DeepDiveNormalizedInputsV1 = {
   report: any;
   orchestrator_report: any;
+  classification: DeepDiveClassificationEnrichmentV1;
   facts: {
     raise_present: boolean;
     business_model: string | null;
@@ -166,6 +169,7 @@ const computeMissingCriticalFacts = (report: any): string[] => {
 };
 
 const buildNormalizedDeepDiveInputsV1 = (args: {
+  dio?: any;
   report?: any;
   orchestrator_report?: any;
 }): DeepDiveNormalizedInputsV1 => {
@@ -179,10 +183,16 @@ const buildNormalizedDeepDiveInputsV1 = (args: {
     ? orchestrator.segments.financial.benchmarks
     : [];
   const riskEvidenceRefs = readRiskEvidenceRefs(orchestrator);
+  const classification = deriveDeepDiveClassificationEnrichmentV1({
+    dio: args.dio,
+    report,
+    orchestrator_report: orchestrator,
+  });
 
   return {
     report,
     orchestrator_report: orchestrator,
+    classification,
     facts: {
       raise_present: Boolean(asNonEmptyString(report?.structured_summary?.raise?.value)),
       business_model: asNonEmptyString(report?.structured_summary?.business_model?.value),
@@ -252,6 +262,7 @@ export function generateDeepDiveMarketSectionV1(args: {
   normalized: DeepDiveNormalizedInputsV1;
 }): DeepDiveMarketSectionV1 {
   const market = args.normalized.orchestrator_report?.segments?.market;
+  const classification = args.normalized.classification;
   const evidenceRefs = args.normalized.signals.market_evidence_refs;
   const hasTamSignal = Array.isArray(market?.kpis) && market.kpis.some((kpi: any) => /tam|sam|som/i.test(String(kpi?.label ?? "")));
   const hasTimingSignal = Array.isArray(market?.missing_inputs)
@@ -269,6 +280,9 @@ export function generateDeepDiveMarketSectionV1(args: {
             ? "The materials do not provide a clearly supported TAM estimate. Without quantified market sizing, it is harder to test whether growth assumptions are realistic at the proposed scale."
             : "Market sizing evidence is limited in the current materials. As a result, upside potential and addressable demand should be treated as provisional until stronger support is provided.",
         summarizeEvidenceStrength(evidenceRefs.length),
+        classification.classificationConfidence !== "unknown"
+          ? `Best-fit industry category context points to ${classification.bestFitLabel ?? "a likely adjacent category"}; use this as directional validation rather than a replacement for product-native understanding.`
+          : "Industry taxonomy support is currently low-confidence and should not drive market conclusions on its own.",
         asNonEmptyString(market?.narrative) ?? "",
       ]),
       evidence_refs: evidenceRefs,
@@ -280,6 +294,9 @@ export function generateDeepDiveMarketSectionV1(args: {
         hasTimingSignal
           ? "Market timing assumptions are generally coherent in the current evidence set. This supports a near-term execution case, provided demand and competitive dynamics remain stable."
           : "Market timing assumptions are only partially specified. This creates uncertainty around how quickly the company can convert market opportunity into reliable execution outcomes.",
+        ...(Array.isArray(classification.industryExpectations)
+          ? classification.industryExpectations.slice(0, 2).map((item) => `Industry expectation to validate: ${item}`)
+          : []),
         ...((Array.isArray(market?.missing_inputs) ? market.missing_inputs : []).map((x: any) => `Timing dependency: ${String(x)}`)),
       ]),
       evidence_refs: evidenceRefs,
@@ -330,6 +347,7 @@ export function generateDeepDiveBusinessModelSectionV1(args: {
   normalized: DeepDiveNormalizedInputsV1;
 }): DeepDiveBusinessModelSectionV1 {
   const model = args.normalized.facts.business_model;
+  const classification = args.normalized.classification;
   const market = args.normalized.orchestrator_report?.segments?.market;
   const evidenceRefs = toEvidenceRefs([
     ...args.normalized.signals.market_evidence_refs,
@@ -343,19 +361,33 @@ export function generateDeepDiveBusinessModelSectionV1(args: {
   return {
     section: "business_model",
     revenue_model_inference: {
-      inferred_model: model,
-      status: model ? "supported" : "missing",
+      inferred_model: classification.inferredLabel ?? model,
+      status: classification.classificationConfidence === "unknown" ? (model ? "partial" : "missing") : "supported",
       evidence_refs: evidenceRefs,
-      evidence_strength: evidenceStrengthFromSignals({ evidence_refs: evidenceRefs, supporting_signals: model ? 2 : 0 }),
+      evidence_strength: evidenceStrengthFromSignals({
+        evidence_refs: evidenceRefs,
+        supporting_signals: classification.classificationConfidence === "strong" ? 3 : (classification.classificationConfidence === "moderate" ? 2 : (model ? 1 : 0)),
+      }),
     },
     scaling_logic: {
-      status: hasScaleSignals ? "supported" : (model ? "partial" : "missing"),
+      status: hasScaleSignals
+        ? "supported"
+        : (classification.classificationConfidence === "unknown" ? (model ? "partial" : "missing") : "partial"),
       notes: toUniqueStrings([
         hasScaleSignals
           ? "The materials include signals that support a plausible route to scale, which strengthens the business model narrative. Execution quality remains the key determinant of whether this scaling pathway is realized."
           : model
             ? "A business model is present, but evidence for how it scales is still limited. This leaves uncertainty around operating leverage and repeatability beyond early growth."
             : "Business model scaling logic is not yet sufficiently evidenced, limiting confidence in long-term economics.",
+        classification.classificationConfidence === "unknown"
+          ? "Business classification confidence remains low; avoid overcommitting to one operating archetype until stronger evidence appears."
+          : `Appears to operate primarily as ${classification.inferredLabel}. Best-fit industry category context: ${classification.bestFitLabel ?? "not clearly resolved"}.`,
+        classification.isHybrid
+          ? "Hybrid business signals are present; underwriting should evaluate multiple revenue and risk pathways rather than a single-model assumption."
+          : "Classification signal is relatively coherent across available business descriptors.",
+        classification.classificationConflict
+          ? `Classification conflict: ${classification.conflictReason ?? "taxonomy context and product-native signals disagree."}`
+          : "No material classification conflict detected between native business description and taxonomy context.",
         ...(Array.isArray(market?.strengths) ? market.strengths.map((s: string) => `Scale signal: ${s}`) : []),
       ]),
       evidence_refs: evidenceRefs,
@@ -415,6 +447,7 @@ export function generateDeepDiveFinancialsSectionV1(args: {
   normalized: DeepDiveNormalizedInputsV1;
 }): DeepDiveFinancialsSectionV1 {
   const breakdown = args.normalized.report?.financial_breakdown_v1;
+  const classification = args.normalized.classification;
   const evidenceRefs = args.normalized.signals.financial_evidence_refs;
   const supportCount = [
     Boolean(breakdown),
@@ -429,12 +462,18 @@ export function generateDeepDiveFinancialsSectionV1(args: {
         : "Current-state financial visibility is limited, constraining underwriting confidence.",
     ...(Array.isArray(breakdown?.current_state?.summary) ? breakdown.current_state.summary : [breakdown?.current_state?.summary]),
     args.normalized.facts.revenue_amount_present ? "Revenue data is present in structured sources." : "Revenue data is missing from structured sources.",
+    ...(Array.isArray(classification.industryExpectations)
+      ? classification.industryExpectations.slice(0, 2).map((item) => `Category expectation: ${item}`)
+      : []),
   ]);
   const forwardSignals = toUniqueStrings([
     ...(Array.isArray(breakdown?.projections?.periods) && breakdown.projections.periods.length > 0
       ? ["Forward projections are present, enabling a directional view of future operating trajectory."]
       : ["Forward projections are limited or missing, reducing confidence in long-range planning assumptions."]),
     asNonEmptyString(breakdown?.projections?.path_to_profitability_label) ?? "",
+    classification.classificationConflict
+      ? `Financial interpretation should be stress-tested across classification scenarios: ${classification.conflictReason ?? "native signals conflict with taxonomy context."}`
+      : "Financial interpretation can use taxonomy context as a directional benchmark, while keeping product-native facts primary.",
   ]);
 
   return {
@@ -496,6 +535,7 @@ export function generateDeepDiveRisksSectionV1(args: {
   const topRisks = Array.isArray(args.normalized.orchestrator_report?.segments?.risk_verification?.top_risks)
     ? args.normalized.orchestrator_report.segments.risk_verification.top_risks
     : [];
+  const classification = args.normalized.classification;
 
   const mapCategory = (value: string): "market" | "product" | "execution" | "financial" | "team" | "other" => {
     const v = value.toLowerCase();
@@ -515,14 +555,28 @@ export function generateDeepDiveRisksSectionV1(args: {
     return "low";
   };
 
+  const items = topRisks.slice(0, 12).map((risk: any) => ({
+    category: mapCategory(String(risk?.risk ?? "")),
+    severity: mapSeverity(String(risk?.severity ?? "low")),
+    risk: asNonEmptyString(risk?.risk) ?? "Unspecified risk",
+    evidence_refs: toEvidenceRefs(Array.isArray(risk?.evidence_refs) ? risk.evidence_refs : []),
+  }));
+
+  if (classification.classificationConflict) {
+    items.unshift({
+      category: "execution",
+      severity: "high",
+      risk: `Classification conflict: ${classification.conflictReason ?? "operating-category inference is inconsistent across evidence sources."}`,
+      evidence_refs: toEvidenceRefs([
+        ...args.normalized.signals.market_evidence_refs,
+        ...args.normalized.signals.product_evidence_refs,
+      ]).slice(0, 4),
+    });
+  }
+
   return {
     section: "risks",
-    classification: topRisks.slice(0, 12).map((risk: any) => ({
-      category: mapCategory(String(risk?.risk ?? "")),
-      severity: mapSeverity(String(risk?.severity ?? "low")),
-      risk: asNonEmptyString(risk?.risk) ?? "Unspecified risk",
-      evidence_refs: toEvidenceRefs(Array.isArray(risk?.evidence_refs) ? risk.evidence_refs : []),
-    })),
+    classification: items,
   };
 }
 
@@ -539,6 +593,7 @@ export function generateDeepDiveRedFlagsSectionV1(args: {
     report: args.normalized.report,
     orchestrator_report: args.normalized.orchestrator_report,
     missing_critical_facts: args.gap.missing_critical_facts,
+    classification_enrichment: args.normalized.classification,
   })
     .slice(0, 16)
     .map((item) => ({
@@ -663,6 +718,7 @@ export function generateDeepDiveImplementationSectionV1(args: {
 
 export function buildDealDeepDiveV1(args: BuildDealDeepDiveV1Args): DealDeepDiveV1 {
   const normalized = buildNormalizedDeepDiveInputsV1({
+    dio: args.dio,
     report: args.report,
     orchestrator_report: args.orchestrator_report,
   });

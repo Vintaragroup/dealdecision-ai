@@ -4,6 +4,7 @@ import type {
   DeepDiveQuestionPriorityV1,
   DeepDiveRedFlagV1,
 } from "../models/deep-dive-v1.js";
+import type { DeepDiveClassificationEnrichmentV1 } from "../models/deep-dive-classification-v1.js";
 
 const asNonEmptyString = (value: unknown): string | null => {
   if (typeof value !== "string") return null;
@@ -82,6 +83,7 @@ export const detectDeepDiveContradictionsV1 = (args: {
   report?: any;
   orchestrator_report?: any;
   missing_critical_facts?: string[];
+  classification_enrichment?: DeepDiveClassificationEnrichmentV1 | null;
 }): DeepDiveRedFlagV1[] => {
   const redFlags: DeepDiveRedFlagV1[] = [];
   const report = args.report && typeof args.report === "object" ? args.report : null;
@@ -131,6 +133,16 @@ export const detectDeepDiveContradictionsV1 = (args: {
     redFlags.push({
       flag: `${humanizeFactKey(field)} is missing; ${implicationForMissingFact(field)}.`,
       contradiction_type: "missing_critical",
+      evidence_refs: [],
+    });
+  }
+
+  if (args.classification_enrichment?.classificationConflict) {
+    redFlags.push({
+      flag: args.classification_enrichment.conflictReason
+        ? `Classification conflict detected: ${args.classification_enrichment.conflictReason}`
+        : "Classification conflict detected between product-native understanding and taxonomy context.",
+      contradiction_type: "semantic_divergence",
       evidence_refs: [],
     });
   }

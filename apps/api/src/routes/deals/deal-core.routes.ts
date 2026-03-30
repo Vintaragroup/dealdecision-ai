@@ -935,40 +935,45 @@ export async function registerDealCoreRoutes(
     const analysisVersion = typeof latest.analysis_version === "number" ? latest.analysis_version : null;
     const dioData = latest.dio_data && typeof latest.dio_data === "object" ? latest.dio_data : null;
 
-    let report: any = null;
-    if (analysisVersion != null) {
-      const { rows: cachedReportRows } = await pool.query<{ summary: any }>(
-        `SELECT summary
-           FROM ingestion_reports
-          WHERE deal_id = $1 AND analysis_version = $2
-          ORDER BY updated_at DESC NULLS LAST
-          LIMIT 1`,
-        [dealId, analysisVersion]
-      );
-      report = cachedReportRows?.[0]?.summary ?? null;
-    }
-    if (!report) {
-      report = dioData?.report ?? null;
-    }
+    const reportPromise = analysisVersion != null
+      ? pool.query<{ summary: any }>(
+          `SELECT summary
+             FROM ingestion_reports
+            WHERE deal_id = $1 AND analysis_version = $2
+            ORDER BY updated_at DESC NULLS LAST
+            LIMIT 1`,
+          [dealId, analysisVersion]
+        )
+      : Promise.resolve({ rows: [] as Array<{ summary: any }> });
+
+    const renderPackagePromise = (async (): Promise<any | null> => {
+      try {
+        const { rows } = await pool.query<{ render_package: any }>(
+          `SELECT render_package
+             FROM investor_insight_reports
+            WHERE deal_id = $1
+            ORDER BY updated_at DESC
+            LIMIT 1`,
+          [dealId]
+        );
+        return rows?.[0]?.render_package ?? null;
+      } catch (err: any) {
+        const code = typeof err?.code === "string" ? err.code : null;
+        if (code === "42P01") return null;
+        throw err;
+      }
+    })();
+
+    const [cachedReportResult, renderPackage] = await Promise.all([reportPromise, renderPackagePromise]);
+
+    const report: any = cachedReportResult?.rows?.[0]?.summary ?? dioData?.report ?? null;
 
     let orchestratorReport: any = null;
-    const hasInvestorInsightReports = await hasTable(pool as any, "investor_insight_reports");
-    if (hasInvestorInsightReports) {
-      const { rows: investorRows } = await pool.query<{ render_package: any }>(
-        `SELECT render_package
-           FROM investor_insight_reports
-          WHERE deal_id = $1
-          ORDER BY updated_at DESC
-          LIMIT 1`,
-        [dealId]
-      );
-      const renderPackage = investorRows?.[0]?.render_package ?? null;
-      if (renderPackage && Array.isArray(renderPackage.sections)) {
-        try {
-          orchestratorReport = buildOrchestratorReportV1({ dealId, renderPackage });
-        } catch {
-          orchestratorReport = null;
-        }
+    if (renderPackage && Array.isArray(renderPackage.sections)) {
+      try {
+        orchestratorReport = buildOrchestratorReportV1({ dealId, renderPackage });
+      } catch {
+        orchestratorReport = null;
       }
     }
 

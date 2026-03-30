@@ -175,8 +175,24 @@ export {
   buildDealDeepDiveV1,
   generateDeepDiveDiscoverySectionV1,
   generateDeepDiveGapSectionV1,
+  generateDeepDiveMarketSectionV1,
+  generateDeepDiveProductSectionV1,
+  generateDeepDiveBusinessModelSectionV1,
+  generateDeepDiveTractionSectionV1,
+  generateDeepDiveFinancialsSectionV1,
+  generateDeepDiveTeamSectionV1,
+  generateDeepDiveRisksSectionV1,
+  generateDeepDiveRedFlagsSectionV1,
+  generateDeepDiveOpenQuestionsSectionV1,
   generateDeepDiveImplementationSectionV1,
 } from "./reports/deep-dive-v1";
+export { DealDeepDiveV1Schema } from "./reports/deep-dive-v1.schema";
+export {
+  toUniqueStrings as deepDiveToUniqueStrings,
+  evidenceStrengthFromSignals,
+  detectDeepDiveContradictionsV1,
+  prioritizeDeepDiveQuestionsV1,
+} from "./reports/deep-dive-reasoning-v1";
 export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";
 export type { ScoreExplanation } from "./reports/score-explanation";
 export type { ScoringDiagnosticsV1 } from "./types/dio";
@@ -266,10 +282,24 @@ export type {
   DealDeepDiveV1,
   DeepDiveDiscoverySectionV1,
   DeepDiveGapSectionV1,
+  DeepDiveMarketSectionV1,
+  DeepDiveProductSectionV1,
+  DeepDiveBusinessModelSectionV1,
+  DeepDiveTractionSectionV1,
+  DeepDiveFinancialsSectionV1,
+  DeepDiveTeamSectionV1,
+  DeepDiveRisksSectionV1,
+  DeepDiveRedFlagsSectionV1,
+  DeepDiveOpenQuestionsSectionV1,
+  DeepDiveRiskItemV1,
+  DeepDiveRedFlagV1,
+  DeepDiveOpenQuestionV1,
   DeepDiveImplementationSectionV1,
   DeepDiveImplementationActionV1,
   DeepDiveActionPriorityV1,
   DeepDiveActionSourceV1,
+  DeepDiveEvidenceStrengthV1,
+  DeepDiveQuestionPriorityV1,
 } from "./models/deep-dive-v1";
 export {
   isFiniteFactValue,

@@ -37,6 +37,7 @@ import {
   getSegmentConfidenceThresholds,
   detectContentArchetypeTags,
   buildOrchestratorReportV1,
+  buildDealDeepDiveV1,
 } from "@dealdecision/core";
 import {
   BrandModel,
@@ -896,6 +897,90 @@ export async function registerDealCoreRoutes(
         consistency_warnings: coerceJsonArray((latest as any).consistency_warnings),
       },
     });
+  });
+
+  // Deterministic Deal Deep Dive (v1): discovery -> gap -> implementation actions.
+  // Read-only composition from existing persisted artifacts. No LLM calls. No DB writes.
+  app.get("/api/v1/deals/:deal_id/deep-dive", async (request, reply) => {
+    const dealId = (request.params as { deal_id: string }).deal_id;
+    if (!isUuid(dealId)) {
+      return reply.status(400).send({ error: "invalid_deal_id", message: "deal_id must be a UUID" });
+    }
+
+    const { rows: dealRows } = await pool.query<{ id: string }>(
+      `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+      [dealId]
+    );
+    if (dealRows.length === 0) {
+      return reply.status(404).send({ error: "Deal not found" });
+    }
+
+    const { rows: latestDioRows } = await pool.query<{
+      analysis_version: number | null;
+      dio_data: any;
+    }>(
+      `SELECT analysis_version, dio_data
+         FROM deal_intelligence_objects
+        WHERE deal_id = $1
+        ORDER BY analysis_version DESC NULLS LAST, updated_at DESC NULLS LAST, dio_id DESC
+        LIMIT 1`,
+      [dealId]
+    );
+
+    if (latestDioRows.length === 0) {
+      return reply.status(200).send({ deep_dive: null, reason: "analysis_not_started" });
+    }
+
+    const latest = latestDioRows[0];
+    const analysisVersion = typeof latest.analysis_version === "number" ? latest.analysis_version : null;
+    const dioData = latest.dio_data && typeof latest.dio_data === "object" ? latest.dio_data : null;
+
+    let report: any = null;
+    if (analysisVersion != null) {
+      const { rows: cachedReportRows } = await pool.query<{ summary: any }>(
+        `SELECT summary
+           FROM ingestion_reports
+          WHERE deal_id = $1 AND analysis_version = $2
+          ORDER BY updated_at DESC NULLS LAST
+          LIMIT 1`,
+        [dealId, analysisVersion]
+      );
+      report = cachedReportRows?.[0]?.summary ?? null;
+    }
+    if (!report) {
+      report = dioData?.report ?? null;
+    }
+
+    let orchestratorReport: any = null;
+    const hasInvestorInsightReports = await hasTable(pool as any, "investor_insight_reports");
+    if (hasInvestorInsightReports) {
+      const { rows: investorRows } = await pool.query<{ render_package: any }>(
+        `SELECT render_package
+           FROM investor_insight_reports
+          WHERE deal_id = $1
+          ORDER BY updated_at DESC
+          LIMIT 1`,
+        [dealId]
+      );
+      const renderPackage = investorRows?.[0]?.render_package ?? null;
+      if (renderPackage && Array.isArray(renderPackage.sections)) {
+        try {
+          orchestratorReport = buildOrchestratorReportV1({ dealId, renderPackage });
+        } catch {
+          orchestratorReport = null;
+        }
+      }
+    }
+
+    const deepDive = buildDealDeepDiveV1({
+      deal_id: dealId,
+      analysis_version: analysisVersion,
+      dio: dioData,
+      report,
+      orchestrator_report: orchestratorReport,
+    });
+
+    return reply.status(200).send({ deep_dive: deepDive });
   });
 
   // PR3: latest analysis diagnostics snapshot (read-only). No side effects.

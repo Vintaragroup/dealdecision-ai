@@ -171,6 +171,12 @@ export type {
 } from "./models/conviction-v1";
 export { buildDeterministicDealSummaryV1FromStructuredSummary } from "./reports/deal-summary-v1-deterministic";
 export { buildInvestmentAnalysisOverviewV2 } from "./reports/investment-analysis-overview-v2";
+export {
+  buildDealDeepDiveV1,
+  generateDeepDiveDiscoverySectionV1,
+  generateDeepDiveGapSectionV1,
+  generateDeepDiveImplementationSectionV1,
+} from "./reports/deep-dive-v1";
 export { buildScoreExplanationFromDIO, buildScoringDiagnosticsFromDIO } from "./reports/score-explanation";
 export type { ScoreExplanation } from "./reports/score-explanation";
 export type { ScoringDiagnosticsV1 } from "./types/dio";
@@ -256,6 +262,15 @@ export type {
   ResolvedCrossSheetValue,
   CellDependency,
 } from "./financial-facts/financial-fact-v1";
+export type {
+  DealDeepDiveV1,
+  DeepDiveDiscoverySectionV1,
+  DeepDiveGapSectionV1,
+  DeepDiveImplementationSectionV1,
+  DeepDiveImplementationActionV1,
+  DeepDiveActionPriorityV1,
+  DeepDiveActionSourceV1,
+} from "./models/deep-dive-v1";
 export {
   isFiniteFactValue,
   capFactExcerpt,

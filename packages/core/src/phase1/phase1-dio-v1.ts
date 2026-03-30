@@ -1686,15 +1686,23 @@ function detectDealTypeFromDocs(docs: Phase1GeneratorInputDocument[]): string | 
 			.filter(Boolean)
 	);
 	if (types.length === 0) return null;
-	if (types.some((t) => t === "pitch_deck")) return "startup_raise";
-	if (types.some((t) => t === "financials")) return "startup_raise";
-	return "other";
+	// Conservative fallback: document type alone is not enough to force deal type.
+	return null;
 }
 
 function detectDealType(params: { docs: Phase1GeneratorInputDocument[]; readableText: string }): string | null {
-	if (looksLikeRealEstateOffering(params.readableText)) {
+	const text = params.readableText || "";
+	if (looksLikeRealEstateOffering(text)) {
 		return /\bpreferred\s+equity\b/i.test(params.readableText) ? "real_estate_preferred_equity" : "real_estate_offering";
 	}
+
+	const fundSignals = (text.match(/\b(spv|special\s+purpose\s+vehicle|limited\s+partners?|general\s+partner|private\s+placement|subscription\s+agreement|fund\s+vehicle)\b/gi) ?? []).length;
+	if (fundSignals >= 2) return "fund_spv";
+
+	const startupSignals = (text.match(/\b(startup|venture|saas|software|platform|product|traction|go\s*-?\s*to\s*-?\s*market|arr|mrr|runway|burn)\b/gi) ?? []).length;
+	const roundSignals = (text.match(/\b(pre\s*-?seed|seed\s+round|series\s+[a-d]|raising|seeking|the\s+ask|funding\s+round)\b/gi) ?? []).length;
+	if ((startupSignals >= 3 && roundSignals >= 1) || roundSignals >= 2) return "startup_raise";
+
 	return detectDealTypeFromDocs(params.docs);
 }
 

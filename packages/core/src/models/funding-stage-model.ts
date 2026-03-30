@@ -33,6 +33,7 @@ export function inferFundingStageModelV1(input: {
   raise_sources?: Array<EvidenceRefLike> | null;
 }): FundingStageModelV1 {
   const signals: FundingStageModelV1["signals"] = [];
+  let labelSignalCount = 0;
 
   const stageScores: Record<Exclude<FundingStage, "unknown">, number> = {
     pre_seed: 0,
@@ -47,6 +48,7 @@ export function inferFundingStageModelV1(input: {
     const stage = inferStageFromAnyLabel(rawStr);
     if (!stage) return;
     stageScores[stage] += 0.6;
+    labelSignalCount += 1;
     signals.push({
       label: `${labelKind}:${stage}`,
       weight: 0.6,
@@ -70,6 +72,16 @@ export function inferFundingStageModelV1(input: {
       value: raiseAmount,
       source: src0 && typeof src0 === "object" ? src0 : undefined,
     });
+  }
+
+  // Conservative fallback: amount-only signals are too ambiguous to force a stage.
+  if (labelSignalCount === 0 && raiseStage) {
+    return {
+      funding_stage: "unknown",
+      confidence: 0.3,
+      signals,
+      notes: ["raise_amount_only_signal"],
+    };
   }
 
   const candidates = (Object.keys(stageScores) as Array<Exclude<FundingStage, "unknown">>)

@@ -252,6 +252,7 @@ function classifyDealType(input: Required<DIOContextBuilderInput>, primaryDocTyp
   const headingsText = normalizeText(input.headings.join(" \n "));
   const fullText = normalizeText(input.full_text);
   const combined = `${title}\n${headingsText}\n${fullText}`;
+  const bodyText = `${headingsText}\n${fullText}`;
 
   const fundSignals = keywordScore(combined, [
     "spv",
@@ -264,11 +265,64 @@ function classifyDealType(input: Required<DIOContextBuilderInput>, primaryDocTyp
     "subscription agreement",
     "private placement",
   ]);
+  const fundSignalsBody = keywordScore(bodyText, [
+    "spv",
+    "special purpose vehicle",
+    "limited partners",
+    "lp",
+    "general partner",
+    "gp",
+    "subscription agreement",
+    "private placement",
+  ]);
 
   const holdcoSignals = keywordScore(combined, ["holdco", "holding company", "platform", "roll-up", "roll up", "buy and build", "acquisition"]);
+  const holdcoSignalsBody = keywordScore(bodyText, ["holdco", "holding company", "platform", "roll-up", "roll up", "buy and build", "acquisition"]);
   const servicesSignals = keywordScore(combined, ["services", "agency", "consulting", "managed services", "implementation"]);
+  const servicesSignalsBody = keywordScore(bodyText, ["services", "agency", "consulting", "managed services", "implementation"]);
   const consumerSignals = keywordScore(combined, ["consumer", "cpg", "brand", "retail", "d2c", "direct-to-consumer", "direct to consumer"]);
+  const consumerSignalsBody = keywordScore(bodyText, ["consumer", "cpg", "brand", "retail", "d2c", "direct-to-consumer", "direct to consumer"]);
   const cryptoMiningSignals = keywordScore(combined, ["mining", "hashrate", "hash rate", "asic", "btc", "bitcoin", "hosting", "miners", "power cost"]);
+  const cryptoMiningSignalsBody = keywordScore(bodyText, ["mining", "hashrate", "hash rate", "asic", "btc", "bitcoin", "hosting", "miners", "power cost"]);
+  const sportsMediaSignalsBody = keywordScore(bodyText, [
+    "hockey",
+    "ice hockey",
+    "league",
+    "athlete",
+    "athletes",
+    "season",
+    "broadcast",
+    "fans",
+    "sports",
+    "media rights",
+  ]);
+  const startupSignals = keywordScore(combined, [
+    "startup",
+    "venture",
+    "saas",
+    "software",
+    "platform",
+    "product",
+    "traction",
+    "the ask",
+    "use of funds",
+    "go-to-market",
+    "go to market",
+  ]);
+  const startupSignalsBody = keywordScore(bodyText, [
+    "startup",
+    "venture",
+    "saas",
+    "software",
+    "platform",
+    "product",
+    "traction",
+    "the ask",
+    "use of funds",
+    "go-to-market",
+    "go to market",
+  ]);
+  const startupRoundSignals = keywordScore(combined, ["pre-seed", "pre seed", "seed round", "series a", "series b", "series c", "raising", "seeking"]);
 
   const scores: Record<DealType, number> = {
     startup_raise: 0,
@@ -280,14 +334,22 @@ function classifyDealType(input: Required<DIOContextBuilderInput>, primaryDocTyp
     other: 0,
   };
 
-  scores.fund_spv += Math.min(fundSignals, 6);
-  scores.holdco_platform += Math.min(holdcoSignals, 5);
-  scores.services += Math.min(servicesSignals, 5);
-  scores.consumer_product += Math.min(consumerSignals, 5);
-  scores.crypto_mining += Math.min(cryptoMiningSignals, 6);
+  scores.fund_spv += Math.min(fundSignals, 6) + Math.min(fundSignalsBody, 2);
+  scores.holdco_platform += Math.min(holdcoSignals, 5) + Math.min(holdcoSignalsBody, 2);
+  scores.services += Math.min(servicesSignals, 5) + Math.min(servicesSignalsBody, 1);
+  scores.consumer_product += Math.min(consumerSignals, 5) + Math.min(consumerSignalsBody, 1);
+  scores.crypto_mining += Math.min(cryptoMiningSignals, 6) + Math.min(cryptoMiningSignalsBody, 2);
+  scores.startup_raise += Math.min(startupSignals, 4) + Math.min(startupRoundSignals, 3) + Math.min(startupSignalsBody, 2);
+
+  // Operating-company media/sports decks frequently contain legal terms that can mimic fund docs.
+  if (sportsMediaSignalsBody >= 3 && fundSignalsBody <= 1) {
+    scores.startup_raise += 3;
+    scores.fund_spv -= 1;
+  }
 
   // Priors
-  if (primaryDocType === "pitch_deck") scores.startup_raise += 2;
+  if (primaryDocType === "pitch_deck") scores.startup_raise += 1;
+  if (primaryDocType === "exec_summary" || primaryDocType === "one_pager") scores.startup_raise += 1;
   if (primaryDocType === "business_plan_im") scores.holdco_platform += 1;
 
   const best = pickBest(scores);
@@ -295,14 +357,38 @@ function classifyDealType(input: Required<DIOContextBuilderInput>, primaryDocTyp
   const confidence = confidenceFromBestScore(best.score, maxPossible);
 
   if (best.max <= 0) {
-    // If we have a pitch-ish doc but no strong signals, assume startup raise.
-    if (primaryDocType === "pitch_deck" || primaryDocType === "exec_summary" || primaryDocType === "one_pager") {
-      return { value: "startup_raise", confidence: 0.55 };
+    // Fail closed when evidence is weak or title-only.
+    if ((startupSignals >= 2 && (startupSignalsBody > 0 || startupRoundSignals > 0)) || startupRoundSignals >= 2) {
+      return { value: "startup_raise", confidence: 0.45 };
     }
     return { value: "other", confidence: 0 };
   }
 
-  return { value: best.label, confidence };
+  if (best.label !== "startup_raise" && best.label !== "other") {
+    const bodySupportByType: Record<Exclude<DealType, "startup_raise" | "other">, number> = {
+      fund_spv: fundSignalsBody,
+      holdco_platform: holdcoSignalsBody,
+      services: servicesSignalsBody,
+      consumer_product: consumerSignalsBody,
+      crypto_mining: cryptoMiningSignalsBody,
+    };
+    const bodySupport = bodySupportByType[best.label as Exclude<DealType, "startup_raise" | "other">] ?? 0;
+    if (bodySupport <= 0 && best.score <= 2) {
+      return { value: "other", confidence: 0 };
+    }
+  }
+
+  let finalConfidence = confidence;
+  if (
+    best.label === "startup_raise" &&
+    finalConfidence < 0.55 &&
+    (primaryDocType === "pitch_deck" || primaryDocType === "exec_summary" || primaryDocType === "one_pager") &&
+    startupSignalsBody > 0
+  ) {
+    finalConfidence = 0.55;
+  }
+
+  return { value: best.label, confidence: finalConfidence };
 }
 
 function classifyVertical(input: Required<DIOContextBuilderInput>, dealType: DealType): { value: Vertical; confidence: number } {
@@ -358,17 +444,21 @@ function classifyVertical(input: Required<DIOContextBuilderInput>, dealType: Dea
 function classifyStage(input: Required<DIOContextBuilderInput>, dealType: DealType): { value: Stage; confidence: number } {
   const title = normalizeText(input.filename);
   const headingsText = normalizeText(input.headings.join(" \n "));
-  const combined = `${title}\n${headingsText}`;
+  const fullText = normalizeText(input.full_text);
+  const bodyText = `${headingsText}\n${fullText}`;
 
   if (dealType === "fund_spv") {
     return { value: "fund_ops", confidence: 0.9 };
   }
 
-  const ideaSignals = keywordScore(combined, ["idea", "concept", "pre-product", "pre product", "stealth"]);
-  const preSeedSignals = keywordScore(combined, ["pre-seed", "pre seed"]);
-  const seedSignals = keywordScore(combined, ["seed", "seed round"]);
-  const growthSignals = keywordScore(combined, ["series a", "series b", "series c", "growth stage", "scale", "scaling", "expansion"]);
-  const matureSignals = keywordScore(combined, ["profitable", "profitability", "ebitda", "mature", "ipo"]);
+  const ideaSignals = keywordScore(bodyText, ["idea stage", "concept stage", "pre-product", "pre product", "stealth"]) + Math.min(keywordScore(title, ["idea", "concept", "pre-product", "pre product", "stealth"]), 1);
+  const preSeedSignals = keywordScore(bodyText, ["pre-seed", "pre seed", "preseed"]) + Math.min(keywordScore(title, ["pre-seed", "pre seed", "preseed"]), 1);
+  const seedSignals = keywordScore(bodyText, ["seed round", "seed financing", "seed raise", "seed extension"]) + Math.min(keywordScore(title, ["seed round", "seed financing", "seed raise"]), 1);
+  const seriesASignals = keywordScore(bodyText, ["series a", "series-a", "series_a", "a round"]) + Math.min(keywordScore(title, ["series a", "series-a", "series_a"]), 1);
+  const growthSignals = keywordScore(bodyText, ["series b", "series c", "growth stage", "scaling", "expansion", "late stage"])
+    + Math.min(keywordScore(title, ["series b", "series c", "growth stage", "late stage"]), 1);
+  const matureSignals = keywordScore(bodyText, ["profitable", "profitability", "ebitda", "cash flow positive", "net income positive", "ipo"])
+    + Math.min(keywordScore(title, ["profitable", "profitability", "ebitda", "ipo"]), 1);
 
   const scores: Record<Stage, number> = {
     idea: 0,
@@ -381,18 +471,27 @@ function classifyStage(input: Required<DIOContextBuilderInput>, dealType: DealTy
   };
 
   scores.idea += Math.min(ideaSignals, 3);
-  scores.pre_seed += Math.min(preSeedSignals, 3) + (preSeedSignals > 0 ? 2 : 0);
-  scores.seed += Math.min(seedSignals, 3) + (seedSignals > 0 ? 2 : 0);
-  scores.growth += Math.min(growthSignals, 4) + (growthSignals > 0 ? 2 : 0);
-  scores.mature += Math.min(matureSignals, 4) + (matureSignals > 0 ? 2 : 0);
+  scores.pre_seed += Math.min(preSeedSignals, 4) + (preSeedSignals > 0 ? 1 : 0);
+  scores.seed += Math.min(seedSignals, 4) + (seedSignals > 0 ? 1 : 0);
+  scores.growth += Math.min(growthSignals + seriesASignals, 5) + (growthSignals > 0 || seriesASignals > 0 ? 1 : 0);
+  scores.mature += Math.min(matureSignals, 5) + (matureSignals > 0 ? 1 : 0);
 
-  const best = pickBest(scores);
-  const maxPossible = 6;
-  const confidence = confidenceFromBestScore(best.score, maxPossible);
+  const candidates = (Object.entries(scores) as Array<[Stage, number]>).filter(([stage, score]) => stage !== "unknown" && score > 0);
+  if (candidates.length === 0) return { value: "unknown", confidence: 0 };
 
-  if (best.max <= 0) return { value: "unknown", confidence: 0 };
+  const ranked = [...candidates].sort((a, b) => b[1] - a[1]);
+  const [topStage, topScore] = ranked[0]!;
+  const secondScore = ranked[1]?.[1] ?? 0;
 
-  return { value: best.label, confidence };
+  if (topScore < 2 || topScore - secondScore <= 1) {
+    return { value: "unknown", confidence: 0.35 };
+  }
+
+  const maxPossible = 7;
+  let confidence = confidenceFromBestScore(topScore, maxPossible);
+  if (topScore < 3) confidence = Math.min(confidence, 0.6);
+
+  return { value: topStage, confidence };
 }
 
 async function maybeEnhanceWithGPT52(args: {

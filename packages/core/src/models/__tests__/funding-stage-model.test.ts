@@ -14,7 +14,7 @@ describe("FundingStageModel v1", () => {
     expect(out.signals.map((s) => s.label)).toContain("funding_round_label:series_a");
   });
 
-  it("raiseAmount = 2_000_000 -> seed (moderate confidence)", () => {
+  it("raiseAmount = 2_000_000 without labels -> unknown (conservative)", () => {
     const out = inferFundingStageModelV1({
       funding_round_label: null,
       company_phase_label: null,
@@ -22,12 +22,13 @@ describe("FundingStageModel v1", () => {
       raise_sources: null,
     });
 
-    expect(out.funding_stage).toBe("seed");
-    expect(out.confidence).toBeCloseTo(0.4, 6);
+    expect(out.funding_stage).toBe("unknown");
+    expect(out.confidence).toBeCloseTo(0.3, 6);
     expect(out.signals.map((s) => s.label)).toContain("raise_amount_band:seed");
+    expect(out.notes ?? []).toContain("raise_amount_only_signal");
   });
 
-  it("raiseAmount = 800_000 -> pre_seed", () => {
+  it("raiseAmount = 800_000 without labels -> unknown (conservative)", () => {
     const out = inferFundingStageModelV1({
       funding_round_label: null,
       company_phase_label: null,
@@ -35,8 +36,9 @@ describe("FundingStageModel v1", () => {
       raise_sources: null,
     });
 
-    expect(out.funding_stage).toBe("pre_seed");
+    expect(out.funding_stage).toBe("unknown");
     expect(out.signals.map((s) => s.label)).toContain("raise_amount_band:pre_seed");
+    expect(out.notes ?? []).toContain("raise_amount_only_signal");
   });
 
   it("roundLabel = 'Series A', raiseAmount = 1_000_000 -> conflict -> unknown", () => {

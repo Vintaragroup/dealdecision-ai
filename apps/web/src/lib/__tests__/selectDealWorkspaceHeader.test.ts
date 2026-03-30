@@ -192,4 +192,69 @@ describe('selectDealWorkspaceHeader', () => {
     expect(selected.business_model.value).toBe('Usage-based SaaS');
     expect(selected.business_model.label).toBe('Attributed');
   });
+
+  test('when raise evidence is from team/advisors value claims without round context: suppresses raise display', () => {
+    const report: any = {
+      ready: true,
+      structured_summary: {
+        raise: {
+          value: '$2B Equity',
+          value_json: { amount: { amount: 2_000_000_000 } },
+          sources: [
+            {
+              segment_key: 'team',
+              slide_title: 'Advisory board has created over $2B in value',
+              note_snippet: 'created over $2B in value',
+            },
+          ],
+        },
+        kpis: {
+          raise: {
+            value: '$2B Equity',
+            sources: [
+              {
+                segment_key: 'team',
+                slide_title: 'Advisory board has created over $2B in value',
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    const selected = selectDealWorkspaceHeader(report, null);
+    expect(selected.ready).toBe(true);
+    expect(selected.raise.value).toBeNull();
+    expect(selected.raise.label).toBeUndefined();
+  });
+
+  test('when raise has explicit round label: keeps amount display', () => {
+    const report: any = {
+      ready: true,
+      structured_summary: {
+        raise: {
+          value: '$5M Seed',
+          round_label: 'Seed',
+          value_json: { amount: { amount: 5_000_000 } },
+          sources: [
+            {
+              segment_key: 'team',
+              slide_title: 'Team slide text that should not matter when round is explicit',
+            },
+          ],
+        },
+        kpis: {
+          raise: {
+            value: '$5M Seed',
+            label: 'Seed',
+          },
+        },
+      },
+    };
+
+    const selected = selectDealWorkspaceHeader(report, null);
+    expect(selected.ready).toBe(true);
+    expect(selected.raise.value).toBe('$5M');
+    expect(selected.raise.label).toBe('Seed');
+  });
 });

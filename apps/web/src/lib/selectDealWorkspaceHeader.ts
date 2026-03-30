@@ -176,6 +176,37 @@ const computeGrowthBadgeLabel = (growth: any): string | undefined => {
   return undefined;
 };
 
+const isLikelyRaiseSource = (source: Source): boolean => {
+  const segmentKey = asNonEmptyString((source as any)?.segment_key)?.toLowerCase() ?? null;
+  if (segmentKey === 'team' || segmentKey === 'advisors') return false;
+
+  const title = asNonEmptyString((source as any)?.slide_title)?.toLowerCase() ?? '';
+  const note = asNonEmptyString((source as any)?.note_snippet)?.toLowerCase() ?? '';
+  const text = `${title} ${note}`;
+
+  const hasRaiseIntent =
+    /\b(raising|raise|fundraise|fundraising|ask|seeking|series\s*[a-z]|pre[\s-]?seed|seed)\b/.test(text);
+  const hasNonRaiseValueContext =
+    /\b(in\s+value|created\s+over|valuation|enterprise\s+value|tam|sam|som|market\s+size)\b/.test(text);
+
+  if (hasNonRaiseValueContext && !hasRaiseIntent) return false;
+  return true;
+};
+
+const isTrustworthyRaise = (structuredRaise: any, kpiRaise: any): boolean => {
+  const roundLabel = asNonEmptyString(structuredRaise?.round_label) ?? asNonEmptyString(kpiRaise?.label);
+  if (roundLabel) return true;
+
+  const sources = Array.isArray(structuredRaise?.sources)
+    ? (structuredRaise.sources as Source[])
+    : Array.isArray(kpiRaise?.sources)
+      ? (kpiRaise.sources as Source[])
+      : [];
+  if (sources.length === 0) return true;
+
+  return sources.some((s) => isLikelyRaiseSource(s));
+};
+
 /**
  * Canonical selection for Deal Workspace header tiles.
  *
@@ -225,11 +256,14 @@ export function selectDealWorkspaceHeader(
     const revenueLabel = computeRevenueBadgeLabel(revenue);
     const growthLabel = computeGrowthBadgeLabel(growth);
 
+    const raiseTrusted = isTrustworthyRaise(structuredRaise, kpiRaise);
+
     const raiseValue = (() => {
+      if (!raiseTrusted) return null;
       if (raiseAmount != null) return formatMoney(raiseAmount);
       return asNonEmptyString(kpiRaise?.value) ?? asNonEmptyString(kpiRaise?.value?.raw) ?? null;
     })();
-    const raiseLabel = raiseRoundLabel ?? asNonEmptyString(kpiRaise?.label);
+    const raiseLabel = raiseTrusted ? (raiseRoundLabel ?? asNonEmptyString(kpiRaise?.label)) : null;
     const raiseSources = Array.isArray(structuredRaise?.sources)
       ? (structuredRaise.sources as Source[])
       : (Array.isArray(kpiRaise?.sources) ? (kpiRaise.sources as Source[]) : undefined);

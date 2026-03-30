@@ -5405,7 +5405,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         } catch { return null; }
       })()
       ?? null,
-    topSectionDealType,
+    topSectionDealType: reportView.dealType || topSectionDealType,
     pipelineStatus: vmPipelineStatus,
     diligencePhase: vmDiligencePhase,
     insightsScore: canonicalScoreView.score0_100 ?? 0,
@@ -5417,7 +5417,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     scoreExplanationV1, vmEvidenceCoverage, governedDealOneLinerDisplay,
     governedKeyFacts, heroFieldBindings, selectedHeader, revenueCoveragePolicy, runwayTileValue,
     burnTileValue, reportStructuredGrowthValue, overviewV2, authoritativeBusinessModel,
-    workspaceOverviewModel, topSectionDealType, vmPipelineStatus, vmDiligencePhase,
+    workspaceOverviewModel, topSectionDealType, reportView.dealType, vmPipelineStatus, vmDiligencePhase,
     selectedPolicyId, isStartupPolicySchema, topSectionRevenue, topSectionGrowth, topSectionCustomers, looksRealEstate, policyFamily,
     canonicalScoreView, topSectionConfidence,
   ]);

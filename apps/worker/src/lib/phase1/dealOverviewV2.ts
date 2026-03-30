@@ -1465,6 +1465,86 @@ function detectBusinessModelFromText(text: string): string | null {
 	return null;
 }
 
+function countKeywordHits(text: string, patterns: RegExp[]): number {
+	let count = 0;
+	for (const re of patterns) {
+		if (re.test(text)) count += 1;
+	}
+	return count;
+}
+
+function inferConservativeDealTypeFromText(text: string, raise?: string): string {
+	const t = sanitizeInlineText(text).toLowerCase();
+	if (!t) return 'other';
+
+	const realEstateSignals = countKeywordHits(t, [
+		/\breal\s+estate\b/i,
+		/\bpreferred\s+equity\b/i,
+		/\boffering\s+memorandum\b/i,
+		/\bmultifamily\b/i,
+		/\bcap\s*rate\b/i,
+		/\bnoi\b/i,
+		/\bdscr\b/i,
+		/\bltv\b/i,
+		/\btenant\b/i,
+		/\boccupanc\w*\b/i,
+		/\brent\s+roll\b/i,
+	]);
+
+	if (/\bpreferred\s+equity\b/i.test(t) && realEstateSignals >= 2) return 'real_estate_preferred_equity';
+	if (realEstateSignals >= 3) return 'real_estate_offering';
+
+	const fundSignals = countKeywordHits(t, [
+		/\bspv\b/i,
+		/\bspecial\s+purpose\s+vehicle\b/i,
+		/\blimited\s+partners?\b/i,
+		/\bgeneral\s+partner\b/i,
+		/\bprivate\s+placement\b/i,
+		/\bsubscription\s+agreement\b/i,
+		/\bfund\s+vehicle\b/i,
+		/\bcarried\s+interest\b/i,
+	]);
+
+	const startupSignals = countKeywordHits(t, [
+		/\bstartup\b/i,
+		/\bventure\b/i,
+		/\bsaas\b/i,
+		/\bsoftware\b/i,
+		/\bplatform\b/i,
+		/\bproduct\b/i,
+		/\btraction\b/i,
+		/\bgo\s*-?\s*to\s*-?\s*market\b/i,
+		/\barr\b/i,
+		/\bmrr\b/i,
+		/\bb2b\b/i,
+		/\bb2c\b/i,
+	]);
+
+	if (fundSignals >= 3 && startupSignals === 0) return 'fund_spv';
+
+	const roundSignals = countKeywordHits(t, [
+		/\bpre\s*-?seed\b/i,
+		/\bseed\s+round\b/i,
+		/\bseries\s+[a-d]\b/i,
+		/\bfunding\s+round\b/i,
+		/\bthe\s+ask\b/i,
+		/\braising\b/i,
+		/\bseeking\b/i,
+		/\brunway\b/i,
+		/\bburn\b/i,
+	]);
+
+	const hasRaise = typeof raise === 'string' && raise.trim().length > 0;
+	if ((startupSignals >= 3 && (roundSignals >= 1 || hasRaise)) || (roundSignals >= 2 && hasRaise)) {
+		return 'startup_raise';
+	}
+	if (hasRaise && realEstateSignals < 2 && fundSignals < 2) {
+		return 'startup_raise';
+	}
+
+	return 'other';
+}
+
 function detectTractionSignalsFromText(text: string): string[] {
 	const signals: Array<{ re: RegExp; label: string }> = [
 		{ re: /\barr\b/i, label: 'ARR mentioned' },
@@ -1737,7 +1817,7 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 		if (business_model && bmLine?.source) pushSource(bmLine.source);
 		traction_signals = detectTractionSignalsFromText(firstPagesText);
 		key_risks_detected = detectRiskSignalsFromText(firstPagesText);
-		deal_type = raise ? 'startup_raise' : 'other';
+		deal_type = inferConservativeDealTypeFromText(firstPagesText, raise);
 
 		if (debug) {
 			const topProduct = productCandidates.slice(0, 5).map((c) => ({
@@ -1802,12 +1882,7 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 		if (!traction_signals || traction_signals.length === 0) traction_signals = traction;
 		const risks = detectRiskSignalsFromText(combined);
 		if (!key_risks_detected || key_risks_detected.length === 0) key_risks_detected = risks;
-		deal_type = deal_type ?? (raise ? 'startup_raise' : 'other');
-	}
-
-	// If we discovered a raise later via fallback, ensure deal_type reflects that.
-	if (raise && deal_type === 'other') {
-		deal_type = 'startup_raise';
+		deal_type = deal_type ?? inferConservativeDealTypeFromText(combined, raise);
 	}
 
 	// Minimal but high-impact fallback:
@@ -2297,7 +2372,7 @@ export function buildPhase1DealUnderstandingV1(input: {
 				{ document_id: docId, note: 'risk signals (page text)', text_head: sanitizeInlineText(firstPagesText).slice(0, 120) },
 			];
 		}
-		deal_type = raise ? 'startup_raise' : 'other';
+		deal_type = inferConservativeDealTypeFromText(firstPagesText, raise);
 		confidence.deal_type = 'low';
 
 		// Deal name best-effort: first non-empty title token on page 1.
@@ -2344,7 +2419,7 @@ export function buildPhase1DealUnderstandingV1(input: {
 		key_risks_detected = detectRiskSignalsFromText(combinedFullText);
 		if (key_risks_detected.length > 0 && confidence.key_risks_detected === 'missing') confidence.key_risks_detected = 'low';
 	}
-	deal_type = deal_type ?? (raise ? 'startup_raise' : 'other');
+	deal_type = deal_type ?? inferConservativeDealTypeFromText(combinedFullText, raise);
 	if (confidence.deal_type === 'missing') confidence.deal_type = 'low';
 
 	return {

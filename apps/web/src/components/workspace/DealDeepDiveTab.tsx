@@ -8,8 +8,8 @@ import { OpenQuestionsGrid } from './Deal-Deep-Dive/open-questions-grid';
 import { SideNavigation } from './Deal-Deep-Dive/side-navigation';
 import type { DealDeepDiveResponse, DealDeepDiveV1 } from '../../lib/apiClient';
 import {
-  humanizeActionRationale,
-  humanizeActionTitle,
+  humanizeImplementationActionText,
+  humanizeOpenQuestionText,
   humanizeContradictionType,
   humanizeCriticalFieldName,
   humanizeEvidenceRefs,
@@ -55,6 +55,34 @@ const toQuestionPriority = (value: string): 'critical' | 'important' | 'low' => 
   return 'low';
 };
 
+const toSectionCoverage = (strengths: Array<DealDeepDiveV1['market']['tam_reasoning']['evidence_strength'] | undefined>): {
+  strong: number;
+  moderate: number;
+  weak: number;
+} | undefined => {
+  const values = strengths.filter((s): s is DealDeepDiveV1['market']['tam_reasoning']['evidence_strength'] => Boolean(s));
+  if (values.length === 0) return undefined;
+
+  const total = values.length;
+  const strong = Math.round((values.filter((s) => s === 'strong').length / total) * 100);
+  const moderate = Math.round((values.filter((s) => s === 'moderate').length / total) * 100);
+  const weak = Math.max(0, 100 - strong - moderate);
+
+  return { strong, moderate, weak };
+};
+
+const dedupeByText = <T extends { text: string }>(items: T[]): T[] => {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    const key = normalizeDeepDiveText(item.text).toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+};
+
 export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled = false }: DealDeepDiveTabProps) {
   const [activeSection, setActiveSection] = useState('market');
 
@@ -68,17 +96,75 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
     }
   };
 
-  const sourceCoverage = useMemo(() => {
-    if (!deepDive) return { strong: 0, moderate: 0, weak: 100 };
-    const values = [
-      deepDive.discovery.sources.dio_present,
-      deepDive.discovery.sources.report_present,
-      deepDive.discovery.sources.investor_orchestrator_present,
-      deepDive.discovery.sources.financial_breakdown_present,
-      deepDive.discovery.sources.underwriting_readiness_present,
-    ];
-    const strong = Math.round((values.filter(Boolean).length / values.length) * 100);
-    return { strong, moderate: 100 - strong, weak: 0 };
+  const sectionCoverage = useMemo(() => {
+    if (!deepDive) {
+      return {
+        market: undefined,
+        product: undefined,
+        businessModel: undefined,
+        traction: undefined,
+        financials: undefined,
+        team: undefined,
+      };
+    }
+
+    return {
+      market: toSectionCoverage([
+        deepDive.market.tam_reasoning.evidence_strength,
+        deepDive.market.timing_logic.evidence_strength,
+      ]),
+      product: toSectionCoverage([
+        deepDive.product.differentiation_detection.evidence_strength,
+        deepDive.product.defensibility_logic.evidence_strength,
+      ]),
+      businessModel: toSectionCoverage([
+        deepDive.business_model.revenue_model_inference.evidence_strength,
+        deepDive.business_model.scaling_logic.evidence_strength,
+      ]),
+      traction: toSectionCoverage([
+        deepDive.traction.growth_validation.evidence_strength,
+        deepDive.traction.proof_vs_promise_detection.evidence_strength,
+      ]),
+      financials: toSectionCoverage([
+        deepDive.financials.interpretation_layer.evidence_strength,
+      ]),
+      team: toSectionCoverage([
+        deepDive.team.capability_inference.evidence_strength,
+      ]),
+    };
+  }, [deepDive]);
+
+  const openQuestionItems = useMemo(() => {
+    if (!deepDive) return [] as Array<{ text: string; priority: 'critical' | 'important' | 'low' }>;
+
+    const normalized = deepDive.open_questions.prioritized.map((q) => ({
+      text: humanizeOpenQuestionText(q.question),
+      priority: toQuestionPriority(q.priority),
+    }));
+
+    return dedupeByText(normalized);
+  }, [deepDive]);
+
+  const actionItems = useMemo(() => {
+    if (!deepDive) return [] as Array<{ text: string; priority: 'critical' | 'important' | 'low' }>;
+
+    const contradictionSeen = new Set<string>();
+    const normalized = deepDive.implementation.actions
+      .map((a) => {
+        const text = humanizeImplementationActionText(a.title, a.rationale);
+        if (a.action_id.startsWith('red_flag:')) {
+          const key = normalizeDeepDiveText(text).replace(/\b(this inconsistency|reconcile conflicting evidence in a single source-of-truth summary)\b/gi, '').toLowerCase();
+          if (contradictionSeen.has(key)) return null;
+          contradictionSeen.add(key);
+        }
+        return {
+          text,
+          priority: a.priority === 'high' ? 'critical' as const : a.priority === 'medium' ? 'important' as const : 'low' as const,
+        };
+      })
+      .filter((item): item is { text: string; priority: 'critical' | 'important' | 'low' } => Boolean(item));
+
+    return dedupeByText(normalized);
   }, [deepDive]);
 
   const headerTitle = 'Deal Deep Dive';
@@ -156,12 +242,11 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                 title="0. Discovery"
                 id="discovery"
                 defaultOpen={true}
-                evidenceCoverage={sourceCoverage}
               >
                 <SubSection
                   title="Source Availability"
                   summary={`DIO: ${deepDive.discovery.sources.dio_present ? 'present' : 'missing'}; report: ${deepDive.discovery.sources.report_present ? 'present' : 'missing'}; investor orchestrator: ${deepDive.discovery.sources.investor_orchestrator_present ? 'present' : 'missing'}.`}
-                  evidenceStrength={sourceCoverage.strong >= 80 ? 'strong' : sourceCoverage.strong >= 40 ? 'moderate' : 'weak'}
+                  evidenceStrength={deepDive.discovery.sources.report_present && deepDive.discovery.sources.investor_orchestrator_present ? 'moderate' : 'weak'}
                   strengths={[
                     `Financial breakdown: ${deepDive.discovery.sources.financial_breakdown_present ? 'present' : 'missing'}`,
                     `Underwriting readiness: ${deepDive.discovery.sources.underwriting_readiness_present ? 'present' : 'missing'}`,
@@ -185,7 +270,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
               </aside>
 
               <main className="flex-1 min-w-0">
-                <CollapsibleSection title="1. Market" id="market" evidenceCoverage={sourceCoverage}>
+                <CollapsibleSection title="1. Market" id="market" evidenceCoverage={sectionCoverage.market}>
                   <SubSection
                     title="TAM Realism"
                     summary={normalizeDeepDiveText(firstText(deepDive.market.tam_reasoning.notes))}
@@ -200,7 +285,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="2. Product" id="product" evidenceCoverage={sourceCoverage}>
+                <CollapsibleSection title="2. Product" id="product" evidenceCoverage={sectionCoverage.product}>
                   <SubSection
                     title="Differentiation Detection"
                     summary={normalizeDeepDiveText(firstText(deepDive.product.differentiation_detection.notes))}
@@ -215,7 +300,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="3. Business Model" id="business-model" evidenceCoverage={sourceCoverage}>
+                <CollapsibleSection title="3. Business Model" id="business-model" evidenceCoverage={sectionCoverage.businessModel}>
                   <SubSection
                     title="Revenue Model Inference"
                     summary={normalizeDeepDiveText(deepDive.business_model.revenue_model_inference.inferred_model ?? 'The current materials do not provide a clearly supported revenue model.')}
@@ -230,7 +315,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="4. Traction" id="traction" evidenceCoverage={sourceCoverage}>
+                <CollapsibleSection title="4. Traction" id="traction" evidenceCoverage={sectionCoverage.traction}>
                   <SubSection
                     title="Growth Validation"
                     summary={normalizeDeepDiveText(firstText(deepDive.traction.growth_validation.notes))}
@@ -245,7 +330,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="5. Financials" id="financials" evidenceCoverage={sourceCoverage}>
+                <CollapsibleSection title="5. Financials" id="financials" evidenceCoverage={sectionCoverage.financials}>
                   <SubSection
                     title="Interpretation Layer"
                     summary={
@@ -260,7 +345,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="6. Team" id="team" evidenceCoverage={sourceCoverage}>
+                <CollapsibleSection title="6. Team" id="team" evidenceCoverage={sectionCoverage.team}>
                   <SubSection
                     title="Capability Inference"
                     summary={
@@ -274,7 +359,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                   />
                 </CollapsibleSection>
 
-                <CollapsibleSection title="7. Risks" id="risks" evidenceCoverage={sourceCoverage}>
+                <CollapsibleSection title="7. Risks" id="risks">
                   <div className="grid md:grid-cols-2 gap-4">
                     {deepDive.risks.classification.length > 0 ? deepDive.risks.classification.map((risk) => (
                       <RiskCard
@@ -290,7 +375,7 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                   </div>
                 </CollapsibleSection>
 
-                <CollapsibleSection title="8. Red Flags" id="red-flags" evidenceCoverage={sourceCoverage}>
+                <CollapsibleSection title="8. Red Flags" id="red-flags">
                   <div className="space-y-4">
                     {deepDive.red_flags.items.length > 0 ? deepDive.red_flags.items.map((item, idx) => (
                       <RedFlagCard
@@ -307,22 +392,16 @@ export function DealDeepDiveTab({ deepDiveResponse, loading, error, debugEnabled
                   </div>
                 </CollapsibleSection>
 
-                <CollapsibleSection title="9. Open Questions & Unknowns" id="open-questions" evidenceCoverage={sourceCoverage}>
+                <CollapsibleSection title="9. Open Questions & Unknowns" id="open-questions">
                   <OpenQuestionsGrid
                     categories={[
                       {
                         title: 'Prioritized Questions',
-                        questions: deepDive.open_questions.prioritized.map((q) => ({
-                          text: normalizeDeepDiveText(q.question),
-                          priority: toQuestionPriority(q.priority),
-                        })),
+                        questions: openQuestionItems,
                       },
                       {
                         title: 'Implementation Actions',
-                        questions: deepDive.implementation.actions.map((a) => ({
-                          text: `${humanizeActionTitle(a.title)} ${humanizeActionRationale(a.rationale)}`,
-                          priority: a.priority === 'high' ? 'critical' : a.priority === 'medium' ? 'important' : 'low',
-                        })),
+                        questions: actionItems,
                       },
                     ]}
                   />

@@ -20,10 +20,14 @@ type RewriteReplacement = string | ((...args: any[]) => string);
 
 const MACHINE_PHRASE_REWRITES: Array<[RegExp, RewriteReplacement]> = [
   [/No explicit TAM KPI evidence found\.?/gi, 'The materials do not provide a clearly supported TAM estimate.'],
+  [/No market timing gaps reported[^.]*\.?/gi, 'The current materials do not provide strong evidence that timing is a near-term advantage.'],
   [/Growth metric is missing from structured summary\.?/gi, 'The current materials do not provide a clearly supported growth metric.'],
   [/Customer metric is missing from structured summary\.?/gi, 'The current materials do not provide a clearly supported customer metric.'],
   [/Growth metric is present in structured summary\.?/gi, 'A growth metric is present in the current materials.'],
   [/Customer metric is present in structured summary\.?/gi, 'A customer metric is present in the current materials.'],
+  [/Revenue traction signal present in documentation\.?/gi, 'The materials suggest some evidence of revenue traction, but they do not provide enough context to judge consistency or quality.'],
+  [/Revenue value present\.?/gi, 'Revenue is referenced in the materials, but confidence in the figure remains limited without fuller supporting context.'],
+  [/Revenue data is present in structured sources\.?/gi, 'Revenue is referenced in the materials, but confidence depends on corroborating evidence and period consistency.'],
   [/Differentiation claims are present in product profile\.?/gi, 'The company presents a differentiation claim, but durability still needs stronger support.'],
   [/Differentiation claims are sparse or absent\.?/gi, 'Differentiation is not yet clearly supported in the current materials.'],
   [/No explicit defensibility note present\.?/gi, 'The current materials do not clearly establish long-term defensibility.'],
@@ -156,4 +160,28 @@ export function humanizeActionRationale(rationale: string): string {
   return normalizeDeepDiveText(rationale)
     .replace(/\bunderwriting_readiness_v1\b/gi, 'underwriting readiness analysis')
     .replace(/\bdeterministic\b/gi, 'current evidence-based');
+}
+
+export function humanizeOpenQuestionText(question: string): string {
+  const q = normalizeDeepDiveText(question)
+    .replace(/^What verified evidence can establish\s+/i, 'What evidence would validate ')
+    .replace(/\bbusiness_model\b/gi, 'business model')
+    .replace(/\bcustomer_count\b/gi, 'customer count')
+    .replace(/\brevenue\b/gi, 'revenue quality and repeatability')
+    .replace(/\bfundraising terms\b/gi, 'the financing structure and dilution impact')
+    .replace(/\bbusiness model\b/gi, 'the core revenue model and buyer behavior')
+    .replace(/\bcustomer count\b/gi, 'customer concentration and retention quality')
+    .replace(/\bgrowth metrics\b/gi, 'sustainable growth quality')
+    .replace(/\?\s*$/g, '?');
+
+  return q;
+}
+
+export function humanizeImplementationActionText(title: string, rationale: string): string {
+  const merged = `${humanizeActionTitle(title)} ${humanizeActionRationale(rationale)}`;
+  return normalizeDeepDiveText(merged)
+    .replace(/^Resolve evidence contradiction\.?\s*/i, 'Reconcile conflicting evidence in a single source-of-truth summary. ')
+    .replace(/^Close prioritized diligence question\.?\s*/i, 'Resolve this diligence dependency with clear primary evidence. ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }

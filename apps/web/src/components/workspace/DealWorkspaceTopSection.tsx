@@ -140,6 +140,17 @@ export function DealWorkspaceHeader({
   const displayScore = ventureLensV1?.final_investment_score ?? vcScoringV2?.vc_composite_score ?? score;
   // Active posture: prefer V3 final posture > V2 posture > null (falls back to legacy verdict)
   const activePosture = ventureLensV1?.final_posture ?? vcScoringV2?.investment_posture ?? null;
+  // Hero tooltip content — changes by active score mode
+  const heroTooltipTitle = ventureLensV1
+    ? 'Venture Lens Score'
+    : vcScoringV2
+    ? 'VC Composite Score'
+    : 'Evidence Score';
+  const heroTooltipBody = ventureLensV1
+    ? 'Final investment score derived from opportunity, confidence, and risk, then adjusted by the venture lens.'
+    : vcScoringV2
+    ? 'Composite score derived from opportunity, confidence, and risk.'
+    : 'Legacy evidence-weighted score based on available extracted deal signals.';
 
   // Verdict color scheme
   const getVerdictColor = () => {
@@ -329,7 +340,7 @@ export function DealWorkspaceHeader({
           {/* Left: Circular Score */}
           <div
             className="flex-shrink-0 pr-0 md:pr-2 relative"
-            onMouseEnter={() => { if (vcScoringV2) setHoveredTooltip('vc-composite'); }}
+            onMouseEnter={() => setHoveredTooltip('hero-score')}
             onMouseLeave={() => setHoveredTooltip(null)}
           >
             <div data-testid="radial-score-chart" className="relative w-20 h-20 sm:w-24 sm:h-24">
@@ -389,15 +400,16 @@ export function DealWorkspaceHeader({
                 Evidence: {score}
               </div>
             )}
-            {/* VC composite formula tooltip */}
-            {hoveredTooltip === 'vc-composite' && (
+            {/* Hero score tooltip — content adapts to active score mode */}
+            {hoveredTooltip === 'hero-score' && (
               <div
-                data-testid="vc-composite-tooltip"
-                className={`absolute left-1/2 -translate-x-1/2 top-full mt-1 px-2.5 py-1.5 rounded text-[11px] whitespace-nowrap z-20 ${
+                data-testid="hero-score-tooltip"
+                className={`absolute left-1/2 -translate-x-1/2 top-full mt-1 px-2.5 py-1.5 rounded text-[11px] z-20 w-52 ${
                   darkMode ? 'bg-gray-900 text-gray-300 border border-white/10' : 'bg-white text-gray-700 border border-gray-200 shadow-lg'
                 }`}
               >
-                50% Opportunity · 25% Confidence · 25% (100 − Risk)
+                <div className="font-semibold mb-0.5">{heroTooltipTitle}</div>
+                <div>{heroTooltipBody}</div>
               </div>
             )}
           </div>

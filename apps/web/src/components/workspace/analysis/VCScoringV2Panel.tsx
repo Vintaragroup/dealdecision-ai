@@ -8,6 +8,9 @@
  * This component is purely presentational — no computation, no derivation.
  */
 
+import { VCScoringV2InferencePanel } from './VCScoringV2InferencePanel';
+import type { VCScoringV2InferenceLike } from '../../../lib/vcInferenceSummary';
+
 // Minimal subset of the VCScoringV2 type that this component needs.
 // Pulled from the OrchestratorReportV1.vc_scoring_v2 field in apiClient.ts.
 export interface VCScoringV2Like {
@@ -17,6 +20,8 @@ export interface VCScoringV2Like {
   vc_composite_score: number;
   investment_posture: 'PASS' | 'MONITOR' | 'INVESTIGATE' | 'HIGH_PRIORITY_DILIGENCE' | 'INVESTABLE';
   reasoning: string[];
+  /** Signal inference trace — present when inference layer ran. */
+  inference?: VCScoringV2InferenceLike;
 }
 
 interface VCScoringV2PanelProps {
@@ -105,7 +110,7 @@ function AxisBar({ label, value, darkMode, invert = false }: AxisBarProps) {
 export function VCScoringV2Panel({ darkMode, vcScoringV2 }: VCScoringV2PanelProps) {
   if (!vcScoringV2) return null;
 
-  const { opportunity_score, confidence_score, risk_score, vc_composite_score, investment_posture, reasoning } = vcScoringV2;
+  const { opportunity_score, confidence_score, risk_score, vc_composite_score, investment_posture, reasoning, inference } = vcScoringV2;
   const postureClass = postureColorClass(investment_posture, darkMode);
 
   return (
@@ -156,6 +161,11 @@ export function VCScoringV2Panel({ darkMode, vcScoringV2 }: VCScoringV2PanelProp
             </li>
           ))}
         </ul>
+      )}
+
+      {/* Inference trace — shown when backend ran the inference layer */}
+      {inference && (
+        <VCScoringV2InferencePanel inference={inference} darkMode={darkMode} />
       )}
     </div>
   );

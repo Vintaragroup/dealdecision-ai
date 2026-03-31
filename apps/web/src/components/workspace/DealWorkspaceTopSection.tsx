@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useState } from 'react';
+import { getInferenceSummary, type VCScoringV2InferenceLike } from '../../lib/vcInferenceSummary';
 
 const isPlaceholder = (v: string | undefined | null): boolean =>
   !v || v.trim() === '—' || v.trim().toLowerCase() === 'unknown';
@@ -75,6 +76,8 @@ interface DealWorkspaceHeaderProps {
     vc_composite_score: number;
     investment_posture: 'PASS' | 'MONITOR' | 'INVESTIGATE' | 'HIGH_PRIORITY_DILIGENCE' | 'INVESTABLE';
     reasoning: string[];
+    /** Signal inference trace — present when inference layer ran. */
+    inference?: VCScoringV2InferenceLike;
   } | null;
 }
 
@@ -112,7 +115,10 @@ export function DealWorkspaceHeader({
 }: DealWorkspaceHeaderProps) {
   
   const [hoveredTooltip, setHoveredTooltip] = useState<string | null>(null);
-  
+
+  // Primary display score: VC composite when V2 is available, legacy evidence score as fallback.
+  const displayScore = vcScoringV2?.vc_composite_score ?? score;
+
   // Verdict color scheme
   const getVerdictColor = () => {
     switch (verdict) {
@@ -299,7 +305,11 @@ export function DealWorkspaceHeader({
       <div className={`px-4 py-4 sm:px-6 sm:py-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:gap-6 min-h-0 md:min-h-[10rem]">
           {/* Left: Circular Score */}
-          <div className="flex-shrink-0 pr-0 md:pr-2">
+          <div
+            className="flex-shrink-0 pr-0 md:pr-2 relative"
+            onMouseEnter={() => { if (vcScoringV2) setHoveredTooltip('vc-composite'); }}
+            onMouseLeave={() => setHoveredTooltip(null)}
+          >
             <div data-testid="radial-score-chart" className="relative w-20 h-20 sm:w-24 sm:h-24">
               {/* Circular progress ring */}
               <svg className="w-20 h-20 sm:w-24 sm:h-24 transform -rotate-90" viewBox="0 0 96 96">
@@ -315,10 +325,10 @@ export function DealWorkspaceHeader({
                   cx="48"
                   cy="48"
                   r="42"
-                  stroke={score >= 75 ? '#10b981' : score >= 50 ? '#f59e0b' : '#ef4444'}
+                  stroke={displayScore >= 75 ? '#10b981' : displayScore >= 50 ? '#f59e0b' : '#ef4444'}
                   strokeWidth="5"
                   fill="none"
-                  strokeDasharray={`${(score / 100) * 264} 264`}
+                  strokeDasharray={`${(displayScore / 100) * 264} 264`}
                   strokeLinecap="round"
                   className="transition-all duration-500"
                 />
@@ -326,19 +336,48 @@ export function DealWorkspaceHeader({
               {/* Score number */}
               <div className="absolute inset-0 flex items-center justify-center">
                 <span className={`text-xl sm:text-2xl font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {score}
+                  {displayScore}
                 </span>
               </div>
             </div>
-            {/* Verdict label — muted when Investment Posture V2 is present (posture is primary signal) */}
+            {/* Score label — posture when VC V2 is present, verdict when legacy */}
             <div className={`text-center mt-1.5 text-xs font-semibold tracking-wide ${
-              vcScoringV2 ? (darkMode ? 'text-gray-500' : 'text-gray-400') : getVerdictColor()
+              vcScoringV2
+                ? (vcScoringV2.investment_posture === 'INVESTABLE' ? (darkMode ? 'text-emerald-400' : 'text-emerald-700')
+                  : vcScoringV2.investment_posture === 'HIGH_PRIORITY_DILIGENCE' ? (darkMode ? 'text-blue-400' : 'text-blue-700')
+                  : vcScoringV2.investment_posture === 'INVESTIGATE' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
+                  : vcScoringV2.investment_posture === 'MONITOR' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
+                  : (darkMode ? 'text-red-400' : 'text-red-700'))
+                : getVerdictColor()
             }`}>
-              {verdict}
+              {vcScoringV2
+                ? ({ INVESTABLE: 'Investable', HIGH_PRIORITY_DILIGENCE: 'High Priority', INVESTIGATE: 'Investigate', MONITOR: 'Monitor', PASS: 'Pass' } as Record<string, string>)[vcScoringV2.investment_posture] ?? vcScoringV2.investment_posture
+                : verdict}
             </div>
+            {/* Score caption */}
             <div className={`text-center mt-0.5 text-[10px] ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
-              Evidence Score
+              {vcScoringV2 ? 'VC Composite Score' : 'Evidence Score'}
             </div>
+            {/* Demoted evidence score — visible only when V2 composite is primary */}
+            {vcScoringV2 && (
+              <div
+                data-testid="evidence-score-secondary"
+                className={`text-center mt-0.5 text-[10px] ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}
+              >
+                Evidence: {score}
+              </div>
+            )}
+            {/* VC composite formula tooltip */}
+            {hoveredTooltip === 'vc-composite' && (
+              <div
+                data-testid="vc-composite-tooltip"
+                className={`absolute left-1/2 -translate-x-1/2 top-full mt-1 px-2.5 py-1.5 rounded text-[11px] whitespace-nowrap z-20 ${
+                  darkMode ? 'bg-gray-900 text-gray-300 border border-white/10' : 'bg-white text-gray-700 border border-gray-200 shadow-lg'
+                }`}
+              >
+                50% Opportunity · 25% Confidence · 25% (100 − Risk)
+              </div>
+            )}
           </div>
 
           {/* Center: Decision Summary */}
@@ -429,6 +468,7 @@ export function DealWorkspaceHeader({
         };
         const postureClass = postureColorMap[vcScoringV2.investment_posture] ?? (darkMode ? 'text-gray-400 bg-gray-500/10 border-gray-500/20' : 'text-gray-600 bg-gray-100 border-gray-200');
         const postureRowBg = postureRowBgMap[vcScoringV2.investment_posture] ?? '';
+        const inferenceSummary = vcScoringV2.inference ? getInferenceSummary(vcScoringV2.inference) : null;
         return (
           <div className={`px-4 py-3 sm:px-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'} ${postureRowBg}`}>
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
@@ -446,6 +486,15 @@ export function DealWorkspaceHeader({
               <span className={darkMode ? 'text-gray-500' : 'text-gray-500'}>Risk</span>
               <span className={`font-semibold ${axisColor(vcScoringV2.risk_score, true)}`}>{vcScoringV2.risk_score}</span>
             </div>
+            {inferenceSummary && (
+              <div
+                data-testid="vc-inference-summary"
+                className={`mt-1.5 text-xs flex items-center gap-1.5 ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}
+              >
+                <span className={darkMode ? 'text-gray-700' : 'text-gray-400'}>↑</span>
+                {inferenceSummary}
+              </div>
+            )}
           </div>
         );
       })()}

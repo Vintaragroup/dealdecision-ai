@@ -26,6 +26,7 @@ export * from './scoring/segment-coverage';
 export * from './scoring/scoring-input-v0';
 export * from './scoring/score-bands-v2';
 export * from './scoring/decision-v1';
+export * from './scoring/vc-scoring-v2';
 export * from './classification/content-archetypes';
 export * from './classification/business-model-arbitrator';
 export * from './classification/policy-aware-schema';

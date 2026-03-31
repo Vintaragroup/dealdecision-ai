@@ -46,6 +46,7 @@ import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '
 import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDealDeepDive, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type DealDeepDiveResponse, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
+import { useOrchestratorReport } from '../../hooks/useOrchestratorReport';
 import type { JobProgressEventV1 } from '@dealdecision/contracts';
 import { getPolicyFamily, getPolicyScoreSectionLabel, resolveSelectedPolicyIdFromAny } from '../../lib/policyUtils';
 import { debugLogger } from '../../lib/debugLogger';
@@ -141,6 +142,9 @@ type FeedbackItem = {
 export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: DealWorkspaceProps) {
   const { isAnalyst, isInvestor } = useUserRole();
   const { scoreSource, setScoreSource } = useScoreSource();
+  // VC Scoring V2 — fetched at workspace level so the top header can show the VC posture.
+  // AnalysisTab maintains its own independent call for the deeper analysis panel.
+  const { data: headerOrchData } = useOrchestratorReport(dealId);
   const dealDataExt = dealData as DealFormDataExtras | null | undefined;
   const [activeTab, setActiveTab] = useState('overview');
 
@@ -7584,6 +7588,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 ...filteredWeaknesses,
                 ...stripScoreFractionsFromItems(topSectionActionsToImprove),
               ]}
+              vcScoringV2={headerOrchData?.report?.vc_scoring_v2 ?? null}
             />
           </div>
 

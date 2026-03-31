@@ -2656,6 +2656,29 @@ export type OrchestratorReportV1 = {
     warnings: string[];
     inputs_present: Record<string, boolean>;
   };
+  /**
+   * VC Scoring V2 — parallel investment posture track.
+   * Optional: absent on older cached reports compiled before this field was added.
+   */
+  vc_scoring_v2?: {
+    opportunity_score: number;
+    confidence_score: number;
+    risk_score: number;
+    vc_composite_score: number;
+    investment_posture: 'PASS' | 'MONITOR' | 'INVESTIGATE' | 'HIGH_PRIORITY_DILIGENCE' | 'INVESTABLE';
+    reasoning: string[];
+    breakdown: {
+      opportunity: Record<string, number>;
+      confidence: Record<string, number>;
+      risk: Record<string, number>;
+    };
+    inference: {
+      market: { boosted: boolean; inferred_score: number; final_score: number; reasons: string[] };
+      product: { boosted: boolean; inferred_score: number; final_score: number; reasons: string[] };
+      team: { boosted: boolean; inferred_score: number; final_score: number; reasons: string[] };
+      traction: { boosted: boolean; inferred_score: number; final_score: number; reasons: string[] };
+    };
+  };
 };
 
 export type OrchestratorReportResponse = {

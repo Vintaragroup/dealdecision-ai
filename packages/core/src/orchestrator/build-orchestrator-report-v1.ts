@@ -67,6 +67,7 @@ import {
   computeDecision,
   type DecisionInputs,
 } from './compute-ors';
+import { computeVCScoringV2, type VCScoringV2Inputs } from '../scoring/vc-scoring-v2';
 
 // ─── Public type alias ───────────────────────────────────────────────────────
 
@@ -675,6 +676,58 @@ export function buildOrchestratorReportV1(args: {
     product_profile_v1: buildProductProfileV1Segment(rp),
   };
 
+  // ─── 10. VC Scoring V2 ────────────────────────────────────────────────────
+  // Parallel investment-posture track: opportunity / confidence / risk.
+  // Dimension scores are not available from the render package alone — all
+  // null here, which causes the implementation to fall back to neutral 50s.
+  // Traction and GTM signals are derived from canonical field presence.
+
+  const vcTractionSignals: VCScoringV2Inputs['traction_signals'] = {
+    tam_present: canonicalFields.some(
+      (f) => f.field === 'tam_value' && f.computability === 'Computable'
+    ),
+    growth_rate_present: canonicalFields.some(
+      (f) => f.field === 'growth_rate' && f.computability === 'Computable'
+    ),
+    arr_or_mrr_present: canonicalFields.some(
+      (f) => (f.field === 'arr_value' || f.field === 'mrr_value') && f.computability === 'Computable'
+    ),
+    revenue_present: canonicalFields.some(
+      (f) => (f.field === 'revenue_value' || f.field === 'revenue_latest') && f.computability === 'Computable'
+    ),
+  };
+
+  const vcGtmPresent =
+    hasSectionKey(rp, 'go_to_market') ||
+    hasSectionKey(rp, 'gtm') ||
+    canonicalFields.some((f) => f.category === 'market_claims' && f.computability === 'Computable');
+
+  const vcScoringV2Inputs: VCScoringV2Inputs = {
+    market_score_raw,
+    dimension_scores: {
+      solution_product: null,
+      problem_clarity: null,
+      team: null,
+      traction: null,
+      business_model: null,
+    },
+    gtm_signal: { present: vcGtmPresent, confidence: vcGtmPresent ? 0.7 : 0.3 },
+    traction_signals: vcTractionSignals,
+    dci_score: documentConfidence.score,
+    fhc_score: fhc.score,
+    fhc_status: fhc.status,
+    fhc_has_structured_sources: fhc.status === 'ok' && !fhc.is_deck_only_fsi,
+    reconciliation_confidence: rec?.confidence_score ?? null,
+    kpi_count: 0,
+    kpi_avg_confidence: 0.5,
+    extraction_modifier: 1.0,
+    conflict_count: conflicts.length,
+    urss_components: urssResult.components,
+    team_penalty_codes: [],
+  };
+
+  const vcScoringV2 = computeVCScoringV2(vcScoringV2Inputs);
+
   // ─── 11. Assemble report ───────────────────────────────────────────────────
 
   const composeTotal = Date.now() - startMs;
@@ -724,6 +777,7 @@ export function buildOrchestratorReportV1(args: {
     segments,
     evidence_registry: buildEmptyEvidenceRegistry(),
     diagnostics,
+    vc_scoring_v2: vcScoringV2,
   };
 }
 

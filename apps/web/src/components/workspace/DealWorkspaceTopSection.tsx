@@ -63,6 +63,19 @@ interface DealWorkspaceHeaderProps {
   scoreSummaryText?: string;
   scoreStrengthBullets?: string[];
   scoreWeaknessBullets?: string[];
+  /**
+   * VC Scoring V2 — parallel investment posture track.
+   * Optional: rendered as a compact V2 strip below the confidence row.
+   * Gracefully absent when the orchestrator report was compiled before this field was added.
+   */
+  vcScoringV2?: {
+    opportunity_score: number;
+    confidence_score: number;
+    risk_score: number;
+    vc_composite_score: number;
+    investment_posture: 'PASS' | 'MONITOR' | 'INVESTIGATE' | 'HIGH_PRIORITY_DILIGENCE' | 'INVESTABLE';
+    reasoning: string[];
+  } | null;
 }
 
 export function DealWorkspaceHeader({
@@ -95,6 +108,7 @@ export function DealWorkspaceHeader({
   scoreSummaryText,
   scoreStrengthBullets = [],
   scoreWeaknessBullets = [],
+  vcScoringV2,
 }: DealWorkspaceHeaderProps) {
   
   const [hoveredTooltip, setHoveredTooltip] = useState<string | null>(null);
@@ -316,9 +330,14 @@ export function DealWorkspaceHeader({
                 </span>
               </div>
             </div>
-            {/* Verdict label */}
-            <div className={`text-center mt-1.5 text-xs font-semibold tracking-wide ${getVerdictColor()}`}>
+            {/* Verdict label — muted when Investment Posture V2 is present (posture is primary signal) */}
+            <div className={`text-center mt-1.5 text-xs font-semibold tracking-wide ${
+              vcScoringV2 ? (darkMode ? 'text-gray-500' : 'text-gray-400') : getVerdictColor()
+            }`}>
               {verdict}
+            </div>
+            <div className={`text-center mt-0.5 text-[10px] ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+              Evidence Score
             </div>
           </div>
 
@@ -378,6 +397,58 @@ export function DealWorkspaceHeader({
           )}
         </div>
       </div>
+
+      {/* LAYER 2b — INVESTMENT POSTURE V2 (conditional — only when available) */}
+      {vcScoringV2 && (() => {
+        const POSTURE_LABELS: Record<string, string> = {
+          INVESTABLE: 'Investable',
+          HIGH_PRIORITY_DILIGENCE: 'High Priority Diligence',
+          INVESTIGATE: 'Investigate',
+          MONITOR: 'Monitor',
+          PASS: 'Pass',
+        };
+        const postureColorMap: Record<string, string> = {
+          INVESTABLE: darkMode ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' : 'text-emerald-700 bg-emerald-50 border-emerald-200',
+          HIGH_PRIORITY_DILIGENCE: darkMode ? 'text-blue-400 bg-blue-500/10 border-blue-500/30' : 'text-blue-700 bg-blue-50 border-blue-200',
+          INVESTIGATE: darkMode ? 'text-amber-400 bg-amber-500/10 border-amber-500/30' : 'text-amber-700 bg-amber-50 border-amber-200',
+          MONITOR: darkMode ? 'text-amber-400/80 bg-amber-500/5 border-amber-500/20' : 'text-amber-600 bg-amber-50 border-amber-200',
+          PASS: darkMode ? 'text-red-400 bg-red-500/10 border-red-500/30' : 'text-red-700 bg-red-50 border-red-200',
+        };
+        const axisColor = (val: number, invert = false) => {
+          const eff = invert ? 100 - val : val;
+          if (eff >= 70) return darkMode ? 'text-emerald-400' : 'text-emerald-700';
+          if (eff >= 45) return darkMode ? 'text-amber-400' : 'text-amber-600';
+          return darkMode ? 'text-red-400' : 'text-red-700';
+        };
+        const postureRowBgMap: Record<string, string> = {
+          INVESTABLE: darkMode ? 'bg-emerald-500/5' : 'bg-emerald-50/60',
+          HIGH_PRIORITY_DILIGENCE: darkMode ? 'bg-blue-500/5' : 'bg-blue-50/60',
+          INVESTIGATE: darkMode ? 'bg-amber-500/5' : 'bg-amber-50/60',
+          MONITOR: darkMode ? 'bg-amber-500/5' : 'bg-amber-50/40',
+          PASS: darkMode ? 'bg-red-500/5' : 'bg-red-50/60',
+        };
+        const postureClass = postureColorMap[vcScoringV2.investment_posture] ?? (darkMode ? 'text-gray-400 bg-gray-500/10 border-gray-500/20' : 'text-gray-600 bg-gray-100 border-gray-200');
+        const postureRowBg = postureRowBgMap[vcScoringV2.investment_posture] ?? '';
+        return (
+          <div className={`px-4 py-3 sm:px-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'} ${postureRowBg}`}>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+              <span className={`font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Investment Posture</span>
+              <span className={`px-2.5 py-1 rounded border text-xs font-bold ${postureClass}`}>
+                {POSTURE_LABELS[vcScoringV2.investment_posture] ?? vcScoringV2.investment_posture}
+              </span>
+              <span className={`hidden sm:inline ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}>|</span>
+              <span className={darkMode ? 'text-gray-500' : 'text-gray-500'}>Opportunity</span>
+              <span className={`font-semibold ${axisColor(vcScoringV2.opportunity_score)}`}>{vcScoringV2.opportunity_score}</span>
+              <span className={`hidden sm:inline ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}>·</span>
+              <span className={darkMode ? 'text-gray-500' : 'text-gray-500'}>Confidence</span>
+              <span className={`font-semibold ${axisColor(vcScoringV2.confidence_score)}`}>{vcScoringV2.confidence_score}</span>
+              <span className={`hidden sm:inline ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}>·</span>
+              <span className={darkMode ? 'text-gray-500' : 'text-gray-500'}>Risk</span>
+              <span className={`font-semibold ${axisColor(vcScoringV2.risk_score, true)}`}>{vcScoringV2.risk_score}</span>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* LAYER 3 — DECISION CONFIDENCE (COMPACT) */}
       <div className={`px-4 py-4 sm:px-6 border-b ${darkMode ? 'border-white/10' : 'border-gray-200/50'}`}>

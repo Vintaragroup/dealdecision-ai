@@ -31,6 +31,7 @@ import type { DealReportFinancialIntegrityV1 } from '../../lib/apiClient';
 import type { FinancialBreakdownV1Like, UnderwritingReadinessV1Like } from '../../lib/selectors/selectAuthoritativeFinancialBreakdownV1';
 import { resolveScoreDivergence } from '../../lib/resolveScoreDivergence';
 import { ScoreDivergenceBanner } from './analysis/ScoreDivergenceBanner';
+import { VCScoringV2Panel } from './analysis/VCScoringV2Panel';
 import type { WorkspaceVerdict } from '../../lib/resolveWorkspaceVerdict';
 
 interface AnalysisTabProps {
@@ -570,6 +571,7 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnaly
             <ScoreDivergenceBanner divergence={scoreDivergence} darkMode={darkMode} />
           </div>
         )}
+        <VCScoringV2Panel darkMode={darkMode} vcScoringV2={orchData?.report?.vc_scoring_v2 ?? null} />
         <AnalysisSnapshotDashboard
           darkMode={darkMode}
           analysis={mergedAnalysis}

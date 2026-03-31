@@ -8,6 +8,10 @@
  * risk_severity_score (URSS): 0–100 where HIGHER is WORSE.
  */
 
+import type { VCScoringV2 } from '../scoring/vc-scoring-v2';
+// Re-export so consumers of types.ts can access this type without a second import.
+export type { VCScoringV2 };
+
 // ─── Shared primitives ───────────────────────────────────────────────────────
 
 export type DciBand = "Strong" | "Good" | "Partial" | "Weak";
@@ -407,4 +411,6 @@ export interface OrchestratorReportV1 {
   segments: OrchestratorSegments;
   evidence_registry: EvidenceRegistry;
   diagnostics: OrchestratorDiagnostics;
+  /** VC Scoring V2 — parallel investment posture track (opportunity/confidence/risk). Optional: absent on older cached reports. */
+  vc_scoring_v2?: VCScoringV2;
 }

@@ -99,6 +99,13 @@ export function computeFinancialHealthComposite(raw: FhcRawInputs): FinancialHea
       ? pct(raw.reconciliation_confidence_score)
       : null;
 
+  // Track whether FSI is built from structured XLSX sources or deck signals only.
+  const hasAnyStructuredForScore =
+    raw.has_income_statement ||
+    raw.has_cash_flow ||
+    raw.has_balance_sheet ||
+    raw.has_saas_kpis;
+
   const missingIn: FinancialHealthScoreInputs = {
     fsi_evidence_strength: fsi,
     reconciliation_confidence_pct: rcRaw,
@@ -117,11 +124,16 @@ export function computeFinancialHealthComposite(raw: FhcRawInputs): FinancialHea
 
   const missing_sections = buildMissingSections(raw);
 
-  if (fsi < 15) {
+  // Threshold history: was 15 (2026-03-30 calibration → lowered to 10).
+  // Rationale: single deck signal (e.g. revenue-only = FSI=10) previously fell
+  // short of FSI=15, forcing ORS to use the DCI-derived financial proxy even
+  // when real (weak) FHC data was available.
+  if (fsi < 10) {
     return {
       status: "insufficient_data",
       score: null,
       is_proxy: false,
+      is_deck_only_fsi: !hasAnyStructuredForScore,
       missing_sections,
       inputs: missingIn,
     };
@@ -136,6 +148,7 @@ export function computeFinancialHealthComposite(raw: FhcRawInputs): FinancialHea
     status: "ok",
     score,
     is_proxy: isProxy,
+    is_deck_only_fsi: !hasAnyStructuredForScore,
     missing_sections,
     inputs: missingIn,
   };

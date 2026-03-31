@@ -136,8 +136,10 @@ export function DealWorkspaceHeader({
   
   const [hoveredTooltip, setHoveredTooltip] = useState<string | null>(null);
 
-  // Primary display score: VC composite when V2 is available, legacy evidence score as fallback.
-  const displayScore = vcScoringV2?.vc_composite_score ?? score;
+  // Primary display score: Venture Lens V3 > VC composite V2 > legacy evidence score.
+  const displayScore = ventureLensV1?.final_investment_score ?? vcScoringV2?.vc_composite_score ?? score;
+  // Active posture: prefer V3 final posture > V2 posture > null (falls back to legacy verdict)
+  const activePosture = ventureLensV1?.final_posture ?? vcScoringV2?.investment_posture ?? null;
 
   // Verdict color scheme
   const getVerdictColor = () => {
@@ -360,26 +362,26 @@ export function DealWorkspaceHeader({
                 </span>
               </div>
             </div>
-            {/* Score label — posture when VC V2 is present, verdict when legacy */}
+            {/* Score label — posture when V3/V2 is present, verdict when legacy */}
             <div className={`text-center mt-1.5 text-xs font-semibold tracking-wide ${
-              vcScoringV2
-                ? (vcScoringV2.investment_posture === 'INVESTABLE' ? (darkMode ? 'text-emerald-400' : 'text-emerald-700')
-                  : vcScoringV2.investment_posture === 'HIGH_PRIORITY_DILIGENCE' ? (darkMode ? 'text-blue-400' : 'text-blue-700')
-                  : vcScoringV2.investment_posture === 'INVESTIGATE' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
-                  : vcScoringV2.investment_posture === 'MONITOR' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
+              activePosture
+                ? (activePosture === 'INVESTABLE' ? (darkMode ? 'text-emerald-400' : 'text-emerald-700')
+                  : activePosture === 'HIGH_PRIORITY_DILIGENCE' ? (darkMode ? 'text-blue-400' : 'text-blue-700')
+                  : activePosture === 'INVESTIGATE' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
+                  : activePosture === 'MONITOR' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
                   : (darkMode ? 'text-red-400' : 'text-red-700'))
                 : getVerdictColor()
             }`}>
-              {vcScoringV2
-                ? ({ INVESTABLE: 'Investable', HIGH_PRIORITY_DILIGENCE: 'High Priority', INVESTIGATE: 'Investigate', MONITOR: 'Monitor', PASS: 'Pass' } as Record<string, string>)[vcScoringV2.investment_posture] ?? vcScoringV2.investment_posture
+              {activePosture
+                ? ({ INVESTABLE: 'Investable', HIGH_PRIORITY_DILIGENCE: 'High Priority', INVESTIGATE: 'Investigate', MONITOR: 'Monitor', PASS: 'Pass' } as Record<string, string>)[activePosture] ?? activePosture
                 : verdict}
             </div>
             {/* Score caption */}
             <div className={`text-center mt-0.5 text-[10px] ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
-              {vcScoringV2 ? 'VC Composite Score' : 'Evidence Score'}
+              {ventureLensV1 ? 'Venture Lens Score' : vcScoringV2 ? 'VC Composite Score' : 'Evidence Score'}
             </div>
-            {/* Demoted evidence score — visible only when V2 composite is primary */}
-            {vcScoringV2 && (
+            {/* Demoted evidence score — visible when V3 or V2 is primary */}
+            {(ventureLensV1 || vcScoringV2) && (
               <div
                 data-testid="evidence-score-secondary"
                 className={`text-center mt-0.5 text-[10px] ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}

@@ -105,7 +105,7 @@ class PdfV2Block(BaseModel):
 
 class PdfV2NativePage(BaseModel):
     page_index: int
-    method: Literal["pdfplumber", "pymupdf"]
+    method: Literal["pdfplumber"]
     text: str
     word_count: int = 0
     image_count: int = 0

@@ -12,6 +12,10 @@ export type PdfV2ExtractMode = "v2_shadow" | "v2_primary";
 
 type PdfV2NativePage = {
 	page_index: number;
+	// "pymupdf" is retained for backward compatibility with DB-persisted records
+	// from ingestion jobs that ran before PyMuPDF was removed (2026-03-31).
+	// New pages from the Python vision_worker will always carry "pdfplumber".
+	// Do not remove this union until a DB migration clears all historical records.
 	method: "pdfplumber" | "pymupdf";
 	text: string;
 	word_count: number;

@@ -100,6 +100,9 @@ export type SlideUnderstandingV1 = {
 	version: "slide_understanding_v1";
 	created_at: string;
 	page_index: number;
+	// "pymupdf" is retained for backward compatibility with DB-persisted
+	// slide_understanding records written before PyMuPDF was removed (2026-03-31).
+	// New records will only carry "pdfplumber", "ocr", "hybrid", or "native".
 	method: "pdfplumber" | "pymupdf" | "ocr" | "hybrid" | "native";
 	text_raw: string;
 	regions: SlideUnderstandingV1Region[];
@@ -675,6 +678,7 @@ function resolveMethod(page: PdfV2UnifiedPageLike): SlideUnderstandingV1["method
 	if (final === "native") {
 		const nm = String(page.native?.method || "native").toLowerCase();
 		if (nm.includes("pdfplumber")) return "pdfplumber";
+		// Legacy: records written before 2026-03-31 may still carry method="pymupdf".
 		if (nm.includes("pymupdf")) return "pymupdf";
 		return "native";
 	}

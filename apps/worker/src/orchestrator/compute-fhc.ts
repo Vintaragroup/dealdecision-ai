@@ -94,6 +94,13 @@ function buildMissingSections(inputs: FhcRawInputs): string[] {
 export function computeFinancialHealthComposite(raw: FhcRawInputs): FinancialHealthScore {
   const fsi = computeFsi(raw);
 
+  // Track whether FSI is built from structured XLSX sources or deck signals only.
+  const hasAnyStructuredForScore =
+    raw.has_income_statement ||
+    raw.has_cash_flow ||
+    raw.has_balance_sheet ||
+    raw.has_saas_kpis;
+
   const rcRaw =
     raw.reconciliation_confidence_score !== null
       ? pct(raw.reconciliation_confidence_score)
@@ -122,6 +129,7 @@ export function computeFinancialHealthComposite(raw: FhcRawInputs): FinancialHea
       status: "insufficient_data",
       score: null,
       is_proxy: false,
+      is_deck_only_fsi: !hasAnyStructuredForScore,
       missing_sections,
       inputs: missingIn,
     };
@@ -136,6 +144,7 @@ export function computeFinancialHealthComposite(raw: FhcRawInputs): FinancialHea
     status: "ok",
     score,
     is_proxy: isProxy,
+    is_deck_only_fsi: !hasAnyStructuredForScore,
     missing_sections,
     inputs: missingIn,
   };

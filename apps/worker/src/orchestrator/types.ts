@@ -82,6 +82,9 @@ export interface FinancialHealthScore {
   /** null only when status === "insufficient_data" */
   score: number | null;
   is_proxy: boolean;
+  /** true when FSI was built exclusively from deck signals (no structured XLSX sources).
+   *  ORS must treat this as if fhc_status === "insufficient_data" — use DCI proxy. */
+  is_deck_only_fsi: boolean;
   missing_sections: string[];
   inputs: FinancialHealthScoreInputs;
 }

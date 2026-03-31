@@ -101,6 +101,9 @@ export interface OrsInputs {
   /** null when FHC is insufficient_data */
   fhc_score: number | null;
   fhc_status: FhcStatus;
+  /** true when FHC score was built from deck signals only (no XLSX structured sources).
+   *  ORS must use the DCI-derived financial proxy instead of the deck-sourced FHC score. */
+  fhc_is_deck_only_fsi?: boolean;
   urss: number;
   dci: number;
   /** true when deck has revenue/burn/arr signals (used for Series A GO guard) */
@@ -124,8 +127,9 @@ export function computeOverallRecommendationScore(inputs: OrsInputs): OrsResult 
   let financialProxy: number;
   let financialProxyUsed: boolean;
 
-  if (inputs.fhc_score === null || inputs.fhc_status === "insufficient_data") {
-    // Financial proxy rule
+  if (inputs.fhc_score === null || inputs.fhc_status === "insufficient_data" || inputs.fhc_is_deck_only_fsi === true) {
+    // Financial proxy rule: deck-sourced FHC is treated the same as insufficient_data
+    // because deck revenue/burn/runway language is marketing narrative, not structured financial truth.
     financialProxy = clamp(Math.round(0.6 * inputs.dci + 0.4 * riskQuality), 0, 100);
     financialProxyUsed = true;
   } else {
@@ -171,13 +175,15 @@ export interface DecisionInputs {
   stage: StageLabel;
   fhc_score: number | null;
   fhc_status: FhcStatus;
+  fhc_is_deck_only_fsi?: boolean;
   deck_has_strong_financial_signals: boolean;
   dci: number;
   financial_proxy_used: boolean;
 }
 
 function computeConfidenceBand(inputs: DecisionInputs): ConfidenceBand {
-  if (inputs.dci >= 70 && inputs.fhc_status !== "insufficient_data") return "High";
+  const fhcStructured = inputs.fhc_status !== "insufficient_data" && !inputs.fhc_is_deck_only_fsi;
+  if (inputs.dci >= 70 && fhcStructured) return "High";
   if (inputs.dci < 50) return "Low";
   return "Medium";
 }

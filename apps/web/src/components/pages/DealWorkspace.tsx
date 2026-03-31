@@ -31,6 +31,7 @@ import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import UploadDocModal from '../upload_doc_modal';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
 import { resolveCanonicalScore, type ResolvedScore } from '../../lib/resolveCanonicalScore';
+import { resolveWorkspaceVerdict, type WorkspaceVerdict } from '../../lib/resolveWorkspaceVerdict';
 import { selectAuthoritativeBusinessModelV1 } from '../../lib/selectors/selectAuthoritativeBusinessModelV1';
 import { selectAuthoritativeProductSummaryV1 } from '../../lib/selectors/selectAuthoritativeProductSummaryV1';
 import { selectAuthoritativeMarketSummaryV1 } from '../../lib/selectors/selectAuthoritativeMarketSummaryV1';
@@ -1552,12 +1553,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
   }
 
-  const scoreToWorkspaceDecision = (score: number): 'PASS' | 'CONSIDER' | 'FUND' => {
-    // Keep this aligned with backend report recommendation thresholds.
-    if (score >= 70) return 'FUND';
-    if (score >= 55) return 'CONSIDER';
-    return 'PASS';
-  };
 
   const recommendationRaw = typeof phase1Signals?.recommendation === 'string' ? phase1Signals.recommendation : null;
   const normalizedRecommendation = recommendationRaw ? recommendationRaw.toLowerCase().trim() : null;
@@ -1583,17 +1578,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const displayScoreSourceV1: 'fundamentals' | 'fundability_v1' =
     scoreSource === 'fundability_v1' && fundabilityScore0_100 != null ? 'fundability_v1' : 'fundamentals';
 
-  const decisionLabelSource: 'phase1_signals' | 'score_thresholds' = hasPhase1Signals ? 'phase1_signals' : 'score_thresholds';
-
-  const decisionLabel = hasPhase1Signals
-    ? (normalizedRecommendation
-      ? (normalizedRecommendation.includes('pass') || normalizedRecommendation.includes('reject')
-        ? 'PASS'
-        : normalizedRecommendation.includes('go') || normalizedRecommendation.includes('invest') || normalizedRecommendation.includes('proceed')
-          ? 'FUND'
-          : 'CONSIDER')
-      : (phase1Score != null ? scoreToWorkspaceDecision(phase1Score) : '—'))
-    : (fundamentalsScore0_100 != null ? scoreToWorkspaceDecision(fundamentalsScore0_100) : '—');
+  // [VERDICT-CONTRACT] Single canonical workspace verdict — resolveWorkspaceVerdict
+  // encapsulates the full priority chain so DealWorkspace has one decision path.
+  const _workspaceVerdict = resolveWorkspaceVerdict({
+    report: reportFromApi,
+    score: fundamentalsScore0_100,
+    phase1Signals: hasPhase1Signals
+      ? { recommendation: recommendationRaw, score: phase1Score }
+      : null,
+  });
+  const decisionLabel = _workspaceVerdict.verdict;
 
   const sectionConfidence =
     (executiveSummaryV2 && typeof executiveSummaryV2 === 'object' ? (executiveSummaryV2 as any)?.confidence?.sections : null)
@@ -1711,7 +1705,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
     : decisionLabel === 'CONSIDER'
       ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
-      : decisionLabel === 'PASS'
+      : (decisionLabel === 'PASS' || decisionLabel === 'HARD_PASS')
         ? 'bg-red-500/10 border-red-500/40 text-red-200'
         : (darkMode ? 'bg-white/5 border-white/10 text-gray-300' : 'bg-white/60 border-gray-200 text-gray-700');
 
@@ -1744,15 +1738,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const decisionMissing = missingChips.slice(0, 4);
 
   // Decision tile (investor-facing): keep copy formal and avoid internal process terms.
-  // The Decision tile is intentionally scoped to a single score source (fundamentals) to avoid confusing users.
+  // [VERDICT-CONTRACT] decisionTileLabel is now derived from the same canonical resolver as
+  // the workspace verdict — no separate threshold logic. Null score → '—' sentinel.
   const decisionTileScore0_100: number | null = fundamentalsScore0_100;
-  const decisionTileLabel: 'PASS' | 'CONSIDER' | 'FUND' | '—' =
-    decisionTileScore0_100 != null ? scoreToWorkspaceDecision(decisionTileScore0_100) : '—';
+  const decisionTileLabel: WorkspaceVerdict | '—' =
+    decisionTileScore0_100 != null ? _workspaceVerdict.verdict : '—';
   const decisionTileAccent = decisionTileLabel === 'FUND'
     ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
     : decisionTileLabel === 'CONSIDER'
       ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
-      : decisionTileLabel === 'PASS'
+      : (decisionTileLabel === 'PASS' || decisionTileLabel === 'HARD_PASS')
         ? 'bg-red-500/10 border-red-500/40 text-red-200'
         : (darkMode ? 'bg-white/5 border-white/10 text-gray-300' : 'bg-white/60 border-gray-200 text-gray-700');
 
@@ -5367,17 +5362,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return 'Early Diligence';
   })();
 
-  const vmVerdict: WorkspaceViewModelInputs['verdict'] = (() => {
-    const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
-      ? (reportFromApi as any).metadata
-      : ((reportEnvelope as any)?.report?.metadata && typeof (reportEnvelope as any).report.metadata === 'object')
-        ? (reportEnvelope as any).report.metadata
-        : null;
-    if (Boolean((reportMeta as any)?.hard_pass_guardrail_v2?.triggered)) return 'HARD_PASS';
-    if (decisionLabel === 'FUND') return 'INVEST';
-    if (decisionLabel === 'CONSIDER') return 'CONSIDER';
-    return 'PASS';
-  })();
+  const vmVerdict: WorkspaceViewModelInputs['verdict'] =
+    _workspaceVerdict.verdict === 'HARD_PASS' ? 'HARD_PASS'
+    : _workspaceVerdict.verdict === 'FUND' ? 'INVEST'
+    : _workspaceVerdict.verdict === 'CONSIDER' ? 'CONSIDER'
+    : 'PASS';
 
   const vmEvidenceCoverage: WorkspaceViewModelInputs['evidenceCoverage'] =
     decisionTileConfidenceBand === 'high' ? 'Strong'
@@ -8513,8 +8502,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                                 <div>
                                   <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recommendation</div>
                                   {(() => {
-                                    const decisionLabel = safeText((reportFromApi as any)?.metadata?.decision_v1?.label);
-                                    const recommendation = decisionLabel || reportView.recommendation || null;
+                                    // [VERDICT-CONTRACT] Use outer canonical decisionLabel (_workspaceVerdict.verdict).
+                                    // Never re-read raw decision_v1.label here — it yields snake_case 6-band keys.
+                                    const recommendation = decisionLabel || null;
                                     return <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{recommendation || '—'}</div>;
                                   })()}
                                 </div>

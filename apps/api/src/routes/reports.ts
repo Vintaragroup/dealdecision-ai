@@ -2016,10 +2016,27 @@ function attachScoreBandAndGuardrailV2(args: {
       const overrideAssessment = typeof overrideQuality?.assessment === 'string' ? String(overrideQuality.assessment) : null;
       const overrideRatio = asFiniteNumber(overrideQuality?.override_ratio);
 
-      const unadjustedPinned = Boolean((totals as any)?.unadjusted_pinned === true);
-      const unadjustedReason = (totals && typeof (totals as any).unadjusted_reason === 'string' && String((totals as any).unadjusted_reason).trim())
-        ? String((totals as any).unadjusted_reason).trim()
+      // [BACKFILL] For older DIOs where unadjusted_pinned was not persisted, recompute
+      // it deterministically from stored totals so decision_v1 severity is correct.
+      const _pinnedExplicit = (totals && (totals as any).unadjusted_pinned !== undefined)
+        ? Boolean((totals as any).unadjusted_pinned)
         : null;
+      const _scoreConfidence = asFiniteNumber(totals?.confidence_score);
+      const _kpiCountForPin = kpis.length;
+      const _pinBackfill = _pinnedExplicit === null
+        ? shouldPinUnadjusted({
+            coverageRatio,
+            kpiCount: _kpiCountForPin,
+            driftAssessment,
+            scoreConfidence: _scoreConfidence,
+          })
+        : { pinned: _pinnedExplicit, reason: null as null };
+      const unadjustedPinned = _pinnedExplicit !== null ? _pinnedExplicit : _pinBackfill.pinned;
+      const unadjustedReason = (
+        totals && typeof (totals as any).unadjusted_reason === 'string' && String((totals as any).unadjusted_reason).trim()
+      )
+        ? String((totals as any).unadjusted_reason).trim()
+        : (_pinBackfill.reason ?? null);
 
       meta.decision_v1 = computeDecisionV1({
         score_band_key: band.key,

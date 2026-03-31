@@ -161,6 +161,10 @@ function pickRaiseAmount(text: string): { money: Money | null; raw: string | nul
 			if (/(seed|series\s*[abc]|pre[- ]?seed)/.test(after) || /(seed|series\s*[abc]|pre[- ]?seed)/.test(before)) score += 1;
 			// Penalize if it looks like revenue/ARR/etc.
 			if (/(arr|revenue|sales|gmv|run[- ]?rate)/.test(before) || /(arr|revenue|sales|gmv|run[- ]?rate)/.test(after)) score -= 2;
+			// Penalize if it looks like a historical outcome rather than a fundraising ask
+			// (e.g. "created $2B in value", "helped raise $2B in enterprise value").
+			if (/(in\s+(?:enterprise\s+)?value|in\s+value\s+created)/.test(after)) score -= 3;
+			if (/(helped?\b|helping\b)/.test(before)) score -= 3;
 			// Prefer mid-sized amounts (typical raises) over tiny ones.
 			if (c.money.amount >= 250_000 && c.money.amount <= 200_000_000) score += 1;
 			return { ...c, score };
@@ -1103,6 +1107,28 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 				ts: new Date().toISOString(),
 			})
 		);
+	}
+
+	// Stale-raise cleanup: if this document scan produced no raise candidate, delete any
+	// previously stored raise_terms_v1 evidence that was sourced from THIS document.
+	// This prevents a stale false-positive raise (e.g. from a B2B abbreviation or an advisor
+	// bio page) from persisting across re-runs once the underlying detection rule is fixed.
+	// We scope the delete to `source_document_id = documentId` so that a valid raise found
+	// in a sibling document is not erased.
+	if (raiseCandidates.length === 0) {
+		const raiseEvidenceId = stableEvidenceId(dealId, 'raise_terms_v1');
+		try {
+			await pool.query(
+				`DELETE FROM evidence_items
+				  WHERE evidence_id = $1
+				    AND deal_id   = $2::uuid
+				    AND source_document_id = $3::uuid`,
+				[raiseEvidenceId, dealId, documentId]
+			);
+		} catch {
+			// Non-fatal: deletion is best-effort. On next successful promotion the
+			// stale row will be overwritten by the correct candidate.
+		}
 	}
 
 	let inserted = 0;

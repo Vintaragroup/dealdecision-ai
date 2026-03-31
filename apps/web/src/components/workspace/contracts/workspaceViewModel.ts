@@ -135,6 +135,12 @@ export type WorkspaceOverviewVM = {
   marketSummary: string;
   businessModelSummary: string;
   raiseTerms: string;
+  /**
+   * Medium-length narrative paragraph for the Investment Snapshot body.
+   * Sourced from report.investment_analysis_overview_v2.summary_medium (paragraphs[0]).
+   * Empty string when not yet extracted.
+   */
+  investmentSnapshotBody: string;
   insightsScore: number;
   insightsConfidence: 'High' | 'Medium' | 'Low';
 };

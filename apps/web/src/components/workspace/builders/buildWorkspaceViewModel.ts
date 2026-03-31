@@ -62,6 +62,8 @@ export interface WorkspaceViewModelInputs {
   governedMarket: string;
   governedBusinessModel: string;
   governedRaise: string;
+  /** Medium-length narrative for the Investment Snapshot body. Empty string when absent. */
+  investmentSnapshotBody: string;
 
   // ── KPI tiles ────────────────────────────────────────────────────────────
   selectedHeaderReady: boolean;
@@ -295,6 +297,7 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     governedMarket,
     governedBusinessModel,
     governedRaise,
+    investmentSnapshotBody,
     selectedHeaderReady,
     raiseValue,
     raiseLabel,
@@ -574,6 +577,7 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     marketSummary: sanitizeEvidenceText(governedMarket, { isRealEstateSchema }),
     businessModelSummary: sanitizeEvidenceText(governedBusinessModel, { isRealEstateSchema }),
     raiseTerms: sanitizeEvidenceText(governedRaise, { isRealEstateSchema: false }),
+    investmentSnapshotBody,
     insightsScore,
     insightsConfidence,
   };

@@ -45,6 +45,11 @@ type DealOverviewTabProps = {
   marketSummary: string;
   businessModelSummary: string;
   raiseTerms: string;
+  /**
+   * Medium-length narrative paragraph from investment_analysis_overview_v2.summary_medium.
+   * When non-empty, replaces the stitched productSummary/marketSummary/businessModelSummary paragraph.
+   */
+  investmentSnapshotBody?: string;
 
   insightsScore: number;
   insightsConfidence: 'High' | 'Medium' | 'Low';
@@ -93,6 +98,7 @@ export function DealOverviewTab({
   productSummary,
   marketSummary,
   businessModelSummary,
+  investmentSnapshotBody,
   onOpenInsights,
 }: DealOverviewTabProps) {
   const stageValue = firstValueForLabel(deal, /stage|phase|status/i);
@@ -157,13 +163,17 @@ export function DealOverviewTab({
 
         <div className={`rounded-xl border p-8 ${surfaceClass}`}>
           <h2 className={`text-sm uppercase tracking-wide mb-4 ${mutedClass}`}>Investment Snapshot</h2>
-          <p className={`text-base leading-relaxed ${bodyClass}`}>
-            <strong className={titleClass}>{businessModelSummary || 'Business model context unavailable.'}</strong>
-            {' '}
-            {marketSummary || 'Market summary unavailable.'}
-            {' '}
-            {productSummary || 'Product summary unavailable.'}
-          </p>
+          {investmentSnapshotBody ? (
+            <p className={`text-base leading-relaxed ${bodyClass}`}>{investmentSnapshotBody}</p>
+          ) : (
+            <p className={`text-base leading-relaxed ${bodyClass}`}>
+              <strong className={titleClass}>{businessModelSummary || 'Business model context unavailable.'}</strong>
+              {' '}
+              {marketSummary || 'Market summary unavailable.'}
+              {' '}
+              {productSummary || 'Product summary unavailable.'}
+            </p>
+          )}
         </div>
 
         <div className="grid md:grid-cols-3 gap-4">

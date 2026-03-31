@@ -35,7 +35,13 @@ export function containsMarketSizingLanguage(text: string): boolean {
 function isMoneyLikeToken(tok: string, prev: string | null, next: string | null): boolean {
 	if (!tok) return false;
 	if (/\$\d/.test(tok)) return true;
-	if (/^\d[\d,.]*(?:\.\d+)?(?:k|m|mm|b|bn)$/i.test(tok)) return true;
+	if (/^\d[\d,.]*(?:\.\d+)?(?:k|m|mm|b|bn)$/i.test(tok)) {
+		// Guard: abbreviations like "B2B", "B2C", "G2G" tokenize as a single-letter token
+		// followed by a digit+suffix token (e.g. ["b", "2b"]). A bare single-letter token
+		// immediately before signals an alphanumeric abbreviation, not a monetary amount.
+		if (prev !== null && /^[a-z]$/i.test(prev)) return false;
+		return true;
+	}
 
 	// Handle "2 million" / "8 billion".
 	if ((tok === "million" || tok === "billion") && prev && /^\d[\d,.]*(?:\.\d+)?$/i.test(prev)) return true;
@@ -67,6 +73,15 @@ function hasAnchorToken(tokens: Token[]): number[] {
 	for (let i = 0; i < tokens.length; i += 1) {
 		const t = tokens[i];
 		if (t === "raising" || t === "raise" || t === "seeking" || t === "seek" || t === "safe" || t === "convertible" || t === "equity") {
+			// Guard: "raise" / "raising" must not appear in a historical/portfolio context.
+			// "helped companies raise $2B" describes an advisor's track record, not the
+			// company's own fundraising ask. Check the 6-token window before the anchor.
+			if (t === "raise" || t === "raising") {
+				const lookback = tokens.slice(Math.max(0, i - 6), i);
+				if (lookback.some((x) => x === "helped" || x === "help" || x === "helps" || x === "helping")) {
+					continue;
+				}
+			}
 			anchorIdx.push(i);
 			continue;
 		}

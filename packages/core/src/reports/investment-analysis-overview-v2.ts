@@ -33,6 +33,12 @@ export type InvestmentAnalysisOverviewV2 = {
 		items: string[];
 	};
 	coverage_gaps: string[];
+	/** Investor-readable one-liner sourced from dio.phase1.deal_summary_v2.summary.one_liner */
+	summary: string | null;
+	/** Medium-length narrative paragraph sourced from dio.phase1.deal_summary_v2.summary.paragraphs[0] */
+	summary_medium: string | null;
+	/** Long-form narrative sourced from dio.phase1.deal_summary_v2.summary.paragraphs[1] + paragraphs[2] joined */
+	summary_long: string | null;
 };
 
 const uniqSorted = (arr: string[]): string[] => {
@@ -160,6 +166,22 @@ export function buildInvestmentAnalysisOverviewV2(args: {
 
 	const coverageGaps = openItemsSource === "score_explanation.totals.unadjusted_missing_inputs" ? openItemsFromMissing : openItemsFromMissing;
 
+	const dealSummaryV2 = phase1?.deal_summary_v2;
+	const oneLiner =
+		typeof dealSummaryV2?.summary?.one_liner === "string" && dealSummaryV2.summary.one_liner.trim()
+			? dealSummaryV2.summary.one_liner.trim()
+			: null;
+
+	const paragraphs: string[] = Array.isArray(dealSummaryV2?.summary?.paragraphs)
+		? (dealSummaryV2.summary.paragraphs as unknown[]).filter((p): p is string => typeof p === "string" && p.trim().length > 0).map((p) => p.trim())
+		: [];
+
+	const summaryMedium = paragraphs[0] ?? null;
+	const summaryLong = (() => {
+		const tail = [paragraphs[1], paragraphs[2]].filter((p): p is string => p !== undefined && p.length > 0);
+		return tail.length > 0 ? tail.join("\n\n") : null;
+	})();
+
 	return {
 		version: "investment_analysis_overview_v2",
 		archetype: { value: archetypeValue, confidence: archetypeConfidence },
@@ -177,5 +199,8 @@ export function buildInvestmentAnalysisOverviewV2(args: {
 		open_items: { source: openItemsSource, items: openItems },
 		top_risks: topRisks,
 		coverage_gaps: coverageGaps,
+		summary: oneLiner,
+		summary_medium: summaryMedium,
+		summary_long: summaryLong,
 	};
 }

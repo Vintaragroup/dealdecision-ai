@@ -558,3 +558,138 @@ describe('buildPhase1UpdateReportV1 (deterministic diffs)', () => {
 		expect(change?.category).toBe('coverage_changed');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Regression: advisor/team text must not be accepted as product_solution
+// ---------------------------------------------------------------------------
+describe('buildPhase1DealOverviewV2 — advisor/team text rejection (upstream data fix)', () => {
+	it('rejects advisory team slide text as product_solution (OVERVIEW heading scenario)', () => {
+		// Page 16 of a pitch deck: an "Overview" heading followed by advisory team bios.
+		// The text uses "helps" which would match TAGLINE_VERB_RE — the rejection must fire
+		// on the team-type patterns before acceptance.
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-advisor-reject', [
+				{ text: 'OVERVIEW\nOur advisory team helps companies raise $2B in enterprise value.' },
+				{ text: 'Normal slide without product info' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		// Advisory team bios must not win the product_solution slot.
+		expect(out.product_solution).toBeNull();
+	});
+
+	it('rejects leadership team slide text as product_solution', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-leadership-reject', [
+				{ text: 'WHAT WE DO\nOur leadership team connects enterprise brands with end retail operators.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution).toBeNull();
+	});
+
+	it('still accepts genuine product descriptions that do NOT match team patterns', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-genuine-product', [
+				{ text: 'OVERVIEW\nAcme provides an AI-powered platform that helps enterprises automate compliance workflows.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution).not.toBeNull();
+		expect(out.product_solution ?? '').toMatch(/compliance/i);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Regression: historical "raise" context must not produce a raise signal
+// ---------------------------------------------------------------------------
+describe('buildPhase1DealOverviewV2 — raise detection guards (upstream data fix)', () => {
+	it('does not extract raise from "helped companies raise $2B" advisor bio text', () => {
+		// Only advisor bios, no actual ask slide. Raise must be null or undefined.
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-no-raise-bio', [
+				{ text: 'Our Team\nJohn Smith helped companies raise $2B in value over 20 years.' },
+				{ text: 'Market Overview\nThe market is large and growing.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		// $2B from advisor track record must NOT become the raise signal.
+		expect(out.raise ?? null).toBeNull();
+	});
+
+	it('does not extract raise from "created over $2B in enterprise value" outcome text', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-no-raise-outcome', [
+				{ text: 'ADVISORS\nOur network has created over $2B in enterprise value for portfolio companies.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.raise ?? null).toBeNull();
+	});
+
+	it('STILL extracts a legitimate raise from an explicit ask slide', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-with-raise', [
+				{ text: 'Our Team\nJohn Smith helped companies raise $2B in value over 20 years.' },
+				{ text: 'The Ask\nWe are raising $5M in a SAFE note to expand sales.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		// Genuine raise from ask slide must survive.
+		expect(out.raise ?? '').toMatch(/\$\s*5\s*m/i);
+		// The $2B from advisor bio must not override the real raise.
+		expect(out.raise ?? '').not.toMatch(/\$\s*2\s*b/i);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Regression: personal-bio and PE/VC-activity lines must not win product_solution
+// via the tagline:verb_pattern path (Vermont advisor page regression)
+// ---------------------------------------------------------------------------
+describe('buildPhase1DealOverviewV2 — bio and PE/VC activity tagline rejection', () => {
+	it('rejects "He is a CPA" personal-bio line as product_solution', () => {
+		// Vermont-style advisor/bio slide: Daniela "also a CPA. source deals, raise capital..."
+		// The line contains "deliver" but the "He is a" pronoun+copula signals a bio sentence.
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-bio-reject', [
+				{
+					text: 'Our Advisors\nArmando is an expert in corporate governance. He is also a CPA. source deals, raise capital and provide value to dealmakers.',
+				},
+				{ text: 'The Gin\nThe right amount of juniper delivers a balanced, aromatic spirit.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		// Bio/PE text must NOT win. Only the gin tagline (page 2) should be selected.
+		expect(out.product_solution ?? '').not.toMatch(/CPA|source deals|raise capital/i);
+		expect(out.product_solution ?? '').toMatch(/juniper/i);
+	});
+
+	it('rejects "source deals, raise capital" PE/VC advisor-activity line as product_solution', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-vc-activity-reject', [
+				{ text: 'Team\nShe is a strategic deal connector. source deals, raise capital and provide value to dealmakers.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution).toBeNull();
+	});
+
+	it('does NOT reject genuine product descriptions with "delivers" or "provides"', () => {
+		const docs: OverviewDocumentInput[] = [
+			docWithPages('doc-genuine-delivers', [
+				{ text: 'Our Product\nOur platform delivers real-time compliance monitoring for enterprise teams.' },
+			]),
+		];
+
+		const out = buildPhase1DealOverviewV2({ documents: docs, nowIso: '2025-01-01T00:00:00.000Z' });
+		expect(out.product_solution ?? '').toMatch(/compliance/i);
+	});
+});

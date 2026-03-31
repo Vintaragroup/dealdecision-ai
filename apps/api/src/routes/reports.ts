@@ -2327,7 +2327,23 @@ export async function registerReportRoutes(
               const _sr = await computeReportFinancialSnapshotStale(pool, deal_id, version, { dioUpdatedAt: row.updated_at });
               financial_snapshot_stale = _sr.stale;
             } catch { /* fail-open */ }
-            return reply.status(200).send({ ...cached.value, financial_snapshot_stale });
+            // Inject investment_analysis_overview_v2 fresh on cache-hit — never persisted.
+            // Ensures the summary field (and any future builder changes) are always current.
+            const cacheHitReport: any = { ...cached.value };
+            try {
+              const freshIaoV2 = buildInvestmentAnalysisOverviewV2({
+                dio: row.dio_data as any,
+                report: cacheHitReport,
+              });
+              cacheHitReport.investment_analysis_overview_v2 = freshIaoV2;
+              const meta = { ...((cacheHitReport.metadata && typeof cacheHitReport.metadata === 'object' ? cacheHitReport.metadata : {})) };
+              meta.investment_analysis_overview_v2 = freshIaoV2;
+              cacheHitReport.metadata = meta;
+              if (cacheHitReport.report && typeof cacheHitReport.report === 'object') {
+                cacheHitReport.report = { ...cacheHitReport.report, investment_analysis_overview_v2: freshIaoV2 };
+              }
+            } catch { /* fail-open */ }
+            return reply.status(200).send({ ...cacheHitReport, financial_snapshot_stale });
           }
         }
 
@@ -2954,10 +2970,14 @@ export async function registerReportRoutes(
           // Deterministic Investment Analysis Overview v2 (no LLM): derived from persisted DIO + deterministic report metadata.
           try {
             const nextMetadata = { ...((report as any)?.metadata ?? (payload as any)?.metadata ?? {}) };
-            (nextMetadata as any).investment_analysis_overview_v2 = buildInvestmentAnalysisOverviewV2({
+            const iaoV2 = buildInvestmentAnalysisOverviewV2({
               dio: row.dio_data as any,
               report,
             });
+            (nextMetadata as any).investment_analysis_overview_v2 = iaoV2;
+            // Also hoist to top-level on report so the canonical DataFlow path
+            // (report.investment_analysis_overview_v2.summary) resolves correctly.
+            (report as any).investment_analysis_overview_v2 = iaoV2;
             (payload as any).metadata = nextMetadata;
             (report as any).metadata = nextMetadata;
           } catch {
@@ -3180,6 +3200,20 @@ export async function registerReportRoutes(
               _stale_max_fact_ts = _sr.max_fact_ts;
               _stale_report_ts = _sr.report_ts;
               _stale_freshness_basis = _sr.freshness_basis;
+            } catch { /* fail-open */ }
+            // Inject investment_analysis_overview_v2 fresh on cache-hit — never persisted.
+            try {
+              const freshIaoV2 = buildInvestmentAnalysisOverviewV2({
+                dio: row.dio_data as any,
+                report: cached,
+              });
+              (cached as any).investment_analysis_overview_v2 = freshIaoV2;
+              const meta = { ...((cached as any).metadata && typeof (cached as any).metadata === 'object' ? (cached as any).metadata : {}) };
+              meta.investment_analysis_overview_v2 = freshIaoV2;
+              (cached as any).metadata = meta;
+              if ((cached as any).report && typeof (cached as any).report === 'object') {
+                (cached as any).report = { ...(cached as any).report, investment_analysis_overview_v2: freshIaoV2 };
+              }
             } catch { /* fail-open */ }
             // Lazy recompile: when financial_facts_v1 are newer than the DIO's updated_at, trigger a
             // fresh analyze_deal job in the background. Idempotent via dedupe — never blocks response.
@@ -3445,10 +3479,14 @@ export async function registerReportRoutes(
         // Deterministic Investment Analysis Overview v2 (no LLM): derived from persisted DIO + deterministic report metadata.
         try {
           const nextMetadata = { ...((report as any)?.metadata ?? {}) };
-          (nextMetadata as any).investment_analysis_overview_v2 = buildInvestmentAnalysisOverviewV2({
+          const iaoV2 = buildInvestmentAnalysisOverviewV2({
             dio: row.dio_data as any,
             report,
           });
+          (nextMetadata as any).investment_analysis_overview_v2 = iaoV2;
+          // Also hoist to top-level on report so the canonical DataFlow path
+          // (report.investment_analysis_overview_v2.summary) resolves correctly.
+          (report as any).investment_analysis_overview_v2 = iaoV2;
           (report as any).metadata = nextMetadata;
         } catch {
           // ignore

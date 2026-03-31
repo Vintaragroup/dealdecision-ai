@@ -27,6 +27,7 @@ const BASE: WorkspaceViewModelInputs = {
   governedMarket: 'SMB-to-mid-market SaaS, ~$12B TAM.',
   governedBusinessModel: 'Usage-based SaaS with enterprise expansion.',
   governedRaise: '$5M Seed on $20M cap.',
+  investmentSnapshotBody: '',
   selectedHeaderReady: true,
   raiseValue: '$5M',
   raiseLabel: 'Seed',

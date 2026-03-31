@@ -435,6 +435,12 @@ const REJECT_BLOCK_RE: RegExp[] = [
 	/\b(schedule|season|week\s+\d+|game\s+\d+|tournament|broadcast|format|rules|scoring)\b/i,
 	/\b(addendum|appendix)\b/i,
 	/\b(financials?|income\s+statement|balance\s+sheet|cash\s*flow|p\s*&\s*l)\b/i,
+	// Biographical language — personal pronoun + copula signals a bio sentence, not a product
+	// tagline (e.g. "He is a CPA", "She was also a founder").
+	/\b(he|she)\s+(is|was|also)\s+(a|an)\b/i,
+	// PE/VC advisor activity — describes what an advisor does, not a product
+	// (e.g. "source deals, raise capital and provide value to dealmakers").
+	/\b(source[sd]?\s+deals?|raise\s+capital|source\s+capital)\b/i,
 ];
 
 const LEGAL_DISCLAIMER_BLOCK_RE = /\b(for\s+informational\s+purposes\s+only|not\s+(?:an\s+offer|a\s+solicitation)|does\s+not\s+constitute\s+an\s+offer|offer\s+to\s+sell|private\s+placement\s+memorandum|forward[-\s]*looking\s+statements?|accredited\s+investors?|securities\s+act|investment\s+advice|past\s+performance|risk\s+factors?)\b/i;
@@ -1416,8 +1422,14 @@ function pickBestNonMetaphorOnly(cands: ScoredCandidate[]): ScoredCandidate | nu
 }
 
 function detectRaiseFromText(text: string): string | null {
+	// Strip historical/portfolio raise achievements before detection:
+	// e.g. "helped companies raise $2B" or "raised $2B in value" are
+	// advisor track records, not the company's own fundraising ask.
+	const cleaned = text
+		.replace(/\bhelped?\b[^\n.\r]{0,80}\b(?:raise|raised)\b[^\n.\r]{0,80}/gi, '')
+		.replace(/\b(?:raise|raised)\b[^\n.\r]{0,80}\bin\s+(?:enterprise\s+)?value\b/gi, '');
 	const re = /\b(?:raising|raise|seeking|the\s+ask|funding)\b[^\n\r]{0,100}(\$\s?\d[\d,]*(?:\.\d+)?\s*(?:k|m|b|mm|bn|million|billion)?)|\$\s?\d[\d,]*(?:\.\d+)?\s*(?:k|m|b|mm|bn|million|billion)?\s*(?:seed|series\s+[a-d]|pre-?seed|round)\b/i;
-	const m = text.match(re);
+	const m = cleaned.match(re);
 	if (!m) return null;
 	const s = sanitizeInlineText(m[0]);
 	return s ? s.slice(0, 120) : null;
@@ -1604,7 +1616,7 @@ function evaluateFallbackCandidate(raw: string): { ok: boolean; score: number; r
 	}
 
 	// Reject roster/team language.
-	if (/\b(on-air|talent|roster|lineup|coaches|players|extended\s+team|advisors|staff)\b/i.test(s)) {
+if (/\b(on-air|talent|roster|lineup|coaches|players|extended\s+team|advisors?|staff|advisory\s+team|leadership\s+team|management\s+team|executive\s+team|founding\s+team)\b/i.test(s)) {
 		return { ok: false, score, rejected_reason: 'roster_or_team_list' };
 	}
 
@@ -1791,11 +1803,13 @@ export function buildPhase1DealOverviewV2(input: { documents: OverviewDocumentIn
 		}
 
 		// Derive additional fields from early pages for determinism (prefer page-backed sources when possible).
+		// Require a fundraising keyword on the matched line — do NOT match bare dollar amounts alone,
+		// since advisor/team slides frequently mention historical dollar figures ("created $2B in value").
 		const raiseLine = findFirstLineMatchWithPage({
 			docId,
 			pages: primary.pages,
 			maxPages: 30,
-			re: /\b(raising|raise|seeking|funding|the\s+ask)\b|\$\s?\d[\d,]*(?:\.\d+)?\s*(?:k|m|b|mm|bn|million|billion)?\b/i,
+			re: /\b(raising|raise|seeking|funding|the\s+ask)\b/i,
 			note: 'raise signal (page line)',
 		});
 		const allPagesTextForRaise = primary.pages.map((p) => p.text).join('\n').slice(0, 120_000);

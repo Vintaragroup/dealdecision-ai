@@ -67,6 +67,15 @@ function toTitleCase(s: string): string {
     : s;
 }
 
+function humanizeInlineMachineKeys(s: string): string {
+  return s.replace(/\b([a-z][a-z0-9]*(?:_[a-z0-9]+)+)\b/g, (token) =>
+    token
+      .split('_')
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(' '),
+  );
+}
+
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 /**
@@ -92,7 +101,7 @@ export function buildSignalCards(
   const seen = new Set<string>();
 
   for (const title of strengths) {
-    const t = toTitleCase(title?.trim() ?? '');
+    const t = humanizeInlineMachineKeys(toTitleCase(title?.trim() ?? ''));
     if (!t) continue;
     const key = t.toLowerCase();
     if (seen.has(key)) continue;
@@ -107,7 +116,7 @@ export function buildSignalCards(
   }
 
   for (const title of weaknesses) {
-    const t = toTitleCase(title?.trim() ?? '');
+    const t = humanizeInlineMachineKeys(toTitleCase(title?.trim() ?? ''));
     if (!t) continue;
     const key = t.toLowerCase();
     if (seen.has(key)) continue;

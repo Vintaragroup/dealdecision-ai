@@ -2543,7 +2543,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return false;
     };
 
-    const dealTypeRaw = safeText(overviewV2?.deal_type) || safeText((executiveSummaryV1 as any)?.deal_type) || '';
+    // [CONTRACT: DataFlow_contract.md §2.2] deal_type MUST come only from report.metadata.score_explanation.context.deal_type.
+    const dealTypeRaw = safeText(decisionScoreExplanation?.context?.deal_type) || '';
     const dealTypeNorm = dealTypeRaw.toLowerCase();
     const isStartupDealType = dealTypeNorm === 'startup_raise';
     const isRealEstateDealType = dealTypeNorm === 'real_estate_preferred_equity' || dealTypeNorm === 'real_estate' || policyFamily === 'real_estate';
@@ -3247,7 +3248,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     ? pickValue(/\bterm\b[^\d]{0,24}(\d{1,3})\s*(months|month|mos|years|year|yrs)\b/i, (m) => `${m[1]} ${m[2]}`)
     : pickValue(/\b(\d[\d,]*)\s*(customers|users|teams|clients)\b/i, (m) => `${m[1]} ${m[2]}`);
   const topSectionBusinessModel = authoritativeBusinessModel.value || '—';
-  const topSectionDealType = safeText(overviewV2?.deal_type) || safeText(executiveSummaryV1?.deal_type) || '—';
+  // [CONTRACT: DataFlow_contract.md §2.2] deal_type MUST come only from report.metadata.score_explanation.context.deal_type.
+  // Forbidden: overviewV2.deal_type, executiveSummaryV1.deal_type (phase1 inferred sources).
+  const topSectionDealType = safeText(decisionScoreExplanation?.context?.deal_type) || '—';
 
   const reportView = useMemo(() => {
     const fallbackScore = (() => {
@@ -3260,11 +3263,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     const ctx = decisionScoreExplanation && typeof decisionScoreExplanation === 'object' ? decisionScoreExplanation?.context : null;
     const ctxStageRaw = typeof ctx?.stage === 'string' ? ctx.stage.trim() : '';
-    const fallbackStageRaw = typeof (dealFromApi as any)?.stage === 'string' ? String((dealFromApi as any).stage).trim() : '';
-    const stageRaw = (ctxStageRaw || fallbackStageRaw) || null;
+    // [CONTRACT: DataFlow_contract.md §2.3] stage MUST come only from report.metadata.score_explanation.context.stage.
+    // Forbidden: dealFromApi.stage (pipeline/CRM stage — a different concept, not the funding stage).
+    // If missing → return 'unknown' per contract §2.3.
+    const stageRaw = ctxStageRaw || null;
 
     const stageLabel = (() => {
-      if (!stageRaw) return null;
+      if (!stageRaw) return 'unknown';
       const map: Record<string, string> = {
         intake: 'Intake',
         under_review: 'Under review',
@@ -3383,10 +3388,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       dealSummarySource: showCanonicalTopSummary ? 'canonical' : 'legacy',
       businessModel: businessModelFromReport || topSectionBusinessModel,
       businessModelLabel: businessModelLabelFromReport,
+      // [CONTRACT: DataFlow_contract.md §2.2] deal_type: canonical source only; no phase1 fallback.
       dealType: dealTypeFromReport || topSectionDealType,
-      raise: raiseFromReport || topSectionRaise,
-      revenue: reportReady ? (revenueFromReport || null) : (revenueFromReport || topSectionRevenue),
-      customers: customersFromReport || topSectionCustomers,
+      // [CONTRACT: DataFlow_contract.md §2.1] raise: structured_summary.raise only; topSectionRaise (text-mining) removed.
+      raise: raiseFromReport || null,
+      // [CONTRACT: DataFlow_contract.md §2.7] revenue: structured_summary.kpis.revenue.value only; no text-mining fallback.
+      revenue: revenueFromReport || null,
+      // [CONTRACT: DataFlow_contract.md §2.6] customers: structured_summary.kpis.customers.value only; no text-mining fallback.
+      customers: customersFromReport || null,
       source: reportReady ? 'report' : 'fallback',
     } as const;
   }, [
@@ -3770,7 +3779,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     _businessModelBase
     || deterministicOverviewSlots.business_model?.value
     || (reportView.applied ? reportView.businessModel : overviewBusinessModel);
-  const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms);
+  const overviewRaiseTermsCanonical = reportStructuredRaise || (reportView.applied ? reportView.raise : overviewRaiseTerms) || '';
 
   const displayFactsV1 = useMemo(() => {
     const dfv1 = (governedOverview as any)?.overview?.overview_json?.display_facts_v1;
@@ -3790,6 +3799,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (!s) return true;
     if (/^\$\s*[,.-]*\s*$/i.test(s)) return true;
     if (/^\$\s*[,.-]+\s*[kmbn]*$/i.test(s)) return true;
+    return false;
+  };
+
+  const isLowQualityHeroSummary = (value: string): boolean => {
+    const s = String(value ?? '').trim();
+    if (!s) return true;
+
+    // Guard against OCR-heavy blobs leaking into investor-facing hero copy.
+    const nonAlphaNumRatio = s.length > 0
+      ? (s.match(/[^a-z0-9\s.,;:()\-/$%]/gi)?.length ?? 0) / s.length
+      : 0;
+    const hasReplacementGlyph = /[\uFFFD]/.test(s);
+    const hasLongPunctuationRun = /[|]{3,}|[_]{3,}|[-]{5,}|[~]{3,}/.test(s);
+    const looksLikeDeckScrape = /\b(investors@|stackfactor\.ai|slide|page\s+\d+)\b/i.test(s) && s.length > 220;
+
+    if (hasReplacementGlyph) return true;
+    if (hasLongPunctuationRun) return true;
+    if (nonAlphaNumRatio > 0.2 && s.length > 160) return true;
+    if (looksLikeDeckScrape) return true;
     return false;
   };
   const splitTierDeepToParagraphs = (raw: string): string[] => {
@@ -4305,7 +4333,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     | 'governed_ui_copy_v1'
     | 'deal_overview_v2'
     | 'deal_summary_v2'
-    | 'summary_text';
+    | 'summary_text'
+    // [CONTRACT] Approved report-layer sources:
+    | 'investment_analysis_overview_v2'
+    | 'executive_summary_v1';
 
   type HeroFieldCandidate = {
     tier: HeroSourceTier;
@@ -4444,14 +4475,26 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       return '';
     })();
 
+    // [CONTRACT: DataFlow_contract.md §2.4] Company Description sources (hard stop after first valid):
+    //   1. report.investment_analysis_overview_v2.summary
+    //   2. report.executive_summary_v1.summary
+    // Forbidden: display_facts_v1.hero_summary, governed_ui_copy_v1.hero_summary,
+    //   deal_overview_v2.summary_text, deal_summary_v2.summary.one_liner, overview.summary_text.
     const oneLiner = chooseHeroFieldByPrecedence('product', [
-      { tier: 'display_facts_v1', sourcePath: 'overview_json.display_facts_v1.hero_summary.text', value: safeText(displayFactsV1?.hero_summary?.text) },
-      { tier: 'policy_resolved', sourcePath: 'policy_resolved.hero_summary', value: policySummary },
-      { tier: 'governed_ui_copy_v1', sourcePath: 'overview_json.phase1.governed_ui_copy_v1.hero_summary', value: safeText(ovFacts?.deal_summary_mid?.value) },
-      { tier: 'deal_overview_v2', sourcePath: 'overview_json.phase1.deal_overview_v2.summary_text', value: safeText((phase1?.deal_overview_v2 as any)?.summary_text) },
-      { tier: 'deal_summary_v2', sourcePath: 'overview_json.phase1.deal_summary_v2.summary.one_liner', value: safeText((phase1DealSummaryV2 as any)?.summary?.one_liner) || safeText((dealSummaryV2 as any)?.summary?.one_liner) },
-      { tier: 'summary_text', sourcePath: 'overview.summary_text', value: safeText((governedOverview.overview as any)?.summary_text) },
+      { tier: 'investment_analysis_overview_v2', sourcePath: 'report.investment_analysis_overview_v2.summary', value: safeText((reportFromApi as any)?.investment_analysis_overview_v2?.summary) },
+      { tier: 'executive_summary_v1', sourcePath: 'report.executive_summary_v1.summary', value: safeText((reportFromApi as any)?.executive_summary_v1?.summary) },
     ]);
+
+    if (oneLiner.value && isLowQualityHeroSummary(oneLiner.value)) {
+      oneLiner.rejectedSources.push({
+        sourcePath: oneLiner.sourcePathUsed,
+        reason: 'low_quality_or_ocr_like_summary',
+        value: oneLiner.value,
+      });
+      oneLiner.value = null;
+      oneLiner.sourcePathUsed = 'suppressed.low_quality_or_ocr_like_summary';
+      oneLiner.hiddenDueToFormatting = true;
+    }
 
     return { product, market, businessModel, raise, oneLiner };
   }, [workspaceMirrorVM, governedOverview, overviewV2, dealSummaryV2, governedKeyFacts, looksRealEstate, displayFactsV1]);
@@ -4627,14 +4670,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     };
   }, [workspaceMirrorVM, governedKeyFacts, authoritativeProductSummaryV1.sources, authoritativeMarketSummaryV1.sources]);
 
+  // [CONTRACT: DataFlow_contract.md §2.4] Company Description: only contract-approved sources.
+  // canonicalTierOverview/canonicalTierHero are not contract-approved for this slot.
   const governedDealOneLinerDisplay = useMemo(() => {
-    const fromContract = safeText(heroFieldBindings.oneLiner.value);
-    if (fromContract) return fromContract;
-
-    if (canonicalTierOverview) return canonicalTierOverview;
-    if (canonicalTierHero) return canonicalTierHero;
-    return 'Not extracted';
-  }, [heroFieldBindings, canonicalTierOverview, canonicalTierHero]);
+    return safeText(heroFieldBindings.oneLiner.value) || 'Not extracted';
+  }, [heroFieldBindings]);
 
   const dealSummarySourceLabel = canonicalDealSummaryReady ? 'Authoritative (deterministic)' : 'Legacy';
 
@@ -5315,8 +5355,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return 'Active';
   })();
 
+  // [CONTRACT] Diligence phase uses the deal pipeline stage (dealFromApi.stage — CRM workflow),
+  // NOT the funding stage (dealStageRaw). These are separate concepts.
   const vmDiligencePhase: WorkspaceViewModelInputs['diligencePhase'] = (() => {
-    const s = dealStageRaw ?? '';
+    const s = typeof (dealFromApi as any)?.stage === 'string' ? String((dealFromApi as any).stage).trim() : '';
     if (s === 'intake') return 'Initial Screening';
     if (s === 'under_review') return 'Early Diligence';
     if (s === 'in_diligence') return 'Deep Diligence';
@@ -5363,24 +5405,31 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     governedProduct: heroFieldBindings.product.value || governedKeyFacts.product.value,
     governedMarket: heroFieldBindings.market.value || governedKeyFacts.market.value,
     governedBusinessModel: heroFieldBindings.businessModel.value || governedKeyFacts.businessModel.value,
-    governedRaise: heroFieldBindings.raise.value || governedKeyFacts.raise.value,
+    // [CONTRACT: DataFlow_contract.md §2.4] investmentSnapshotBody from investment_analysis_overview_v2.summary_medium.
+    investmentSnapshotBody: safeText((reportFromApi as any)?.investment_analysis_overview_v2?.summary_medium),
+    // [CONTRACT: DataFlow_contract.md §2.1] governedRaise: structured_summary.raise only.
+    // Forbidden: heroFieldBindings.raise (reads display_facts_v1.raise_terms.text first).
+    governedRaise: (() => {
+      const roundLabel = safeText(reportCanonicalRaise.roundLabel);
+      const amount = safeText(reportCanonicalRaise.value);
+      if (roundLabel && amount) return `${roundLabel}: ${amount}`;
+      if (amount) return amount;
+      if (roundLabel) return roundLabel;
+      return '';
+    })(),
     selectedHeaderReady: selectedHeader.ready,
     raiseValue: selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null,
     raiseLabel: selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null,
-    revenueValue: isStartupPolicySchema
-      ? (selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null)
-      : (topSectionRevenue !== '—' ? topSectionRevenue : null),
+    // [CONTRACT: DataFlow_contract.md §2.5-2.8] Revenue/Growth/Customers: ONLY from structured_summary.kpis.
+    // Forbidden: topSectionRevenue/topSectionGrowth/topSectionCustomers (regex text-mining fallbacks).
+    revenueValue: selectedHeader.ready ? (selectedHeader.revenue.value ?? null) : null,
     revenueTileLabel: revenueCoveragePolicy.kpiTileLabel,
     revenueAllowed: revenueCoveragePolicy.allow,
-    growthValue: isStartupPolicySchema
-      ? (selectedHeader.ready ? (selectedHeader.growth.value ?? null) : null)
-      : (topSectionGrowth !== '—' ? topSectionGrowth : null),
+    growthValue: selectedHeader.ready ? (selectedHeader.growth.value ?? null) : null,
     growthLabel: isStartupPolicySchema
       ? (selectedHeader.ready ? (selectedHeader.growth.label ?? null) : null)
       : (looksRealEstate ? 'Target IRR' : policyFamily === 'fund' ? 'Target return' : null),
-    customersValue: isStartupPolicySchema
-      ? (selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null)
-      : (topSectionCustomers !== '—' ? topSectionCustomers : null),
+    customersValue: selectedHeader.ready ? (selectedHeader.customers.value ?? null) : null,
     customersLabel: isStartupPolicySchema
       ? (selectedHeader.ready ? (selectedHeader.customers.label ?? null) : null)
       : (looksRealEstate ? 'Term' : policyFamily === 'fund' ? 'Vehicle term' : null),
@@ -5393,18 +5442,16 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     runwayTileValue: runwayTileValue ?? null,
     burnTileValue: burnTileValue ?? null,
     reportStructuredGrowthValue: reportStructuredGrowthValue ?? null,
-    // TAM: prefer phase1 AI-extracted numeric market size, then fall back to
-    // display_facts_v1.market_icp.text from the governed payload (which may
-    // mention market size in its ICP description). Neither is a structured KPI.
-    tamValue: (overviewV2 as any)?.market_size
-      ?? (overviewV2 as any)?.tam
-      ?? (() => {
-        try {
-          const dfv1 = (governedOverview as any)?.overview?.overview_json?.display_facts_v1;
-          return (dfv1?.market_icp?.text || dfv1?.market?.text) ?? null;
-        } catch { return null; }
-      })()
-      ?? null,
+    // [CONTRACT: DataFlow_contract.md §2.5] TAM MUST come only from report.structured_summary.kpis.tam.value.
+    // Forbidden: overviewV2.market_size, overviewV2.tam (phase1 inferred sources).
+    tamValue: (() => {
+      const tamKpi = reportStructuredKpis?.tam as any;
+      if (!tamKpi) return null;
+      const raw = safeText(tamKpi?.value?.raw);
+      if (raw) return raw;
+      const valStr = typeof tamKpi?.value === 'string' ? tamKpi.value.trim() : null;
+      return valStr || null;
+    })(),
     topSectionDealType: reportView.dealType || topSectionDealType,
     pipelineStatus: vmPipelineStatus,
     diligencePhase: vmDiligencePhase,
@@ -5419,7 +5466,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     burnTileValue, reportStructuredGrowthValue, overviewV2, authoritativeBusinessModel,
     workspaceOverviewModel, topSectionDealType, reportView.dealType, vmPipelineStatus, vmDiligencePhase,
     selectedPolicyId, isStartupPolicySchema, topSectionRevenue, topSectionGrowth, topSectionCustomers, looksRealEstate, policyFamily,
-    canonicalScoreView, topSectionConfidence,
+    canonicalScoreView, topSectionConfidence, reportFromApi,
   ]);
 
   const lastPolicyOverviewLogRef = useRef<string | null>(null);
@@ -8772,6 +8819,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                     raiseTerms={vm.overview.raiseTerms}
                     insightsScore={vm.overview.insightsScore}
                     insightsConfidence={vm.overview.insightsConfidence}
+                    investmentSnapshotBody={vm.overview.investmentSnapshotBody}
                     onOpenInsights={() => setActiveTab('investor-insights')}
                   />
                 </div>

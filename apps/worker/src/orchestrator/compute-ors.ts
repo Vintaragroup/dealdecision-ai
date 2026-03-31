@@ -31,6 +31,11 @@ export interface MarketScoreInputs {
 }
 
 export function computeMarketScorePersisted(raw: number, dci: number): number {
+  // Fix D (2026-03-30 calibration): when raw market signal is exactly zero,
+  // do not apply the DCI smoothing floor.  A deal with zero computable market
+  // signals should not receive artificial market credit from document quality.
+  // The DCI blending (0.15 coefficient) is retained for all non-zero raw scores.
+  if (raw === 0) return 0;
   return clamp(Math.round(0.85 * raw + 0.15 * dci), 0, 100);
 }
 

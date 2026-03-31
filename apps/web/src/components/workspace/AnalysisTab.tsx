@@ -29,6 +29,9 @@ import {
 import { ReportGeneratorPreviewSplit } from '../deals/analysis/ReportGeneratorPreviewSplit';
 import type { DealReportFinancialIntegrityV1 } from '../../lib/apiClient';
 import type { FinancialBreakdownV1Like, UnderwritingReadinessV1Like } from '../../lib/selectors/selectAuthoritativeFinancialBreakdownV1';
+import { resolveScoreDivergence } from '../../lib/resolveScoreDivergence';
+import { ScoreDivergenceBanner } from './analysis/ScoreDivergenceBanner';
+import type { WorkspaceVerdict } from '../../lib/resolveWorkspaceVerdict';
 
 interface AnalysisTabProps {
   darkMode: boolean;
@@ -50,9 +53,20 @@ interface AnalysisTabProps {
   underwritingReadinessV1?: UnderwritingReadinessV1Like | null;
   /** True when financial_facts_v1 rows are newer than the compiled breakdown/readiness snapshot. */
   financialSnapshotStale?: boolean;
+  /**
+   * Fix B (2026-03-30): workspace DIO score (0-100) from the report compiler.
+   * Used to evaluate divergence against the orchestrator ORS track.
+   * Optional — no divergence indicator when absent.
+   */
+  workspaceScore?: number | null;
+  /**
+   * Fix B (2026-03-30): resolved WorkspaceVerdict from resolveWorkspaceVerdict().
+   * Used alongside workspaceScore to detect opposite-signal divergence.
+   */
+  workspaceVerdict?: WorkspaceVerdict | null;
 }
 
-export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnalyzing = false, financialIntegrityV1, financialBreakdownV1, underwritingReadinessV1, financialSnapshotStale = false }: AnalysisTabProps) {
+export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnalyzing = false, financialIntegrityV1, financialBreakdownV1, underwritingReadinessV1, financialSnapshotStale = false, workspaceScore = null, workspaceVerdict = null }: AnalysisTabProps) {
   const [analysis, setAnalysis] = useState<DealAnalysis | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
 
@@ -539,8 +553,23 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnaly
       );
     }
 
+    // Fix B: compute divergence between workspace verdict/score and ORS track.
+    // Only evaluates when both workspace and orchestrator data are present.
+    const orchDecision = orchData?.report?.decision?.label ?? null;
+    const scoreDivergence = resolveScoreDivergence(
+      workspaceScore,
+      workspaceVerdict,
+      orchData?.report?.scores?.overall_recommendation_score ?? null,
+      orchDecision as 'GO' | 'CONSIDER' | 'NO_GO' | null,
+    );
+
     return (
       <>
+        {scoreDivergence.isDiverging && (
+          <div className="mb-3">
+            <ScoreDivergenceBanner divergence={scoreDivergence} darkMode={darkMode} />
+          </div>
+        )}
         <AnalysisSnapshotDashboard
           darkMode={darkMode}
           analysis={mergedAnalysis}

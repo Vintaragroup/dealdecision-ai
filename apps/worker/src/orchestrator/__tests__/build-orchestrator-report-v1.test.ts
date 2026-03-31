@@ -422,9 +422,12 @@ describe("buildOrchestratorReportV1", () => {
       assertBaseInvariants(report, "deck-only");
     });
 
-    it("FHC is insufficient_data — no XLSX financial sheets and insufficient deck signals", () => {
-      expect(report.scores.financial_health_score.status).toBe("insufficient_data");
-      expect(report.scores.financial_health_score.score).toBeNull();
+    it("FHC is ok with weak score — no XLSX financial sheets, deck has revenue only (FSI=10, threshold lowered to 10 in Fix A)", () => {
+      // Fix A (2026-03-30 calibration): threshold was 15, now 10.
+      // deck_has_revenue=true → FSI=10. FSI=10 is now ≥ threshold, so status='ok'.
+      // FHC = round(0.6×10 + 0.4×50) = 26 (RC=null → proxy=50 used).
+      expect(report.scores.financial_health_score.status).toBe("ok");
+      expect(report.scores.financial_health_score.score).toBe(26);
     });
 
     it("report has correct schema_version and deal_id", () => {

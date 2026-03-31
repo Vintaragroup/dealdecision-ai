@@ -88,8 +88,15 @@ function buildMissingSections(inputs: FhcRawInputs): string[] {
 /**
  * Compute the Financial Health Composite.
  *
- * - FSI < 15 → status=insufficient_data, score=null
+ * - FSI < 10 → status=insufficient_data, score=null
  * - Otherwise: score = round(0.60 * FSI + 0.40 * (RC ?? 50))
+ *
+ * Threshold history: was 15 (2026-03-30 calibration → lowered to 10).
+ * Rationale: single deck signal (e.g. revenue-only = FSI=10) previously fell
+ * short of FSI=15, forcing ORS to use the DCI-derived financial proxy even
+ * when real (weak) FHC data was available.  FSI=10 is the smallest non-zero
+ * deck signal; allowing it to compute FHC produces a more accurate (lower)
+ * financial score than the proxy for data-sparse deals.
  */
 export function computeFinancialHealthComposite(raw: FhcRawInputs): FinancialHealthScore {
   const fsi = computeFsi(raw);
@@ -124,7 +131,7 @@ export function computeFinancialHealthComposite(raw: FhcRawInputs): FinancialHea
 
   const missing_sections = buildMissingSections(raw);
 
-  if (fsi < 15) {
+  if (fsi < 10) {
     return {
       status: "insufficient_data",
       score: null,

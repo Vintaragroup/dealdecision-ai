@@ -2657,6 +2657,26 @@ export type OrchestratorReportV1 = {
     inputs_present: Record<string, boolean>;
   };
   /**
+   * Venture Lens V1 — conviction scoring layer on top of V2.
+   * Five venture dimensions: Team · Market · Product · Traction · Upside.
+   * Optional: absent on older cached reports compiled before this field was added.
+   */
+  venture_lens_v1?: {
+    venture_score: number;
+    conviction_level: 'LOW' | 'MEDIUM' | 'HIGH';
+    adjustment: number;
+    final_investment_score: number;
+    final_posture: 'PASS' | 'MONITOR' | 'INVESTIGATE' | 'HIGH_PRIORITY_DILIGENCE' | 'INVESTABLE';
+    reasons: string[];
+    breakdown: {
+      team: number;
+      market: number;
+      product: number;
+      traction: number;
+      upside: number;
+    };
+  };
+  /**
    * VC Scoring V2 — parallel investment posture track.
    * Optional: absent on older cached reports compiled before this field was added.
    */

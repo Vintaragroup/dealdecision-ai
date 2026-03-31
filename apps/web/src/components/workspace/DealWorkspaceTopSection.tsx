@@ -79,6 +79,25 @@ interface DealWorkspaceHeaderProps {
     /** Signal inference trace — present when inference layer ran. */
     inference?: VCScoringV2InferenceLike;
   } | null;
+  /**
+   * Venture Lens V1 — conviction layer on top of V2.
+   * Rendered as a second labeled score block adjacent to the circle.
+   * Pass 2 validation determines whether this becomes the hero score.
+   */
+  ventureLensV1?: {
+    venture_score: number;
+    conviction_level: 'LOW' | 'MEDIUM' | 'HIGH';
+    adjustment: number;
+    final_investment_score: number;
+    final_posture: 'PASS' | 'MONITOR' | 'INVESTIGATE' | 'HIGH_PRIORITY_DILIGENCE' | 'INVESTABLE';
+    breakdown: {
+      team: number;
+      market: number;
+      product: number;
+      traction: number;
+      upside: number;
+    };
+  } | null;
 }
 
 export function DealWorkspaceHeader({
@@ -112,6 +131,7 @@ export function DealWorkspaceHeader({
   scoreStrengthBullets = [],
   scoreWeaknessBullets = [],
   vcScoringV2,
+  ventureLensV1,
 }: DealWorkspaceHeaderProps) {
   
   const [hoveredTooltip, setHoveredTooltip] = useState<string | null>(null);
@@ -495,6 +515,54 @@ export function DealWorkspaceHeader({
                 {inferenceSummary}
               </div>
             )}
+          </div>
+        );
+      })()}
+
+      {/* LAYER 2c — VENTURE LENS (conditional — only when available) */}
+      {ventureLensV1 && (() => {
+        const POSTURE_LABELS: Record<string, string> = {
+          INVESTABLE: 'Investable',
+          HIGH_PRIORITY_DILIGENCE: 'High Priority Diligence',
+          INVESTIGATE: 'Investigate',
+          MONITOR: 'Monitor',
+          PASS: 'Pass',
+        };
+        const postureColorMap: Record<string, string> = {
+          INVESTABLE: darkMode ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' : 'text-emerald-700 bg-emerald-50 border-emerald-200',
+          HIGH_PRIORITY_DILIGENCE: darkMode ? 'text-blue-400 bg-blue-500/10 border-blue-500/30' : 'text-blue-700 bg-blue-50 border-blue-200',
+          INVESTIGATE: darkMode ? 'text-amber-400 bg-amber-500/10 border-amber-500/30' : 'text-amber-700 bg-amber-50 border-amber-200',
+          MONITOR: darkMode ? 'text-amber-400/80 bg-amber-500/5 border-amber-500/20' : 'text-amber-600 bg-amber-50 border-amber-200',
+          PASS: darkMode ? 'text-red-400 bg-red-500/10 border-red-500/30' : 'text-red-700 bg-red-50 border-red-200',
+        };
+        const convictionColorMap: Record<string, string> = {
+          HIGH: darkMode ? 'text-emerald-400' : 'text-emerald-700',
+          MEDIUM: darkMode ? 'text-amber-400' : 'text-amber-600',
+          LOW: darkMode ? 'text-red-400' : 'text-red-700',
+        };
+        const postureClass = postureColorMap[ventureLensV1.final_posture] ?? (darkMode ? 'text-gray-400 bg-gray-500/10 border-gray-500/20' : 'text-gray-600 bg-gray-100 border-gray-200');
+        const convictionClass = convictionColorMap[ventureLensV1.conviction_level] ?? (darkMode ? 'text-gray-400' : 'text-gray-600');
+        const { team, market, product, traction, upside } = ventureLensV1.breakdown;
+        return (
+          <div
+            data-testid="venture-lens-strip"
+            className={`px-4 py-3 sm:px-6 border-b ${darkMode ? 'border-white/10 bg-white/2' : 'border-gray-200/50 bg-gray-50/40'}`}
+          >
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+              <span className={`font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Venture Lens</span>
+              <span className={`px-2.5 py-1 rounded border text-xs font-bold ${postureClass}`}>
+                {POSTURE_LABELS[ventureLensV1.final_posture] ?? ventureLensV1.final_posture}
+              </span>
+              <span className={`hidden sm:inline ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}>|</span>
+              <span className={darkMode ? 'text-gray-500' : 'text-gray-500'}>Score</span>
+              <span className={`font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{ventureLensV1.final_investment_score}</span>
+              <span className={`hidden sm:inline ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}>·</span>
+              <span className={darkMode ? 'text-gray-500' : 'text-gray-500'}>Conviction</span>
+              <span className={`font-semibold ${convictionClass}`}>{ventureLensV1.conviction_level}</span>
+            </div>
+            <div className={`mt-1.5 text-[11px] ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+              Team {team} · Market {market} · Product {product} · Traction {traction} · Upside {upside}
+            </div>
           </div>
         );
       })()}

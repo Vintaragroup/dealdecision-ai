@@ -32,6 +32,7 @@ import type { FinancialBreakdownV1Like, UnderwritingReadinessV1Like } from '../.
 import { resolveScoreDivergence } from '../../lib/resolveScoreDivergence';
 import { ScoreDivergenceBanner } from './analysis/ScoreDivergenceBanner';
 import { VCScoringV2Panel } from './analysis/VCScoringV2Panel';
+import { VentureLensPanel } from './analysis/VentureLensPanel';
 import type { WorkspaceVerdict } from '../../lib/resolveWorkspaceVerdict';
 
 interface AnalysisTabProps {
@@ -571,6 +572,7 @@ export function AnalysisTab({ darkMode, dealData, onRunAnalysis, dealId, isAnaly
             <ScoreDivergenceBanner divergence={scoreDivergence} darkMode={darkMode} />
           </div>
         )}
+        <VentureLensPanel darkMode={darkMode} ventureLens={orchData?.report?.venture_lens_v1 ?? null} />
         <VCScoringV2Panel darkMode={darkMode} vcScoringV2={orchData?.report?.vc_scoring_v2 ?? null} />
         <AnalysisSnapshotDashboard
           darkMode={darkMode}

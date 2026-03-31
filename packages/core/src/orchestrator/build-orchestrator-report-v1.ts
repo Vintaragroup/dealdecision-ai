@@ -68,6 +68,7 @@ import {
   type DecisionInputs,
 } from './compute-ors';
 import { computeVCScoringV2, type VCScoringV2Inputs } from '../scoring/vc-scoring-v2';
+import { computeVentureLensV1 } from '../scoring/vc-venture-lens-v1';
 
 // ─── Public type alias ───────────────────────────────────────────────────────
 
@@ -727,6 +728,7 @@ export function buildOrchestratorReportV1(args: {
   };
 
   const vcScoringV2 = computeVCScoringV2(vcScoringV2Inputs);
+  const ventureLensV1 = computeVentureLensV1(vcScoringV2Inputs, vcScoringV2);
 
   // ─── 11. Assemble report ───────────────────────────────────────────────────
 
@@ -778,6 +780,7 @@ export function buildOrchestratorReportV1(args: {
     evidence_registry: buildEmptyEvidenceRegistry(),
     diagnostics,
     vc_scoring_v2: vcScoringV2,
+    venture_lens_v1: ventureLensV1,
   };
 }
 

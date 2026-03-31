@@ -9,8 +9,9 @@
  */
 
 import type { VCScoringV2 } from '../scoring/vc-scoring-v2';
+import type { VentureLensV1 } from '../scoring/vc-venture-lens-v1';
 // Re-export so consumers of types.ts can access this type without a second import.
-export type { VCScoringV2 };
+export type { VCScoringV2, VentureLensV1 };
 
 // ─── Shared primitives ───────────────────────────────────────────────────────
 
@@ -413,4 +414,6 @@ export interface OrchestratorReportV1 {
   diagnostics: OrchestratorDiagnostics;
   /** VC Scoring V2 — parallel investment posture track (opportunity/confidence/risk). Optional: absent on older cached reports. */
   vc_scoring_v2?: VCScoringV2;
+  /** Venture Lens V1 — conviction scoring layer on top of V2 (team/market/product/traction/upside). Optional: absent on older cached reports. */
+  venture_lens_v1?: VentureLensV1;
 }

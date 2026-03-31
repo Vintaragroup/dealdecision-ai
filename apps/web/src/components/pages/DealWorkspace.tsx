@@ -7589,6 +7589,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 ...stripScoreFractionsFromItems(topSectionActionsToImprove),
               ]}
               vcScoringV2={headerOrchData?.report?.vc_scoring_v2 ?? null}
+              ventureLensV1={headerOrchData?.report?.venture_lens_v1 ?? null}
             />
           </div>
 

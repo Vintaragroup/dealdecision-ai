@@ -15,7 +15,7 @@ export function ImprovementActions({ improvements }: ImprovementActionsProps) {
       <h2 className="text-xl font-semibold text-white mb-6">What Would Improve This Score</h2>
 
       {improvements.length === 0 ? (
-        <p className="text-sm text-zinc-500 italic">No improvement recommendations available.</p>
+        <p className="text-sm text-zinc-500">Run analysis to surface actionable improvements.</p>
       ) : (
         <div className="space-y-3">
           {improvements.map((improvement, index) => (

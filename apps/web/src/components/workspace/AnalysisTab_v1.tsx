@@ -81,46 +81,86 @@ export function AnalysisTab({
   const riskScore = vcScoringV2?.risk_score ?? null;
 
   // One-line explanation
+  // reasoning[0] is always a data-dump line ("VC Composite: X/100 — …").
+  // reasoning[1] is the posture narrative — the only clean verdict sentence.
   const explanation = (() => {
-    const firstReason = vcScoringV2?.reasoning?.[0] ?? ventureLensV1?.reasons?.[0] ?? null;
-    if (firstReason) return firstReason;
+    const v2Verdict = vcScoringV2?.reasoning?.[1] ?? null;
+    if (v2Verdict) return v2Verdict;
     switch (displayPosture) {
-      case 'FUND': return 'Strong fundamentals across key dimensions.';
-      case 'INVESTIGATE': return 'Promising signals with areas requiring deeper diligence.';
-      case 'MONITOR': return 'Some concerns present — monitor for resolution.';
-      case 'PASS': return 'Significant concerns across multiple dimensions.';
+      case 'FUND': return 'Fundamentals are strong across the key investment dimensions.';
+      case 'INVESTIGATE': return 'Merits deeper diligence — positive signals present but not yet conviction-level.';
+      case 'MONITOR': return 'Concerns outweigh positives at this stage. Watch for signal improvement.';
+      case 'PASS': return 'Multiple critical dimensions are insufficient for investment consideration.';
     }
   })();
 
-  // Strengths — top venture lens dimensions (score >= 70), formatted as bullets
+  // Strength label map — investor-readable dimension names
+  const DIM_LABEL: Record<string, string> = {
+    team: 'Team quality and depth',
+    market: 'Market size and timing',
+    product: 'Product differentiation',
+    traction: 'Traction and revenue signals',
+    upside: 'Upside potential',
+  };
+
+  // Strengths — top venture lens dimensions (score >= 70)
+  // Fallback: V2 axis scores when V3 breakdown is unavailable
   const strengths: { text: string; data: string }[] = (() => {
-    if (!ventureLensV1?.breakdown) return [];
-    return (Object.entries(ventureLensV1.breakdown) as [string, number][])
-      .filter(([, s]) => s >= 70)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 3)
-      .map(([dim, s]) => ({
-        text: `Strong ${dim.charAt(0).toUpperCase()}${dim.slice(1)}`,
-        data: `${s}/100`,
-      }));
+    if (ventureLensV1?.breakdown) {
+      const v3 = (Object.entries(ventureLensV1.breakdown) as [string, number][])
+        .filter(([, s]) => s >= 70)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 3)
+        .map(([dim, s]) => ({
+          text: DIM_LABEL[dim] ?? `${dim.charAt(0).toUpperCase()}${dim.slice(1)}`,
+          data: `${s}/100`,
+        }));
+      if (v3.length > 0) return v3;
+    }
+    if (vcScoringV2) {
+      return [
+        { label: 'Market opportunity signal', score: vcScoringV2.opportunity_score },
+        { label: 'Evidence quality and confidence', score: vcScoringV2.confidence_score },
+      ]
+        .filter(({ score }) => score >= 70)
+        .slice(0, 3)
+        .map(({ label, score }) => ({ text: label, data: `${score}/100` }));
+    }
+    return [];
   })();
 
-  // Concerns — vc_scoring_v2 reasoning bullets (or venture lens reasons as fallback)
-  // Skip reasoning[0] when it is already used as the explanation to avoid duplication
+  // Concerns — derived from V2 axis scores (specific, with evidence badges).
+  // When V2 is absent, fall back to V3 signal bullets (skip last 2 summary dump lines).
   const concerns: { text: string; data: string }[] = (() => {
-    const bullets = vcScoringV2?.reasoning ?? ventureLensV1?.reasons ?? [];
-    const filtered = bullets.filter((r) => r !== explanation);
-    return filtered.slice(0, 3).map((r) => ({ text: r, data: '' }));
+    if (vcScoringV2) {
+      const items: { text: string; data: string }[] = [];
+      if (vcScoringV2.opportunity_score < 55) {
+        items.push({ text: 'Opportunity signal below investment threshold', data: `${vcScoringV2.opportunity_score}/100` });
+      }
+      if (vcScoringV2.confidence_score < 55) {
+        items.push({ text: 'Insufficient structured evidence for conviction', data: `${vcScoringV2.confidence_score}/100` });
+      }
+      if (vcScoringV2.risk_score > 60) {
+        items.push({ text: 'Elevated risk profile requires resolution', data: `${vcScoringV2.risk_score}/100` });
+      }
+      return items.slice(0, 3);
+    }
+    // V3-only: signal bullets, excluding last 2 summary dump lines
+    const v3Bullets = ventureLensV1?.reasons ?? [];
+    return v3Bullets.slice(0, Math.max(0, v3Bullets.length - 2)).slice(0, 3).map((r) => ({ text: r, data: '' }));
   })();
 
-  // Improvements — from underwriting readiness gaps
+  // Improvements — from underwriting readiness gaps.
+  // Points assigned by position (backend returns gaps in priority order).
   const improvements: { action: string; points: number }[] = (() => {
     const gaps: unknown = (underwritingReadinessV1 as any)?.gaps;
     if (Array.isArray(gaps) && gaps.length > 0) {
-      return (gaps as unknown[]).slice(0, 5).map((g, i) => ({
-        action: typeof g === 'string' ? g : String(g),
-        points: Math.max(3, 12 - i * 2),
-      }));
+      return (gaps as unknown[])
+        .slice(0, 5)
+        .map((g, i) => ({
+          action: typeof g === 'string' ? g : String(g),
+          points: Math.max(3, 12 - i * 2),
+        }));
     }
     return [];
   })();

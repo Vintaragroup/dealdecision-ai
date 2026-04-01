@@ -1,4 +1,4 @@
-import { AlertTriangle, ChevronRight } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 
 interface DivergenceData {
   exists: boolean;
@@ -29,7 +29,7 @@ export function DivergenceWarning({ data }: DivergenceWarningProps) {
         
         <div className="flex-1">
           <h3 className="text-base font-semibold uppercase tracking-wider text-amber-400 mb-3">
-            Systems Disagree
+            Score Divergence
           </h3>
           
           <div className="flex items-center gap-4 mb-3 flex-wrap">
@@ -44,14 +44,9 @@ export function DivergenceWarning({ data }: DivergenceWarningProps) {
             </div>
           </div>
           
-          <p className="text-sm text-amber-200 leading-relaxed mb-4">
+          <p className="text-sm text-amber-200 leading-relaxed">
             <span className="font-medium">Key Difference:</span> {data.explanation}
           </p>
-          
-          <button className="flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 transition-colors">
-            View Detailed Comparison
-            <ChevronRight className="w-4 h-4" />
-          </button>
         </div>
       </div>
     </div>

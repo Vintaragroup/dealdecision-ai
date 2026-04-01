@@ -108,6 +108,7 @@ import {
 	buildRenderPackage,
 	persistReport,
 } from "./stages/stage-4-render-package";
+import { runIntelligenceStage } from "./stages/stage-5-intelligence";
 import { runDpuOcrBackfillForDeal } from "../../lib/dpu-ocr-backfill-v1";
 import { maybeEnqueueInvestorInsightsAfterOcrImprovement } from "../../lib/ocr-auto-rerun-v1";
 import {
@@ -874,9 +875,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	const phase2Sections = buildPhase2Sections(insightSlotInputs);
 	const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
 	const thesisSection = buildInvestorThesisStubSection(thesisInputsForScoring);
-	const limitedScoringSection = buildLimitedScoringSection(
-		computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs)
-	);
+	const limitedScoringResult = computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs);
+	const limitedScoringSection = buildLimitedScoringSection(limitedScoringResult);
 	const fusionResult = fuseDealCanonicalFacts(
 		insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
 	);
@@ -1116,6 +1116,82 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			ts: new Date().toISOString(),
 		})
 	);
+
+	// ── 8. Stage 5: Intelligence Pass (non-blocking, flag-gated) ─────────────
+	// Runs after primary pipeline is complete. Never throws and never affects
+	// the primary return value. Gated by DDAI_INTELLIGENCE_LAYER_ENABLED=1.
+	try {
+		// Derive score proxies from limited scoring + pipeline signals.
+		// These are approximations; the intelligence layer treats them as inputs
+		// to pattern detection, not authoritative orchestrator scores.
+		const orsProxy = limitedScoringResult.overall_limited_score ?? 50;
+		const dciProxy = limitedScoringResult.completeness_score ?? 50;
+		const fhcProxy = limitedScoringResult.traction_signal_score ?? 50;
+		const urssProxy = Math.min(
+			100,
+			(upstream.evidenceCount < 5 ? 40 : 0) +
+			(insightSlotInputs.dpuLoadFailed ? 30 : 0) +
+			(fusionResult.conflicts.length * 10)
+		);
+		const verdictProxy =
+			orsProxy >= 70 && limitedScoringResult.scoring_confidence === "high"
+				? "GO"
+				: orsProxy >= 45
+				? "CONSIDER"
+				: "NO_GO";
+		const financialCoveragePct = insightSlotInputs.financialCoverage
+			? (await import("../../lib/financial-facts/financial-coverage-signals-v1.js"))
+					.computeFinancialCoveragePct(insightSlotInputs.financialCoverage)
+			: 0;
+		const arrStructured = insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null;
+		const balanceSheet = insightSlotInputs.balanceSheet;
+		const cashFlow = insightSlotInputs.cashFlow;
+		const burnMonthly: number | null = cashFlow?.derived?.monthly_burn_from_ops ?? null;
+		const runwayMonths: number | null = cashFlow?.derived?.runway_months ?? null;
+		const cashOnHand: number | null = balanceSheet?.derived?.cash_latest ?? null;
+
+		await runIntelligenceStage(pool, {
+			deal_id: dealId,
+			deal_name: dealName ?? dealId,
+			org_id: null,
+			engine_version: engineVersion,
+			upstream_fingerprint: upstreamFingerprint,
+			ors_score: orsProxy,
+			dci_score: dciProxy,
+			fhc_score: fhcProxy,
+			urss_score: urssProxy,
+			verdict: verdictProxy,
+			scoreband_key: `${verdictProxy.toLowerCase()}_${
+				limitedScoringResult.scoring_confidence === "high" ? "high" :
+				limitedScoringResult.scoring_confidence === "medium" ? "medium" : "low"
+			}`,
+			evidence_count: upstream.evidenceCount,
+			contradiction_count: fusionResult.conflicts.length,
+			section_count: sections.length,
+			dpu_provenance_missing: insightSlotInputs.dpuLoadFailed,
+			xlsx_extraction_had_llm_fallback: false,
+			evidence_gate_passed: evidenceGate.passed,
+			investor_insights_status: "deterministic_only",
+			llm_cache_age_days: null,
+			arr_narrative: null,
+			arr_structured: arrStructured,
+			burn_rate_monthly: burnMonthly,
+			runway_months: runwayMonths,
+			cash_on_hand: cashOnHand,
+			financial_completeness_pct: financialCoveragePct,
+			has_xlsx: (insightSlotInputs.financialStatements?.length ?? 0) > 0,
+			has_cap_table: insightSlotInputs.capTable != null,
+		});
+	} catch (s5Err) {
+		// Stage 5 is fully non-blocking. Any failure here must not affect the
+		// primary return value or report persistence.
+		console.error(JSON.stringify({
+			event: "INVESTOR_INSIGHTS_STAGE5_UNCAUGHT",
+			deal_id: dealId,
+			error: s5Err instanceof Error ? s5Err.message : String(s5Err),
+			ts: new Date().toISOString(),
+		}));
+	}
 
 	return {
 		ok: true,

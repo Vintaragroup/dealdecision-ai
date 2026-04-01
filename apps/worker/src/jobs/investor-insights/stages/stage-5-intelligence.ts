@@ -40,27 +40,46 @@ export type IntelligenceRolloutMode =
   | "internal_expose"
   | "full";
 
+// Runtime-checkable tuple of all valid modes — kept in sync with the type above.
+// NOTE: "active" is NOT a valid IntelligenceRolloutMode and must never be introduced.
+// Persist=true modes are: "persist_only", "internal_expose", "full".
+const VALID_ROLLOUT_MODES = [
+  "off",
+  "shadow",
+  "persist_only",
+  "internal_expose",
+  "full",
+] as const satisfies readonly IntelligenceRolloutMode[];
+
+function isValidRolloutMode(v: string): v is IntelligenceRolloutMode {
+  return (VALID_ROLLOUT_MODES as readonly string[]).includes(v);
+}
+
+// Internal assertion: guarantees any resolved mode is a recognized value.
+// Throws synchronously — absorbed by Stage 5's outer try/catch so the main
+// pipeline is never affected.
+function assertRolloutMode(mode: unknown): asserts mode is IntelligenceRolloutMode {
+  if (typeof mode !== "string" || !isValidRolloutMode(mode)) {
+    throw new Error(
+      `[intelligence] Resolved rollout mode "${String(mode)}" is not a recognized IntelligenceRolloutMode`
+    );
+  }
+}
+
 /**
  * Resolve the current rollout mode from environment variables.
  *
  * Priority:
- *  1. DDAI_INTELLIGENCE_LAYER_ENABLED != "1"   → "off"
- *  2. DDAI_INTELLIGENCE_ROLLOUT_MODE env var   → use value if valid, else "full"
- *  3. Default when ENABLED=1 but no mode set   → "full"
+ *  1. DDAI_INTELLIGENCE_LAYER_ENABLED !== "1"  → "off" (covers unset, "0", "false")
+ *  2. DDAI_INTELLIGENCE_ROLLOUT_MODE env var   → use if valid, else "full"
+ *  3. Default when ENABLED=1 but MODE not set  → "full"
  */
 export function resolveRolloutMode(): IntelligenceRolloutMode {
   if (process.env.DDAI_INTELLIGENCE_LAYER_ENABLED !== "1") return "off";
   const raw = process.env.DDAI_INTELLIGENCE_ROLLOUT_MODE ?? "";
-  const valid: IntelligenceRolloutMode[] = [
-    "off",
-    "shadow",
-    "persist_only",
-    "internal_expose",
-    "full",
-  ];
-  return (valid.includes(raw as IntelligenceRolloutMode)
-    ? raw
-    : "full") as IntelligenceRolloutMode;
+  const mode: IntelligenceRolloutMode = isValidRolloutMode(raw) ? raw : "full";
+  assertRolloutMode(mode); // dev-time guard — should never fire given the logic above
+  return mode;
 }
 
 function isEnabled(): boolean {
@@ -68,7 +87,245 @@ function isEnabled(): boolean {
 }
 
 function shouldPersist(mode: IntelligenceRolloutMode): boolean {
+  // persist_only, internal_expose, full → true
+  // off, shadow → false
+  //
+  // IMPORTANT: if you add a new mode, update VALID_ROLLOUT_MODES first, then
+  // decide whether it should persist and update this function accordingly.
+  // NOTE: "active" is NOT a valid mode — per VALID_ROLLOUT_MODES above.
   return mode === "persist_only" || mode === "internal_expose" || mode === "full";
+}
+
+// ─── Guards & invariants ──────────────────────────────────────────────────────
+
+/**
+ * Small invariant helper. Throws with a readable message in all environments.
+ * Used near persistence gates and mode checks inside Stage 5.
+ *
+ * Throws synchronously so Stage 5's outer try/catch absorbs it — the main
+ * pipeline is never affected.
+ */
+function invariant(condition: boolean, message: string): asserts condition {
+  if (!condition) {
+    throw new Error(`[intelligence] Invariant violation: ${message}`);
+  }
+}
+
+/**
+ * Dev-time structured-log field assertion.
+ *
+ * Validates that required keys are present and forbidden keys are absent before
+ * any console.log call. Throws synchronously → absorbed by Stage 5's outer catch.
+ *
+ * @param eventName     - Label used in error messages.
+ * @param payload       - The log payload object.
+ * @param reqKeys       - Keys that MUST be present and non-undefined.
+ * @param forbiddenKeys - Keys that MUST NOT be present (deprecated aliases etc.)
+ */
+function assertEventKeys(
+  eventName: string,
+  payload: object,
+  reqKeys: readonly string[],
+  forbiddenKeys: readonly string[] = []
+): void {
+  const p = payload as Record<string, unknown>;
+  for (const k of reqKeys) {
+    if (!(k in p) || p[k] === undefined) {
+      throw new Error(
+        `[intelligence] Event "${eventName}" missing required key: "${k}"`
+      );
+    }
+  }
+  for (const k of forbiddenKeys) {
+    if (k in p) {
+      throw new Error(
+        `[intelligence] Event "${eventName}" contains forbidden key: "${k}" (deprecated — use the canonical name instead)`
+      );
+    }
+  }
+}
+
+// ─── Log payload types ────────────────────────────────────────────────────────
+// Explicit TypeScript types for emitted structured-log payloads.
+// Prevents silent field renames and makes payload shape auditable in one place.
+
+export interface Stage5SkippedEvent {
+  event: "intelligence.stage5.skipped";
+  deal_id: string;
+  /** Intentionally coarse — covers both ENABLED=0 and MODE="off" paths. */
+  reason: "feature_flag_off";
+  ts: string;
+}
+
+export interface Stage5StartedEvent {
+  event: "intelligence.stage5.started";
+  deal_id: string;
+  run_id: string;
+  rollout_mode: IntelligenceRolloutMode;
+  ts: string;
+}
+
+export interface MemoryShadowEvent {
+  event: "intelligence.memory.shadow";
+  deal_id: string;
+  run_id: string;
+  ors_score: number;
+  ts: string;
+}
+
+/** "flag_count" is a deprecated alias — never emit it. Use "total_flags". */
+export interface EvaluationCompletedEvent {
+  event: "intelligence.evaluation.completed";
+  deal_id: string;
+  run_id: string;
+  total_flags: number;
+  critical_count: number;
+  error_count: number;
+  warn_count: number;
+  info_count: number;
+  clean: boolean;
+  duration_ms: number;
+  ts: string;
+}
+
+/**
+ * "flag_count" and "total_duration_ms" are deprecated aliases — never emit them.
+ * Use "total_flags" and "duration_ms" respectively.
+ */
+export interface Stage5CompletedEvent {
+  event: "intelligence.stage5.completed";
+  deal_id: string;
+  run_id: string;
+  rollout_mode: IntelligenceRolloutMode;
+  persisted: boolean;
+  total_flags: number;
+  confidence_score: number;
+  confidence_band: string;
+  verdict_resistance: number;
+  verdict_resistance_label: string;
+  similar_deal_count: number;
+  memory_snapshot_id: string | null;
+  duration_ms: number;
+  ts: string;
+}
+
+export interface Stage5FailedEvent {
+  event: "intelligence.stage5.failed";
+  deal_id: string;
+  run_id: string;
+  rollout_mode: IntelligenceRolloutMode;
+  error: string;
+  duration_ms: number;
+  ts: string;
+}
+
+// ─── Log payload builders ─────────────────────────────────────────────────────
+// Centralise field names so accidental renames (e.g. flag_count → total_flags,
+// total_duration_ms → duration_ms) are caught by TypeScript rather than
+// discovered at runtime in logs.
+
+function buildStage5SkippedEvent(deal_id: string): Stage5SkippedEvent {
+  return {
+    event: "intelligence.stage5.skipped",
+    deal_id,
+    reason: "feature_flag_off",
+    ts: new Date().toISOString(),
+  };
+}
+
+function buildStage5StartedEvent(
+  deal_id: string,
+  run_id: string,
+  rollout_mode: IntelligenceRolloutMode
+): Stage5StartedEvent {
+  return {
+    event: "intelligence.stage5.started",
+    deal_id,
+    run_id,
+    rollout_mode,
+    ts: new Date().toISOString(),
+  };
+}
+
+function buildMemoryShadowEvent(
+  deal_id: string,
+  run_id: string,
+  ors_score: number
+): MemoryShadowEvent {
+  return {
+    event: "intelligence.memory.shadow",
+    deal_id,
+    run_id,
+    ors_score,
+    ts: new Date().toISOString(),
+  };
+}
+
+function buildEvaluationCompletedEvent(
+  deal_id: string,
+  run_id: string,
+  summary: {
+    total_flags: number;
+    critical_count: number;
+    error_count: number;
+    warn_count: number;
+    info_count: number;
+    clean: boolean;
+  },
+  duration_ms: number
+): EvaluationCompletedEvent {
+  return {
+    event: "intelligence.evaluation.completed",
+    deal_id,
+    run_id,
+    total_flags: summary.total_flags,
+    critical_count: summary.critical_count,
+    error_count: summary.error_count,
+    warn_count: summary.warn_count,
+    info_count: summary.info_count,
+    clean: summary.clean,
+    duration_ms,
+    ts: new Date().toISOString(),
+  };
+}
+
+function buildStage5CompletedEvent(params: {
+  deal_id: string;
+  run_id: string;
+  rollout_mode: IntelligenceRolloutMode;
+  persisted: boolean;
+  total_flags: number;
+  confidence_score: number;
+  confidence_band: string;
+  verdict_resistance: number;
+  verdict_resistance_label: string;
+  similar_deal_count: number;
+  memory_snapshot_id: string | null;
+  duration_ms: number;
+}): Stage5CompletedEvent {
+  return {
+    event: "intelligence.stage5.completed",
+    ...params,
+    ts: new Date().toISOString(),
+  };
+}
+
+function buildStage5FailedEvent(
+  deal_id: string,
+  run_id: string,
+  rollout_mode: IntelligenceRolloutMode,
+  error: string,
+  duration_ms: number
+): Stage5FailedEvent {
+  return {
+    event: "intelligence.stage5.failed",
+    deal_id,
+    run_id,
+    rollout_mode,
+    error,
+    duration_ms,
+    ts: new Date().toISOString(),
+  };
 }
 
 // ─── Empty/no-op result ───────────────────────────────────────────────────────
@@ -176,14 +433,9 @@ export async function runIntelligenceStage(
 
   if (mode === "off") {
     intelligenceMetrics.increment("stage5_skipped");
-    console.log(
-      JSON.stringify({
-        event: "intelligence.stage5.skipped",
-        deal_id: inputs.deal_id,
-        reason: "feature_flag_off",
-        ts: new Date().toISOString(),
-      })
-    );
+    const skippedPayload = buildStage5SkippedEvent(inputs.deal_id);
+    assertEventKeys("intelligence.stage5.skipped", skippedPayload, ["deal_id", "reason", "ts"]);
+    console.log(JSON.stringify(skippedPayload));
     return disabledResult(inputs.deal_id);
   }
 
@@ -194,17 +446,11 @@ export async function runIntelligenceStage(
   if (mode === "shadow") intelligenceMetrics.increment("stage5_shadow_runs");
   if (mode === "persist_only") intelligenceMetrics.increment("stage5_persist_only_runs");
 
-  console.log(
-    JSON.stringify({
-      event: "intelligence.stage5.started",
-      deal_id: inputs.deal_id,
-      run_id,
-      rollout_mode: mode,
-      ts: new Date().toISOString(),
-    })
-  );
+  console.log(JSON.stringify(buildStage5StartedEvent(inputs.deal_id, run_id, mode)));
 
   const persist = shouldPersist(mode);
+  // TypeScript confirms mode ≠ "off" here: the "off" branch returned early above.
+  // persist reflects whether this mode writes artifacts to storage.
 
   try {
     // ── 1. Decision Memory ────────────────────────────────────────────────────
@@ -271,19 +517,11 @@ export async function runIntelligenceStage(
             ts: new Date().toISOString(),
           })
         );
-        // Non-fatal: continue without memory persistence
+        // Non-fatal: stage5_error is NOT set here — only the outer catch sets stage5_error.
       }
     } else {
       // shadow mode: build snapshot only, do not persist
-      console.log(
-        JSON.stringify({
-          event: "intelligence.memory.shadow",
-          deal_id: inputs.deal_id,
-          run_id,
-          ors_score: inputs.ors_score,
-          ts: new Date().toISOString(),
-        })
-      );
+      console.log(JSON.stringify(buildMemoryShadowEvent(inputs.deal_id, run_id, inputs.ors_score)));
     }
 
     // ── 2. Evaluation Engine ──────────────────────────────────────────────────
@@ -318,21 +556,19 @@ export async function runIntelligenceStage(
     intelligenceMetrics.increment("evaluator_flag_warn", evaluator_report.summary.warn_count);
     intelligenceMetrics.increment("evaluator_flag_info", evaluator_report.summary.info_count);
 
-    console.log(
-      JSON.stringify({
-        event: "intelligence.evaluation.completed",
-        deal_id: inputs.deal_id,
-        run_id,
-        total_flags: evaluator_report.summary.total_flags,
-        critical_count: evaluator_report.summary.critical_count,
-        error_count: evaluator_report.summary.error_count,
-        warn_count: evaluator_report.summary.warn_count,
-        info_count: evaluator_report.summary.info_count,
-        clean: evaluator_report.summary.clean,
-        duration_ms: Date.now() - evalStart,
-        ts: new Date().toISOString(),
-      })
+    const evalPayload = buildEvaluationCompletedEvent(
+      inputs.deal_id,
+      run_id,
+      evaluator_report.summary,
+      Date.now() - evalStart
     );
+    assertEventKeys(
+      "intelligence.evaluation.completed",
+      evalPayload,
+      ["total_flags", "critical_count", "error_count", "warn_count", "info_count", "clean", "duration_ms"],
+      ["flag_count"] // deprecated alias — must never be emitted
+    );
+    console.log(JSON.stringify(evalPayload));
 
     if (persist) {
       try {
@@ -349,7 +585,7 @@ export async function runIntelligenceStage(
             ts: new Date().toISOString(),
           })
         );
-        // Non-fatal: continue
+        // Non-fatal: stage5_error is NOT set here — only the outer catch sets stage5_error.
       }
     }
 
@@ -417,7 +653,7 @@ export async function runIntelligenceStage(
             ts: new Date().toISOString(),
           })
         );
-        // Non-fatal: continue
+        // Non-fatal: stage5_error is NOT set here — only the outer catch sets stage5_error.
       }
     }
 
@@ -483,7 +719,7 @@ export async function runIntelligenceStage(
             ts: new Date().toISOString(),
           })
         );
-        // Non-fatal: continue
+        // Non-fatal: stage5_error is NOT set here — only the outer catch sets stage5_error.
       }
     }
 
@@ -492,24 +728,27 @@ export async function runIntelligenceStage(
     intelligenceMetrics.increment("stage5_successes");
     intelligenceMetrics.timing("stage5.duration_ms", totalDurationMs);
 
-    console.log(
-      JSON.stringify({
-        event: "intelligence.stage5.completed",
-        deal_id: inputs.deal_id,
-        run_id,
-        rollout_mode: mode,
-        persisted: persist,
-        total_flags: evaluator_report.summary.total_flags,
-        confidence_score: confidence_report.overall_confidence_score,
-        confidence_band: confidence_report.overall_confidence_band,
-        verdict_resistance: challenge_pass_result.verdict_resistance_score,
-        verdict_resistance_label: challenge_pass_result.verdict_resistance_label,
-        similar_deal_count: similar_deals.length,
-        memory_snapshot_id,
-        duration_ms: totalDurationMs,
-        ts: new Date().toISOString(),
-      })
+    const completedPayload = buildStage5CompletedEvent({
+      deal_id: inputs.deal_id,
+      run_id,
+      rollout_mode: mode,
+      persisted: persist,
+      total_flags: evaluator_report.summary.total_flags,
+      confidence_score: confidence_report.overall_confidence_score,
+      confidence_band: confidence_report.overall_confidence_band,
+      verdict_resistance: challenge_pass_result.verdict_resistance_score,
+      verdict_resistance_label: challenge_pass_result.verdict_resistance_label,
+      similar_deal_count: similar_deals.length,
+      memory_snapshot_id,
+      duration_ms: totalDurationMs,
+    });
+    assertEventKeys(
+      "intelligence.stage5.completed",
+      completedPayload,
+      ["run_id", "rollout_mode", "duration_ms", "total_flags", "confidence_score", "confidence_band", "verdict_resistance", "persisted"],
+      ["flag_count", "total_duration_ms"] // deprecated aliases — must never be emitted
     );
+    console.log(JSON.stringify(completedPayload));
 
     return {
       run_id,
@@ -522,23 +761,16 @@ export async function runIntelligenceStage(
       stage5_error: null,
     };
   } catch (err) {
+    // Stage-level failure. This is the ONLY place stage5_error is set to a
+    // non-null value. Persistence sub-failures are caught by their own inner
+    // try/catch blocks and must never surface here or be assigned to stage5_error.
     const errorMsg = err instanceof Error ? err.message : String(err);
     const totalDurationMs = Date.now() - stageStartMs;
 
     intelligenceMetrics.increment("stage5_failures");
     intelligenceMetrics.timing("stage5.duration_ms", totalDurationMs);
 
-    console.error(
-      JSON.stringify({
-        event: "intelligence.stage5.failed",
-        deal_id: inputs.deal_id,
-        run_id,
-        rollout_mode: mode,
-        error: errorMsg,
-        duration_ms: totalDurationMs,
-        ts: new Date().toISOString(),
-      })
-    );
+    console.error(JSON.stringify(buildStage5FailedEvent(inputs.deal_id, run_id, mode, errorMsg, totalDurationMs)));
 
     return {
       run_id,

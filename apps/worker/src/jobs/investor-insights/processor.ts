@@ -1117,9 +1117,18 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		})
 	);
 
-	// ── 8. Stage 5: Intelligence Pass (non-blocking, flag-gated) ─────────────
-	// Runs after primary pipeline is complete. Never throws and never affects
-	// the primary return value. Gated by DDAI_INTELLIGENCE_LAYER_ENABLED=1.
+	// ── 8. Stage 5: Intelligence Pass (non-blocking, observational) ──────────
+	//
+	// CONTRACT — Stage 5 is fully observational and must NEVER:
+	//   • throw an unhandled exception that reaches the caller
+	//   • mutate or override any field in the primary return value
+	//   • gate, block, or delay the return of this function
+	//
+	// runIntelligenceStage() has its own outer try/catch and is internally
+	// non-throwing. This outer try/catch is a second safety net for unexpected
+	// import-level or runtime errors not covered by the inner guard.
+	//
+	// Gated by DDAI_INTELLIGENCE_LAYER_ENABLED=1.
 	try {
 		// Derive score proxies from limited scoring + pipeline signals.
 		// These are approximations; the intelligence layer treats them as inputs

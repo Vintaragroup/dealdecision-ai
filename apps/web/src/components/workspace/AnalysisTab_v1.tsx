@@ -151,16 +151,16 @@ export function AnalysisTab({
   })();
 
   // Improvements — from underwriting readiness gaps.
-  // Points assigned by position (backend returns gaps in priority order).
+  // Use `missing` (human-readable labels like "Burn rate and runway data"), not
+  // `gaps` (machine-key enums like "no_burn_rate"). Points by position; backend
+  // returns items in priority order.
   const improvements: { action: string; points: number }[] = (() => {
-    const gaps: unknown = (underwritingReadinessV1 as any)?.gaps;
-    if (Array.isArray(gaps) && gaps.length > 0) {
-      return (gaps as unknown[])
-        .slice(0, 5)
-        .map((g, i) => ({
-          action: typeof g === 'string' ? g : String(g),
-          points: Math.max(3, 12 - i * 2),
-        }));
+    const items = underwritingReadinessV1?.missing ?? [];
+    if (items.length > 0) {
+      return items.slice(0, 5).map((g, i) => ({
+        action: g,
+        points: Math.max(3, 12 - i * 2),
+      }));
     }
     return [];
   })();

@@ -3734,6 +3734,12 @@ export async function apiGetProfileStats(): Promise<{ dealCount: number; documen
 // Gated on debugRoutesEnabled server-side and workspaceDebugEnabled client-side.
 // Memory influence is a secondary signal — it does not change ORS or overwrite verdicts.
 
+export type IntelligenceDebugPenalty = {
+  reason: string;
+  penalty: number;
+  code?: string;
+};
+
 export type IntelligenceDebugConfidence = {
   intelligence_run_id: string;
   overall_confidence_score: number | null;
@@ -3742,7 +3748,15 @@ export type IntelligenceDebugConfidence = {
   memory_adjustment_reason: string | null;
   penalty_count: number | null;
   total_penalty: number | null;
+  penalties_applied: IntelligenceDebugPenalty[] | null;
   created_at: string | null;
+};
+
+export type IntelligenceDebugChallengeFactor = {
+  code: string;
+  severity: 'Critical' | 'High' | 'Medium' | 'Low';
+  title: string;
+  explanation: string;
 };
 
 export type IntelligenceDebugChallenge = {
@@ -3756,6 +3770,8 @@ export type IntelligenceDebugChallenge = {
   diligence_gaps_count: number | null;
   memory_challenge_used: boolean | null;
   memory_challenge_summary: string | null;
+  primary_challenge_reason: string | null;
+  challenge_factors: IntelligenceDebugChallengeFactor[] | null;
   created_at: string | null;
 };
 

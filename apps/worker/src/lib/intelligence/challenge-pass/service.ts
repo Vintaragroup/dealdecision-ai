@@ -508,8 +508,9 @@ export async function persistChallengePassResult(
        (deal_id, intelligence_run_id, verdict_resistance_score, verdict_resistance_label,
         opposing_case_summary, overconfident_claims, missing_evidence, diligence_gaps,
         flag_count_critical, flag_count_error, flag_count_warn,
-        memory_challenge_used, memory_challenge_summary)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        memory_challenge_used, memory_challenge_summary,
+        primary_challenge_reason, challenge_factors)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      ON CONFLICT (deal_id, intelligence_run_id) DO UPDATE SET
        verdict_resistance_score  = EXCLUDED.verdict_resistance_score,
        verdict_resistance_label  = EXCLUDED.verdict_resistance_label,
@@ -522,6 +523,8 @@ export async function persistChallengePassResult(
        flag_count_warn           = EXCLUDED.flag_count_warn,
        memory_challenge_used     = EXCLUDED.memory_challenge_used,
        memory_challenge_summary  = EXCLUDED.memory_challenge_summary,
+       primary_challenge_reason  = EXCLUDED.primary_challenge_reason,
+       challenge_factors         = EXCLUDED.challenge_factors,
        updated_at                = now()`,
     [
       result.deal_id,
@@ -537,6 +540,8 @@ export async function persistChallengePassResult(
       result.flag_count_warn,
       result.memory_challenge_used,
       result.memory_challenge_summary,
+      result.primary_challenge_reason,
+      JSON.stringify(result.challenge_factors),
     ]
   );
 }

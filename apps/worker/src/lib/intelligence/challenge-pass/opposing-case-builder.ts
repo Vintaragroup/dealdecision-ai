@@ -1,12 +1,14 @@
 /**
  * Challenge Pass — Opposing Case Builder
  *
- * Pure function. Constructs the bear case from evaluator flags and
- * any risk items surfaced in the render package.
+ * Pure function. Reconstructs the bear case from pre-derived ChallengeFactor[]
+ * rather than raw flags so the output is always grounded in real signal, not
+ * a generic lookup table.
  */
 
 import type { EvaluationFlag } from "../evaluation-engine/types.js";
-import type { OverconfidentClaim } from "./types.js";
+import type { ChallengeFactor, MissingEvidenceItem, OverconfidentClaim } from "./types.js";
+import type { MemoryInfluenceSummary } from "../decision-memory/influence.js";
 
 export interface OpposingCaseInput {
   deal_name: string;
@@ -14,6 +16,9 @@ export interface OpposingCaseInput {
   ors_score: number;
   flags: EvaluationFlag[];
   deck_risk_items?: string[];
+  challenge_factors: ChallengeFactor[];
+  missing_evidence: MissingEvidenceItem[];
+  memory_influence: MemoryInfluenceSummary | null;
 }
 
 export interface OpposingCaseOutput {
@@ -21,113 +26,93 @@ export interface OpposingCaseOutput {
   overconfident_claims: OverconfidentClaim[];
 }
 
-// ─── Map flag types to bear-case sentences ────────────────────────────────────
-
-const FLAG_BEAR_SENTENCES: Record<string, string> = {
-  ARR_NARRATIVE_CONTRADICTION:
-    "The ARR figures in the narrative diverge materially from structured financial data — revenue quality is unverified.",
-  SCORE_VERDICT_MISALIGNMENT:
-    "The recommendation verdict is misaligned with the quantitative scores, raising questions about scoring integrity.",
-  URSS_GO_CONFLICT:
-    "Unit economics are signaling concern while the verdict indicates GO — capital efficiency risk is elevated.",
-  DCI_FHC_DIVERGENCE:
-    "Debt complexity is high relative to financial health, suggesting hidden capital structure risk.",
-  EVIDENCE_COUNT_CRITICAL:
-    "Insufficient evidence was available to support this analysis — the conclusions rest on thin factual basis.",
-  DPU_PROVENANCE_MISSING:
-    "Document-level extraction quality is unverified — data provenance cannot be confirmed.",
-  XLSX_LLM_FALLBACK:
-    "Structured financial data was supplemented by LLM inference — XLSX extraction was incomplete.",
-  EVIDENCE_GATE_FAILED:
-    "This deal did not pass the evidence gate — analysis may be based on incomplete data.",
-  DETERMINISTIC_ONLY_MODE:
-    "The pipeline ran in deterministic-only mode — LLM-enhanced extraction was not applied.",
-  STALE_CACHE:
-    "The analysis is based on a stale cache snapshot — market conditions may have shifted since last scoring.",
-  EVIDENCE_COUNT_LOW:
-    "Evidence coverage is below the recommended threshold — conclusions carry higher uncertainty.",
-  EVIDENCE_SECTIONS_ZERO:
-    "No structured evidence sections were identified — the analysis has no grounded support.",
-  VERDICT_RESISTANCE_LOW:
-    "This deal's verdict is fragile — minor new information could shift the recommendation.",
-};
-
-// ─── Build overconfident claims from flags ────────────────────────────────────
+// ─── Build overconfident claims from high-severity factors ────────────────────
 
 function buildOverconfidentClaims(
   flags: EvaluationFlag[],
+  factors: ChallengeFactor[],
   originalVerdict: string
 ): OverconfidentClaim[] {
   const claims: OverconfidentClaim[] = [];
 
-  for (const flag of flags) {
-    if (flag.severity === "CRITICAL" || flag.severity === "ERROR") {
-      const bearLabel =
-        FLAG_BEAR_SENTENCES[flag.flag_type] ??
-        `Flag type ${flag.flag_type} indicates unreliable signal.`;
+  const critical = factors.filter((f) => f.severity === "Critical");
+  const high = factors.filter((f) => f.severity === "High");
 
-      claims.push({
-        claim_text: `Verdict "${originalVerdict}" is presented with ${
-          flag.severity === "CRITICAL" ? "critical" : "significant"
-        } uncertainty.`,
-        source: "score",
-        challenge_reason: bearLabel,
-        flag_type: flag.flag_type,
-      });
-    }
+  for (const factor of [...critical, ...high].slice(0, 3)) {
+    const sourceFlag = flags.find((fl) =>
+      ["CRITICAL", "ERROR"].includes(fl.severity)
+    );
+    claims.push({
+      claim_text: `Verdict "${originalVerdict}" is presented with ${
+        factor.severity === "Critical" ? "critical" : "significant"
+      } uncertainty.`,
+      source: "score",
+      challenge_reason: factor.explanation,
+      flag_type: sourceFlag?.flag_type ?? factor.code,
+    });
   }
 
   return claims;
 }
 
-// ─── Build narrative paragraphs ───────────────────────────────────────────────
+// ─── Build grounded narrative paragraphs ─────────────────────────────────────
 
 function buildNarrativeParagraphs(
   verdict: string,
-  orsScore: number,
-  flags: EvaluationFlag[],
-  deckRisks: string[]
+  ors_score: number,
+  factors: ChallengeFactor[],
+  deck_risk_items: string[],
+  missing_evidence: MissingEvidenceItem[],
+  memory_influence: MemoryInfluenceSummary | null
 ): string[] {
   const paragraphs: string[] = [];
 
-  const criticals = flags.filter((f) => f.severity === "CRITICAL");
-  const errors = flags.filter((f) => f.severity === "ERROR");
-  const warns = flags.filter((f) => f.severity === "WARN");
+  // Top 1–3 factors drive the narrative — ordered Critical → High → Medium → Low.
+  // memory_fragility is excluded here: it is handled by the appended suffix in service.ts
+  // so that base prose (without memory) and base prose (with memory) are identical.
+  const top = factors.filter((f) => f.code !== "memory_fragility").slice(0, 3);
 
-  if (criticals.length > 0) {
-    const bullets = criticals
-      .map((f) => FLAG_BEAR_SENTENCES[f.flag_type] ?? `${f.flag_type} is flagged as critical.`)
-      .join(" ");
-    paragraphs.push(`Critical issues: ${bullets}`);
+  for (const f of top) {
+    paragraphs.push(f.explanation);
   }
 
-  if (errors.length > 0 && criticals.length === 0) {
-    const bullets = errors
-      .slice(0, 2)
-      .map((f) => FLAG_BEAR_SENTENCES[f.flag_type] ?? `${f.flag_type} is flagged.`)
-      .join(" ");
-    paragraphs.push(`Analysis errors: ${bullets}`);
-  }
-
-  if (warns.length > 0) {
+  // Deck risk items as supplemental signal (max 2)
+  if (deck_risk_items.length > 0 && top.length < 3) {
     paragraphs.push(
-      `${warns.length} warning-level flag${warns.length > 1 ? "s" : ""} indicate elevated uncertainty.`
+      `Narrative risk items identified in the deck: ${deck_risk_items.slice(0, 2).join("; ")}.`
     );
   }
 
-  if (orsScore < 55 && verdict === "GO") {
+  // Memory fragility if not already in factors
+  if (
+    memory_influence?.memory_fragility_signal &&
+    !factors.some((f) => f.code === "memory_fragility")
+  ) {
     paragraphs.push(
-      `The Overall Readiness Score (${orsScore}) is below 55 — the GO verdict may overstate deal quality.`
+      memory_influence.challenge_memory_summary ??
+        `Memory pool analysis shows structurally similar deals have predominantly received unfavorable verdicts.`
     );
   }
 
-  if (deckRisks.length > 0) {
-    paragraphs.push(`Deck-identified risks: ${deckRisks.slice(0, 3).join("; ")}.`);
+  // Structural gaps as a closing note when they are the primary non-memory driver.
+  // memory_fragility is excluded so this condition is stable regardless of memory context.
+  const nonMemoryFactors = factors.filter((f) => f.code !== "memory_fragility");
+  if (
+    nonMemoryFactors.length === 0 ||
+    (nonMemoryFactors.length === 1 && nonMemoryFactors[0].code === "structural_gaps_only")
+  ) {
+    if (missing_evidence.length > 0) {
+      const high = missing_evidence.filter((m) => m.verdict_sensitivity === "High");
+      const names = high.map((m) => m.evidence_type).slice(0, 3).join(", ");
+      paragraphs.push(
+        `The ${high.length > 0 ? `${high.length} high-sensitivity` : missing_evidence.length.toString()} missing evidence item${missing_evidence.length > 1 ? "s" : ""} (${names}) prevent a high-confidence verdict.`
+      );
+    }
   }
 
   if (paragraphs.length === 0) {
     paragraphs.push(
-      `No material contradictions or failures were detected, but all recommendations carry inherent uncertainty.`
+      `No material contradictions or pipeline failures were detected for this deal. The verdict appears internally consistent given available evidence. All recommendations carry inherent uncertainty.`
     );
   }
 
@@ -137,13 +122,40 @@ function buildNarrativeParagraphs(
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export function buildOpposingCase(input: OpposingCaseInput): OpposingCaseOutput {
-  const { deal_name, verdict, ors_score, flags, deck_risk_items = [] } = input;
+  const {
+    deal_name,
+    verdict,
+    ors_score,
+    flags,
+    deck_risk_items = [],
+    challenge_factors,
+    missing_evidence,
+    memory_influence,
+  } = input;
 
-  const paragraphs = buildNarrativeParagraphs(verdict, ors_score, flags, deck_risk_items);
-  const overconfidentClaims = buildOverconfidentClaims(flags, verdict);
+  const paragraphs = buildNarrativeParagraphs(
+    verdict,
+    ors_score,
+    challenge_factors,
+    deck_risk_items,
+    missing_evidence,
+    memory_influence
+  );
 
-  const intro = `Bear case for ${deal_name} (verdict: ${verdict}, ORS: ${ors_score}):`;
+  const overconfident_claims = buildOverconfidentClaims(flags, challenge_factors, verdict);
+
+  // Use the top non-memory factor for the primary title so the intro is stable
+  // regardless of memory context (memory is additive via the appended suffix).
+  const primaryFactor = challenge_factors.find((f) => f.code !== "memory_fragility");
+  const primaryCode = primaryFactor?.code ?? "structural_gaps_only";
+  const primaryTitle = primaryFactor?.title ?? "No material challenge factors detected";
+
+  const intro =
+    `Challenge assessment for ${deal_name} (verdict: ${verdict}, ORS: ${ors_score}). ` +
+    `Primary risk signal: ${primaryTitle}.`;
+
   const opposing_case_summary = [intro, ...paragraphs].join(" ");
 
-  return { opposing_case_summary, overconfident_claims: overconfidentClaims };
+  return { opposing_case_summary, overconfident_claims };
 }
+

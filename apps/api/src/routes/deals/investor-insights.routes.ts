@@ -669,8 +669,9 @@ export async function registerInvestorInsightsRoutes(
                  overall_confidence_band,
                  memory_adjustment,
                  memory_adjustment_reason,
-                 penalty_count,
-                 total_penalty,
+                 jsonb_array_length(penalties_applied) AS penalty_count,
+                 (SELECT COALESCE(SUM((item->>'penalty')::int), 0)
+                  FROM jsonb_array_elements(penalties_applied) item) AS total_penalty,
                  created_at
                FROM deal_confidence_assessments
                WHERE deal_id = $1
@@ -694,8 +695,8 @@ export async function registerInvestorInsightsRoutes(
                  flag_count_critical,
                  flag_count_error,
                  flag_count_warn,
-                 missing_evidence_count,
-                 diligence_gaps_count,
+                 jsonb_array_length(missing_evidence) AS missing_evidence_count,
+                 jsonb_array_length(diligence_gaps) AS diligence_gaps_count,
                  memory_challenge_used,
                  memory_challenge_summary,
                  created_at

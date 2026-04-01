@@ -627,5 +627,129 @@ export async function registerInvestorInsightsRoutes(
         });
       }
     );
+
+    // ── GET /api/v1/debug/deals/:dealId/intelligence ─────────────────────────
+    // Internal-only. Returns the most recent Stage 5 intelligence output for a
+    // deal: confidence assessment and challenge pass result.
+    //
+    // Gated behind debugRoutesEnabled — never exposed to end users.
+    // Memory influence is a secondary signal; it does not change ORS or
+    // overwrite verdicts.
+    app.get<{ Params: { dealId: string } }>(
+      "/api/v1/debug/deals/:dealId/intelligence",
+      {
+        schema: {
+          tags: ["debug"],
+          params: {
+            type: "object",
+            properties: { dealId: { type: "string" } },
+            required: ["dealId"],
+          },
+        } as any,
+      },
+      async (request, reply) => {
+        const parsed = z.string().uuid().safeParse(request.params.dealId);
+        if (!parsed.success) {
+          return reply.status(400).send({ error: "dealId must be a valid UUID" });
+        }
+        const dealId = parsed.data;
+
+        const hasConfidenceTable = await hasTable(pool, "deal_confidence_assessments");
+        const hasChallengeTable = await hasTable(pool, "deal_challenge_pass_results");
+
+        let confidence: Record<string, unknown> | null = null;
+        let challenge: Record<string, unknown> | null = null;
+
+        if (hasConfidenceTable) {
+          try {
+            const { rows } = await pool.query<Record<string, unknown>>(
+              `SELECT
+                 intelligence_run_id,
+                 overall_confidence_score,
+                 overall_confidence_band,
+                 memory_adjustment,
+                 memory_adjustment_reason,
+                 penalty_count,
+                 total_penalty,
+                 created_at
+               FROM deal_confidence_assessments
+               WHERE deal_id = $1
+               ORDER BY created_at DESC
+               LIMIT 1`,
+              [dealId]
+            );
+            confidence = rows[0] ?? null;
+          } catch {
+            confidence = null;
+          }
+        }
+
+        if (hasChallengeTable && confidence?.intelligence_run_id) {
+          try {
+            const { rows } = await pool.query<Record<string, unknown>>(
+              `SELECT
+                 intelligence_run_id,
+                 verdict_resistance_score,
+                 verdict_resistance_label,
+                 flag_count_critical,
+                 flag_count_error,
+                 flag_count_warn,
+                 missing_evidence_count,
+                 diligence_gaps_count,
+                 memory_challenge_used,
+                 memory_challenge_summary,
+                 created_at
+               FROM deal_challenge_pass_results
+               WHERE intelligence_run_id = $1
+               LIMIT 1`,
+              [confidence.intelligence_run_id]
+            );
+            challenge = rows[0] ?? null;
+          } catch {
+            challenge = null;
+          }
+        }
+
+        // Pull neighbor stats from deal_memory_snapshots if available.
+        const hasMemorySnapshotColumn = hasChallengeTable
+          ? await hasColumn(pool, "deal_confidence_assessments", "memory_adjustment")
+          : false;
+
+        let memory: Record<string, unknown> | null = null;
+        if (hasMemorySnapshotColumn && confidence?.intelligence_run_id) {
+          try {
+            const { rows } = await pool.query<Record<string, unknown>>(
+              `SELECT
+                 similar_deal_count,
+                 avg_similarity_pct,
+                 memory_support_signal,
+                 memory_fragility_signal,
+                 verdict_agreement_fraction,
+                 neighbor_snapshots
+               FROM deal_memory_snapshots
+               WHERE intelligence_run_id = $1
+               LIMIT 1`,
+              [confidence.intelligence_run_id]
+            );
+            memory = rows[0] ?? null;
+          } catch {
+            // deal_memory_snapshots may not exist; continue without it
+            memory = null;
+          }
+        }
+
+        return reply.send({
+          deal_id: dealId,
+          run_id: confidence?.intelligence_run_id ?? null,
+          confidence,
+          challenge,
+          memory,
+          _meta: {
+            has_confidence_table: hasConfidenceTable,
+            has_challenge_table: hasChallengeTable,
+          },
+        });
+      }
+    );
   }
 }

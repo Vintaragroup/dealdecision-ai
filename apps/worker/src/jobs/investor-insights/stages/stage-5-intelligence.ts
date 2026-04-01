@@ -163,6 +163,10 @@ export interface Stage5StartedEvent {
   deal_id: string;
   run_id: string;
   rollout_mode: IntelligenceRolloutMode;
+  /** Confirms the memory influence wiring (1b) is active in this process. */
+  has_memory_influence_wiring: true;
+  /** Static version tag for the memory influence implementation. */
+  memory_influence_version: "v1";
   ts: string;
 }
 
@@ -244,6 +248,8 @@ function buildStage5StartedEvent(
     deal_id,
     run_id,
     rollout_mode,
+    has_memory_influence_wiring: true,
+    memory_influence_version: "v1",
     ts: new Date().toISOString(),
   };
 }

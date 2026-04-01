@@ -3729,4 +3729,60 @@ export async function apiGetProfileStats(): Promise<{ dealCount: number; documen
   return res.json();
 }
 
+// ─── Stage 5 Intelligence Debug ──────────────────────────────────────────────
+// Internal-only. Returned by GET /api/v1/debug/deals/:dealId/intelligence.
+// Gated on debugRoutesEnabled server-side and workspaceDebugEnabled client-side.
+// Memory influence is a secondary signal — it does not change ORS or overwrite verdicts.
+
+export type IntelligenceDebugConfidence = {
+  intelligence_run_id: string;
+  overall_confidence_score: number | null;
+  overall_confidence_band: string | null;
+  memory_adjustment: number | null;
+  memory_adjustment_reason: string | null;
+  penalty_count: number | null;
+  total_penalty: number | null;
+  created_at: string | null;
+};
+
+export type IntelligenceDebugChallenge = {
+  intelligence_run_id: string;
+  verdict_resistance_score: number | null;
+  verdict_resistance_label: string | null;
+  flag_count_critical: number | null;
+  flag_count_error: number | null;
+  flag_count_warn: number | null;
+  missing_evidence_count: number | null;
+  diligence_gaps_count: number | null;
+  memory_challenge_used: boolean | null;
+  memory_challenge_summary: string | null;
+  created_at: string | null;
+};
+
+export type IntelligenceDebugMemory = {
+  similar_deal_count: number | null;
+  avg_similarity_pct: number | null;
+  memory_support_signal: boolean | null;
+  memory_fragility_signal: boolean | null;
+  verdict_agreement_fraction: number | null;
+  neighbor_snapshots: unknown[] | null;
+};
+
+export type IntelligenceDebugPayload = {
+  deal_id: string;
+  run_id: string | null;
+  confidence: IntelligenceDebugConfidence | null;
+  challenge: IntelligenceDebugChallenge | null;
+  memory: IntelligenceDebugMemory | null;
+  _meta: {
+    has_confidence_table: boolean;
+    has_challenge_table: boolean;
+  };
+};
+
+export async function apiGetIntelligenceDebug(dealId: string): Promise<IntelligenceDebugPayload> {
+  return request<IntelligenceDebugPayload>(`/api/v1/debug/deals/${dealId}/intelligence`);
+}
+
+
 export type { Deal };

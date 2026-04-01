@@ -67,6 +67,7 @@ import { filterMismatchedScoreItems, stripScoreFractions, stripScoreFractionsFro
 import { buildWorkspaceViewModel } from '../workspace/builders/buildWorkspaceViewModel';
 import type { WorkspaceViewModelInputs } from '../workspace/builders/buildWorkspaceViewModel';
 import { WorkspaceDebugPanel } from '../workspace/WorkspaceDebugPanel';
+import { Stage5IntelPanel } from '../workspace/Stage5IntelPanel';
 import {
   PolarAngleAxis,
   PolarGrid,
@@ -7950,6 +7951,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               })()}
             </div>
           </details>
+        )}
+
+        {workspaceDebugEnabled && dealId && (
+          <Stage5IntelPanel dealId={dealId} darkMode={darkMode} />
         )}
 
         </WorkspaceDebugPanel>

@@ -107,6 +107,31 @@ describe("deriveMemoryInfluence — no-memory cases", () => {
     );
     expect(result2.similar_deal_count).toBe(2);
   });
+
+  it("returns targeted NO_GO reason when current verdict is not positive but pool is valid", () => {
+    // 5 NO_GO neighbors at strong similarity — pool and similarity guards pass,
+    // but the non-positive verdict guard fires and returns the targeted reason string.
+    const validPool = [
+      makeDeal("deal-01", "NO_GO", 20, 80),
+      makeDeal("deal-02", "NO_GO", 18, 82),
+      makeDeal("deal-03", "NO_GO", 22, 78),
+      makeDeal("deal-04", "NO_GO", 17, 80),
+      makeDeal("deal-05", "NO_GO", 19, 81),
+    ];
+    const result = deriveMemoryInfluence(validPool, "NO_GO");
+
+    expect(result.confidence_adjustment).toBe(0);
+    expect(result.memory_support_signal).toBe(false);
+    expect(result.memory_fragility_signal).toBe(false);
+    expect(result.challenge_memory_used).toBe(false);
+    expect(result.challenge_memory_summary).toBeNull();
+
+    // Targeted reason — must NOT say "inconclusive" (that path is for genuinely
+    // mixed pools, not for non-positive verdicts)
+    expect(result.confidence_adjustment_reason).not.toMatch(/inconclusive/i);
+    expect(result.confidence_adjustment_reason).toMatch(/only applied to positive verdicts/i);
+    expect(result.confidence_adjustment_reason).toMatch(/NO_GO/i);
+  });
 });
 
 // ─── B. Supportive-memory cases ───────────────────────────────────────────

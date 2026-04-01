@@ -199,6 +199,19 @@ export function deriveMemoryInfluence(
     );
   }
 
+  // ── Guard: non-positive verdict ────
+  // Support and fragility signals are only meaningful for positive verdicts
+  // (GO or CONSIDER). A NO_GO deal cannot benefit from support, and the
+  // concept of a "fragility" signal (optimism relative to NO_GO neighbors)
+  // does not apply when the current verdict is already negative.
+  // This guard runs AFTER the pool/similarity checks so the neighbor stats
+  // are still computed and logged below — only influence is suppressed.
+  if (!isPositiveVerdict(currentVerdict)) {
+    return noInfluence(
+      `No memory confidence adjustment: current verdict is ${currentVerdict}, and memory influence is only applied to positive verdicts (GO or CONSIDER).`
+    );
+  }
+
   // ── Derive verdict mix ────
   const verdictMix: NeighborVerdictMix = { go: 0, consider: 0, no_go: 0 };
   let orsSum = 0;

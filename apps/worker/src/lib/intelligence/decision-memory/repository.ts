@@ -74,7 +74,7 @@ export async function upsertMemorySnapshot(
       arr_value, mrr_value, burn_rate_monthly, runway_months, raise_amount,
       evidence_count, contradiction_count, key_risk_count, key_strength_count,
       financial_completeness_pct, document_quality_score, has_xlsx,
-      JSON.stringify(feature_vector), JSON.stringify(vector_null_mask),
+      `{${feature_vector.join(",")}}`, `{${vector_null_mask.join(",")}}`,
     ]
   );
   return result.rows[0].id;

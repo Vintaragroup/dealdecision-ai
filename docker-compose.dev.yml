@@ -129,6 +129,8 @@ services:
       FUNDABILITY_SOFT_CAPS: ${FUNDABILITY_SOFT_CAPS:-1}
       FUNDABILITY_HARD_GATES: ${FUNDABILITY_HARD_GATES:-0}
       DEBUG_PHASE1_OVERVIEW_V2: "1"
+      DDAI_INTELLIGENCE_LAYER_ENABLED: ${DDAI_INTELLIGENCE_LAYER_ENABLED:-0}
+      DDAI_INTELLIGENCE_ROLLOUT_MODE: ${DDAI_INTELLIGENCE_ROLLOUT_MODE:-off}
     volumes:
       - ./apps/worker/src:/app/apps/worker/src
       - ./apps/worker/package.json:/app/apps/worker/package.json

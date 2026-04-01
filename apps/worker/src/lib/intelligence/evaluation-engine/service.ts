@@ -53,6 +53,7 @@ export async function persistEvaluationFlags(
        severity           = EXCLUDED.severity,
        description        = EXCLUDED.description,
        detail             = EXCLUDED.detail,
+       intelligence_run_id = EXCLUDED.intelligence_run_id,
        updated_at         = now()`,
     params
   );

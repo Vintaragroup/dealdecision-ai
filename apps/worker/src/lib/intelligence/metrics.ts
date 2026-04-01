@@ -41,6 +41,8 @@ export interface IntelligenceMetricSnapshot {
   challenge_pass_runs: number;
   challenge_pass_fragile: number;   // resistance_label = Fragile or Very Fragile
   persistence_write_failures: number;
+  memory_influence_boost: number;   // memory applied a positive confidence adjustment
+  memory_influence_penalty: number; // memory applied a negative confidence adjustment
 
   // Timing (nanoseconds internally, reported as ms)
   stage5_total_duration_ms: number;
@@ -70,6 +72,8 @@ const counters: IntelligenceMetricSnapshot = {
   challenge_pass_runs: 0,
   challenge_pass_fragile: 0,
   persistence_write_failures: 0,
+  memory_influence_boost: 0,
+  memory_influence_penalty: 0,
   stage5_total_duration_ms: 0,
   stage5_run_count_for_avg: 0,
 };

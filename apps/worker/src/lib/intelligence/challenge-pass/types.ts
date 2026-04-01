@@ -44,4 +44,12 @@ export interface ChallengePassResult {
   flag_count_critical: number;
   flag_count_error: number;
   flag_count_warn: number;
+  /** Whether decision memory was used to enrich the opposing case. */
+  memory_challenge_used: boolean;
+  /**
+   * Memory-derived challenge context appended to the opposing case summary.
+   * null when memory was not used (pool too small, similarity too weak, or no
+   * fragility signal).
+   */
+  memory_challenge_summary: string | null;
 }

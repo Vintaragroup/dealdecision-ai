@@ -28,6 +28,13 @@ export interface IntelligencePassResult {
   deal_id: string;
   memory_snapshot_id: string | null;
   similar_deals: import("./decision-memory/types.js").SimilarDeal[];
+  /**
+   * Memory influence summary — derived from similar deals after memory recall.
+   * Contains confidence adjustment, fragility/support signals, and challenge
+   * memory context. This is an INTERNAL/ADMIN field and must not be exposed
+   * directly in public user-facing API responses without review.
+   */
+  memory_influence_summary: import("./decision-memory/influence.js").MemoryInfluenceSummary | null;
   evaluator_report: import("./evaluation-engine/types.js").EvaluatorReport;
   confidence_report: import("./confidence-engine/types.js").ConfidenceReport;
   challenge_pass_result: import("./challenge-pass/types.js").ChallengePassResult;

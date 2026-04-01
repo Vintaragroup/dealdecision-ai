@@ -89,9 +89,20 @@ function buildRationale(
 
 export function computeConfidence(input: ConfidenceInput): ConfidenceReport {
   const { penalties, total_penalty } = computePenalties(input);
-  const overallScore = clamp(BASE_SCORE - total_penalty, MIN_SCORE, BASE_SCORE);
-  const overallBand = scoreToConfidenceBand(overallScore);
+  const baseScore = clamp(BASE_SCORE - total_penalty, MIN_SCORE, BASE_SCORE);
   const weakeners = penalties.map((p) => p.reason);
+
+  // ── Memory adjustment (bounded, secondary signal) ────────────────────────
+  // Applied AFTER base confidence is finalized.
+  // Memory may never be the sole reason for a negative verdict.
+  const memAdj = input.memory_influence?.confidence_adjustment ?? 0;
+  const memReason =
+    input.memory_influence?.confidence_adjustment_reason ??
+    "No memory adjustment applied: memory influence not provided.";
+
+  const overallScore = clamp(baseScore + memAdj, MIN_SCORE, BASE_SCORE);
+  const overallBand = scoreToConfidenceBand(overallScore);
+
   const conclusions = buildConclusions(input, overallScore, weakeners);
   const rationale = buildRationale(overallScore, total_penalty, weakeners);
 
@@ -103,6 +114,8 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceReport {
     penalties_applied: penalties,
     conclusions,
     rationale,
+    memory_adjustment: memAdj,
+    memory_adjustment_reason: memReason,
   };
 }
 
@@ -114,14 +127,17 @@ export async function persistConfidenceReport(
 ): Promise<void> {
   await pool.query(
     `INSERT INTO deal_confidence_assessments
-       (deal_id, overall_confidence_score, overall_confidence_band, penalties_applied, conclusions, rationale, intelligence_run_id)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)
+       (deal_id, overall_confidence_score, overall_confidence_band, penalties_applied, conclusions, rationale,
+        intelligence_run_id, memory_adjustment, memory_adjustment_reason)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (deal_id, intelligence_run_id) DO UPDATE SET
        overall_confidence_score  = EXCLUDED.overall_confidence_score,
        overall_confidence_band   = EXCLUDED.overall_confidence_band,
        penalties_applied         = EXCLUDED.penalties_applied,
        conclusions               = EXCLUDED.conclusions,
        rationale                 = EXCLUDED.rationale,
+       memory_adjustment         = EXCLUDED.memory_adjustment,
+       memory_adjustment_reason  = EXCLUDED.memory_adjustment_reason,
        updated_at                = now()`,
     [
       report.deal_id,
@@ -131,6 +147,8 @@ export async function persistConfidenceReport(
       JSON.stringify(report.conclusions),
       report.rationale,
       report.intelligence_run_id,
+      report.memory_adjustment,
+      report.memory_adjustment_reason,
     ]
   );
 }

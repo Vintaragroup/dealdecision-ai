@@ -8,6 +8,7 @@
 import type { Pool } from "pg";
 import type { EvaluationFlag } from "../evaluation-engine/types.js";
 import type { ChallengePassResult, VerdictResistanceLabel } from "./types.js";
+import type { MemoryInfluenceSummary } from "../decision-memory/influence.js";
 import { buildOpposingCase } from "./opposing-case-builder.js";
 import { detectMissingEvidence, missingEvidencePenalty } from "./missing-evidence-detector.js";
 import type { MissingEvidenceInput } from "./missing-evidence-detector.js";
@@ -46,6 +47,13 @@ export interface ChallengePassInput {
   flags: EvaluationFlag[];
   deck_risk_items?: string[];
   evidence: MissingEvidenceInput;
+  /**
+   * Optional: memory influence summary derived from similar deals.
+   * When present and fragility signal is active, the opposing case summary
+   * is enriched with memory-based context.
+   * Memory never rewrites ORS, verdict, or evidence facts.
+   */
+  memory_influence?: MemoryInfluenceSummary | null;
 }
 
 export function runChallengePass(input: ChallengePassInput): ChallengePassResult {
@@ -65,18 +73,31 @@ export function runChallengePass(input: ChallengePassInput): ChallengePassResult
     deck_risk_items,
   });
 
+  // ── Memory enrichment ─────────────────────────────────────────────────────
+  // Only append memory context when the fragility signal is active.
+  // Memory challenge summary is appended to (never replaces) the base opposing case.
+  const memChallengeUsed = input.memory_influence?.challenge_memory_used ?? false;
+  const memChallengeSummary = input.memory_influence?.challenge_memory_summary ?? null;
+
+  const enrichedOpposingCase =
+    memChallengeUsed && memChallengeSummary
+      ? `${opposing_case_summary}\n\nMemory signal: ${memChallengeSummary}`
+      : opposing_case_summary;
+
   return {
     deal_id,
     intelligence_run_id,
     verdict_resistance_score: resistance_score,
     verdict_resistance_label: resistance_label,
-    opposing_case_summary,
+    opposing_case_summary: enrichedOpposingCase,
     overconfident_claims,
     missing_evidence,
     diligence_gaps,
     flag_count_critical: flags.filter((f) => f.severity === "CRITICAL").length,
     flag_count_error: flags.filter((f) => f.severity === "ERROR").length,
     flag_count_warn: flags.filter((f) => f.severity === "WARN").length,
+    memory_challenge_used: memChallengeUsed,
+    memory_challenge_summary: memChallengeSummary,
   };
 }
 
@@ -90,8 +111,9 @@ export async function persistChallengePassResult(
     `INSERT INTO deal_challenge_pass_results
        (deal_id, intelligence_run_id, verdict_resistance_score, verdict_resistance_label,
         opposing_case_summary, overconfident_claims, missing_evidence, diligence_gaps,
-        flag_count_critical, flag_count_error, flag_count_warn)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        flag_count_critical, flag_count_error, flag_count_warn,
+        memory_challenge_used, memory_challenge_summary)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      ON CONFLICT (deal_id, intelligence_run_id) DO UPDATE SET
        verdict_resistance_score  = EXCLUDED.verdict_resistance_score,
        verdict_resistance_label  = EXCLUDED.verdict_resistance_label,
@@ -102,6 +124,8 @@ export async function persistChallengePassResult(
        flag_count_critical       = EXCLUDED.flag_count_critical,
        flag_count_error          = EXCLUDED.flag_count_error,
        flag_count_warn           = EXCLUDED.flag_count_warn,
+       memory_challenge_used     = EXCLUDED.memory_challenge_used,
+       memory_challenge_summary  = EXCLUDED.memory_challenge_summary,
        updated_at                = now()`,
     [
       result.deal_id,
@@ -115,6 +139,8 @@ export async function persistChallengePassResult(
       result.flag_count_critical,
       result.flag_count_error,
       result.flag_count_warn,
+      result.memory_challenge_used,
+      result.memory_challenge_summary,
     ]
   );
 }

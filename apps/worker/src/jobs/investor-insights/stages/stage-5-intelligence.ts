@@ -26,6 +26,7 @@ import type { Pool } from "pg";
 import type { IntelligencePassResult } from "../../../lib/intelligence/types.js";
 
 import { buildMemorySnapshot, persistAndRecallMemory } from "../../../lib/intelligence/decision-memory/service.js";
+import { deriveMemoryInfluence } from "../../../lib/intelligence/decision-memory/influence.js";
 import { runEvaluatorPass, persistEvaluationFlags } from "../../../lib/intelligence/evaluation-engine/service.js";
 import { computeConfidence, persistConfidenceReport } from "../../../lib/intelligence/confidence-engine/service.js";
 import { runChallengePass, persistChallengePassResult } from "../../../lib/intelligence/challenge-pass/service.js";
@@ -336,6 +337,7 @@ function disabledResult(deal_id: string): IntelligencePassResult {
     deal_id,
     memory_snapshot_id: null,
     similar_deals: [],
+    memory_influence_summary: null,
     evaluator_report: {
       deal_id,
       run_id: "",
@@ -357,6 +359,8 @@ function disabledResult(deal_id: string): IntelligencePassResult {
       penalties_applied: [],
       conclusions: [],
       rationale: "Intelligence layer disabled.",
+      memory_adjustment: 0,
+      memory_adjustment_reason: "Intelligence layer disabled.",
     },
     challenge_pass_result: {
       deal_id,
@@ -370,6 +374,8 @@ function disabledResult(deal_id: string): IntelligencePassResult {
       flag_count_critical: 0,
       flag_count_error: 0,
       flag_count_warn: 0,
+      memory_challenge_used: false,
+      memory_challenge_summary: null,
     },
     stage5_error: null,
   };
@@ -524,6 +530,33 @@ export async function runIntelligenceStage(
       console.log(JSON.stringify(buildMemoryShadowEvent(inputs.deal_id, run_id, inputs.ors_score)));
     }
 
+    // ── 1b. Memory Influence ──────────────────────────────────────────────────
+    // Derived from similar_deals AFTER memory recall completes.
+    // This is a SECONDARY, BOUNDED signal — never overwrites ORS or facts.
+    const memory_influence_summary = deriveMemoryInfluence(similar_deals, inputs.verdict);
+    if (memory_influence_summary.confidence_adjustment !== 0) {
+      intelligenceMetrics.increment(
+        memory_influence_summary.confidence_adjustment > 0
+          ? "memory_influence_boost"
+          : "memory_influence_penalty"
+      );
+    }
+    console.log(
+      JSON.stringify({
+        event: "intelligence.memory.influence",
+        deal_id: inputs.deal_id,
+        run_id,
+        similar_deal_count: memory_influence_summary.similar_deal_count,
+        avg_similarity_pct: memory_influence_summary.avg_similarity_pct,
+        memory_support_signal: memory_influence_summary.memory_support_signal,
+        memory_fragility_signal: memory_influence_summary.memory_fragility_signal,
+        verdict_agreement_fraction: memory_influence_summary.verdict_agreement_fraction,
+        confidence_adjustment: memory_influence_summary.confidence_adjustment,
+        challenge_memory_used: memory_influence_summary.challenge_memory_used,
+        ts: new Date().toISOString(),
+      })
+    );
+
     // ── 2. Evaluation Engine ──────────────────────────────────────────────────
     const evalStart = Date.now();
     const evaluatorInput: import("../../../lib/intelligence/evaluation-engine/types.js").EvaluatorInput = {
@@ -609,6 +642,7 @@ export async function runIntelligenceStage(
       ),
       arr_structured: inputs.arr_structured,
       burn_rate_monthly: inputs.burn_rate_monthly,
+      memory_influence: memory_influence_summary,
     };
 
     const confidence_report = computeConfidence(confidenceInput);
@@ -679,6 +713,7 @@ export async function runIntelligenceStage(
       flags: evaluator_report.flags,
       deck_risk_items: inputs.deck_risk_items,
       evidence: missingEvidenceInput,
+      memory_influence: memory_influence_summary,
     });
 
     intelligenceMetrics.increment("challenge_pass_runs");
@@ -755,6 +790,7 @@ export async function runIntelligenceStage(
       deal_id: inputs.deal_id,
       memory_snapshot_id,
       similar_deals,
+      memory_influence_summary,
       evaluator_report,
       confidence_report,
       challenge_pass_result,
@@ -777,6 +813,7 @@ export async function runIntelligenceStage(
       deal_id: inputs.deal_id,
       memory_snapshot_id: null,
       similar_deals: [],
+      memory_influence_summary: null,
       evaluator_report: {
         deal_id: inputs.deal_id,
         run_id,
@@ -793,6 +830,8 @@ export async function runIntelligenceStage(
         penalties_applied: [],
         conclusions: [],
         rationale: "Stage 5 error — see logs.",
+        memory_adjustment: 0,
+        memory_adjustment_reason: "Stage 5 error — memory adjustment not computed.",
       },
       challenge_pass_result: {
         deal_id: inputs.deal_id,
@@ -806,6 +845,8 @@ export async function runIntelligenceStage(
         flag_count_critical: 0,
         flag_count_error: 0,
         flag_count_warn: 0,
+        memory_challenge_used: false,
+        memory_challenge_summary: null,
       },
       stage5_error: errorMsg,
     };

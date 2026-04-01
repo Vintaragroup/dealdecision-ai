@@ -8,32 +8,32 @@ import {
   AlertTriangle,
   Target,
 } from 'lucide-react';
-import { Button } from '../ui/button';
-import type { DealFormData } from '../Modal_Legacy/NewDealModal';
-import { ProfessionalReportGenerator } from '../reports/ProfessionalReportGenerator';
-import { OrchestratorFullReportView } from './OrchestratorFullReportView';
-import { Dialog, DialogContent } from '../ui/dialog';
-import { ScrollArea } from '../ui/scroll-area';
+import { Button } from '../../ui/button';
+import type { DealFormData } from '../../Modal_Legacy/NewDealModal';
+import { ProfessionalReportGenerator } from '../../reports/ProfessionalReportGenerator';
+import { OrchestratorFullReportView } from '../OrchestratorFullReportView';
+import { Dialog, DialogContent } from '../../ui/dialog';
+import { ScrollArea } from '../../ui/scroll-area';
 import {
   AnalysisSnapshotDashboard,
   type DealAnalysis,
   type CategoryScore,
-} from '../deals/analysis/AnalysisSnapshotDashboard';
-import { useOrchestratorReport } from '../../hooks/useOrchestratorReport';
-import { mergeSnapshotWithOrchestrator } from '../deals/analysis/mergeSnapshotWithOrchestrator';
+} from '../../deals/analysis/AnalysisSnapshotDashboard';
+import { useOrchestratorReport } from '../../../hooks/useOrchestratorReport';
+import { mergeSnapshotWithOrchestrator } from '../../deals/analysis/mergeSnapshotWithOrchestrator';
 import {
   ReportViewConfigModal,
   type ReportViewConfig,
   DEFAULT_REPORT_VIEW_CONFIG,
-} from '../deals/analysis/ReportViewConfigModal';
-import { ReportGeneratorPreviewSplit } from '../deals/analysis/ReportGeneratorPreviewSplit';
-import type { DealReportFinancialIntegrityV1 } from '../../lib/apiClient';
-import type { FinancialBreakdownV1Like, UnderwritingReadinessV1Like } from '../../lib/selectors/selectAuthoritativeFinancialBreakdownV1';
-import { resolveScoreDivergence } from '../../lib/resolveScoreDivergence';
-import { ScoreDivergenceBanner } from './analysis/ScoreDivergenceBanner';
-import { VCScoringV2Panel } from './analysis/VCScoringV2Panel';
-import { VentureLensPanel } from './analysis/VentureLensPanel';
-import type { WorkspaceVerdict } from '../../lib/resolveWorkspaceVerdict';
+} from '../../deals/analysis/ReportViewConfigModal';
+import { ReportGeneratorPreviewSplit } from '../../deals/analysis/ReportGeneratorPreviewSplit';
+import type { DealReportFinancialIntegrityV1 } from '../../../lib/apiClient';
+import type { FinancialBreakdownV1Like, UnderwritingReadinessV1Like } from '../../../lib/selectors/selectAuthoritativeFinancialBreakdownV1';
+import { resolveScoreDivergence } from '../../../lib/resolveScoreDivergence';
+import { ScoreDivergenceBanner } from '../analysis/ScoreDivergenceBanner';
+import { VCScoringV2Panel } from '../analysis/VCScoringV2Panel';
+import { VentureLensPanel } from '../analysis/VentureLensPanel';
+import type { WorkspaceVerdict } from '../../../lib/resolveWorkspaceVerdict';
 
 interface AnalysisTabProps {
   darkMode: boolean;

@@ -14,7 +14,7 @@ import { DealFormData } from '../Modal_Legacy/NewDealModal';
 import { AnimatedCounter } from '../AnimatedCounter';
 import { ExportReportModal } from '../ExportReportModal';
 import { TemplateExportModal } from '../TemplateExportModal';
-import { AnalysisTab } from '../workspace/AnalysisTab';
+import { AnalysisTab } from '../workspace/AnalysisTab_v1';
 import { DataTab } from '../workspace/DataTab';
 import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
 import { InvestorInsightsTab } from '../workspace/investor-insights/InvestorInsightsTab';

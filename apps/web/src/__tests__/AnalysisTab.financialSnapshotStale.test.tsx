@@ -15,7 +15,7 @@ import { render, screen, act } from '@testing-library/react';
 import React from 'react';
 import { describe, expect, test, vi, beforeEach, afterEach } from 'vitest';
 
-import { AnalysisTab } from '../components/workspace/AnalysisTab';
+import { AnalysisTab } from '../components/workspace/AI-analysis-legacy/AnalysisTab';
 import type { DealFormData } from '../components/Modal_Legacy/NewDealModal';
 import type { FinancialBreakdownV1Like, UnderwritingReadinessV1Like } from '../lib/selectors/selectAuthoritativeFinancialBreakdownV1';
 

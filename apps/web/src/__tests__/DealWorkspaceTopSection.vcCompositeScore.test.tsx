@@ -5,7 +5,7 @@
  *   1. When vcScoringV2 is absent, the circle shows the legacy evidence score.
  *   2. When vcScoringV2 is present, the circle shows vc_composite_score.
  *   3. When vcScoringV2 is present, the label below the circle shows the posture label.
- *   4. When vcScoringV2 is present, the caption reads "VC Composite Score".
+ *   4. When vcScoringV2 is present, the caption reads "VC Composite".
  *   5. When vcScoringV2 is present, the demoted evidence score secondary line is visible.
  */
 import { render, screen, within } from '@testing-library/react';
@@ -67,9 +67,9 @@ describe('DealWorkspaceTopSection — VC composite score circle swap', () => {
     expect(screen.getAllByText('Investigate').length).toBeGreaterThan(0);
   });
 
-  it('4. with vcScoringV2: caption reads "VC Composite Score"', () => {
+  it('4. with vcScoringV2: caption reads "VC Composite"', () => {
     render(<DealWorkspaceHeader {...BASE_PROPS} vcScoringV2={VC_V2_INVESTIGATE} />);
-    expect(screen.getByText('VC Composite Score')).toBeInTheDocument();
+    expect(screen.getByText('VC Composite')).toBeInTheDocument();
     expect(screen.queryByText('Evidence Score')).toBeNull();
   });
 

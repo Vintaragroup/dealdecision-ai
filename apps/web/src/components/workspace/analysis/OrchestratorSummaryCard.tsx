@@ -158,7 +158,7 @@ function CardContent({
 
         {/* ORS score */}
         <div className={`flex items-center gap-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-          <span className="text-xs font-medium uppercase tracking-wide opacity-60">Deal Score</span>
+          <span className="text-xs font-medium uppercase tracking-wide opacity-60">Orchestrator Score</span>
           <span className="font-bold text-lg tabular-nums" data-testid="ors-score">{ors}</span>
           <span className="text-xs opacity-50">/100</span>
         </div>

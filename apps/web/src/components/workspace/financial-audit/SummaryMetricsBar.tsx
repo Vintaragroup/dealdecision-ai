@@ -24,7 +24,7 @@ export function SummaryMetricsBar({
         {/* Completeness Score */}
         <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
           <div className={`text-xs mb-1.5 font-medium ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-            Completeness
+            Data Completeness
           </div>
           <div className="flex items-baseline gap-1">
             <span className={`text-2xl font-bold ${getCompletenessColor(completeness, darkMode)}`}>

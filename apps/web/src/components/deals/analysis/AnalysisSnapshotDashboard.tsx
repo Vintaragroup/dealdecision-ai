@@ -211,7 +211,7 @@ export function AnalysisSnapshotDashboard({
               </div>
             </div>
             <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              Deal Score
+              Snapshot Score
             </p>
             <p className="text-xs mt-1" style={{ color: getScoreColor(analysis.overallScore) }}>
               {analysis.grade}

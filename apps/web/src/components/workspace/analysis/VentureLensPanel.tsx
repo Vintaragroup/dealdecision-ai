@@ -188,11 +188,11 @@ export function VentureLensPanel({ darkMode, ventureLens }: VentureLensPanelProp
       {/* Venture score + adjustment line */}
       <div className={`flex items-center gap-3 mb-4 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
         <span>
-          Venture Score <span className={`font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{venture_score}/100</span>
+          Base Venture Score <span className={`font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{venture_score}/100</span>
         </span>
         <span className={darkMode ? 'text-gray-700' : 'text-gray-400'}>·</span>
         <span>
-          V2 Adjustment{' '}
+          Adjustment{' '}
           <span
             className={`font-semibold ${
               adjustment > 0
@@ -207,7 +207,7 @@ export function VentureLensPanel({ darkMode, ventureLens }: VentureLensPanelProp
         </span>
         <span className={darkMode ? 'text-gray-700' : 'text-gray-400'}>→</span>
         <span>
-          Final <span className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{final_investment_score}</span>
+          Final Investment Score <span className={`font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{final_investment_score}</span>
         </span>
       </div>
 

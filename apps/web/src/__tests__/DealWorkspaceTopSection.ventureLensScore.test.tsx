@@ -3,16 +3,16 @@
  *
  * Contract:
  *   1. V3 present: hero circle shows final_investment_score, not V2 or legacy
- *   2. V3 present: caption reads "Venture Lens Score"
+ *   2. V3 present: caption reads "Final Investment Score"
  *   3. V3 present: posture label uses final_posture
  *   4. V3 present: evidence score shown as secondary
  *   5. V2 present, V3 absent: hero circle shows vc_composite_score
- *   6. V2 present, V3 absent: caption reads "VC Composite Score"
+ *   6. V2 present, V3 absent: caption reads "VC Composite"
  *   7. V2 present, V3 absent: posture label uses investment_posture
  *   8. Neither V2 nor V3: hero circle shows legacy score
  *   9. Neither V2 nor V3: caption reads "Evidence Score", no secondary line
- *  10. Tooltip V3 mode: title "Venture Lens Score", correct body text
- *  11. Tooltip V2 mode: title "VC Composite Score", correct body text
+ *  10. Tooltip V3 mode: title "Final Investment Score", correct body text
+ *  11. Tooltip V2 mode: title "VC Composite", correct body text
  *  12. Tooltip legacy mode: title "Evidence Score", correct body text
  */
 import { render, screen, fireEvent, within } from '@testing-library/react';
@@ -72,10 +72,10 @@ describe('DealWorkspaceTopSection — Venture Lens hero score hierarchy', () => 
     expect(within(chart).queryByText(/^55$/)).toBeNull();
   });
 
-  it('2. V3 present: caption reads "Venture Lens Score"', () => {
+  it('2. V3 present: caption reads "Final Investment Score"', () => {
     render(<DealWorkspaceHeader {...BASE_PROPS} vcScoringV2={VC_V2} ventureLensV1={VENTURE_LENS_V1} />);
-    expect(screen.getByText('Venture Lens Score')).toBeInTheDocument();
-    expect(screen.queryByText('VC Composite Score')).toBeNull();
+    expect(screen.getByText('Final Investment Score')).toBeInTheDocument();
+    expect(screen.queryByText('VC Composite')).toBeNull();
     expect(screen.queryByText('Evidence Score')).toBeNull();
   });
 
@@ -100,10 +100,10 @@ describe('DealWorkspaceTopSection — Venture Lens hero score hierarchy', () => 
     expect(within(chart).queryByText(/^55$/)).toBeNull();
   });
 
-  it('6. V2 present, V3 absent: caption reads "VC Composite Score"', () => {
+  it('6. V2 present, V3 absent: caption reads "VC Composite"', () => {
     render(<DealWorkspaceHeader {...BASE_PROPS} vcScoringV2={VC_V2} ventureLensV1={null} />);
-    expect(screen.getByText('VC Composite Score')).toBeInTheDocument();
-    expect(screen.queryByText('Venture Lens Score')).toBeNull();
+    expect(screen.getByText('VC Composite')).toBeInTheDocument();
+    expect(screen.queryByText('Final Investment Score')).toBeNull();
     expect(screen.queryByText('Evidence Score')).toBeNull();
   });
 
@@ -121,8 +121,8 @@ describe('DealWorkspaceTopSection — Venture Lens hero score hierarchy', () => 
   it('9. Neither V2 nor V3: caption reads "Evidence Score", no secondary line', () => {
     render(<DealWorkspaceHeader {...BASE_PROPS} vcScoringV2={null} ventureLensV1={null} />);
     expect(screen.getByText('Evidence Score')).toBeInTheDocument();
-    expect(screen.queryByText('Venture Lens Score')).toBeNull();
-    expect(screen.queryByText('VC Composite Score')).toBeNull();
+    expect(screen.queryByText('Final Investment Score')).toBeNull();
+    expect(screen.queryByText('VC Composite')).toBeNull();
     expect(screen.queryByTestId('evidence-score-secondary')).toBeNull();
   });
 });
@@ -135,22 +135,22 @@ describe('DealWorkspaceTopSection — hero score tooltip content', () => {
     return screen.getByTestId('radial-score-chart').parentElement!;
   }
 
-  it('10. V3 mode: tooltip title is "Venture Lens Score" with correct body', () => {
+  it('10. V3 mode: tooltip title is "Final Investment Score" with correct body', () => {
     render(<DealWorkspaceHeader {...BASE_PROPS} vcScoringV2={VC_V2} ventureLensV1={VENTURE_LENS_V1} />);
     fireEvent.mouseEnter(getScoreRing());
     const tooltip = screen.getByTestId('hero-score-tooltip');
     expect(tooltip).toBeInTheDocument();
-    expect(tooltip.textContent).toContain('Venture Lens Score');
+    expect(tooltip.textContent).toContain('Final Investment Score');
     expect(tooltip.textContent).toContain('venture lens');
     fireEvent.mouseLeave(getScoreRing());
     expect(screen.queryByTestId('hero-score-tooltip')).toBeNull();
   });
 
-  it('11. V2 mode (no V3): tooltip title is "VC Composite Score" with correct body', () => {
+  it('11. V2 mode (no V3): tooltip title is "VC Composite" with correct body', () => {
     render(<DealWorkspaceHeader {...BASE_PROPS} vcScoringV2={VC_V2} ventureLensV1={null} />);
     fireEvent.mouseEnter(getScoreRing());
     const tooltip = screen.getByTestId('hero-score-tooltip');
-    expect(tooltip.textContent).toContain('VC Composite Score');
+    expect(tooltip.textContent).toContain('VC Composite');
     expect(tooltip.textContent).toContain('opportunity, confidence, and risk');
     fireEvent.mouseLeave(getScoreRing());
     expect(screen.queryByTestId('hero-score-tooltip')).toBeNull();

@@ -142,9 +142,9 @@ export function DealWorkspaceHeader({
   const activePosture = ventureLensV1?.final_posture ?? vcScoringV2?.investment_posture ?? null;
   // Hero tooltip content — changes by active score mode
   const heroTooltipTitle = ventureLensV1
-    ? 'Venture Lens Score'
+    ? 'Final Investment Score'
     : vcScoringV2
-    ? 'VC Composite Score'
+    ? 'VC Composite'
     : 'Evidence Score';
   const heroTooltipBody = ventureLensV1
     ? 'Final investment score derived from opportunity, confidence, and risk, then adjusted by the venture lens.'
@@ -389,7 +389,7 @@ export function DealWorkspaceHeader({
             </div>
             {/* Score caption */}
             <div className={`text-center mt-0.5 text-[10px] ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
-              {ventureLensV1 ? 'Venture Lens Score' : vcScoringV2 ? 'VC Composite Score' : 'Evidence Score'}
+              {ventureLensV1 ? 'Final Investment Score' : vcScoringV2 ? 'VC Composite' : 'Evidence Score'}
             </div>
             {/* Demoted evidence score — visible when V3 or V2 is primary */}
             {(ventureLensV1 || vcScoringV2) && (

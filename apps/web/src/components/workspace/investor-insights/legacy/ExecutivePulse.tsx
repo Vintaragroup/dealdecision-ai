@@ -36,7 +36,7 @@ const POSTURE_CFG: Record<LlmInterpretationPosture, PostureCfg> = {
     accentLight: 'text-emerald-700',
   },
   INVESTIGATE: {
-    label: 'INVESTIGATE',
+    label: 'Review',
     icon: '◈',
     gaugeFill: 3,
     badgeVariant: 'amber',
@@ -66,7 +66,7 @@ const SEGMENT_COLORS = [
   { active: 'bg-red-500', inactive: '' },
   // segment 2 (CAUTION): orange
   { active: 'bg-orange-400', inactive: '' },
-  // segment 3 (INVESTIGATE): amber
+  // segment 3 (REVIEW): amber
   { active: 'bg-amber-400', inactive: '' },
   // segment 4 (GO): emerald
   { active: 'bg-emerald-500', inactive: '' },

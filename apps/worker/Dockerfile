@@ -110,12 +110,12 @@ COPY --from=build /app/apps/worker/package.json ./package.json
 
 # Copy required prompt artifact markdown files into the worker artifacts directory.
 # Build context is the repo root (render.yaml: dockerContext: .).
+# Files live at apps/worker/artifacts/ — committed to git and NOT gitignored.
+# The repo root artifacts/ directory is in .gitignore and is never present in
+# the Render build context, which is why COPY artifacts/... fails with "not found".
 # These files are read at runtime by policy-aware-prompt-runtime.ts; without them
 # the worker throws ENOENT and all phase1 jobs fail with policy_prompt_artifact_missing.
-COPY artifacts/DealDecision-System-Audit-Prompt-Pack-v1.md ./artifacts/
-COPY artifacts/DealDecision-Scoring-Normalization-Rubric-v1.md ./artifacts/
-COPY artifacts/DealDecision-Policy-Aware-Prompt-Pack-v2.md ./artifacts/
-COPY artifacts/DealDecision-Policy-Aware-Output-Template-v2.md ./artifacts/
+COPY apps/worker/artifacts/ ./artifacts/
 
 # Build-time verification: fail the image build immediately if any required artifact is missing.
 # This catches missing files at build time rather than silently at job runtime.

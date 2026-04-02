@@ -23,6 +23,10 @@ yarn-error.log*
 pnpm-debug.log*
 .eslintcache
 artifacts/
+# Re-include worker prompt artifact markdown files — required in the production Docker image.
+# apps/worker/artifacts/ must be committed so it is present in the Render build context.
+!apps/worker/artifacts/
+!apps/worker/artifacts/**
 scripts/experimental/
 
 # local dev artifacts (do not commit)

@@ -293,11 +293,20 @@ export async function registerInvestorInsightsRoutes(
     // Unique per-request jobId — bypasses BullMQ dedup so regenerate always enqueues.
     const jobId = `investor_insights__${dealId}__v1__manual_regenerate__${Date.now()}`;
 
+    const body = (request.body ?? {}) as { override_llm_mode?: boolean };
+    const overrideLlmMode = body.override_llm_mode === true;
+
     const insightsQueue = deps?.investorInsightsQueue ?? (getQueues().investorInsightsQueue as any);
     try {
       await insightsQueue.add(
         "generate_investor_insights",
-        { deal_id: dealId, engine_version: "v1", triggered_by: "manual_regenerate", force_recompute: true },
+        {
+          deal_id: dealId,
+          engine_version: "v1",
+          triggered_by: "manual_regenerate",
+          force_recompute: true,
+          ...(overrideLlmMode && { override_llm_mode: true }),
+        },
         { jobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
       );
     } catch (err) {
@@ -714,13 +723,13 @@ export async function registerInvestorInsightsRoutes(
           }
         }
 
-        // Pull neighbor stats from deal_memory_snapshots if available.
-        const hasMemorySnapshotColumn = hasChallengeTable
-          ? await hasColumn(pool, "deal_confidence_assessments", "memory_adjustment")
-          : false;
+        // Pull memory influence snapshot from deal_memory_snapshots.
+        // Created by Stage 5 after deriveMemoryInfluence() so reviewers can
+        // see WHY memory did or did not adjust confidence for this run.
+        const hasMemorySnapshotTable = await hasTable(pool as any, "deal_memory_snapshots");
 
         let memory: Record<string, unknown> | null = null;
-        if (hasMemorySnapshotColumn && confidence?.intelligence_run_id) {
+        if (hasMemorySnapshotTable && confidence?.intelligence_run_id) {
           try {
             const { rows } = await pool.query<Record<string, unknown>>(
               `SELECT
@@ -729,6 +738,7 @@ export async function registerInvestorInsightsRoutes(
                  memory_support_signal,
                  memory_fragility_signal,
                  verdict_agreement_fraction,
+                 confidence_adjustment,
                  neighbor_snapshots
                FROM deal_memory_snapshots
                WHERE intelligence_run_id = $1
@@ -737,7 +747,6 @@ export async function registerInvestorInsightsRoutes(
             );
             memory = rows[0] ?? null;
           } catch {
-            // deal_memory_snapshots may not exist; continue without it
             memory = null;
           }
         }
@@ -751,6 +760,7 @@ export async function registerInvestorInsightsRoutes(
           _meta: {
             has_confidence_table: hasConfidenceTable,
             has_challenge_table: hasChallengeTable,
+            has_memory_snapshot_table: hasMemorySnapshotTable,
           },
         });
       }

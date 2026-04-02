@@ -7,6 +7,7 @@
 
 import type { Pool } from "pg";
 import type { MemorySnapshot, SimilarDeal, FindSimilarDealsOptions } from "./types.js";
+import type { MemoryNeighborSnapshot } from "./influence.js";
 import { vectorizeMemorySnapshot } from "./vectorizer.js";
 import { findSimilarDeals } from "./matcher.js";
 import {
@@ -83,4 +84,56 @@ export async function persistAndRecallMemory(
   );
 
   return { memory_snapshot_id, similar_deals };
+}
+
+// ─── Persist memory influence snapshot ───────────────────────────────────────
+
+/**
+ * Persists the computed memory influence summary to deal_memory_snapshots.
+ *
+ * Called by Stage 5 after deriveMemoryInfluence() so that reviewers can
+ * answer "why did memory boost (or not boost) this deal?" without reading logs.
+ *
+ * Non-throwing — caller must wrap in try/catch.
+ */
+export async function persistMemoryInfluenceSnapshot(
+  pool: Pool,
+  opts: {
+    deal_id: string;
+    intelligence_run_id: string;
+    similar_deal_count: number;
+    avg_similarity_pct: number;
+    verdict_agreement_fraction: number;
+    memory_support_signal: boolean;
+    memory_fragility_signal: boolean;
+    confidence_adjustment: number;
+    neighbor_snapshots: MemoryNeighborSnapshot[];
+  }
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO deal_memory_snapshots
+       (deal_id, intelligence_run_id, similar_deal_count, avg_similarity_pct,
+        verdict_agreement_fraction, memory_support_signal, memory_fragility_signal,
+        confidence_adjustment, neighbor_snapshots)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT (deal_id, intelligence_run_id) DO UPDATE SET
+       similar_deal_count         = EXCLUDED.similar_deal_count,
+       avg_similarity_pct         = EXCLUDED.avg_similarity_pct,
+       verdict_agreement_fraction = EXCLUDED.verdict_agreement_fraction,
+       memory_support_signal      = EXCLUDED.memory_support_signal,
+       memory_fragility_signal    = EXCLUDED.memory_fragility_signal,
+       confidence_adjustment      = EXCLUDED.confidence_adjustment,
+       neighbor_snapshots         = EXCLUDED.neighbor_snapshots`,
+    [
+      opts.deal_id,
+      opts.intelligence_run_id,
+      opts.similar_deal_count,
+      opts.avg_similarity_pct,
+      opts.verdict_agreement_fraction,
+      opts.memory_support_signal,
+      opts.memory_fragility_signal,
+      opts.confidence_adjustment,
+      JSON.stringify(opts.neighbor_snapshots),
+    ]
+  );
 }

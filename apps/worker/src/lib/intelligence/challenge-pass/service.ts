@@ -82,6 +82,21 @@ interface ChallengeFactorInput {
   confidence_penalties: ConfidencePenalty[];
   memory_influence: MemoryInfluenceSummary | null | undefined;
   missing_evidence: ReturnType<typeof detectMissingEvidence>["missing_evidence"];
+  deal_name: string;
+}
+
+function orsBandLabel(ors_score: number): "strong" | "moderate" | "weak" {
+  if (ors_score >= 70) return "strong";
+  if (ors_score >= 45) return "moderate";
+  return "weak";
+}
+
+function verdictLabel(verdict: string): string {
+  switch (verdict.toUpperCase()) {
+    case "GO": return "GO";
+    case "NO_GO": return "NO_GO";
+    default: return "CONSIDER";
+  }
 }
 
 function deriveChallengeFactors(input: ChallengeFactorInput): ChallengeFactor[] {
@@ -96,7 +111,11 @@ function deriveChallengeFactors(input: ChallengeFactorInput): ChallengeFactor[] 
     confidence_penalties,
     memory_influence,
     missing_evidence,
+    deal_name,
   } = input;
+
+  const band = orsBandLabel(ors_score);
+  const vLabel = verdictLabel(verdict);
 
   // 1. Contradictions — highest analytical signal
   if (contradiction_count >= 3) {
@@ -195,7 +214,7 @@ function deriveChallengeFactors(input: ChallengeFactorInput): ChallengeFactor[] 
       code: "financial_evidence_weak",
       severity: "High",
       title: "Financial evidence critically incomplete",
-      explanation: `Only ${financial_completeness_pct.toFixed(0)}% of expected financial data is present. The verdict depends on assumptions rather than verified financial signals.`,
+      explanation: `For a ${vLabel} deal with a ${band} score (ORS ${ors_score}), only ${financial_completeness_pct.toFixed(0)}% of expected financial data is present. ${deal_name} depends on assumptions rather than verified financial signals.`,
       detail: { financial_completeness_pct },
     });
   } else if (financial_completeness_pct < 60) {
@@ -203,7 +222,7 @@ function deriveChallengeFactors(input: ChallengeFactorInput): ChallengeFactor[] 
       code: "financial_evidence_partial",
       severity: "Medium",
       title: "Financial evidence partially complete",
-      explanation: `Financial completeness is ${financial_completeness_pct.toFixed(0)}%. Key figures (burn rate, runway, or structured ARR) require additional documentation before the verdict can be considered robust.`,
+      explanation: `Financial completeness is ${financial_completeness_pct.toFixed(0)}% — key figures (burn rate, runway, or structured ARR) are missing from ${deal_name}'s documentation and should be confirmed before treating this ${vLabel} as robust.`,
       detail: { financial_completeness_pct },
     });
   }
@@ -214,7 +233,7 @@ function deriveChallengeFactors(input: ChallengeFactorInput): ChallengeFactor[] 
       code: "document_quality_low",
       severity: "Medium",
       title: "Document quality insufficient for reliable extraction",
-      explanation: `Document Confidence Index (DCI) is ${dci_score} — below the threshold for reliable extraction. Signals derived from this document set carry elevated uncertainty.`,
+      explanation: `Document Confidence Index (DCI) for ${deal_name} is ${dci_score} — below the threshold for reliable extraction at a ${band} ORS level. Signals supporting this ${vLabel} verdict carry elevated uncertainty.`,
       detail: { dci_score },
     });
   }
@@ -256,7 +275,7 @@ function deriveChallengeFactors(input: ChallengeFactorInput): ChallengeFactor[] 
       code: "evidence_base_thin",
       severity: "High",
       title: "Evidence base critically thin",
-      explanation: thinEvidenceFlag.description,
+      explanation: `${deal_name} has insufficient evidence for a ${vLabel} verdict at ORS ${ors_score}. ${thinEvidenceFlag.description}`,
     });
   }
 
@@ -457,6 +476,7 @@ export function runChallengePass(input: ChallengePassInput): ChallengePassResult
     confidence_penalties,
     memory_influence: input.memory_influence,
     missing_evidence,
+    deal_name,
   });
 
   const { opposing_case_summary, overconfident_claims } = buildOpposingCase({

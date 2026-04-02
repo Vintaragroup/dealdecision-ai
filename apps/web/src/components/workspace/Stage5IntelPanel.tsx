@@ -265,20 +265,37 @@ export function Stage5IntelPanel({ dealId, darkMode }: Stage5IntelPanelProps) {
 
             {/* Memory section */}
             <SubSection title="Memory" darkMode={darkMode}>
-              <Row label="Similar deals" value={fmtNum(mem?.similar_deal_count ?? null)} darkMode={darkMode} />
-              <Row label="Avg similarity" value={fmtPct(mem?.avg_similarity_pct ?? null)} darkMode={darkMode} />
-              <Row
-                label="Signal"
-                value={memSignalLabel}
-                valueClass={memSignalClass}
-                darkMode={darkMode}
-              />
-              {mem?.verdict_agreement_fraction != null && (
-                <Row
-                  label="Agreement"
-                  value={fmtPct((mem.verdict_agreement_fraction as number) * 100)}
-                  darkMode={darkMode}
-                />
+              {mem === null ? (
+                <div className={`text-[10px] italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  No memory snapshot yet — re-run Stage 5 to populate.
+                  {c?.memory_adjustment_reason && (
+                    <span className="block mt-0.5 not-italic">{c.memory_adjustment_reason}</span>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <Row label="Similar deals" value={fmtNum(mem.similar_deal_count as number ?? null)} darkMode={darkMode} />
+                  <Row label="Avg similarity" value={fmtPct(mem.avg_similarity_pct as number ?? null)} darkMode={darkMode} />
+                  <Row
+                    label="Signal"
+                    value={memSignalLabel}
+                    valueClass={memSignalClass}
+                    darkMode={darkMode}
+                  />
+                  {mem.verdict_agreement_fraction != null && (
+                    <Row
+                      label="Agreement"
+                      value={fmtPct((mem.verdict_agreement_fraction as number) * 100)}
+                      darkMode={darkMode}
+                    />
+                  )}
+                  <Row
+                    label="Confidence adj"
+                    value={adjBadge.label}
+                    valueClass={adjBadge.color}
+                    darkMode={darkMode}
+                  />
+                </>
               )}
             </SubSection>
 

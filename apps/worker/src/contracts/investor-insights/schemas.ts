@@ -203,6 +203,16 @@ export const InvestorInsightsJobSchema = z.object({
    *                               and emits DETERMINISTIC_ONLY_RECOVERY_* events.
    */
   mode: z.enum(["standard", "recover_structured_json"]).default("standard"),
+  /**
+   * Per-deal override: when true, Stage 5 evaluation engine receives
+   * investor_insights_status "complete" instead of "deterministic_only".
+   * This suppresses the deterministic_only_mode WARN and allows CRITICAL/ERROR
+   * flags to be evaluated without the system noise flag masking them.
+   *
+   * Use for controlled testing of the evaluation engine on 1–2 deals.
+   * Does NOT change the upstream LLM stages — only affects Stage 5 inputs.
+   */
+  override_llm_mode: z.boolean().optional(),
 });
 
 export type InvestorInsightsJob = z.infer<typeof InvestorInsightsJobSchema>;

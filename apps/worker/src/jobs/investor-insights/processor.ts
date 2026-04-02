@@ -192,6 +192,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		force_recompute: forceRecompute = false,
 		triggered_by: triggeredBy,
 		mode,
+		override_llm_mode: overrideLlmMode,
 	} = parsed;
 
 	console.log(
@@ -1180,7 +1181,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			dpu_provenance_missing: insightSlotInputs.dpuLoadFailed,
 			xlsx_extraction_had_llm_fallback: false,
 			evidence_gate_passed: evidenceGate.passed,
-			investor_insights_status: "deterministic_only",
+			investor_insights_status: overrideLlmMode ? "complete" : "deterministic_only",
 			llm_cache_age_days: null,
 			arr_narrative: null,
 			arr_structured: arrStructured,

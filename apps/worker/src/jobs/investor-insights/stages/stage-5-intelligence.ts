@@ -25,7 +25,7 @@ import type { Pool } from "pg";
 
 import type { IntelligencePassResult } from "../../../lib/intelligence/types.js";
 
-import { buildMemorySnapshot, persistAndRecallMemory } from "../../../lib/intelligence/decision-memory/service.js";
+import { buildMemorySnapshot, persistAndRecallMemory, persistMemoryInfluenceSnapshot } from "../../../lib/intelligence/decision-memory/service.js";
 import { deriveMemoryInfluence } from "../../../lib/intelligence/decision-memory/influence.js";
 import { runEvaluatorPass, persistEvaluationFlags } from "../../../lib/intelligence/evaluation-engine/service.js";
 import { computeConfidence, persistConfidenceReport } from "../../../lib/intelligence/confidence-engine/service.js";
@@ -565,6 +565,38 @@ export async function runIntelligenceStage(
       })
     );
 
+    // Persist memory influence snapshot so reviewers can inspect WHY memory
+    // did or did not adjust confidence for this run (non-fatal).
+    if (persist) {
+      try {
+        await persistMemoryInfluenceSnapshot(pool, {
+          deal_id: inputs.deal_id,
+          intelligence_run_id: run_id,
+          similar_deal_count: memory_influence_summary.similar_deal_count,
+          avg_similarity_pct: memory_influence_summary.avg_similarity_pct,
+          verdict_agreement_fraction: memory_influence_summary.verdict_agreement_fraction,
+          memory_support_signal: memory_influence_summary.memory_support_signal,
+          memory_fragility_signal: memory_influence_summary.memory_fragility_signal,
+          confidence_adjustment: memory_influence_summary.confidence_adjustment,
+          neighbor_snapshots: memory_influence_summary.neighbor_snapshots,
+        });
+        intelligenceMetrics.increment("memory_influence_snapshots_written");
+      } catch (memSnapErr) {
+        intelligenceMetrics.increment("persistence_write_failures");
+        console.error(
+          JSON.stringify({
+            event: "intelligence.persistence.partial_failure",
+            subsystem: "memory_influence_snapshot",
+            deal_id: inputs.deal_id,
+            run_id,
+            error: memSnapErr instanceof Error ? memSnapErr.message : String(memSnapErr),
+            ts: new Date().toISOString(),
+          })
+        );
+        // Non-fatal: stage5_error is NOT set here.
+      }
+    }
+
     // ── 2. Evaluation Engine ──────────────────────────────────────────────────
     const evalStart = Date.now();
     const evaluatorInput: import("../../../lib/intelligence/evaluation-engine/types.js").EvaluatorInput = {
@@ -610,6 +642,35 @@ export async function runIntelligenceStage(
       ["flag_count"] // deprecated alias — must never be emitted
     );
     console.log(JSON.stringify(evalPayload));
+
+    // Diagnostic log: surfaces the threshold inputs that determine whether
+    // CRITICAL/ERROR flags fire, so observers can understand why only WARN
+    // flags are produced on deals with null financial data or stable scores.
+    console.log(
+      JSON.stringify({
+        event: "intelligence.evaluation.threshold_diagnostics",
+        deal_id: inputs.deal_id,
+        run_id,
+        // Revenue contradiction check (fires when both non-null AND diverge >50%)
+        arr_narrative_present: inputs.arr_narrative != null,
+        arr_structured_present: inputs.arr_structured != null,
+        // Verdict/score gap checks
+        verdict: inputs.verdict,
+        ors_score: inputs.ors_score,
+        urss_score: inputs.urss_score,
+        // Evidence coverage checks
+        evidence_count: inputs.evidence_count,
+        section_count: inputs.section_count,
+        financial_completeness_pct: inputs.financial_completeness_pct,
+        // Pipeline health
+        evidence_gate_passed: inputs.evidence_gate_passed,
+        dpu_provenance_missing: inputs.dpu_provenance_missing,
+        investor_insights_status: inputs.investor_insights_status,
+        // What actually fired
+        flag_types: evaluator_report.flags.map((f) => f.flag_type),
+        ts: new Date().toISOString(),
+      })
+    );
 
     if (persist) {
       try {

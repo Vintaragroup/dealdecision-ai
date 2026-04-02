@@ -1160,6 +1160,23 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		const runwayMonths: number | null = cashFlow?.derived?.runway_months ?? null;
 		const cashOnHand: number | null = balanceSheet?.derived?.cash_latest ?? null;
 
+		// arr_narrative: extract the first parseable ARR/MRR dollar figure from deck signals.
+		// Deck claims are the "narrative" source — what the company claims in pitch materials.
+		// Used by the evaluation engine to detect ARR contradiction against structured XLSX data.
+		// Returns null when deck has no ARR mentions or the figure cannot be parsed.
+		const arrNarrative: number | null = (() => {
+			const mentions = insightSlotInputs.deckFinancialSignals?.arr_mrr_mentions ?? [];
+			for (const m of mentions) {
+				const match = /\$([\d,]+(?:\.\d+)?)\s*([KMBTkmbt]?)/.exec(m.text);
+				if (!match) continue;
+				const raw = parseFloat(match[1]!.replace(/,/g, ""));
+				if (isNaN(raw) || raw <= 0) continue;
+				const multipliers: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
+				return raw * (multipliers[match[2]!.toLowerCase()] ?? 1);
+			}
+			return null;
+		})();
+
 		await runIntelligenceStage(pool, {
 			deal_id: dealId,
 			deal_name: dealName ?? dealId,
@@ -1183,7 +1200,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			evidence_gate_passed: evidenceGate.passed,
 			investor_insights_status: overrideLlmMode ? "complete" : "deterministic_only",
 			llm_cache_age_days: null,
-			arr_narrative: null,
+			arr_narrative: arrNarrative,
 			arr_structured: arrStructured,
 			burn_rate_monthly: burnMonthly,
 			runway_months: runwayMonths,

@@ -283,77 +283,97 @@ export function Stage5IntelPanel({ dealId, darkMode }: Stage5IntelPanelProps) {
             </SubSection>
 
             {/* Challenge section */}
-            {ch ? (
-              <>
-                {/* Why challenge this verdict? */}
-                {ch.primary_challenge_reason && (
-                  <SubSection title="Why challenge this verdict?" darkMode={darkMode}>
-                    <div className={`text-xs leading-relaxed break-words ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                      {ch.primary_challenge_reason}
-                    </div>
-                  </SubSection>
-                )}
+            {(() => {
+              const isChallengeStale =
+                !ch ||
+                (!ch.primary_challenge_reason &&
+                  (!ch.challenge_factors || ch.challenge_factors.length === 0));
 
-                {/* Challenge factors */}
-                {Array.isArray(ch.challenge_factors) && ch.challenge_factors.length > 0 && (
-                  <SubSection title="Challenge Factors" darkMode={darkMode}>
-                    <div className="space-y-1.5">
-                      {(ch.challenge_factors as IntelligenceDebugChallengeFactor[])
-                        .slice(0, 4)
-                        .map((f, i) => (
-                          <div key={i} className="space-y-0.5">
-                            <div className="flex items-center gap-1.5">
-                              <span className={`inline-block rounded px-1 py-0 text-[9px] font-semibold ${severityBadgeClass(f.severity, darkMode)}`}>
-                                {f.severity}
-                              </span>
-                              <span className={`text-[11px] font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{f.title}</span>
+              if (isChallengeStale) {
+                return (
+                  <div className="space-y-1.5">
+                    <div className={`text-[10px] font-semibold uppercase tracking-widest ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                      Challenge Pass{' '}
+                      <span className="normal-case tracking-normal font-normal text-yellow-600">(stale)</span>
+                    </div>
+                    <div className={`rounded-lg border p-3 text-sm ${darkMode ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-300' : 'border-yellow-300 bg-yellow-50 text-yellow-900'}`}>
+                      <strong>Challenge analysis not yet generated for this run.</strong>
+                      <div className="mt-1 text-xs opacity-80">
+                        Re-run Stage 5 to populate updated challenge outputs.
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  {/* Why challenge this verdict? */}
+                  {ch.primary_challenge_reason && (
+                    <SubSection title="Why challenge this verdict?" darkMode={darkMode}>
+                      <div className={`text-xs leading-relaxed break-words ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                        {ch.primary_challenge_reason}
+                      </div>
+                    </SubSection>
+                  )}
+
+                  {/* Challenge factors */}
+                  {Array.isArray(ch.challenge_factors) && ch.challenge_factors.length > 0 && (
+                    <SubSection title="Challenge Factors" darkMode={darkMode}>
+                      <div className="space-y-1.5">
+                        {(ch.challenge_factors as IntelligenceDebugChallengeFactor[])
+                          .slice(0, 4)
+                          .map((f, i) => (
+                            <div key={i} className="space-y-0.5">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`inline-block rounded px-1 py-0 text-[9px] font-semibold ${severityBadgeClass(f.severity, darkMode)}`}>
+                                  {f.severity}
+                                </span>
+                                <span className={`text-[11px] font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{f.title}</span>
+                              </div>
+                              <div className={`text-[10px] leading-snug ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{f.explanation}</div>
                             </div>
-                            <div className={`text-[10px] leading-snug ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{f.explanation}</div>
-                          </div>
-                        ))}
-                    </div>
-                  </SubSection>
-                )}
+                          ))}
+                      </div>
+                    </SubSection>
+                  )}
 
-                <SubSection title="Challenge Pass" darkMode={darkMode}>
-                  <Row label="Verdict resistance" value={`${fmtNum(ch.verdict_resistance_score)} — ${ch.verdict_resistance_label ?? '—'}`} darkMode={darkMode} />
-                  <Row
-                    label="Flags"
-                    value={`${totalFlags} total (${fmtNum(ch.flag_count_critical)} critical / ${fmtNum(ch.flag_count_error)} error / ${fmtNum(ch.flag_count_warn)} warn)`}
-                    darkMode={darkMode}
-                  />
-                  <Row label="Missing evidence items" value={fmtNum(ch.missing_evidence_count)} darkMode={darkMode} />
-                  <Row label="Diligence gaps" value={fmtNum(ch.diligence_gaps_count)} darkMode={darkMode} />
-                  <Row
-                    label="Memory challenge used"
-                    value={fmtBool(ch.memory_challenge_used)}
-                    valueClass={
-                      ch.memory_challenge_used
-                        ? 'text-amber-400'
-                        : (darkMode ? 'text-gray-400' : 'text-gray-500')
-                    }
-                    darkMode={darkMode}
-                  />
-                  {ch.memory_challenge_used && ch.memory_challenge_summary && (
+                  <SubSection title="Challenge Pass" darkMode={darkMode}>
+                    <Row label="Verdict resistance" value={`${fmtNum(ch.verdict_resistance_score)} — ${ch.verdict_resistance_label ?? '—'}`} darkMode={darkMode} />
                     <Row
-                      label="Memory challenge summary"
-                      value={ch.memory_challenge_summary}
+                      label="Flags"
+                      value={`${totalFlags} total (${fmtNum(ch.flag_count_critical)} critical / ${fmtNum(ch.flag_count_error)} error / ${fmtNum(ch.flag_count_warn)} warn)`}
                       darkMode={darkMode}
-                      multiline
                     />
-                  )}
-                  {!ch.memory_challenge_used && (
-                    <div className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                      No memory challenge context applied to challenge pass.
-                    </div>
-                  )}
-                </SubSection>
-              </>
-            ) : (
-              <SubSection title="Challenge Pass" darkMode={darkMode}>
-                <div className={`${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>No challenge pass result found for this run.</div>
-              </SubSection>
-            )}
+                    <Row label="Missing evidence items" value={fmtNum(ch.missing_evidence_count)} darkMode={darkMode} />
+                    <Row label="Diligence gaps" value={fmtNum(ch.diligence_gaps_count)} darkMode={darkMode} />
+                    <Row
+                      label="Memory challenge used"
+                      value={fmtBool(ch.memory_challenge_used)}
+                      valueClass={
+                        ch.memory_challenge_used
+                          ? 'text-amber-400'
+                          : (darkMode ? 'text-gray-400' : 'text-gray-500')
+                      }
+                      darkMode={darkMode}
+                    />
+                    {ch.memory_challenge_used && ch.memory_challenge_summary && (
+                      <Row
+                        label="Memory challenge summary"
+                        value={ch.memory_challenge_summary}
+                        darkMode={darkMode}
+                        multiline
+                      />
+                    )}
+                    {!ch.memory_challenge_used && (
+                      <div className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                        No memory challenge context applied to challenge pass.
+                      </div>
+                    )}
+                  </SubSection>
+                </>
+              );
+            })()}
           </>
         )}
       </div>

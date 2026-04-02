@@ -16,6 +16,11 @@ export interface MissingEvidenceInput {
   has_cap_table: boolean;
   evidence_count: number;
   evidence_sections_covered: number;
+  // FTRL truth states — when present, distinguish INSUFFICIENT from CONFLICT
+  arr_truth_state?: string | null;
+  burn_truth_state?: string | null;
+  runway_truth_state?: string | null;
+  cash_truth_state?: string | null;
 }
 
 interface EvidenceSpec {
@@ -32,7 +37,8 @@ const EVIDENCE_SPECS: Array<{
   spec: EvidenceSpec;
 }> = [
   {
-    missing: (i) => i.arr_structured == null,
+    // INSUFFICIENT only — CONFLICT means data exists but is contradictory (handled below)
+    missing: (i) => i.arr_structured == null && i.arr_truth_state !== "CONFLICT",
     spec: {
       evidence_type: "structured_arr",
       description: "No verified ARR figure from structured financial data",
@@ -43,7 +49,20 @@ const EVIDENCE_SPECS: Array<{
     },
   },
   {
-    missing: (i) => i.burn_rate_monthly == null,
+    // CONFLICT: ARR/revenue figures exist but are contradictory across sources
+    missing: (i) => i.arr_truth_state === "CONFLICT",
+    spec: {
+      evidence_type: "arr_conflict",
+      description: "ARR/revenue figures are contradictory across data sources",
+      verdict_sensitivity: "High",
+      diligence_question: "Multiple revenue figures found that cannot be reconciled. Provide a single authoritative financial statement.",
+      category: "financial",
+      gap_severity: "Critical",
+    },
+  },
+  {
+    // INSUFFICIENT only — CONFLICT means data exists but is contradictory
+    missing: (i) => i.burn_rate_monthly == null && i.burn_truth_state !== "CONFLICT",
     spec: {
       evidence_type: "burn_rate",
       description: "Monthly burn rate unavailable",
@@ -54,7 +73,19 @@ const EVIDENCE_SPECS: Array<{
     },
   },
   {
-    missing: (i) => i.runway_months == null,
+    // CONFLICT: burn rate figures exist but are contradictory
+    missing: (i) => i.burn_truth_state === "CONFLICT",
+    spec: {
+      evidence_type: "burn_rate_conflict",
+      description: "Burn rate figures are contradictory across data sources",
+      verdict_sensitivity: "High",
+      diligence_question: "Contradictory burn rate data found. Provide a reconciled 12-month cash flow statement.",
+      category: "financial",
+      gap_severity: "Major",
+    },
+  },
+  {
+    missing: (i) => i.runway_months == null && i.runway_truth_state !== "CONFLICT",
     spec: {
       evidence_type: "runway",
       description: "Runway in months is not calculable from available data",
@@ -65,7 +96,7 @@ const EVIDENCE_SPECS: Array<{
     },
   },
   {
-    missing: (i) => i.cash_on_hand == null,
+    missing: (i) => i.cash_on_hand == null && i.cash_truth_state !== "CONFLICT",
     spec: {
       evidence_type: "cash_on_hand",
       description: "Cash on hand figure is missing",

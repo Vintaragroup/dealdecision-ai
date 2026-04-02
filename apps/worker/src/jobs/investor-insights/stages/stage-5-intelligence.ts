@@ -435,6 +435,15 @@ export interface Stage5Inputs {
 
   // Deck-sourced risk items (optional)
   deck_risk_items?: string[];
+
+  // Financial Truth Resolution Layer V1 states
+  // Present when FTRL ran; null/undefined when legacy path was used.
+  financial_truth_states?: {
+    arr: string | null;
+    burn_rate: string | null;
+    runway_months: string | null;
+    cash: string | null;
+  } | null;
 }
 
 // ─── Main stage entry point ───────────────────────────────────────────────────
@@ -771,6 +780,11 @@ export async function runIntelligenceStage(
       has_cap_table: inputs.has_cap_table,
       evidence_count: inputs.evidence_count,
       evidence_sections_covered: inputs.section_count,
+      // FTRL truth states — gate missing-evidence alerts on INSUFFICIENT only
+      arr_truth_state: inputs.financial_truth_states?.arr ?? null,
+      burn_truth_state: inputs.financial_truth_states?.burn_rate ?? null,
+      runway_truth_state: inputs.financial_truth_states?.runway_months ?? null,
+      cash_truth_state: inputs.financial_truth_states?.cash ?? null,
     };
 
     const challenge_pass_result = runChallengePass({

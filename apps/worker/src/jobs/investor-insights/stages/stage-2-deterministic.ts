@@ -450,6 +450,12 @@ export interface InsightSlotInputs {
 	 * "PD - Verse.pdf" can surface brand candidates without deal-specific hacks.
 	 */
 	documentTitles: string[];
+	/**
+	 * Financial Truth Resolution Layer V1 output.
+	 * Populated by buildFinancialTruthV1 in the processor after buildFinancialFactRegistryV1 runs.
+	 * null/undefined when the FTRL has not run yet (e.g. early gate-fail paths).
+	 */
+	financialTruth?: import("../../../lib/financial-facts/build-financial-truth-v1.js").FinancialTruthMapV1 | null;
 }
 
 

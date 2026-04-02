@@ -53,6 +53,7 @@ import { buildReconciliationSummary } from "../../lib/cross-source-reconciliatio
 import { upsertFinancialFactsV1 } from "../../lib/db/financial-facts-db.js";
 import { buildFinancialCoverageV1 } from "../../lib/financial-facts/build-financial-coverage-v1.js";
 import { detectFinancialFactConflictsV1 } from "../../lib/financial-facts/detect-financial-fact-conflicts-v1.js";
+import { buildFinancialTruthV1, hasXlsxFromTruthMap } from "../../lib/financial-facts/build-financial-truth-v1.js";
 import {
 	computeFinancialCoveragePct,
 	deriveFinancialRiskFlags,
@@ -414,6 +415,18 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 			const fi = await applyFinancialIntelligenceV1(pool, reportId, dealId, factsToUpsert, insightSlotInputs);
+			// ── FTRL: build financial truth map ─────────────────────────────────────
+			const financialTruth = buildFinancialTruthV1({
+				facts: factsToUpsert,
+				deckFinancialSignals: insightSlotInputs.deckFinancialSignals,
+				pipelineB: {
+					revenue_latest: insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null,
+					burn_monthly: insightSlotInputs.cashFlow?.derived?.monthly_burn_from_ops ?? null,
+					runway_months: insightSlotInputs.cashFlow?.derived?.runway_months ?? null,
+					cash_latest: insightSlotInputs.balanceSheet?.derived?.cash_latest ?? null,
+				},
+			});
+			insightSlotInputs.financialTruth = financialTruth;
 			console.log(JSON.stringify({
 				event: "POPULATE_FINANCIAL_FACTS_V1",
 				deal_id: dealId,
@@ -423,6 +436,12 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				financial_conflict_count: fi.conflict_count,
 				financial_risk_flags:     fi.risk_flags,
 				path: "gates_failed",
+				financial_truth: Object.fromEntries(
+					Object.entries(financialTruth).map(([m, r]) => [
+						m,
+						{ state: r.state, resolved_value: r.resolved_value, source_count: r.source_count },
+					])
+				),
 				ts: new Date().toISOString(),
 			}));
 		} catch (factErr) {
@@ -776,6 +795,18 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 			const fi = await applyFinancialIntelligenceV1(pool, egReportId, dealId, factsToUpsert, insightSlotInputs);
+			// ── FTRL: build financial truth map ─────────────────────────────────────
+			const financialTruth = buildFinancialTruthV1({
+				facts: factsToUpsert,
+				deckFinancialSignals: insightSlotInputs.deckFinancialSignals,
+				pipelineB: {
+					revenue_latest: insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null,
+					burn_monthly: insightSlotInputs.cashFlow?.derived?.monthly_burn_from_ops ?? null,
+					runway_months: insightSlotInputs.cashFlow?.derived?.runway_months ?? null,
+					cash_latest: insightSlotInputs.balanceSheet?.derived?.cash_latest ?? null,
+				},
+			});
+			insightSlotInputs.financialTruth = financialTruth;
 			console.log(JSON.stringify({
 				event: "POPULATE_FINANCIAL_FACTS_V1",
 				deal_id: dealId,
@@ -785,6 +816,12 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				financial_conflict_count: fi.conflict_count,
 				financial_risk_flags:     fi.risk_flags,
 				path: "evidence_gate_fail",
+				financial_truth: Object.fromEntries(
+					Object.entries(financialTruth).map(([m, r]) => [
+						m,
+						{ state: r.state, resolved_value: r.resolved_value, source_count: r.source_count },
+					])
+				),
 				ts: new Date().toISOString(),
 			}));
 		} catch (factErr) {
@@ -1083,6 +1120,18 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 		const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 		const fi = await applyFinancialIntelligenceV1(pool, reportId, dealId, factsToUpsert, insightSlotInputs);
+		// ── FTRL: build financial truth map ───────────────────────────────────────
+		const financialTruth = buildFinancialTruthV1({
+			facts: factsToUpsert,
+			deckFinancialSignals: insightSlotInputs.deckFinancialSignals,
+			pipelineB: {
+				revenue_latest: insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null,
+				burn_monthly: insightSlotInputs.cashFlow?.derived?.monthly_burn_from_ops ?? null,
+				runway_months: insightSlotInputs.cashFlow?.derived?.runway_months ?? null,
+				cash_latest: insightSlotInputs.balanceSheet?.derived?.cash_latest ?? null,
+			},
+		});
+		insightSlotInputs.financialTruth = financialTruth;
 		console.log(JSON.stringify({
 			event: "POPULATE_FINANCIAL_FACTS_V1",
 			deal_id: dealId,
@@ -1092,6 +1141,12 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			financial_conflict_count: fi.conflict_count,
 			financial_risk_flags:     fi.risk_flags,
 			path: "happy_path",
+			financial_truth: Object.fromEntries(
+				Object.entries(financialTruth).map(([m, r]) => [
+					m,
+					{ state: r.state, resolved_value: r.resolved_value, source_count: r.source_count },
+				])
+			),
 			ts: new Date().toISOString(),
 		}));
 	} catch (factErr) {
@@ -1153,13 +1208,19 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			? (await import("../../lib/financial-facts/financial-coverage-signals-v1.js"))
 					.computeFinancialCoveragePct(insightSlotInputs.financialCoverage)
 			: 0;
-		const arrStructured = insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null;
+		const ft = insightSlotInputs.financialTruth;
 		const balanceSheet = insightSlotInputs.balanceSheet;
 		const cashFlow = insightSlotInputs.cashFlow;
-		const burnMonthly: number | null = cashFlow?.derived?.monthly_burn_from_ops ?? null;
-		const runwayMonths: number | null = cashFlow?.derived?.runway_months ?? null;
+		// ── FTRL-backed scalar derivation with pipeline-B fallback ───────────────
+		const arrStructured: number | null =
+			ft?.arr?.resolved_value ??
+			ft?.revenue?.resolved_value ??
+			insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null;
+		const burnMonthly: number | null =
+			ft?.burn_rate?.resolved_value ?? cashFlow?.derived?.monthly_burn_from_ops ?? null;
+		const runwayMonths: number | null =
+			ft?.runway_months?.resolved_value ?? cashFlow?.derived?.runway_months ?? null;
 		const cashOnHand: number | null = balanceSheet?.derived?.cash_latest ?? null;
-
 		// arr_narrative: extract the first parseable ARR/MRR dollar figure from deck signals.
 		// Deck claims are the "narrative" source — what the company claims in pitch materials.
 		// Used by the evaluation engine to detect ARR contradiction against structured XLSX data.
@@ -1206,8 +1267,16 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			runway_months: runwayMonths,
 			cash_on_hand: cashOnHand,
 			financial_completeness_pct: financialCoveragePct,
-			has_xlsx: (insightSlotInputs.financialStatements?.length ?? 0) > 0,
+			has_xlsx: ft != null
+				? hasXlsxFromTruthMap(ft)
+				: (insightSlotInputs.financialStatements?.length ?? 0) > 0,
 			has_cap_table: insightSlotInputs.capTable != null,
+			financial_truth_states: ft ? {
+				arr:           ft.arr?.state ?? null,
+				burn_rate:     ft.burn_rate?.state ?? null,
+				runway_months: ft.runway_months?.state ?? null,
+				cash:          null,
+			} : null,
 		});
 	} catch (s5Err) {
 		// Stage 5 is fully non-blocking. Any failure here must not affect the

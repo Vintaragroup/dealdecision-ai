@@ -436,3 +436,105 @@ describe("runChallengePass — challenge_factors ordering", () => {
   });
 });
 
+// ─── runChallengePass — contradiction factor labeling ─────────────────────
+
+describe("runChallengePass — contradiction factor labeling", () => {
+  it("contradiction_count = 1 → single_contradiction code and 'Contradiction detected' title", () => {
+    const result = runChallengePass({
+      deal_id: "cl1",
+      deal_name: "SingleContra",
+      intelligence_run_id: "clr1",
+      verdict: "CONSIDER",
+      ors_score: 60,
+      flags: [],
+      evidence: fullEvidence(),
+      contradiction_count: 1,
+      financial_completeness_pct: 80,
+      dci_score: 80,
+    });
+    const factor = result.challenge_factors.find((f) => f.code === "single_contradiction");
+    expect(factor).toBeDefined();
+    expect(factor!.title).toBe("Contradiction detected");
+    expect(factor!.severity).toBe("High");
+    expect(factor!.explanation).toMatch(/1 contradiction was detected/i);
+    // Must NOT produce multi or cluster codes
+    expect(result.challenge_factors.find((f) => f.code === "multi_contradiction")).toBeUndefined();
+    expect(result.challenge_factors.find((f) => f.code === "contradiction_cluster")).toBeUndefined();
+  });
+
+  it("contradiction_count = 2 → multi_contradiction code and 'Multiple contradictions detected' title", () => {
+    const result = runChallengePass({
+      deal_id: "cl2",
+      deal_name: "MultiContra",
+      intelligence_run_id: "clr2",
+      verdict: "CONSIDER",
+      ors_score: 60,
+      flags: [],
+      evidence: fullEvidence(),
+      contradiction_count: 2,
+      financial_completeness_pct: 80,
+      dci_score: 80,
+    });
+    const factor = result.challenge_factors.find((f) => f.code === "multi_contradiction");
+    expect(factor).toBeDefined();
+    expect(factor!.title).toBe("Multiple contradictions detected");
+    expect(factor!.severity).toBe("High");
+    expect(factor!.explanation).toMatch(/2 contradictions/i);
+    // Must NOT produce single or cluster codes
+    expect(result.challenge_factors.find((f) => f.code === "single_contradiction")).toBeUndefined();
+    expect(result.challenge_factors.find((f) => f.code === "contradiction_cluster")).toBeUndefined();
+  });
+
+  it("contradiction_count = 3 → contradiction_cluster code, Critical severity (unchanged)", () => {
+    const result = runChallengePass({
+      deal_id: "cl3",
+      deal_name: "ClusterContra",
+      intelligence_run_id: "clr3",
+      verdict: "CONSIDER",
+      ors_score: 60,
+      flags: [],
+      evidence: fullEvidence(),
+      contradiction_count: 3,
+      financial_completeness_pct: 80,
+      dci_score: 80,
+    });
+    const factor = result.challenge_factors.find((f) => f.code === "contradiction_cluster");
+    expect(factor).toBeDefined();
+    expect(factor!.severity).toBe("Critical");
+    expect(factor!.explanation).toMatch(/3 contradictions/i);
+    expect(result.challenge_factors.find((f) => f.code === "single_contradiction")).toBeUndefined();
+    expect(result.challenge_factors.find((f) => f.code === "multi_contradiction")).toBeUndefined();
+  });
+
+  it("contradiction scoring deduction: count=2 uses same SINGLE_CONTRADICTION weight as count=1", () => {
+    // Scoring weights are unchanged — only factor labels differ.
+    // Both count=1 and count=2 apply SINGLE_CONTRADICTION(-18) to the resistance score.
+    const single = runChallengePass({
+      deal_id: "cw1",
+      deal_name: "WeightSingle",
+      intelligence_run_id: "cwr1",
+      verdict: "CONSIDER",
+      ors_score: 60,
+      flags: [],
+      evidence: fullEvidence(),
+      contradiction_count: 1,
+      financial_completeness_pct: 100,
+      dci_score: 100,
+    });
+    const dual = runChallengePass({
+      deal_id: "cw2",
+      deal_name: "WeightDual",
+      intelligence_run_id: "cwr2",
+      verdict: "CONSIDER",
+      ors_score: 60,
+      flags: [],
+      evidence: fullEvidence(),
+      contradiction_count: 2,
+      financial_completeness_pct: 100,
+      dci_score: 100,
+    });
+    // Same deduction magnitude — scores should be equal
+    expect(dual.verdict_resistance_score).toBe(single.verdict_resistance_score);
+  });
+});
+

@@ -18,7 +18,8 @@ export type ChallengeFactorSeverity = "Critical" | "High" | "Medium" | "Low";
  */
 export type ChallengeFactorCode =
   | "contradiction_cluster"        // ≥3 contradictions detected
-  | "single_contradiction"         // 1–2 contradictions
+  | "multi_contradiction"          // 2 contradictions
+  | "single_contradiction"         // 1 contradiction
   | "evaluator_critical_flag"      // CRITICAL evaluation flag
   | "evaluator_error_flag"         // ERROR evaluation flag
   | "financial_evidence_weak"      // financial completeness < 30%

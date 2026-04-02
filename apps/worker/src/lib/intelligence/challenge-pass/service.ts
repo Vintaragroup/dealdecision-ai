@@ -107,12 +107,20 @@ function deriveChallengeFactors(input: ChallengeFactorInput): ChallengeFactor[] 
       explanation: `${contradiction_count} contradictions were found between extracted claims and structured evidence. The analytical foundation for this verdict is internally inconsistent.`,
       detail: { contradiction_count },
     });
-  } else if (contradiction_count >= 1) {
+  } else if (contradiction_count === 2) {
+    factors.push({
+      code: "multi_contradiction",
+      severity: "High",
+      title: "Multiple contradictions detected",
+      explanation: `2 contradictions were detected between narrative claims and structured financial data. Multiple conflicting signals reduce confidence in the extracted verdict.`,
+      detail: { contradiction_count },
+    });
+  } else if (contradiction_count === 1) {
     factors.push({
       code: "single_contradiction",
       severity: "High",
-      title: "Contradiction between evidence layers",
-      explanation: `${contradiction_count} contradiction${contradiction_count > 1 ? "s were" : " was"} detected between narrative claims and structured financial data, reducing confidence in the extracted signals.`,
+      title: "Contradiction detected",
+      explanation: `1 contradiction was detected between narrative claims and structured financial data, reducing confidence in the extracted signals.`,
       detail: { contradiction_count },
     });
   }

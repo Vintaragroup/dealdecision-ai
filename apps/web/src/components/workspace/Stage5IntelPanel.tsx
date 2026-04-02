@@ -317,13 +317,15 @@ export function Stage5IntelPanel({ dealId, darkMode }: Stage5IntelPanelProps) {
                     </SubSection>
                   )}
 
-                  {/* Challenge factors */}
-                  {Array.isArray(ch.challenge_factors) && ch.challenge_factors.length > 0 && (
-                    <SubSection title="Challenge Factors" darkMode={darkMode}>
-                      <div className="space-y-1.5">
-                        {(ch.challenge_factors as IntelligenceDebugChallengeFactor[])
-                          .slice(0, 4)
-                          .map((f, i) => (
+                  {/* Challenge factors — deterministic_only is separated out as a system context note */}
+                  {Array.isArray(ch.challenge_factors) && ch.challenge_factors.length > 0 && (() => {
+                    const allFactors = ch.challenge_factors as IntelligenceDebugChallengeFactor[];
+                    const mainFactors = allFactors.filter((f) => f.code !== "deterministic_only").slice(0, 3);
+                    const hasDeterministicOnly = allFactors.some((f) => f.code === "deterministic_only");
+                    return (
+                      <SubSection title="Challenge Factors" darkMode={darkMode}>
+                        <div className="space-y-1.5">
+                          {mainFactors.map((f, i) => (
                             <div key={i} className="space-y-0.5">
                               <div className="flex items-center gap-1.5">
                                 <span className={`inline-block rounded px-1 py-0 text-[9px] font-semibold ${severityBadgeClass(f.severity, darkMode)}`}>
@@ -334,9 +336,15 @@ export function Stage5IntelPanel({ dealId, darkMode }: Stage5IntelPanelProps) {
                               <div className={`text-[10px] leading-snug ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{f.explanation}</div>
                             </div>
                           ))}
-                      </div>
-                    </SubSection>
-                  )}
+                          {hasDeterministicOnly && (
+                            <div className={`mt-1 text-[10px] italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                              Analysis ran in deterministic-only mode; LLM enrichment was not used.
+                            </div>
+                          )}
+                        </div>
+                      </SubSection>
+                    );
+                  })()}
 
                   <SubSection title="Challenge Pass" darkMode={darkMode}>
                     <Row label="Verdict resistance" value={`${fmtNum(ch.verdict_resistance_score)} — ${ch.verdict_resistance_label ?? '—'}`} darkMode={darkMode} />

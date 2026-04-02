@@ -2,6 +2,7 @@ import type { Job } from "bullmq";
 import { randomUUID, createHash } from "crypto";
 import path from "path";
 import fs from "fs/promises";
+import { existsSync } from "fs";
 import { execSync } from "child_process";
 import type { JobProgressEventV1, JobStatus, JobStatusDetail } from "@dealdecision/contracts";
 import {
@@ -2552,6 +2553,42 @@ const __isWorkerEntrypoint = (() => {
 })();
 
 if (__isWorkerEntrypoint) {
+	// Fail-fast: verify required prompt artifact markdown files are present before
+	// starting any queues. Missing artifacts cause phase1_deal_summary_v2_failed at
+	// job runtime (ENOENT) rather than at startup. This check surfaces the failure
+	// immediately with a clear error listing which files are absent and where we looked.
+	const REQUIRED_PROMPT_ARTIFACTS = [
+		"DealDecision-System-Audit-Prompt-Pack-v1.md",
+		"DealDecision-Scoring-Normalization-Rubric-v1.md",
+		"DealDecision-Policy-Aware-Prompt-Pack-v2.md",
+		"DealDecision-Policy-Aware-Output-Template-v2.md",
+	] as const;
+	const _artifactsDir = path.resolve(process.cwd(), "artifacts");
+	const _missingArtifacts = REQUIRED_PROMPT_ARTIFACTS.filter((f) => !existsSync(path.join(_artifactsDir, f)));
+	if (_missingArtifacts.length > 0) {
+		console.error(
+			JSON.stringify({
+				event: "worker_startup_failed",
+				reason: "prompt_artifacts_missing",
+				service: "worker",
+				artifacts_dir: _artifactsDir,
+				missing: _missingArtifacts,
+				message:
+					`Required prompt artifact files are absent from ${_artifactsDir}. ` +
+					"The worker image is incomplete. Check COPY steps in apps/worker/Dockerfile.",
+			})
+		);
+		process.exit(1);
+	}
+	console.log(
+		JSON.stringify({
+			event: "prompt_artifacts_verified",
+			service: "worker",
+			artifacts_dir: _artifactsDir,
+			count: REQUIRED_PROMPT_ARTIFACTS.length,
+		})
+	);
+
 	void (async () => {
 	const allowWithoutDbRaw = process.env.WORKER_ALLOW_START_WITHOUT_DB;
 	const allowWithoutDb = allowWithoutDbRaw === "1" || allowWithoutDbRaw === "true";

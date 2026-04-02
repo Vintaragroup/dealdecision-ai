@@ -107,7 +107,26 @@ RUN apt-get update \
 
 COPY --from=build /app/apps/worker/dist ./dist
 COPY --from=build /app/apps/worker/package.json ./package.json
-RUN mkdir -p /app/artifacts ./artifacts
+
+# Copy required prompt artifact markdown files into the worker artifacts directory.
+# Build context is the repo root (render.yaml: dockerContext: .).
+# These files are read at runtime by policy-aware-prompt-runtime.ts; without them
+# the worker throws ENOENT and all phase1 jobs fail with policy_prompt_artifact_missing.
+COPY artifacts/DealDecision-System-Audit-Prompt-Pack-v1.md ./artifacts/
+COPY artifacts/DealDecision-Scoring-Normalization-Rubric-v1.md ./artifacts/
+COPY artifacts/DealDecision-Policy-Aware-Prompt-Pack-v2.md ./artifacts/
+COPY artifacts/DealDecision-Policy-Aware-Output-Template-v2.md ./artifacts/
+
+# Build-time verification: fail the image build immediately if any required artifact is missing.
+# This catches missing files at build time rather than silently at job runtime.
+RUN test -f ./artifacts/DealDecision-System-Audit-Prompt-Pack-v1.md \
+	&& test -f ./artifacts/DealDecision-Scoring-Normalization-Rubric-v1.md \
+	&& test -f ./artifacts/DealDecision-Policy-Aware-Prompt-Pack-v2.md \
+	&& test -f ./artifacts/DealDecision-Policy-Aware-Output-Template-v2.md \
+	&& echo "prompt_artifacts_verified_ok" \
+	|| (echo "ERROR: required prompt artifact files missing from /app/apps/worker/artifacts" >&2 && exit 1)
+
+RUN mkdir -p /app/artifacts
 
 # pnpm workspace runtime deps (symlinks + .pnpm store live under /app/node_modules)
 COPY --from=deps /app/node_modules /app/node_modules

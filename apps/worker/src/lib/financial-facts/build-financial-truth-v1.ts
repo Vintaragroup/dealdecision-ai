@@ -162,6 +162,7 @@ function normalizeSourceKind(raw: string): SourceKindBucket {
     case "kpi_tile":
     case "structured":
     case "workbook":
+    case "structured_derived":   // derived facts from reconcile-financial-facts-v1
       return "structured_derived";
     case "deck":
     case "narrative":
@@ -344,7 +345,11 @@ function getDeckValue(
       return null;
     }
     case "burn_rate": {
+      // Defense-in-depth: skip any burn mention whose text also appears in
+      // pricing_mentions — catches residual overlap from pricing slide language.
+      const pricingTexts = new Set((signals.pricing_mentions ?? []).map((m) => m.text));
       for (const m of signals.burn_mentions) {
+        if (pricingTexts.has(m.text)) continue;
         const v = parseDeckAmount(m.text);
         if (v != null) return v;
       }

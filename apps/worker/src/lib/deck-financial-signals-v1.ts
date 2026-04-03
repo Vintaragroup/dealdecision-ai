@@ -90,8 +90,12 @@ const ARR_MRR_RE = new RegExp(
 );
 
 // Burn rate / monthly spend
+// NOTE: The middle clause ($AMT /month) was intentionally removed — it matched
+// any dollar-per-month string with zero semantic context, causing pricing slide
+// values to contaminate burn_mentions. Clauses 1 and 3 cover all legitimate
+// burn disclosures: "burn $250K", "burn rate $X", "monthly burn $X", etc.
 const BURN_RE = new RegExp(
-  `(?:burn\\s*(?:rate)?(?:[^\\n]{0,20}?)${AMT}|${AMT}\\s*(?:\\/mo|\\/month|per\\s+month)` +
+  `(?:burn\\s*(?:rate)?(?:[^\\n]{0,20}?)${AMT}` +
   `|monthly\\s*(?:burn|spend|cost)(?:[^\\n]{0,20}?)${AMT})`,
   "gi",
 );

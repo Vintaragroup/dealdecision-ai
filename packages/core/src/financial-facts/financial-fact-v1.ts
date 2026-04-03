@@ -30,6 +30,7 @@ export type FinancialFactSourceKind =
   | "kpi_tile"
   | "chart_pixel"
   | "deck"
+  | "structured_derived"
   | "unknown";
 
 export type FinancialFactPeriodType =

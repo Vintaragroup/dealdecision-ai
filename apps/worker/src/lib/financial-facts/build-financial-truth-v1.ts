@@ -329,16 +329,36 @@ function getDeckValue(
   if (!signals) return null;
 
   switch (metric) {
-    case "arr":
-    case "mrr": {
+    case "arr": {
+      // Only accept arr_mrr_mentions that reference ARR / annual recurring.
+      // Prevents an MRR mention (e.g. "$381K MRR") from being stored as the
+      // ARR deck value.
       for (const m of signals.arr_mrr_mentions) {
+        if (!/\bARR\b|annual\s+recurring/i.test(m.text)) continue;
+        const v = parseDeckAmount(m.text);
+        if (v != null) return v;
+      }
+      return null;
+    }
+    case "mrr": {
+      // Only accept arr_mrr_mentions that reference MRR / monthly recurring.
+      // Prevents an ARR mention from being stored as the MRR deck value.
+      for (const m of signals.arr_mrr_mentions) {
+        if (!/\bMRR\b|monthly\s+recurring/i.test(m.text)) continue;
         const v = parseDeckAmount(m.text);
         if (v != null) return v;
       }
       return null;
     }
     case "revenue": {
+      // Defense-in-depth: skip any revenue mention whose text also appears in
+      // pricing_mentions (pricing tier language) or arr_mrr_mentions (ARR/MRR
+      // figures that leaked into revenue_mentions before REVENUE_RE was tightened).
+      const pricingTexts = new Set((signals.pricing_mentions ?? []).map((m) => m.text));
+      const arrMrrTexts = new Set((signals.arr_mrr_mentions ?? []).map((m) => m.text));
       for (const m of signals.revenue_mentions) {
+        if (pricingTexts.has(m.text)) continue;
+        if (arrMrrTexts.has(m.text)) continue;
         const v = parseDeckAmount(m.text);
         if (v != null) return v;
       }

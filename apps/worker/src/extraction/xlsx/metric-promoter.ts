@@ -30,6 +30,9 @@ const FIELD_TYPE_TO_METRIC_KEY: Record<FieldTypeV1, string> = {
   revenue_canonical_v1:          "revenue",
   marketing_attributed_revenue_v1: "marketing_attributed_revenue",
   forecast_revenue_v1:           "forecast_revenue",
+  // Semantic revenue subtypes — never collapse into generic "revenue"
+  booked_revenue_v1:             "booked_revenue",
+  recognized_revenue_v1:         "recognized_revenue",
   arr_v1:                        "arr",
   mrr_v1:                        "mrr",
   tam_v1:                        "tam",

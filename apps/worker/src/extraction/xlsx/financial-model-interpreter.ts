@@ -42,9 +42,23 @@ const ROW_LABEL_RULES: Array<{ pattern: RegExp; field_type: FieldTypeV1 }> = [
   // ARR / MRR (must precede revenue rule to avoid "arr revenue" mapping wrong)
   { pattern: /\barr\b|annual recurring rev/i,                     field_type: "arr_v1" },
   { pattern: /\bmrr\b|monthly recurring rev/i,                    field_type: "mrr_v1" },
+  // Revenue subtypes — MUST precede the generic revenue/sales catch-all
+  // -----------------------------------------------------------------
+  // Forward-looking / projected revenue rows (captures "Revenue Projections"
+  // which would otherwise fall through to revenue_canonical_v1)
+  { pattern: /\bforecast(?:ed)?\s+rev|\bprojected\s+rev|\brevenue\s+projections?\b/i, field_type: "forecast_revenue_v1" },
+  // Sales-expense rows: must precede \bsales\b to prevent "Total Sales Expense"
+  // or compensation rows from being misclassified as revenue.
+  { pattern: /\bsales\s+(?:expense|cost|spend|salary|bonus|commission|comp(?:ensation)?|incentive|travel)\b/i, field_type: "opex_v1" },
+  { pattern: /\btotal\s+sales\s+(?:expense|cost)\b/i,             field_type: "opex_v1" },
+  // Recognized revenue rows (ASC 606) — must precede revenue to avoid collapse
+  { pattern: /\brecognized\s+rev|\brev(?:enue)?\s+rec(?:ognized)?\b/i, field_type: "recognized_revenue_v1" },
+  // Handles "YTD Revenue Recognized", "Channel Revenue Recognized", etc.
+  { pattern: /\b(?:ytd|channel|direct|subscription|booked)\s+(?:revenue\s+recognized|recognized\s+revenue)\b/i, field_type: "recognized_revenue_v1" },
+  // Booked revenue rows (contracted, not yet recognized) — must precede revenue
+  { pattern: /\bbooked\s+(?:revenue|sales|orders?)\b|\brev(?:enue)?\s+booked\b/i, field_type: "booked_revenue_v1" },
   // Revenue
   { pattern: /\brevenue\b|\bsales\b|\btop[ -]?line\b/i,           field_type: "revenue_canonical_v1" },
-  { pattern: /\bforecast(?:ed)?\s+rev|\bprojected\s+rev/i,        field_type: "forecast_revenue_v1" },
   // Market sizing
   { pattern: /\btam\b|total addr/i,                                field_type: "tam_v1" },
   { pattern: /\bsam\b|serviceable addr/i,                         field_type: "sam_v1" },

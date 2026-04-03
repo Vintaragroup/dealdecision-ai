@@ -34,6 +34,10 @@ export type FieldTypeV1 =
   | "marketing_attributed_revenue_v1"
   /** Forward-looking / forecast revenue. */
   | "forecast_revenue_v1"
+  /** Revenue that has been booked/contracted but not yet recognized (ASC 606). */
+  | "booked_revenue_v1"
+  /** Revenue that has been recognized under ASC 606 / IFRS 15. */
+  | "recognized_revenue_v1"
   // ── ARR / MRR ───────────────────────────────────────────────────────────
   /** Annual recurring revenue (ARR). */
   | "arr_v1"

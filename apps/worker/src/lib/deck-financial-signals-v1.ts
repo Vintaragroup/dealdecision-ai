@@ -75,9 +75,13 @@ export interface DeckSignalPage {
 const AMT = String.raw`\$[\d,]+(?:\.\d+)?\s*[KMBTkmbt]?`;
 
 // Revenue: keyword → $ or $ → keyword
+// NOTE: ARR, MRR, annual/monthly recurring are intentionally excluded — those
+// signals belong exclusively to arr_mrr_mentions via ARR_MRR_RE.  Including
+// them here caused ARR/MRR figures to bleed into revenue_mentions and then into
+// the deck revenue value in FTRL.
 const REVENUE_RE = new RegExp(
-  `(?:${AMT}\\s+(?:ARR|MRR|revenue|revenues|sales|top[\\-\\s]?line|recurring)|` +
-  `(?:revenue|revenues|sales|ARR|MRR|annual\\s+recurring|monthly\\s+recurring)` +
+  `(?:${AMT}\\s+(?:revenue|revenues|sales|top[\\-\\s]?line)|` +
+  `(?:revenue|revenues|sales|top[\\-\\s]?line)` +
   `(?:[^\\n\\r]{0,25}?)${AMT})`,
   "gi",
 );

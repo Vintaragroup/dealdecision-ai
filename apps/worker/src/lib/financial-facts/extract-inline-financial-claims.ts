@@ -62,6 +62,10 @@ const KNOWN_INLINE_METRIC_KEYS = new Set<string>([
   "runway_months",
   "arr",
   "mrr",
+  // Semantic revenue subtypes — distinct from generic "revenue"
+  "forecast_revenue",
+  "booked_revenue",
+  "recognized_revenue",
   "cac",
   "ltv",
   "arpu",

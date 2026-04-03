@@ -69,7 +69,7 @@ export function reconcileFinancialFactsV1(
   facts: FinancialFactV1[],
   dealId: string,
 ): FinancialFactV1[] {
-  if (!Array.isArray(facts) || facts.length < 2) return facts;
+  if (!Array.isArray(facts) || facts.length === 0) return facts;
 
   try {
     const derived: FinancialFactV1[] = [];

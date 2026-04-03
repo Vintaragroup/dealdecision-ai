@@ -2604,6 +2604,19 @@ interface CanonicalField {
 	 * When ≥ 2, buildConfidenceSignals emits evidence_count=2 → VERIFIED tier.
 	 */
 	corroboration_count?: number;
+	/**
+	 * Set to true by applyTruthGatesV1 when the financial truth layer has determined
+	 * that this field's value should not receive full scoring credit.
+	 * The value is still surfaced for display — only scoring is blocked.
+	 *
+	 * Blocked when:
+	 *   - FinancialTruthRecord.state === "CONFLICT"      (sources disagree)
+	 *   - FinancialTruthRecord.state === "INSUFFICIENT"  (not enough data)
+	 *   - FinancialTruthRecord.projected_only_dataset === true  (not current traction)
+	 */
+	truth_gate_blocked?: boolean;
+	/** Machine-readable reason code explaining why truth_gate_blocked is true. */
+	truth_gate_reason?: string;
 }
 
 interface ConflictEntry {
@@ -2958,6 +2971,62 @@ function enrichCorroboration(fields: CanonicalField[], pages: DpuPage[]): void {
 		if (!pattern) continue;
 		const targetNorm = normalizeAmountForConflict(field.value);
 		field.corroboration_count = countCorroboratedPages(pages, pattern, targetNorm);
+	}
+}
+
+// ─── Phase 2 Fix #4: Truth-state gate ────────────────────────────────────────
+
+/**
+ * Maps canonical traction field names to their keys in the FinancialTruthMapV1.
+ * Only fields listed here are ever truth-gated; all other fields pass through.
+ */
+const TRUTH_GATED_FIELDS: Record<string, string> = {
+	arr_value:     "arr",
+	mrr_value:     "mrr",
+	revenue_value: "revenue",
+} as const;
+
+/**
+ * Apply financial truth-layer gates to all canonical traction fields.
+ *
+ * For each field in TRUTH_GATED_FIELDS that is present and Computable, checks the
+ * corresponding FinancialTruthRecord.  When the truth state would reduce confidence
+ * in the value, sets `truth_gate_blocked = true` and `truth_gate_reason` to a
+ * machine-readable code.  The value itself is NOT removed — it remains visible in
+ * the UI but is excluded from market-score computation by computeMarketScoreRaw.
+ *
+ * Gate conditions:
+ *   - state === "CONFLICT"            → sources disagree; no resolved single truth
+ *   - state === "INSUFFICIENT"        → fewer than the minimum reliable sources
+ *   - projected_only_dataset === true → all facts are forward-looking projections
+ *
+ * Permissive default: when financialTruth is absent or the metric has no record,
+ * no gate is applied (field scores normally).
+ *
+ * Exported for unit tests.
+ */
+export function applyTruthGatesV1(
+	fields: CanonicalField[],
+	financialTruth: import("../../../lib/financial-facts/build-financial-truth-v1.js").FinancialTruthMapV1 | null | undefined,
+): void {
+	if (!financialTruth) return;
+	for (const field of fields) {
+		if (field.computability !== "Computable") continue;
+		const metricKey = TRUTH_GATED_FIELDS[field.field];
+		if (!metricKey) continue;
+		const record = financialTruth[metricKey];
+		if (!record) continue;
+		if (record.state === "CONFLICT") {
+			field.truth_gate_blocked = true;
+			field.truth_gate_reason = `TRUTH_CONFLICT:${metricKey.toUpperCase()}`;
+		} else if (record.state === "INSUFFICIENT") {
+			field.truth_gate_blocked = true;
+			field.truth_gate_reason = `TRUTH_INSUFFICIENT:${metricKey.toUpperCase()}`;
+		} else if (record.projected_only_dataset === true) {
+			field.truth_gate_blocked = true;
+			field.truth_gate_reason = `TRUTH_PROJECTED_ONLY:${metricKey.toUpperCase()}`;
+		}
+		// CONFIRMED → no gate; field scores normally.
 	}
 }
 
@@ -3339,6 +3408,10 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 		).level;
 	}
 
+	// ── Phase 2 Fix #4: Truth-state gate — block scoring credit when financial
+	// truth layer reports CONFLICT, INSUFFICIENT, or projected_only for traction fields.
+	applyTruthGatesV1(fields, inputs.financialTruth);
+
 	return { fields, conflicts, completeness };
 }
 
@@ -3349,7 +3422,10 @@ function formatCanonicalFieldLine(f: CanonicalField): string {
 	if (f.computability === "Computable" && f.value !== null && f.evidenceRef !== null) {
 		const src = f.source ?? "deck";
 		const conf = f.confidence ?? "UNKNOWN";
-		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=${f.reasonCode ?? "none"} | source=${src} | confidence=${conf}`;
+		const truthGatePart = f.truth_gate_blocked
+			? ` | truth_gate=blocked | truth_gate_reason=${f.truth_gate_reason ?? "UNKNOWN"}`
+			: "";
+		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=${f.reasonCode ?? "none"} | source=${src} | confidence=${conf}${truthGatePart}`;
 	}
 	const conf = f.confidence ?? "UNKNOWN";
 	const suppressedPart = f.suppressedValue ? ` | suppressed_value="${f.suppressedValue}"` : "";
@@ -3872,4 +3948,5 @@ export {
 	detectArrInTextSources,
 	isValuationMatchTainted,
 	detectValuationPostInTextSources,
+	// Fix #4: Truth-state gate — applyTruthGatesV1 is already an `export function` above.
 };

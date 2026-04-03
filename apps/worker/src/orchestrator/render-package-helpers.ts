@@ -219,6 +219,14 @@ export interface ParsedCanonicalField {
   source_type: string;
   /** Evidence confidence level — serialised from stage-2 (PR36.6). e.g. "STRONG_EVIDENCE" */
   confidence?: string;
+  /**
+   * True when the financial truth layer has blocked scoring credit for this field.
+   * Set by applyTruthGatesV1 in stage-2 when state is CONFLICT, INSUFFICIENT,
+   * or projected_only_dataset. The value is still present for display.
+   */
+  truth_gate_blocked?: boolean;
+  /** Machine-readable reason code for the truth gate, e.g. "TRUTH_CONFLICT:ARR". */
+  truth_gate_reason?: string | null;
 }
 
 /**
@@ -249,6 +257,8 @@ export function parseCanonicalFieldsBody(body: string | null): ParsedCanonicalFi
     const value = computability === "NotComputable" ? null : (parts["value"] || null);
     const evidence = parts["evidence"] && parts["evidence"] !== "none" ? parts["evidence"] : null;
     const reason = parts["reason"] && parts["reason"] !== "none" ? parts["reason"] : null;
+    const truthGateBlocked = parts["truth_gate"] === "blocked" ? true : undefined;
+    const truthGateReason = truthGateBlocked ? (parts["truth_gate_reason"] || null) : undefined;
 
     fields.push({
       category: parts["category"] ?? "",
@@ -259,6 +269,8 @@ export function parseCanonicalFieldsBody(body: string | null): ParsedCanonicalFi
       reason,
       source_type: parts["source"] ?? "unknown",
       confidence: parts["confidence"] || undefined,
+      truth_gate_blocked: truthGateBlocked,
+      truth_gate_reason: truthGateReason,
     });
   }
 

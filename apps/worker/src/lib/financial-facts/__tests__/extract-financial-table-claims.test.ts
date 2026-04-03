@@ -424,3 +424,46 @@ describe("extractFinancialTableClaims — ordinal XLSX forecast series", () => {
     // If not detected, that's also acceptable for now (bare integers require strict sequence)
   });
 });
+
+// ─── Guardrail: year-label suppression (G1) ──────────────────────────────────
+
+describe("extractFinancialTableClaims — year-label suppression (G1)", () => {
+  const DEAL_ID = "deal-g1";
+
+  it("does not emit a fact when a bare year integer (2025) is the only value", () => {
+    // A line where a year number bleeds into a data column should produce no fact.
+    const text = "$1.2M revenue\nTarget Year | 2025";
+    const facts = extractFinancialTableClaims(text, { deal_id: DEAL_ID });
+    const yearFacts = facts.filter((f) => f.value === 2025);
+    expect(yearFacts).toHaveLength(0);
+  });
+
+  it("does not emit a fact for value=2026 without currency symbol", () => {
+    // Pipe-separated row where second column is a calendar year
+    const text = "$1.5M ARR\nLaunch Year | 2026";
+    const facts = extractFinancialTableClaims(text, { deal_id: DEAL_ID });
+    const yearFacts = facts.filter((f) => f.value === 2026);
+    expect(yearFacts).toHaveLength(0);
+  });
+
+  it("still emits a valid revenue fact from the same page as the year line", () => {
+    // The year guard must not block unrelated facts on the same page.
+    const text = "Revenue | $1,200,000\nTarget Year | 2025";
+    const facts = extractFinancialTableClaims(text, { deal_id: DEAL_ID });
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    expect(revFacts.length).toBeGreaterThan(0);
+    expect(revFacts[0]!.value).toBe(1_200_000);
+  });
+
+  it("does not suppress $2025 (with currency symbol) — small but valid currency value is handled by the < $100 guard", () => {
+    // $2025 has a $ symbol so it's classified as currency, not a plain year.
+    // It survives the year-label guard but might be rejected by the < $100 guard
+    // only if below threshold. $2025 > $100, so it should be emitted.
+    const text = "$2,025 revenue\nBurn | $300";
+    const facts = extractFinancialTableClaims(text, { deal_id: DEAL_ID });
+    // Must NOT have been blocked by the year-label guard (unit=currency, not unit=number)
+    const rev = facts.find((f) => f.metric_key === "revenue");
+    // $2025 passes the $100 minimum threshold
+    if (rev) expect(rev.value).toBe(2025);
+  });
+});

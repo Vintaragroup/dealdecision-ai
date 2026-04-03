@@ -185,3 +185,44 @@ describe("normalizeMetricKey — ambiguity guards", () => {
     expect(normalizeMetricKey("Post Money")).toBe("post_money_valuation");
   });
 });
+
+// ─── Guardrail: payroll row suppression (G5) ─────────────────────────────────
+
+describe("normalizeMetricKey — payroll row suppression (G5)", () => {
+  it("maps 'Sales 1' to opex (not revenue)", () => {
+    expect(normalizeMetricKey("Sales 1")).toBe("opex");
+  });
+
+  it("maps 'Sales 2' to opex (not revenue)", () => {
+    expect(normalizeMetricKey("Sales 2")).toBe("opex");
+  });
+
+  it("maps 'Sales 3' to opex (not revenue)", () => {
+    expect(normalizeMetricKey("Sales 3")).toBe("opex");
+  });
+
+  it("maps 'Sales Rep' to opex (not revenue)", () => {
+    expect(normalizeMetricKey("Sales Rep")).toBe("opex");
+  });
+
+  it("maps 'Sales Representative' to opex (not revenue)", () => {
+    expect(normalizeMetricKey("Sales Representative")).toBe("opex");
+  });
+
+  it("maps 'Operations 1' to opex", () => {
+    expect(normalizeMetricKey("Operations 1")).toBe("opex");
+  });
+
+  it("maps 'Operations 2' to opex", () => {
+    expect(normalizeMetricKey("Operations 2")).toBe("opex");
+  });
+
+  it("still maps bare 'Sales' to revenue (unchanged)", () => {
+    // The payroll guard must not break the existing revenue alias.
+    expect(normalizeMetricKey("Sales")).toBe("revenue");
+  });
+
+  it("still maps 'Total Sales' to revenue (unchanged)", () => {
+    expect(normalizeMetricKey("Total Sales")).toBe("revenue");
+  });
+});

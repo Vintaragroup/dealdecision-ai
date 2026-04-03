@@ -152,6 +152,11 @@ export function extractFinancialTableClaims(
       // OCR artifacts (e.g. "$1", "$2").  Threshold: < $100.
       if (unit === "currency" && Math.abs(value) < 100) continue;
 
+      // Year-label guard: reject plain (non-currency) integers that look like
+      // calendar years (2020–2040).  These appear when a year header bleeds into
+      // a data column or a period column is mis-parsed as a metric value.
+      if (unit === "number" && Number.isInteger(value) && value >= 2020 && value <= 2040) continue;
+
       const period_type: FinancialFactPeriodType =
         period_label === "current" ? "unknown" : inferPeriodType(period_label);
 

@@ -65,6 +65,10 @@ export interface FinancialTruthRecord {
   has_xlsx_source: boolean;
   has_deck_source: boolean;
   disagreement_pct: number | null;
+  /** True when intra-document timeseries was detected and collapsed for this metric. */
+  intra_document_timeseries?: boolean;
+  /** Maximum number of distinct periods collapsed from a single document. */
+  collapsed_period_count?: number;
 }
 
 /** Keyed by metric name: "revenue" | "arr" | "mrr" | "burn_rate" | "runway_months" */
@@ -277,27 +281,126 @@ function resolveV2(sources: FinancialTruthSource[]): {
 
 // ─── Source collectors ────────────────────────────────────────────────────────
 
+/**
+ * Rank a period_label for recency / canonical preference.
+ * Higher value = more preferred.
+ *   "current" → highest (10_000)
+ *   "ltm" / "ttm" / "trailing" → near-highest (9_999)
+ *   "FY2024" / "2024" / "fy24" → parsed 4-digit year (2024)
+ *   unparseable → 0 (lowest priority)
+ */
+function rankPeriodLabel(label: string): number {
+  const l = label.toLowerCase().trim();
+  if (l === "current") return 10_000;
+  if (l === "ltm" || l === "ttm" || l === "trailing") return 9_999;
+  // Match a 4-digit year anywhere in the label (e.g. "FY2024", "2024", "Q4 FY2025")
+  const yearFull = /(20\d{2})/.exec(label);
+  if (yearFull) return parseInt(yearFull[1]!, 10);
+  // Match a 2-digit fiscal year suffix (e.g. "FY24", "F24") — only as fallback
+  const yearShort = /\bfy?(\d{2})\b/i.exec(label);
+  if (yearShort) {
+    const yr = parseInt(yearShort[1]!, 10);
+    return yr <= 50 ? 2000 + yr : 1900 + yr;
+  }
+  return 0;
+}
+
+interface CollectedSourcesResult {
+  sources: FinancialTruthSource[];
+  /** True when at least one document contributed ≥2 distinct period_labels for this metric. */
+  intra_document_timeseries: boolean;
+  /** Highest number of distinct periods found in a single document (0 when no timeseries). */
+  collapsed_period_count: number;
+}
+
 function collectFactRegistrySources(
   facts: FinancialFactV1[],
   metricKeys: string[],
-): FinancialTruthSource[] {
-  return facts
-    .filter(
-      (f) =>
-        metricKeys.includes(f.metric_key) &&
-        !isSectionHeaderFact(f) &&
-        f.temporal_scope !== "projected" &&
-        f.temporal_scope !== "scenario" &&
-        f.temporal_scope !== "target",
-    )
-    .map((f) => ({
+): CollectedSourcesResult {
+  const eligible = facts.filter(
+    (f) =>
+      metricKeys.includes(f.metric_key) &&
+      !isSectionHeaderFact(f) &&
+      f.temporal_scope !== "projected" &&
+      f.temporal_scope !== "scenario" &&
+      f.temporal_scope !== "target",
+  );
+
+  // Group eligible facts by document_id.
+  // Facts without a document_id are passed through unchanged (no timeseries collapse).
+  const byDoc = new Map<string, FinancialFactV1[]>();
+  const noDocFacts: FinancialFactV1[] = [];
+  for (const f of eligible) {
+    if (f.document_id == null) {
+      noDocFacts.push(f);
+    } else {
+      const existing = byDoc.get(f.document_id);
+      if (existing) {
+        existing.push(f);
+      } else {
+        byDoc.set(f.document_id, [f]);
+      }
+    }
+  }
+
+  let intra_document_timeseries = false;
+  let collapsed_period_count = 0;
+  const sources: FinancialTruthSource[] = [];
+
+  // Process each document group — collapse intra-document timeseries.
+  for (const docFacts of byDoc.values()) {
+    const distinctPeriods = new Set(docFacts.map((f) => f.period_label));
+    if (distinctPeriods.size >= 2) {
+      // Intra-document timeseries detected: multiple period_labels from one document.
+      // Collapse to the single most recent/canonical period to avoid spurious CONFLICT.
+      intra_document_timeseries = true;
+      if (distinctPeriods.size > collapsed_period_count) {
+        collapsed_period_count = distinctPeriods.size;
+      }
+      const bestPeriod = [...distinctPeriods].reduce((best, cur) =>
+        rankPeriodLabel(cur) > rankPeriodLabel(best) ? cur : best,
+      );
+      const representative = docFacts.find((f) => f.period_label === bestPeriod)!;
+      sources.push({
+        source_kind: representative.source_kind,
+        document_id: representative.document_id ?? null,
+        value: representative.value,
+        confidence: representative.confidence,
+        period_label: representative.period_label,
+        origin: "fact_registry" as const,
+      });
+      dbg(
+        `timeseries collapse: doc=${representative.document_id} periods=${distinctPeriods.size} ` +
+          `best=${bestPeriod} value=${representative.value}`,
+      );
+    } else {
+      // Single period (or single fact) — emit as before.
+      for (const f of docFacts) {
+        sources.push({
+          source_kind: f.source_kind,
+          document_id: f.document_id ?? null,
+          value: f.value,
+          confidence: f.confidence,
+          period_label: f.period_label,
+          origin: "fact_registry" as const,
+        });
+      }
+    }
+  }
+
+  // Facts without a document_id pass through unchanged.
+  for (const f of noDocFacts) {
+    sources.push({
       source_kind: f.source_kind,
-      document_id: f.document_id ?? null,
+      document_id: null,
       value: f.value,
       confidence: f.confidence,
       period_label: f.period_label,
       origin: "fact_registry" as const,
-    }));
+    });
+  }
+
+  return { sources, intra_document_timeseries, collapsed_period_count };
 }
 
 function getPipelineBValue(
@@ -413,7 +516,11 @@ function _buildFinancialTruthV1(inputs: FinancialTruthInputs): FinancialTruthMap
     const sources: FinancialTruthSource[] = [];
 
     // ── 1. Fact registry (xlsx, pdf_table, kpi_tile, etc.) ───────────────────
-    const registrySources = collectFactRegistrySources(facts, aliases);
+    const {
+      sources: registrySources,
+      intra_document_timeseries,
+      collapsed_period_count,
+    } = collectFactRegistrySources(facts, aliases);
     sources.push(...registrySources);
     dbg(`${metric}: fact_registry sources=${registrySources.length}`);
 
@@ -467,6 +574,10 @@ function _buildFinancialTruthV1(inputs: FinancialTruthInputs): FinancialTruthMap
       has_xlsx_source: sources.some((s) => s.source_kind === "xlsx"),
       has_deck_source: sources.some((s) => s.source_kind === "deck"),
       disagreement_pct,
+      ...(intra_document_timeseries && {
+        intra_document_timeseries: true,
+        collapsed_period_count,
+      }),
     };
 
     dbg(`${metric}: state=${state} resolved=${resolved_value} src_kind=${resolved_source_kind} strategy=${resolution_strategy} sources=${sources.length} disagreement=${disagreement_pct?.toFixed(1) ?? "n/a"}%`);

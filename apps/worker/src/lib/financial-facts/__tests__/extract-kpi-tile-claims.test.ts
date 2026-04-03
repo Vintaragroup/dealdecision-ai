@@ -686,3 +686,31 @@ describe("extractKpiTileClaims — whitespace-split scale suffix", () => {
     expect(facts.every((f) => f.value !== 3_500_000_000)).toBe(true);
   });
 });
+
+// ─── Guardrail: product slide suppression (G4) ───────────────────────────────
+
+describe("extractKpiTileClaims — product slide suppression (G4)", () => {
+  const PRODUCT_OPTS = { ...BASE_OPTS, slide_type: "product" };
+
+  it("returns [] for product slide type — suppresses UI screenshot KPIs", () => {
+    const facts = extractKpiTileClaims("$40K MRR", PRODUCT_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("returns [] for product slide even with multiple KPI phrases", () => {
+    const facts = extractKpiTileClaims("$100K ARR\n330K active users", PRODUCT_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("still extracts from traction slide when same text appears there", () => {
+    // The classifier would resolve a genuine traction callout as 'traction', not 'product'.
+    // Ensure suppression does not bleed into other slide types.
+    const facts = extractKpiTileClaims("$40K MRR", { ...BASE_OPTS, slide_type: "traction" });
+    expect(facts.length).toBeGreaterThan(0);
+    expect(facts[0]!.metric_key).toBe("mrr");
+  });
+
+  it("'product' is included in the exported SUPPRESSED_SLIDE_TYPES set", () => {
+    expect(SUPPRESSED_SLIDE_TYPES.has("product")).toBe(true);
+  });
+});

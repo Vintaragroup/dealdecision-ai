@@ -42,6 +42,12 @@ const MIN_CURRENCY_VALUE = 1_000;
 /**
  * Slide types where extraction is suppressed — numeric mentions on these slides
  * are overwhelmingly non-financial (team bios, quotes, sport scores, etc.).
+ *
+ * "product" is included because product feature / demo slides frequently contain
+ * UI screenshots whose embedded numbers (e.g. "$40K MRR" shown inside a demo
+ * dashboard) reflect sample or customer-level data, not company-level KPIs.
+ * Legitimate company traction callouts on a product slide cause the classifier
+ * to resolve the slide as "traction" (higher priority) rather than "product".
  */
 const SUPPRESSED_SLIDE_TYPES = new Set([
   "team",
@@ -49,6 +55,7 @@ const SUPPRESSED_SLIDE_TYPES = new Set([
   "quote",
   "cover",
   "appendix",
+  "product",
 ]);
 
 // ─── Public types ─────────────────────────────────────────────────────────────

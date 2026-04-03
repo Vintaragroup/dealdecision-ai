@@ -50,8 +50,10 @@ const ROW_LABEL_RULES: Array<{ pattern: RegExp; field_type: FieldTypeV1 }> = [
   // Sales-expense rows: must precede \bsales\b to prevent "Total Sales Expense"
   // or compensation rows from being misclassified as revenue.
   { pattern: /\bsales\s+(?:expense|cost|spend|salary|bonus|commission|comp(?:ensation)?|incentive|travel)\b/i, field_type: "opex_v1" },
-  { pattern: /\btotal\s+sales\s+(?:expense|cost)\b/i,             field_type: "opex_v1" },
-  // Recognized revenue rows (ASC 606) — must precede revenue to avoid collapse
+  { pattern: /\btotal\s+sales\s+(?:expense|cost)\b/i,             field_type: "opex_v1" },  // Numbered sales rows (e.g. "Sales 1", "Sales 2") are payroll/headcount line
+  // items in many startup financial models.  Must precede the broad \bsales\b
+  // revenue rule so they are not misclassified as revenue.
+  { pattern: /\bsales\s+\d+\b/i,                                  field_type: "opex_v1" },  // Recognized revenue rows (ASC 606) — must precede revenue to avoid collapse
   { pattern: /\brecognized\s+rev|\brev(?:enue)?\s+rec(?:ognized)?\b/i, field_type: "recognized_revenue_v1" },
   // Handles "YTD Revenue Recognized", "Channel Revenue Recognized", etc.
   { pattern: /\b(?:ytd|channel|direct|subscription|booked)\s+(?:revenue\s+recognized|recognized\s+revenue)\b/i, field_type: "recognized_revenue_v1" },
@@ -243,6 +245,13 @@ export function parseFinancialTable(
     for (let colIdx = 0; colIdx < colMeta.length; colIdx++) {
       const cellValue = row[colIdx];
       if (cellValue === null || cellValue === undefined) continue;
+
+      // Year-label suppression: a raw (pre-scale) integer in the calendar-year
+      // range 2020–2040 is almost always a year value inadvertently placed in a
+      // data cell (e.g. a "Target Year" or "Launch Year" row), not a financial
+      // figure.  Suppress before any scale-factor multiplication to prevent
+      // e.g. 2025 × 1000 = $2,025,000 from appearing as a revenue metric.
+      if (Number.isInteger(cellValue) && cellValue >= 2020 && cellValue <= 2040) continue;
 
       const col = colMeta[colIdx]!;
 

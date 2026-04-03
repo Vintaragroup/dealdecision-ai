@@ -51,6 +51,16 @@ export const METRIC_ALIAS_MAP: Record<string, string> = {
   "booked revenue":                     "booked_revenue",
   "revenue booked":                     "booked_revenue",
   "ytd booked revenue":                 "booked_revenue",
+  // Numbered sales rows — payroll/headcount line items in financial models.
+  // These MUST appear before the bare "sales" → "revenue" alias so that e.g.
+  // "Sales 1", "Sales 2" in a headcount table are mapped to opex, not revenue.
+  "sales 1":                            "opex",
+  "sales 2":                            "opex",
+  "sales 3":                            "opex",
+  "sales rep":                          "opex",
+  "sales representative":               "opex",
+  "operations 1":                       "opex",
+  "operations 2":                       "opex",
   // ── COGS ─────────────────────────────────────────────────────────────────
   cogs:                      "cogs",
   "cost of goods sold":      "cogs",

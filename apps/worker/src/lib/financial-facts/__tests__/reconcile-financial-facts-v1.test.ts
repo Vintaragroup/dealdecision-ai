@@ -658,3 +658,100 @@ describe("reconcileFinancialFactsV1 — Rule 4b: runway chaining from cash_outfl
   });
 });
 
+// ─── Rule 5: ARR derivation from structured MRR ───────────────────────────────
+
+describe("reconcileFinancialFactsV1 — Rule 5: ARR derivation from MRR × 12", () => {
+  it("derives ARR = MRR × 12 when structured MRR exists and no ARR", () => {
+    const mrr = makeFact({ metric_key: "mrr", value: 50_000, source_kind: "xlsx" });
+    const result = reconcileFinancialFactsV1([mrr, makeFact({ metric_key: "revenue", value: 600_000 })], "d1");
+    const arr = result.find((f) => f.metric_key === "arr");
+    expect(arr).toBeDefined();
+    expect(arr!.value).toBe(600_000); // 50_000 × 12
+    expect(arr!.source_kind).toBe("structured_derived");
+    expect(arr!.is_derived).toBe(true);
+    expect(arr!.derivation_rule).toBe("arr_from_mrr_times_12");
+    expect(arr!.confidence).toBe("medium");
+  });
+
+  it("does NOT derive ARR when explicit ARR already exists for the same period", () => {
+    const mrr = makeFact({ metric_key: "mrr", value: 50_000, source_kind: "xlsx" });
+    const arr = makeFact({ metric_key: "arr", value: 700_000 });
+    const result = reconcileFinancialFactsV1([mrr, arr], "d1");
+    const arrFacts = result.filter((f) => f.metric_key === "arr");
+    expect(arrFacts).toHaveLength(1);
+    expect(arrFacts[0]!.value).toBe(700_000); // original unchanged
+  });
+
+  it("does NOT derive ARR from deck MRR (source_kind = deck)", () => {
+    const mrrDeck = makeFact({ metric_key: "mrr", value: 100_000, source_kind: "deck" });
+    const revenue = makeFact({ metric_key: "revenue", value: 1_200_000 });
+    const result = reconcileFinancialFactsV1([mrrDeck, revenue], "d1");
+    const arr = result.find((f) => f.metric_key === "arr");
+    expect(arr).toBeUndefined();
+  });
+
+  it("does NOT derive ARR from narrative MRR (source_kind = narrative)", () => {
+    const mrrNarr = makeFact({ metric_key: "mrr", value: 80_000, source_kind: "narrative" });
+    const revenue = makeFact({ metric_key: "revenue", value: 960_000 });
+    const result = reconcileFinancialFactsV1([mrrNarr, revenue], "d1");
+    expect(result.find((f) => f.metric_key === "arr")).toBeUndefined();
+  });
+
+  it("does NOT derive ARR from projected MRR (temporal_scope = projected)", () => {
+    const mrrProj = makeFact({ metric_key: "mrr", value: 75_000, source_kind: "xlsx", temporal_scope: "projected" });
+    const revenue = makeFact({ metric_key: "revenue", value: 900_000 });
+    const result = reconcileFinancialFactsV1([mrrProj, revenue], "d1");
+    expect(result.find((f) => f.metric_key === "arr")).toBeUndefined();
+  });
+
+  it("does NOT derive ARR from low-confidence MRR", () => {
+    const mrrLow = makeFact({ metric_key: "mrr", value: 60_000, source_kind: "xlsx", confidence: "low" });
+    const revenue = makeFact({ metric_key: "revenue", value: 720_000 });
+    const result = reconcileFinancialFactsV1([mrrLow, revenue], "d1");
+    expect(result.find((f) => f.metric_key === "arr")).toBeUndefined();
+  });
+
+  it("does NOT derive ARR when MRR value is 0", () => {
+    const mrrZero = makeFact({ metric_key: "mrr", value: 0, source_kind: "xlsx" });
+    const revenue = makeFact({ metric_key: "revenue", value: 500_000 });
+    const result = reconcileFinancialFactsV1([mrrZero, revenue], "d1");
+    expect(result.find((f) => f.metric_key === "arr")).toBeUndefined();
+  });
+
+  it("derived ARR has correct semantic metadata", () => {
+    const mrr = makeFact({ metric_key: "mrr", value: 25_000, source_kind: "pdf_table" });
+    const revenue = makeFact({ metric_key: "revenue", value: 300_000 });
+    const result = reconcileFinancialFactsV1([mrr, revenue], "d1");
+    const arr = result.find((f) => f.metric_key === "arr");
+    expect(arr).toBeDefined();
+    expect(arr!.semantic_family).toBe("revenue");
+    expect(arr!.semantic_role).toBe("derived");
+    expect(arr!.reconciliation_status).toBe("ok");
+    expect(arr!.unit).toBe("currency");
+  });
+
+  it("derives ARR per period — two MRR periods produce two ARR facts", () => {
+    const mrr2024 = makeFact({ metric_key: "mrr", value: 40_000, source_kind: "xlsx", period_label: "FY2024",
+      fact_id: "factv1:d1:mrr:annual:FY2024:aaa" });
+    const mrr2025 = makeFact({ metric_key: "mrr", value: 50_000, source_kind: "xlsx", period_label: "FY2025",
+      fact_id: "factv1:d1:mrr:annual:FY2025:bbb" });
+    const result = reconcileFinancialFactsV1([mrr2024, mrr2025], "d1");
+    const arrFacts = result.filter((f) => f.metric_key === "arr");
+    expect(arrFacts).toHaveLength(2);
+    const arr2024 = arrFacts.find((f) => f.period_label === "FY2024");
+    const arr2025 = arrFacts.find((f) => f.period_label === "FY2025");
+    expect(arr2024!.value).toBe(480_000);  // 40_000 × 12
+    expect(arr2025!.value).toBe(600_000);  // 50_000 × 12
+  });
+
+  it("is idempotent — running reconcile twice does not duplicate the derived ARR", () => {
+    const mrr = makeFact({ metric_key: "mrr", value: 30_000, source_kind: "xlsx" });
+    const revenue = makeFact({ metric_key: "revenue", value: 360_000 });
+    const firstPass = reconcileFinancialFactsV1([mrr, revenue], "d1");
+    const secondPass = reconcileFinancialFactsV1(firstPass, "d1");
+    const arrFacts = secondPass.filter((f) => f.metric_key === "arr");
+    expect(arrFacts).toHaveLength(1);
+  });
+});
+
+

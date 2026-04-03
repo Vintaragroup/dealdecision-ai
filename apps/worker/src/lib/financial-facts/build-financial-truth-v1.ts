@@ -40,13 +40,14 @@ export interface FinancialTruthSource {
     | "pipeline_b_financial_statement"
     | "pipeline_b_cash_flow"
     | "pipeline_b_balance_sheet"
-    | "deck_mention";
+    | "deck_mention"
+    | "derived_from_mrr";
 }
 
 /** Normalized source priority buckets used for hierarchy arbitration. */
 export type SourceKindBucket = "xlsx" | "structured_derived" | "deck" | "unknown";
 
-export type ResolutionStrategy = "single_source" | "consensus_average" | "source_hierarchy";
+export type ResolutionStrategy = "single_source" | "consensus_average" | "source_hierarchy" | "derived_from_mrr";
 
 export interface FinancialTruthRecord {
   metric: string;
@@ -469,6 +470,55 @@ function _buildFinancialTruthV1(inputs: FinancialTruthInputs): FinancialTruthMap
     };
 
     dbg(`${metric}: state=${state} resolved=${resolved_value} src_kind=${resolved_source_kind} strategy=${resolution_strategy} sources=${sources.length} disagreement=${disagreement_pct?.toFixed(1) ?? "n/a"}%`);
+  }
+
+  // ── Post-loop: Derive ARR from MRR × 12 when ARR is INSUFFICIENT ─────────
+  // Handles deals where only MRR is available (e.g. deck-only MRR mentions).
+  // Structured MRR → ARR is also handled upstream in reconcileFinancialFactsV1
+  // (Rule 5), so by the time we reach here the fact_registry sources would
+  // already carry a derived ARR.  This block is the safety net for deck MRR.
+  //
+  // Guards:
+  //   - ARR must be INSUFFICIENT (never overwrite explicit ARR)
+  //   - MRR must have a resolved value (CONFIRMED or CONFLICT are both ok —
+  //     we take the resolved_value in both cases)
+  //   - MRR resolved_value > 0
+  const arrRecord = map["arr"];
+  const mrrRecord = map["mrr"];
+  if (
+    arrRecord != null &&
+    mrrRecord != null &&
+    arrRecord.state === "INSUFFICIENT" &&
+    mrrRecord.resolved_value != null &&
+    mrrRecord.resolved_value > 0
+  ) {
+    const derivedArrValue = Math.round(mrrRecord.resolved_value * 12);
+    const derivedBucket: SourceKindBucket = mrrRecord.resolved_source_kind ?? "unknown";
+    // Deck-sourced MRR → ARR remains low-confidence; structured MRR → medium.
+    const derivedConfidence = derivedBucket === "xlsx" ? "medium" : derivedBucket === "structured_derived" ? "medium" : "low";
+    map["arr"] = {
+      metric: "arr",
+      state: "CONFIRMED",
+      resolved_value: derivedArrValue,
+      resolved_source_kind: derivedBucket,
+      resolution_strategy: "derived_from_mrr",
+      disagreement: false,
+      sources: [
+        {
+          source_kind: derivedBucket,
+          document_id: null,
+          value: derivedArrValue,
+          confidence: derivedConfidence,
+          period_label: mrrRecord.sources[0]?.period_label ?? "current",
+          origin: "derived_from_mrr",
+        },
+      ],
+      source_count: 1,
+      has_xlsx_source: derivedBucket === "xlsx",
+      has_deck_source: derivedBucket === "deck",
+      disagreement_pct: null,
+    };
+    dbg(`arr: post-loop derived from mrr=${mrrRecord.resolved_value} → arr=${derivedArrValue} bucket=${derivedBucket}`);
   }
 
   return map;

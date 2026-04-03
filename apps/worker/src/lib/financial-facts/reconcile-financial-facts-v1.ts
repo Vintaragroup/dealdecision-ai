@@ -13,6 +13,15 @@
  *   layer confirms hasOperatingModel → derive burn_rate from total_expenses run-rate
  *   (monthly direct; annual ÷ 12; quarterly ÷ 3).
  *   Semantics-gated: requires interpretFinancialSemantics().hasOperatingModel.
+ * - Rule 4: Derive burn_rate from cash_outflow_operating (see inline comment).
+ * - Rule 5: If structured `mrr` exists AND no `arr` exists for the same period
+ *   → derive arr = mrr × 12.
+ *   Source safety guards:
+ *     - MRR must come from a structured source (xlsx, pdf_table, structured_derived,
+ *       etc.) — deck/narrative MRR is excluded to prevent pricing-tier contamination.
+ *     - MRR must not be projected / scenario / target.
+ *     - MRR confidence must be "medium" or "high".
+ *     - ARR must not already exist for this period.
  *
  * Design rules:
  * - Never mutates input facts.
@@ -486,6 +495,74 @@ export function reconcileFinancialFactsV1(
           }
         }
       }
+    }
+
+    // ── Rule 5: Derive arr from mrr × 12 (structured sources only) ────────
+    // Only fires when structured (non-deck) MRR exists and no ARR exists for
+    // the same period.  Deck/narrative MRR is excluded to prevent pricing-tier
+    // language from contaminating ARR.  The FTRL post-loop handles deck MRR
+    // → ARR separately under resolution_strategy "derived_from_mrr".
+    const DECK_SOURCE_KINDS = new Set<string>(["deck", "narrative", "deck_claim", "fused_fact"]);
+
+    const allMrrFacts = factsForMetric(byKey, "mrr");
+    const allArrFacts = [
+      ...factsForMetric(byKey, "arr"),
+      ...derived.filter((f) => f.metric_key === "arr"),
+    ];
+
+    for (const mrrFact of allMrrFacts) {
+      // Structured-source guard: no deck, narrative, or fused deck facts
+      if (DECK_SOURCE_KINDS.has(mrrFact.source_kind)) continue;
+      // Projection guard
+      if (isProjectedFact(mrrFact)) continue;
+      // Confidence guard: only medium or high MRR
+      if (mrrFact.confidence === "low") continue;
+      // Non-zero guard
+      if (!mrrFact.value || mrrFact.value <= 0) continue;
+      // Idempotency: skip if explicit ARR already recorded for the same period
+      const periodKey = mrrFact.period_label ?? "__none__";
+      const alreadyHasArr = allArrFacts.some(
+        (a) => (a.period_label ?? "__none__") === periodKey,
+      );
+      if (alreadyHasArr) continue;
+
+      const arrValue = Math.round(mrrFact.value * 12);
+      const source_pointer = `derived:arr mrr=${mrrFact.fact_id} rule=mrr_times_12`;
+      const fact_id = computeFactId({
+        deal_id: dealId,
+        metric_key: "arr",
+        period_type: mrrFact.period_type,
+        period_label: mrrFact.period_label,
+        source_pointer,
+      });
+
+      if (existing.some((f) => f.fact_id === fact_id) || derived.some((f) => f.fact_id === fact_id)) continue;
+
+      const arrFact: FinancialFactV1 = {
+        fact_id,
+        deal_id: dealId,
+        document_id: mrrFact.document_id,
+        source_kind: "structured_derived",
+        metric_key: "arr",
+        metric_label: "ARR (derived from MRR × 12)",
+        period_type: mrrFact.period_type,
+        period_label: mrrFact.period_label,
+        value: arrValue,
+        unit: "currency",
+        currency: mrrFact.currency ?? "USD",
+        confidence: "medium",
+        reconciliation_status: "ok",
+        source_pointer,
+        excerpt: `Derived: MRR $${mrrFact.value.toLocaleString()} × 12 = $${arrValue.toLocaleString()}`,
+        is_derived: true,
+        derivation_rule: "arr_from_mrr_times_12",
+        semantic_family: "revenue",
+        semantic_role: "derived",
+      };
+      derived.push(arrFact);
+      // Keep allArrFacts updated so a second MRR period can also find it
+      allArrFacts.push(arrFact);
+      dbg("Rule 5 derived arr from mrr", { period: mrrFact.period_label, mrr: mrrFact.value, arr: arrValue });
     }
 
     return derived.length > 0 ? [...existing, ...derived] : existing;

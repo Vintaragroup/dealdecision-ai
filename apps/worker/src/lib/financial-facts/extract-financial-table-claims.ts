@@ -537,6 +537,15 @@ function extractColumnHeaders(lines: string[]): string[] {
 export interface ParsedNumeric {
   value: number;
   unit: FinancialFactUnit;
+  /**
+   * True when the token contained an explicit K/M/B/T scale suffix that was
+   * already applied to produce `value` (e.g. "$5.12M" → true, "5120" → false).
+   *
+   * Used by page-level scale callers as a double-scaling guard: when this is
+   * true, no additional scale multiplier should be applied because the suffix
+   * already encoded the magnitude.
+   */
+  has_explicit_scale_suffix: boolean;
 }
 
 /** Parse tokens like "$1.2M", "65%", "120k", "1,200,000", "2.5B" */
@@ -549,7 +558,7 @@ export function parseNumericToken(token: string): ParsedNumeric | null {
   if (pctMatch) {
     const v = parseFloat(pctMatch[1].replace(/,/g, ""));
     if (!Number.isFinite(v)) return null;
-    return { value: v, unit: "percent" };
+    return { value: v, unit: "percent", has_explicit_scale_suffix: false };
   }
 
   // Currency with multiplier: $1.2M, $120k, $2.5B etc.
@@ -559,11 +568,13 @@ export function parseNumericToken(token: string): ParsedNumeric | null {
   if (currMatch) {
     const raw = parseFloat(currMatch[1].replace(/,/g, ""));
     if (!Number.isFinite(raw)) return null;
-    const mult = resolveMultiplier(currMatch[2] ?? "");
+    const suffixStr = currMatch[2] ?? "";
+    const mult = resolveMultiplier(suffixStr);
     const hasCurrencySymbol = /[$€£¥₹]/.test(s);
     return {
       value: raw * mult,
       unit: hasCurrencySymbol ? "currency" : "number",
+      has_explicit_scale_suffix: mult > 1,
     };
   }
 

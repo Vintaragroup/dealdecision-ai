@@ -69,6 +69,21 @@ export interface FinancialTruthRecord {
   intra_document_timeseries?: boolean;
   /** Maximum number of distinct periods collapsed from a single document. */
   collapsed_period_count?: number;
+  /**
+   * True when every eligible fact for this metric was a projected/forecast value.
+   * The resolved_value in this case is derived from projected sources, not current actuals.
+   */
+  projected_only_dataset?: boolean;
+  /**
+   * Number of explicitly projected (temporal_scope=projected/scenario/target) facts
+   * that existed for this metric but were excluded from truth resolution.
+   */
+  projected_excluded_count?: number;
+  /**
+   * Number of facts with no temporal scope that had future-year period labels and
+   * were deprioritized in favour of current/historical facts.
+   */
+  future_unknown_excluded_count?: number;
 }
 
 /** Keyed by metric name: "revenue" | "arr" | "mrr" | "burn_rate" | "runway_months" */
@@ -282,27 +297,92 @@ function resolveV2(sources: FinancialTruthSource[]): {
 // ─── Source collectors ────────────────────────────────────────────────────────
 
 /**
+ * Extract the 4-digit calendar year embedded in a period_label.
+ * Returns null when no unambiguous year is found.
+ */
+function extractPeriodYear(label: string): number | null {
+  const full = /(20\d{2})/.exec(label);
+  if (full) return parseInt(full[1]!, 10);
+  const short = /\bfy?(\d{2})\b/i.exec(label);
+  if (short) {
+    const yr = parseInt(short[1]!, 10);
+    return yr <= 50 ? 2000 + yr : 1900 + yr;
+  }
+  return null;
+}
+
+/**
  * Rank a period_label for recency / canonical preference.
  * Higher value = more preferred.
  *   "current" → highest (10_000)
  *   "ltm" / "ttm" / "trailing" → near-highest (9_999)
  *   "FY2024" / "2024" / "fy24" → parsed 4-digit year (2024)
  *   unparseable → 0 (lowest priority)
+ *
+ * NOTE: This rank intentionally allows future years to rank higher numerically.
+ * Callers that care about current vs projected MUST check scope before using rank.
  */
 function rankPeriodLabel(label: string): number {
   const l = label.toLowerCase().trim();
   if (l === "current") return 10_000;
   if (l === "ltm" || l === "ttm" || l === "trailing") return 9_999;
-  // Match a 4-digit year anywhere in the label (e.g. "FY2024", "2024", "Q4 FY2025")
-  const yearFull = /(20\d{2})/.exec(label);
-  if (yearFull) return parseInt(yearFull[1]!, 10);
-  // Match a 2-digit fiscal year suffix (e.g. "FY24", "F24") — only as fallback
-  const yearShort = /\bfy?(\d{2})\b/i.exec(label);
-  if (yearShort) {
-    const yr = parseInt(yearShort[1]!, 10);
-    return yr <= 50 ? 2000 + yr : 1900 + yr;
-  }
+  const yr = extractPeriodYear(label);
+  if (yr !== null) return yr;
   return 0;
+}
+
+/**
+ * Classify a fact's effective temporal scope for truth-resolution purposes.
+ *
+ * Outcome categories:
+ *   "realized"       — temporal_scope is explicitly "current" or "historical"
+ *   "unknown-past"   — no/unknown temporal_scope AND period year ≤ currentYear
+ *   "unknown-future" — no/unknown temporal_scope AND period year > currentYear
+ *   "unknown-noyear" — no/unknown temporal_scope AND no year in period_label
+ *   "projected"      — temporal_scope is "projected", "scenario", or "target"
+ *
+ * Realized facts are highest trust; projected are excluded from primary resolution.
+ */
+type FactScopeClass = "realized" | "unknown-past" | "unknown-future" | "unknown-noyear" | "projected";
+
+function classifyFactScope(f: FinancialFactV1, currentYear: number): FactScopeClass {
+  const scope = f.temporal_scope;
+  if (scope === "projected" || scope === "scenario" || scope === "target") return "projected";
+  if (scope === "current" || scope === "historical") return "realized";
+  // scope is undefined / "unknown"
+  const yr = extractPeriodYear(f.period_label);
+  if (yr === null) return "unknown-noyear";
+  if (yr > currentYear) return "unknown-future";
+  return "unknown-past";
+}
+
+/**
+ * Composite selection rank for choosing the best representative from a
+ * same-document fact group.  Scope tier outweighs period recency.
+ *
+ * Tier offsets:
+ *   realized (current)    50_000 + periodRank
+ *   realized (historical) 40_000 + periodRank
+ *   unknown-noyear        20_000 (period label has no year — treat as current proxy)
+ *   unknown-past          10_000 + year
+ *   unknown-future         1_000 + year   (deprioritized)
+ *   projected                 0           (should not reach here; excluded upstream)
+ */
+function factSelectionRank(f: FinancialFactV1, currentYear: number): number {
+  const scopeClass = classifyFactScope(f, currentYear);
+  const pr = rankPeriodLabel(f.period_label);
+  switch (scopeClass) {
+    case "realized":
+      return (f.temporal_scope === "current" ? 50_000 : 40_000) + pr;
+    case "unknown-noyear":
+      return 20_000;
+    case "unknown-past":
+      return 10_000 + pr;
+    case "unknown-future":
+      return 1_000 + pr;
+    case "projected":
+      return 0;
+  }
 }
 
 interface CollectedSourcesResult {
@@ -311,26 +391,69 @@ interface CollectedSourcesResult {
   intra_document_timeseries: boolean;
   /** Highest number of distinct periods found in a single document (0 when no timeseries). */
   collapsed_period_count: number;
+  /**
+   * True when ALL surviving facts were from projected-only sources
+   * (no current or historical actuals available).
+   */
+  projected_only_dataset: boolean;
+  /** Number of explicitly projected/scenario/target facts that were excluded. */
+  projected_excluded_count: number;
+  /** Number of unknown-scope facts whose period year > currentYear that were deprioritized. */
+  future_unknown_excluded_count: number;
 }
 
 function collectFactRegistrySources(
   facts: FinancialFactV1[],
   metricKeys: string[],
 ): CollectedSourcesResult {
-  const eligible = facts.filter(
-    (f) =>
-      metricKeys.includes(f.metric_key) &&
-      !isSectionHeaderFact(f) &&
-      f.temporal_scope !== "projected" &&
-      f.temporal_scope !== "scenario" &&
-      f.temporal_scope !== "target",
+  const currentYear = new Date().getFullYear();
+
+  // ── Step 1: Broad eligibility (metric match + section header guard) ────────
+  const candidates = facts.filter(
+    (f) => metricKeys.includes(f.metric_key) && !isSectionHeaderFact(f),
   );
 
-  // Group eligible facts by document_id.
-  // Facts without a document_id are passed through unchanged (no timeseries collapse).
+  // ── Step 2: Partition by scope class ──────────────────────────────────────
+  // Explicitly projected/scenario/target → excluded entirely.
+  // Unknown-future (undefined scope + future year) → excluded from primary;
+  //   promoted to fallback only when NO non-projected facts exist at all.
+  const primaryFacts: FinancialFactV1[] = [];
+  let projected_excluded_count = 0;
+  let future_unknown_excluded_count = 0;
+  const fallbackProjectedFacts: FinancialFactV1[] = [];
+
+  for (const f of candidates) {
+    const cls = classifyFactScope(f, currentYear);
+    if (cls === "projected") {
+      projected_excluded_count++;
+      fallbackProjectedFacts.push(f);
+    } else if (cls === "unknown-future") {
+      future_unknown_excluded_count++;
+      fallbackProjectedFacts.push(f);
+    } else {
+      // realized | unknown-past | unknown-noyear → primary
+      primaryFacts.push(f);
+    }
+  }
+  dbg(
+    `collectFactRegistrySources: candidates=${candidates.length} ` +
+      `primary=${primaryFacts.length} proj_excl=${projected_excluded_count} ` +
+      `future_excl=${future_unknown_excluded_count}`,
+  );
+
+  // When NO primary facts exist but projected/future facts do, fall back to
+  // them so a projected-only deal remains resolvable (but clearly marked).
+  const activeFacts = primaryFacts.length > 0 ? primaryFacts : fallbackProjectedFacts;
+  const projected_only_dataset = primaryFacts.length === 0 && fallbackProjectedFacts.length > 0;
+  // Only report exclusion counts when actual primary facts exist to have "won".
+  // In a projected-only dataset nothing was excluded — everything was used.
+  const effective_projected_excluded   = projected_only_dataset ? 0 : projected_excluded_count;
+  const effective_future_unknown_excluded = projected_only_dataset ? 0 : future_unknown_excluded_count;
+
+  // ── Step 3: Group by document_id ──────────────────────────────────────────
   const byDoc = new Map<string, FinancialFactV1[]>();
   const noDocFacts: FinancialFactV1[] = [];
-  for (const f of eligible) {
+  for (const f of activeFacts) {
     if (f.document_id == null) {
       noDocFacts.push(f);
     } else {
@@ -347,20 +470,21 @@ function collectFactRegistrySources(
   let collapsed_period_count = 0;
   const sources: FinancialTruthSource[] = [];
 
-  // Process each document group — collapse intra-document timeseries.
+  // ── Step 4: Collapse intra-document timeseries ────────────────────────────
+  // Uses factSelectionRank() which is scope-aware:  realized > unknown-past
+  // > unknown-noyear > unknown-future.  This ensures a current/historical
+  // period is always preferred over a same-document future-year period.
   for (const docFacts of byDoc.values()) {
     const distinctPeriods = new Set(docFacts.map((f) => f.period_label));
     if (distinctPeriods.size >= 2) {
-      // Intra-document timeseries detected: multiple period_labels from one document.
-      // Collapse to the single most recent/canonical period to avoid spurious CONFLICT.
       intra_document_timeseries = true;
       if (distinctPeriods.size > collapsed_period_count) {
         collapsed_period_count = distinctPeriods.size;
       }
-      const bestPeriod = [...distinctPeriods].reduce((best, cur) =>
-        rankPeriodLabel(cur) > rankPeriodLabel(best) ? cur : best,
+      // Pick the highest-ranked fact using scope-aware ranking.
+      const representative = docFacts.reduce((best, cur) =>
+        factSelectionRank(cur, currentYear) > factSelectionRank(best, currentYear) ? cur : best,
       );
-      const representative = docFacts.find((f) => f.period_label === bestPeriod)!;
       sources.push({
         source_kind: representative.source_kind,
         document_id: representative.document_id ?? null,
@@ -371,10 +495,10 @@ function collectFactRegistrySources(
       });
       dbg(
         `timeseries collapse: doc=${representative.document_id} periods=${distinctPeriods.size} ` +
-          `best=${bestPeriod} value=${representative.value}`,
+          `best=${representative.period_label} scope=${representative.temporal_scope ?? "undef"} ` +
+          `value=${representative.value}`,
       );
     } else {
-      // Single period (or single fact) — emit as before.
       for (const f of docFacts) {
         sources.push({
           source_kind: f.source_kind,
@@ -400,7 +524,14 @@ function collectFactRegistrySources(
     });
   }
 
-  return { sources, intra_document_timeseries, collapsed_period_count };
+  return {
+    sources,
+    intra_document_timeseries,
+    collapsed_period_count,
+    projected_only_dataset,
+    projected_excluded_count: effective_projected_excluded,
+    future_unknown_excluded_count: effective_future_unknown_excluded,
+  };
 }
 
 function getPipelineBValue(
@@ -520,6 +651,9 @@ function _buildFinancialTruthV1(inputs: FinancialTruthInputs): FinancialTruthMap
       sources: registrySources,
       intra_document_timeseries,
       collapsed_period_count,
+      projected_only_dataset,
+      projected_excluded_count,
+      future_unknown_excluded_count,
     } = collectFactRegistrySources(facts, aliases);
     sources.push(...registrySources);
     dbg(`${metric}: fact_registry sources=${registrySources.length}`);
@@ -578,6 +712,9 @@ function _buildFinancialTruthV1(inputs: FinancialTruthInputs): FinancialTruthMap
         intra_document_timeseries: true,
         collapsed_period_count,
       }),
+      ...(projected_only_dataset && { projected_only_dataset: true }),
+      ...(projected_excluded_count > 0 && { projected_excluded_count }),
+      ...(future_unknown_excluded_count > 0 && { future_unknown_excluded_count }),
     };
 
     dbg(`${metric}: state=${state} resolved=${resolved_value} src_kind=${resolved_source_kind} strategy=${resolution_strategy} sources=${sources.length} disagreement=${disagreement_pct?.toFixed(1) ?? "n/a"}%`);

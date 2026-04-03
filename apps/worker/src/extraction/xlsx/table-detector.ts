@@ -141,19 +141,30 @@ const MIN_COL_HEADERS = 2;
  *   - "in billions"
  */
 const UNIT_SCALE_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly factor: number }> = [
-  // Billions
+  // Billions — "in billions", "(in billions)", "USD billions"
   {
-    pattern: /\bin\s+(?:us\s+)?billions?\b|\(in\s+billions?\)/i,
+    pattern: /\bin\s+(?:us\s+)?billions?\b|\(in\s+billions?\)|(?:USD|EUR|GBP|AUD|CAD)\s+billions?\b/i,
     factor: 1_000_000_000,
   },
-  // Millions — "in millions", "(in millions)", "$MM", "£MM", "€MM", "(£MM)"
+  // Millions:
+  //   existing: "in millions", "(in millions)", "$MM", "£MM", "€MM", "(£MM)"
+  //   new:      "$M", "($ M)", "($M)", "in $M", "USD millions"
+  //
+  // Note: [$€£¥₹]\s*m(?!\w) matches "$M" / "$ M" but NOT "$MM" (next char is M, a word char)
+  //       and NOT "$1.5M" (\s* cannot span digits — currency sym is directly before M).
+  //       (?!\w) prevents matching inside currency amounts like "$128M" because \s* only
+  //       matches whitespace between the symbol and M, not digits.
   {
-    pattern: /\bin\s+(?:us\s+)?millions?\b|\(in\s+millions?\)|[$€£¥₹]\s*mm\b|\([$€£¥₹]?\s*mm\)/i,
+    pattern: /\bin\s+(?:us\s+)?millions?\b|\(in\s+millions?\)|[$€£¥₹]\s*mm\b|\([$€£¥₹]?\s*mm\)|[$€£¥₹]\s*m(?!\w)|\([$€£¥₹]?\s*m(?!\w)\)|(?:USD|EUR|GBP|AUD|CAD)\s+millions?\b|\bin\s+[$€£¥₹]\s*m(?!\w)/i,
     factor: 1_000_000,
   },
-  // Thousands — "in thousands", "(in thousands)", "$000s", "£000s", "€000s", "(000s)", "(£000s)"
+  // Thousands:
+  //   existing: "in thousands", "(in thousands)", "$000s", "£000s", "€000s", "(000s)"
+  //   new:      "$K", "($ K)", "($K)", "in $K", "USD thousands"
+  //
+  // Note: [$€£¥₹]\s*k(?!\w) matches "$K" / "$ K" but NOT "$KPIS" (K followed by word char).
   {
-    pattern: /\bin\s+(?:us\s+)?thousands?\b|\(in\s+thousands?\)|[$€£¥₹]\s*000s?\b|\([$€£¥₹]?\s*000s?\)/i,
+    pattern: /\bin\s+(?:us\s+)?thousands?\b|\(in\s+thousands?\)|[$€£¥₹]\s*000s?\b|\([$€£¥₹]?\s*000s?\)|[$€£¥₹]\s*k(?!\w)|\([$€£¥₹]?\s*k(?!\w)\)|(?:USD|EUR|GBP|AUD|CAD)\s+thousands?\b|\bin\s+[$€£¥₹]\s*k(?!\w)/i,
     factor: 1_000,
   },
 ];
@@ -562,8 +573,17 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
   if (rowHeaders.length < MIN_ROW_HEADERS) return null;
 
   // ── Step 3: Detect unit scaling ───────────────────────────────────────
-  // Scan sheet title + column headers for denominator markers.
+  // Scan sheet title + column headers + first 5 rows for denominator markers.
+  // Mirrors the fromExcelRange strategy: workbooks often put "in thousands" or
+  // "($M)" in the first label row rather than in the sheet title or headers.
   const scaleScanTexts: string[] = [sheetTitle, ...headers];
+  for (let i = 0; i < Math.min(5, rows.length); i++) {
+    const row = rows[i];
+    if (!row || typeof row !== "object") continue;
+    for (const v of Object.values(row as Record<string, unknown>)) {
+      if (typeof v === "string" && v.trim()) scaleScanTexts.push(v);
+    }
+  }
   const { factor: unit_scale_factor, source_text: unit_scale_source_text } =
     detectUnitScale(scaleScanTexts);
 

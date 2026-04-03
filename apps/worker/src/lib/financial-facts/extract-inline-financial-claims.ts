@@ -40,10 +40,27 @@ import {
   type ParsedNumeric,
 } from "./extract-financial-table-claims";
 import { normalizeMetricKey } from "./financial-metric-aliases";
+import { detectUnitScale } from "../../extraction/xlsx/table-detector.js";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const MAX_INLINE_CLAIMS_PER_PAGE = 20;
+
+/** Lines scanned from the top of a page for a denominator/scale annotation. */
+const PAGE_SCALE_SCAN_LINES = 6;
+
+/**
+ * Detect a page-level scale annotation from the first few lines of text.
+ * Returns { factor: 1, source_text: null } when no annotation is found.
+ */
+function detectPageScaleContext(text: string): { factor: number; source_text: string | null } {
+  const lines = text
+    .split("\n")
+    .slice(0, PAGE_SCALE_SCAN_LINES)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return detectUnitScale(lines);
+}
 
 /**
  * Canonical metric keys that are valid outputs from the inline extractor.
@@ -131,6 +148,11 @@ export function extractInlineFinancialClaims(
 ): FinancialFactV1[] {
   if (!text || text.length < 5) return [];
 
+  // Detect page-level scale annotation once for the whole page.
+  // Applied to values without an explicit K/M/B/T token suffix.
+  const { factor: pageScaleFactor, source_text: pageScaleSourceText } =
+    detectPageScaleContext(text);
+
   const claims: FinancialFactV1[] = [];
 
   try {
@@ -147,7 +169,7 @@ export function extractInlineFinancialClaims(
       const extracted = tryExtractInlineClaim(line);
       if (!extracted) continue;
 
-      const { rawLabel, parsed, currency, period_label, matchStart, matchEnd } = extracted;
+      const { rawLabel, currency, period_label, matchStart, matchEnd } = extracted;
 
       // ── Noise gate: finance keyword within ±40 chars of numeric match ──────
       const windowStart = Math.max(0, matchStart - 40);
@@ -173,6 +195,14 @@ export function extractInlineFinancialClaims(
       // Prevents labels like "Monthly Cash Out" from aliasing to burn_rate
       // without clear burn context.
       if (metric_key === "burn_rate" && !/\bburn\b/i.test(line)) continue;
+
+      // Apply page-level scale when no explicit K/M/B/T suffix was used.
+      // Double-scaling guard: if the token already expanded a scale suffix
+      // (e.g. "$5.12M" → already 5_120_000), do NOT multiply again.
+      const { parsed } = extracted;
+      const effectiveValue = parsed.has_explicit_scale_suffix
+        ? parsed.value
+        : parsed.value * pageScaleFactor;
 
       const period_type: FinancialFactPeriodType =
         period_label === "current" ? "unknown" : inferPeriodType(period_label);
@@ -205,7 +235,7 @@ export function extractInlineFinancialClaims(
         metric_label:  rawLabel !== metric_key ? rawLabel : undefined,
         period_type,
         period_label,
-        value:         parsed.value,
+        value:         effectiveValue,
         unit:          parsed.unit,
         currency,
         confidence:    "medium",
@@ -215,6 +245,11 @@ export function extractInlineFinancialClaims(
         excerpt:       capFactExcerpt(line),
         slide_type:    opts.slide_type,
         slide_title:   opts.slide_title,
+        // Page-level scale auditability: set when scale was applied from context.
+        ...(pageScaleFactor > 1 && !parsed.has_explicit_scale_suffix ? {
+          unit_scale_factor_applied: pageScaleFactor,
+          unit_scale_source_text:    pageScaleSourceText,
+        } : {}),
       };
 
       claims.push(fact);

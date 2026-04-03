@@ -21,6 +21,7 @@ export interface MissingEvidenceInput {
   burn_truth_state?: string | null;
   runway_truth_state?: string | null;
   cash_truth_state?: string | null;
+  revenue_truth_state?: string | null;
 }
 
 interface EvidenceSpec {
@@ -56,6 +57,18 @@ const EVIDENCE_SPECS: Array<{
       description: "ARR/revenue figures are contradictory across data sources",
       verdict_sensitivity: "High",
       diligence_question: "Multiple revenue figures found that cannot be reconciled. Provide a single authoritative financial statement.",
+      category: "financial",
+      gap_severity: "Critical",
+    },
+  },
+  {
+    // CONFLICT: revenue figures disagree across structured and narrative sources
+    missing: (i) => i.revenue_truth_state === "CONFLICT",
+    spec: {
+      evidence_type: "revenue_conflict",
+      description: "Revenue figures are contradictory across data sources",
+      verdict_sensitivity: "High",
+      diligence_question: "Conflicting revenue data detected across documents. Provide a single authoritative P&L or revenue schedule.",
       category: "financial",
       gap_severity: "Critical",
     },

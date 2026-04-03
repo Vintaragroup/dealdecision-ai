@@ -436,13 +436,17 @@ export interface Stage5Inputs {
   // Deck-sourced risk items (optional)
   deck_risk_items?: string[];
 
-  // Financial Truth Resolution Layer V1 states
+  // Financial Truth Resolution Layer V2 states
   // Present when FTRL ran; null/undefined when legacy path was used.
   financial_truth_states?: {
+    revenue: string | null;
     arr: string | null;
     burn_rate: string | null;
     runway_months: string | null;
     cash: string | null;
+    revenue_resolved_source_kind: string | null;
+    arr_resolved_source_kind: string | null;
+    burn_resolved_source_kind: string | null;
   } | null;
 }
 
@@ -785,6 +789,7 @@ export async function runIntelligenceStage(
       burn_truth_state: inputs.financial_truth_states?.burn_rate ?? null,
       runway_truth_state: inputs.financial_truth_states?.runway_months ?? null,
       cash_truth_state: inputs.financial_truth_states?.cash ?? null,
+      revenue_truth_state: inputs.financial_truth_states?.revenue ?? null,
     };
 
     const challenge_pass_result = runChallengePass({

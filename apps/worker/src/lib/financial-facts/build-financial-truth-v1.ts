@@ -1,7 +1,7 @@
 /**
  * build-financial-truth-v1.ts
  *
- * Financial Truth Resolution Layer — V1
+ * Financial Truth Resolution Layer — V2
  *
  * Collects all available sources for tracked financial metrics and produces a
  * FinancialTruthRecord per metric with a deterministic truth state:
@@ -9,6 +9,15 @@
  *   CONFIRMED    — 1 source, or multiple sources agree within 20%
  *   CONFLICT     — multiple sources disagree by > 20%
  *   INSUFFICIENT — no credible source found
+ *
+ * V2 upgrade: source-priority arbitration.
+ * When sources disagree (CONFLICT), resolved_value is now set using source hierarchy:
+ *   1. xlsx          — structured XLSX financial facts (highest trust)
+ *   2. structured_derived — Pipeline B parse outputs (pdf_table, pdf_kpi_line, etc.)
+ *   3. deck          — deck narrative / deckFinancialSignals
+ *
+ * State remains CONFLICT when hierarchy wins — conflict is preserved, not erased.
+ * resolved_source_kind, resolution_strategy, and disagreement fields are new in V2.
  *
  * Pure function. No I/O. Never throws (outer guard catches and returns INSUFFICIENT map).
  */
@@ -34,10 +43,22 @@ export interface FinancialTruthSource {
     | "deck_mention";
 }
 
+/** Normalized source priority buckets used for hierarchy arbitration. */
+export type SourceKindBucket = "xlsx" | "structured_derived" | "deck" | "unknown";
+
+export type ResolutionStrategy = "single_source" | "consensus_average" | "source_hierarchy";
+
 export interface FinancialTruthRecord {
   metric: string;
   state: FinancialTruthState;
+  /** Best resolved value. Non-null even when state=CONFLICT if source hierarchy produced a winner. */
   resolved_value: number | null;
+  /** Which source bucket provided the resolved_value. Null when INSUFFICIENT. */
+  resolved_source_kind: SourceKindBucket | null;
+  /** How the value was resolved. */
+  resolution_strategy: ResolutionStrategy | null;
+  /** True when multiple sources disagree by >20% (even if resolved_value is set). */
+  disagreement: boolean;
   sources: FinancialTruthSource[];
   source_count: number;
   has_xlsx_source: boolean;
@@ -129,32 +150,127 @@ function computeDisagreementPct(values: number[]): number | null {
 }
 
 /**
- * Apply V1 resolution rules to a list of sources.
+ * Normalize a raw source_kind string into a stable priority bucket.
+ * Explicit mapping — no clever regex. New source_kinds must be added here.
  */
-function resolveV1(sources: FinancialTruthSource[]): {
+function normalizeSourceKind(raw: string): SourceKindBucket {
+  switch (raw) {
+    case "xlsx":
+      return "xlsx";
+    case "pdf_table":
+    case "pdf_kpi_line":
+    case "kpi_tile":
+    case "structured":
+    case "workbook":
+      return "structured_derived";
+    case "deck":
+    case "narrative":
+    case "deck_claim":
+    case "fused_fact":
+      return "deck";
+    default:
+      return "unknown";
+  }
+}
+
+/** Source priority order — lower index = higher priority. */
+const SOURCE_PRIORITY: SourceKindBucket[] = ["xlsx", "structured_derived", "deck", "unknown"];
+
+function sourcePriority(bucket: SourceKindBucket): number {
+  return SOURCE_PRIORITY.indexOf(bucket);
+}
+
+/**
+ * Pick the best (highest-priority) source from a list.
+ * When multiple sources share the top priority bucket, average their values.
+ */
+function selectHierarchyWinner(sources: FinancialTruthSource[]): {
+  value: number;
+  bucket: SourceKindBucket;
+} | null {
+  if (sources.length === 0) return null;
+
+  // Map each source to its normalized bucket
+  const bucketed = sources.map((s) => ({
+    ...s,
+    bucket: normalizeSourceKind(s.source_kind),
+  }));
+
+  // Find the best (lowest priority index) bucket that has at least one source
+  let bestPriorityIdx = Infinity;
+  for (const b of bucketed) {
+    const idx = sourcePriority(b.bucket);
+    if (idx < bestPriorityIdx) bestPriorityIdx = idx;
+  }
+
+  const winners = bucketed.filter((b) => sourcePriority(b.bucket) === bestPriorityIdx);
+  const avg = winners.reduce((sum, b) => sum + b.value, 0) / winners.length;
+  return { value: avg, bucket: SOURCE_PRIORITY[bestPriorityIdx] ?? "unknown" };
+}
+
+/**
+ * Apply V2 resolution rules to a list of sources.
+ * Same state logic as V1, but CONFLICT now resolves a value via source hierarchy.
+ */
+function resolveV2(sources: FinancialTruthSource[]): {
   state: FinancialTruthState;
   resolved_value: number | null;
+  resolved_source_kind: SourceKindBucket | null;
+  resolution_strategy: ResolutionStrategy | null;
+  disagreement: boolean;
   disagreement_pct: number | null;
 } {
   if (sources.length === 0) {
-    return { state: "INSUFFICIENT", resolved_value: null, disagreement_pct: null };
+    return {
+      state: "INSUFFICIENT",
+      resolved_value: null,
+      resolved_source_kind: null,
+      resolution_strategy: null,
+      disagreement: false,
+      disagreement_pct: null,
+    };
   }
   if (sources.length === 1) {
-    return { state: "CONFIRMED", resolved_value: sources[0]!.value, disagreement_pct: null };
+    const s = sources[0]!;
+    return {
+      state: "CONFIRMED",
+      resolved_value: s.value,
+      resolved_source_kind: normalizeSourceKind(s.source_kind),
+      resolution_strategy: "single_source",
+      disagreement: false,
+      disagreement_pct: null,
+    };
   }
 
-  // Prefer xlsx sources as the credible pool when any exist
-  const xlsxSources = sources.filter((s) => s.source_kind === "xlsx");
-  const crediblePool = xlsxSources.length > 0 ? xlsxSources : sources;
-  const values = crediblePool.map((s) => s.value);
+  const values = sources.map((s) => s.value);
   const disagreementPct = computeDisagreementPct(values);
 
   if (disagreementPct === null || disagreementPct <= 20) {
+    // All sources agree — average across all (same logic as V1 CONFIRMED path)
     const avg = values.reduce((a, b) => a + b, 0) / values.length;
-    return { state: "CONFIRMED", resolved_value: avg, disagreement_pct: disagreementPct };
+    // Best bucket from full source set for provenance
+    const winner = selectHierarchyWinner(sources);
+    return {
+      state: "CONFIRMED",
+      resolved_value: avg,
+      resolved_source_kind: winner?.bucket ?? null,
+      resolution_strategy: "consensus_average",
+      disagreement: false,
+      disagreement_pct: disagreementPct,
+    };
   }
 
-  return { state: "CONFLICT", resolved_value: null, disagreement_pct: disagreementPct };
+  // CONFLICT — sources disagree. Pick a winner via source hierarchy.
+  // State remains CONFLICT so downstream knows the data is contested.
+  const winner = selectHierarchyWinner(sources);
+  return {
+    state: "CONFLICT",
+    resolved_value: winner?.value ?? null,
+    resolved_source_kind: winner?.bucket ?? null,
+    resolution_strategy: winner != null ? "source_hierarchy" : null,
+    disagreement: true,
+    disagreement_pct: disagreementPct,
+  };
 }
 
 // ─── Source collectors ────────────────────────────────────────────────────────
@@ -249,6 +365,9 @@ function buildInsufficientMap(): FinancialTruthMapV1 {
       metric,
       state: "INSUFFICIENT",
       resolved_value: null,
+      resolved_source_kind: null,
+      resolution_strategy: null,
+      disagreement: false,
       sources: [],
       source_count: 0,
       has_xlsx_source: false,
@@ -308,12 +427,15 @@ function _buildFinancialTruthV1(inputs: FinancialTruthInputs): FinancialTruthMap
     }
 
     // ── 4. Resolve ────────────────────────────────────────────────────────────
-    const { state, resolved_value, disagreement_pct } = resolveV1(sources);
+    const { state, resolved_value, resolved_source_kind, resolution_strategy, disagreement, disagreement_pct } = resolveV2(sources);
 
     map[metric] = {
       metric,
       state,
       resolved_value,
+      resolved_source_kind,
+      resolution_strategy,
+      disagreement,
       sources,
       source_count: sources.length,
       has_xlsx_source: sources.some((s) => s.source_kind === "xlsx"),
@@ -321,7 +443,7 @@ function _buildFinancialTruthV1(inputs: FinancialTruthInputs): FinancialTruthMap
       disagreement_pct,
     };
 
-    dbg(`${metric}: state=${state} resolved=${resolved_value} sources=${sources.length} disagreement=${disagreement_pct?.toFixed(1) ?? "n/a"}%`);
+    dbg(`${metric}: state=${state} resolved=${resolved_value} src_kind=${resolved_source_kind} strategy=${resolution_strategy} sources=${sources.length} disagreement=${disagreement_pct?.toFixed(1) ?? "n/a"}%`);
   }
 
   return map;

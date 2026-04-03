@@ -439,7 +439,15 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				financial_truth: Object.fromEntries(
 					Object.entries(financialTruth).map(([m, r]) => [
 						m,
-						{ state: r.state, resolved_value: r.resolved_value, source_count: r.source_count },
+						{
+							state: r.state,
+							resolved_value: r.resolved_value,
+							resolved_source_kind: r.resolved_source_kind,
+							resolution_strategy: r.resolution_strategy,
+							disagreement: r.disagreement,
+							disagreement_pct: r.disagreement_pct != null ? Math.round(r.disagreement_pct * 10) / 10 : null,
+							source_count: r.source_count,
+						},
 					])
 				),
 				ts: new Date().toISOString(),
@@ -819,7 +827,15 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				financial_truth: Object.fromEntries(
 					Object.entries(financialTruth).map(([m, r]) => [
 						m,
-						{ state: r.state, resolved_value: r.resolved_value, source_count: r.source_count },
+						{
+							state: r.state,
+							resolved_value: r.resolved_value,
+							resolved_source_kind: r.resolved_source_kind,
+							resolution_strategy: r.resolution_strategy,
+							disagreement: r.disagreement,
+							disagreement_pct: r.disagreement_pct != null ? Math.round(r.disagreement_pct * 10) / 10 : null,
+							source_count: r.source_count,
+						},
 					])
 				),
 				ts: new Date().toISOString(),
@@ -1144,7 +1160,15 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			financial_truth: Object.fromEntries(
 				Object.entries(financialTruth).map(([m, r]) => [
 					m,
-					{ state: r.state, resolved_value: r.resolved_value, source_count: r.source_count },
+					{
+						state: r.state,
+						resolved_value: r.resolved_value,
+						resolved_source_kind: r.resolved_source_kind,
+						resolution_strategy: r.resolution_strategy,
+						disagreement: r.disagreement,
+						disagreement_pct: r.disagreement_pct != null ? Math.round(r.disagreement_pct * 10) / 10 : null,
+						source_count: r.source_count,
+					},
 				])
 			),
 			ts: new Date().toISOString(),
@@ -1272,10 +1296,14 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				: (insightSlotInputs.financialStatements?.length ?? 0) > 0,
 			has_cap_table: insightSlotInputs.capTable != null,
 			financial_truth_states: ft ? {
-				arr:           ft.arr?.state ?? null,
-				burn_rate:     ft.burn_rate?.state ?? null,
-				runway_months: ft.runway_months?.state ?? null,
-				cash:          null,
+				revenue:                    ft.revenue?.state ?? null,
+				arr:                        ft.arr?.state ?? null,
+				burn_rate:                  ft.burn_rate?.state ?? null,
+				runway_months:              ft.runway_months?.state ?? null,
+				cash:                       null,
+				revenue_resolved_source_kind: ft.revenue?.resolved_source_kind ?? null,
+				arr_resolved_source_kind:     ft.arr?.resolved_source_kind ?? null,
+				burn_resolved_source_kind:    ft.burn_rate?.resolved_source_kind ?? null,
 			} : null,
 		});
 	} catch (s5Err) {

@@ -22,15 +22,25 @@ export function runContradictionChecker(opts: {
   arr_narrative: number | null;
   arr_structured: number | null;
   contradiction_count: number;
+  // FTRL truth state for ARR. When CONFLICT, missing-evidence-detector already
+  // raises the appropriate flag — skip the narrative-vs-structured check here.
+  // When INSUFFICIENT, arr_structured is null so the check gates out naturally.
+  arr_truth_state: string | null;
 }): EvaluationFlag[] {
   const flags: EvaluationFlag[] = [];
-  const { deal_id, verdict, ors_score, arr_narrative, arr_structured, contradiction_count } = opts;
+  const { deal_id, verdict, ors_score, arr_narrative, arr_structured, contradiction_count, arr_truth_state } = opts;
 
-  // Revenue contradiction: narrative vs structured, divergence > 50%
+  // ARR contradiction: narrative vs structured, divergence > 50%.
+  // Guards:
+  //   1. Both values must be present (INSUFFICIENT → arr_structured null, gates out).
+  //   2. arr_truth_state must not be CONFLICT — if it is, the contradiction is a
+  //      data-quality issue already raised by missing-evidence-detector, not a
+  //      narrative-vs-structured contradiction at the intelligence layer.
   if (
     arr_narrative != null &&
     arr_structured != null &&
-    arr_structured > 0
+    arr_structured > 0 &&
+    arr_truth_state !== "CONFLICT"
   ) {
     const ratio = arr_narrative / arr_structured;
     if (ratio > 2.0 || ratio < 0.5) {

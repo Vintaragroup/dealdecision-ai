@@ -1235,23 +1235,25 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		const ft = insightSlotInputs.financialTruth;
 		const balanceSheet = insightSlotInputs.balanceSheet;
 		const cashFlow = insightSlotInputs.cashFlow;
-		// ── FTRL-backed scalar derivation with pipeline-B fallback ───────────────
-		const arrStructured: number | null =
-			ft?.arr?.resolved_value ??
-			ft?.revenue?.resolved_value ??
-			insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null;
+		// ── FTRL-backed scalar derivation ───────────────────────────────────────
+		// ARR must come ONLY from explicit ARR sources — never from revenue.
+		// Revenue fallback was removed: revenue != ARR. When ARR is absent,
+		// arr_structured = null and downstream consumers treat it as INSUFFICIENT.
+		const arrStructured: number | null = ft?.arr?.resolved_value ?? null;
 		const burnMonthly: number | null =
 			ft?.burn_rate?.resolved_value ?? cashFlow?.derived?.monthly_burn_from_ops ?? null;
 		const runwayMonths: number | null =
 			ft?.runway_months?.resolved_value ?? cashFlow?.derived?.runway_months ?? null;
 		const cashOnHand: number | null = balanceSheet?.derived?.cash_latest ?? null;
-		// arr_narrative: extract the first parseable ARR/MRR dollar figure from deck signals.
-		// Deck claims are the "narrative" source — what the company claims in pitch materials.
-		// Used by the evaluation engine to detect ARR contradiction against structured XLSX data.
-		// Returns null when deck has no ARR mentions or the figure cannot be parsed.
+		// arr_narrative: extract the first parseable ARR dollar figure from deck signals.
+		// Only ARR-labeled mentions are used — MRR mentions are excluded to prevent
+		// MRR values from being compared against structured ARR and firing false contradictions.
+		// Returns null when the deck has no explicit ARR mention or the figure cannot be parsed.
 		const arrNarrative: number | null = (() => {
 			const mentions = insightSlotInputs.deckFinancialSignals?.arr_mrr_mentions ?? [];
 			for (const m of mentions) {
+				// Only consider mentions that explicitly reference ARR or "annual recurring"
+				if (!/\bARR\b|annual\s+recurring/i.test(m.text)) continue;
 				const match = /\$([\d,]+(?:\.\d+)?)\s*([KMBTkmbt]?)/.exec(m.text);
 				if (!match) continue;
 				const raw = parseFloat(match[1]!.replace(/,/g, ""));

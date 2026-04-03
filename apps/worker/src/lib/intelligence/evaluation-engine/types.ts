@@ -84,6 +84,10 @@ export interface EvaluatorInput {
   arr_structured: number | null;   // from financial_facts_v1
   financial_completeness_pct: number;
 
+  // FTRL truth state for ARR — gates contradiction to CONFIRMED only.
+  // CONFLICT ARR is handled by missing-evidence-detector (not contradiction checker).
+  arr_truth_state?: string | null;
+
   // Optional: section-level evidence counts (section_key -> count)
   section_evidence_counts?: Record<string, number>;
 }

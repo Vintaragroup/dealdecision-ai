@@ -74,6 +74,7 @@ export function runEvaluatorPass(input: EvaluatorInput): EvaluatorReport {
       arr_narrative: input.arr_narrative,
       arr_structured: input.arr_structured,
       contradiction_count: input.contradiction_count,
+      arr_truth_state: input.arr_truth_state ?? null,
     }),
     ...runEvidenceCoverageChecker({
       deal_id: input.deal_id,

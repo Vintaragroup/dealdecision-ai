@@ -633,6 +633,8 @@ export async function runIntelligenceStage(
       arr_structured: inputs.arr_structured,
       financial_completeness_pct: inputs.financial_completeness_pct,
       section_evidence_counts: inputs.section_evidence_counts,
+      // FTRL ARR state — gates contradiction check to CONFIRMED ARR only
+      arr_truth_state: inputs.financial_truth_states?.arr ?? null,
     };
 
     const evaluator_report = runEvaluatorPass(evaluatorInput);

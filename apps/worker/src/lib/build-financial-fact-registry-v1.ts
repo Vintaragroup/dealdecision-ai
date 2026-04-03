@@ -382,20 +382,55 @@ export function buildFinancialFactRegistryV1(
   // ── 6. Deck financial signals — low confidence fallback ───────────────────
   if (inputs.deckSignals) {
     const ds = inputs.deckSignals;
+
+    // Helper: find the first parseable mention matching a text predicate.
+    const firstMentionMatch = (
+      mentions: DeckFinancialMention[],
+      predicate: (text: string) => boolean,
+    ): DeckFinancialMention | null => mentions.find((m) => predicate(m.text)) ?? null;
+
     const deckFactGroups: Array<{
       metric_key: string;
       label: string;
-      mentions: DeckFinancialMention[];
+      mention: DeckFinancialMention | null;
       unit: FinancialFactV1["unit"];
     }> = [
-      { metric_key: "revenue",       label: "Revenue (deck)",   mentions: ds.revenue_mentions,   unit: "currency" },
-      { metric_key: "burn_rate",     label: "Burn Rate (deck)", mentions: ds.burn_mentions,       unit: "currency" },
-      { metric_key: "arr",           label: "ARR (deck)",       mentions: ds.arr_mrr_mentions,    unit: "currency" },
+      {
+        metric_key: "revenue",
+        label: "Revenue (deck)",
+        // Skip mentions that overlap with pricing or ARR/MRR language — these
+        // are not canonical revenue disclosures.
+        mention: (() => {
+          const pricingTexts = new Set((ds.pricing_mentions ?? []).map((m) => m.text));
+          const arrMrrTexts  = new Set((ds.arr_mrr_mentions ?? []).map((m) => m.text));
+          return ds.revenue_mentions.find(
+            (m) => !pricingTexts.has(m.text) && !arrMrrTexts.has(m.text),
+          ) ?? null;
+        })(),
+        unit: "currency",
+      },
+      {
+        metric_key: "burn_rate",
+        label: "Burn Rate (deck)",
+        mention: ds.burn_mentions[0] ?? null,
+        unit: "currency",
+      },
+      {
+        metric_key: "arr",
+        label: "ARR (deck)",
+        // Only write an ARR deck fact when the mention text explicitly references
+        // ARR / "annual recurring". Prevents MRR signals ("$381K MRR") from being
+        // stored as arr facts — those belong in the mrr bucket via getDeckValue.
+        mention: firstMentionMatch(
+          ds.arr_mrr_mentions,
+          (t) => /\bARR\b|annual\s+recurring/i.test(t),
+        ),
+        unit: "currency",
+      },
     ];
 
-    for (const { metric_key, label, mentions, unit } of deckFactGroups) {
+    for (const { metric_key, label, mention, unit } of deckFactGroups) {
       // Only produce one deck fact per metric_key (the first mention)
-      const mention = mentions[0];
       if (!mention) continue;
 
       // Skip if higher-confidence data already covers this metric

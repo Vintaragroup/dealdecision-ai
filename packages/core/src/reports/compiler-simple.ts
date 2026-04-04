@@ -1797,7 +1797,7 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
     const revenueFacts = cleanFacts.filter(
       (f) =>
         (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
-        f.unit === 'currency' &&
+        (f.unit === 'currency' || f.unit === 'number') &&
         f.value > 0,
     );
     if (revenueFacts.length > 0 && revenueFacts.every((f) => f.period_type === 'monthly')) {
@@ -1837,16 +1837,22 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
   const allRevenueFacts = cleanFacts.filter(
     (f) =>
       (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
-      f.unit === 'currency' &&
+      (f.unit === 'currency' || f.unit === 'number') &&
       f.value > 0 &&
       f.period_type !== 'monthly',
   );
   const factCandidates = allRevenueFacts.map((f) => buildFactCandidate(f, f === best));
 
   const currentRevenue = structuredSummary?.revenue;
-  const currentConf = typeof currentRevenue?.confidence === 'number' ? currentRevenue.confidence : 0;
 
-  if (!currentRevenue || currentRevenue.value == null || bestConf >= currentConf) {
+  // Financial facts from the structured-extraction pipeline take priority over DPU promoted
+  // facts whenever the financial fact is at least medium confidence.  Low-confidence financial
+  // facts (deck-only extractions) are the only case where a stronger DPU promoted-fact should
+  // win.  DPU promoted-fact confidence scores are on a different scale (LLM extraction certainty)
+  // and must not crowd out confirmed pipeline KPI or XLSX facts with a numeric near-tie.
+  const financialFactWins = !currentRevenue || currentRevenue.value == null || best.confidence !== 'low';
+
+  if (financialFactWins) {
     // Financial fact wins (or no deck value present): set as primary selection.
     structuredSummary.revenue = {
       value: {
@@ -1865,7 +1871,7 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
       ],
     };
   } else {
-    // Deck fact wins on confidence: preserve deck selection, append financial fact candidates.
+    // Deck fact wins (low-confidence financial fact): preserve deck selection, append financial fact candidates.
     if (!structuredSummary.revenue) return;
     const existing = Array.isArray(structuredSummary.revenue.candidates)
       ? structuredSummary.revenue.candidates

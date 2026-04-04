@@ -10,10 +10,13 @@
  *     previously absent from structured_summary (fixed by removing xlsx-only filter).
  *   - WebMax-type divergence: monthly-only XLSX facts must not produce a revenue
  *     headline on either path.
+ *   - StackFactor-type divergence (Fix 10): kpi_tile current revenue must win over
+ *     projected quarterly xlsx facts with ambiguous temporal scope.
  */
 
 import {
   selectCanonicalRevenueFact,
+  isCorruptedFact,
   CANONICAL_REVENUE_KEYS,
   filterCorruptedFacts,
 } from '../select-authoritative-fact';
@@ -75,8 +78,10 @@ describe('selectCanonicalRevenueFact — basic selection', () => {
     expect(selectCanonicalRevenueFact([f])).toBeUndefined();
   });
 
-  test('returns undefined when revenue fact has unit != currency', () => {
-    const f = fact('revenue', 1_000_000, { unit: 'number' });
+  test('returns undefined when revenue fact has unit = percent (non-monetary)', () => {
+    // unit='percent' is not a monetary representation — excluded.
+    // Note: unit='number' IS accepted (kpi_tile revenue facts use 'number'; see Fix 10b).
+    const f = fact('revenue', 1_000_000, { unit: 'percent' });
     expect(selectCanonicalRevenueFact([f])).toBeUndefined();
   });
 
@@ -289,5 +294,219 @@ describe('selectCanonicalRevenueFact — determinism', () => {
     expect(fwd?.fact_id).toBe(rev?.fact_id);
     // xlsx beats pdf_table and deck
     expect(fwd?.source_kind).toBe('xlsx');
+  });
+});
+
+// ─── Guard 5 — denomination period label ─────────────────────────────────────
+
+describe('isCorruptedFact — Guard 5 (denomination period label)', () => {
+  // $000, $0000 etc. are XLSX denomination row markers, not fiscal periods.
+  test('$000 period label is corrupted', () => {
+    const f = fact('revenue', 1_545, { period_label: '$000', period_type: 'unknown' });
+    expect(isCorruptedFact(f).corrupted).toBe(true);
+    expect(isCorruptedFact(f).reason).toBe('invalid_denomination_period');
+  });
+
+  test('$0000 period label is corrupted', () => {
+    const f = fact('revenue', 2_091, { period_label: '$0000', period_type: 'unknown' });
+    expect(isCorruptedFact(f).corrupted).toBe(true);
+  });
+
+  test('$00 period label is corrupted', () => {
+    const f = fact('revenue', 808, { period_label: '$00', period_type: 'unknown' });
+    expect(isCorruptedFact(f).corrupted).toBe(true);
+  });
+
+  test('FY2025 is not corrupted by Guard 5', () => {
+    const f = fact('revenue', 1_500_000, { period_label: 'FY2025' });
+    expect(isCorruptedFact(f).corrupted).toBe(false);
+  });
+
+  test('$USD is not corrupted by Guard 5 (not all zeros)', () => {
+    // Edge case: a hypothetical period label containing a non-zero dollar prefix
+    const f = fact('revenue', 1_000, { period_label: 'Q1 2025' });
+    expect(isCorruptedFact(f).corrupted).toBe(false);
+  });
+});
+
+describe('selectCanonicalRevenueFact — Guard 5 ($000 denomination facts excluded)', () => {
+  test('[Fix 10 / StackFactor] $000 xlsx facts are rejected as corrupted', () => {
+    // These facts come from XLSX denomination rows (values in thousands header)
+    const denom1 = fact('revenue', 541, { period_label: '$000', period_type: 'unknown' });
+    const denom2 = fact('revenue', 1_545, { period_label: '$000', period_type: 'unknown' });
+    const denom3 = fact('revenue', 2_091, { period_label: '$000', period_type: 'unknown' });
+    expect(selectCanonicalRevenueFact([denom1, denom2, denom3])).toBeUndefined();
+  });
+
+  test('[Fix 10 / StackFactor] kpi_tile wins after $000 facts removed', () => {
+    const denom = fact('revenue', 2_091, { period_label: '$000', period_type: 'unknown' });
+    const kpiFact = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+    });
+    const result = selectCanonicalRevenueFact([denom, kpiFact]);
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+});
+
+// ─── Tier A / B / C — StackFactor KPI tile regression ────────────────────────
+
+describe('selectCanonicalRevenueFact — Tier A/B priority (Fix 10 / StackFactor)', () => {
+  // Tier A: xlsx/pdf annual or TTM beats everything.
+  test('[Tier A] xlsx annual beats kpi_tile current', () => {
+    const annual = fact('revenue', 3_337_000, { source_kind: 'xlsx', period_label: 'FY2026', period_type: 'annual' });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile', period_label: 'current', period_type: 'unknown', confidence: 'medium',
+    });
+    const result = selectCanonicalRevenueFact([kpi, annual]);
+    expect(result?.source_kind).toBe('xlsx');
+    expect(result?.value).toBe(3_337_000);
+  });
+
+  test('[Tier A] TTM xlsx beats kpi_tile current', () => {
+    const ttm = fact('revenue', 1_200_000, { source_kind: 'xlsx', period_label: 'TTM', period_type: 'ttm' });
+    const kpi = fact('revenue', 95_000, {
+      source_kind: 'kpi_tile', period_label: 'current', period_type: 'unknown', confidence: 'high',
+    });
+    const result = selectCanonicalRevenueFact([kpi, ttm]);
+    expect(result?.period_type).toBe('ttm');
+    expect(result?.value).toBe(1_200_000);
+  });
+
+  // Tier B: when no annual/TTM facts exist, kpi_tile beats xlsx quarterly/unknown.
+  test('[Fix 10 / StackFactor] kpi_tile current beats xlsx quarterly unknown', () => {
+    // These represent StackFactor's 2Q/3Q/4Q 2026 XLSX projection rows.
+    const q2 = fact('revenue', 4_500, { source_kind: 'xlsx', period_label: '2Q2026', period_type: 'unknown' });
+    const q3 = fact('revenue', 16_000, { source_kind: 'xlsx', period_label: '3Q2026', period_type: 'unknown' });
+    const q4 = fact('revenue', 21_750, { source_kind: 'xlsx', period_label: '4Q2026', period_type: 'unknown' });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile', period_label: 'current', period_type: 'unknown', confidence: 'medium',
+    });
+    const result = selectCanonicalRevenueFact([q2, q3, q4, kpi]);
+    // kpi_tile Tier B wins — no annual/TTM Tier A facts present
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+
+  test('[Fix 10 / StackFactor] kpi_tile beats deck quarterly unknown', () => {
+    const deckQ = deckFact('revenue', 50_000, { period_label: 'Q3 2026', period_type: 'unknown' });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile', period_label: 'current', period_type: 'unknown', confidence: 'medium',
+    });
+    const result = selectCanonicalRevenueFact([deckQ, kpi]);
+    expect(result?.source_kind).toBe('kpi_tile');
+  });
+
+  test('[Fix 10] xlsx annual still beats kpi_tile even when kpi_tile has higher value', () => {
+    // Guard: Tier A must not be overridden by Tier B regardless of value magnitude.
+    const annual = fact('revenue', 800_000, { source_kind: 'xlsx', period_label: 'FY2025', period_type: 'annual' });
+    const kpi = fact('revenue', 999_999, {
+      source_kind: 'kpi_tile', period_label: 'current', period_type: 'unknown', confidence: 'high',
+    });
+    const result = selectCanonicalRevenueFact([kpi, annual]);
+    expect(result?.source_kind).toBe('xlsx');
+    expect(result?.period_type).toBe('annual');
+  });
+
+  test('[Fix 10] pdf_kpi_line current fact is Tier B (wins over xlsx quarterly unknown)', () => {
+    const q4 = fact('revenue', 50_000, { source_kind: 'xlsx', period_label: '4Q2025', period_type: 'unknown' });
+    const pdfKpi = fact('revenue', 30_000, {
+      source_kind: 'pdf_kpi_line', period_label: 'current', period_type: 'unknown', confidence: 'high',
+    });
+    const result = selectCanonicalRevenueFact([q4, pdfKpi]);
+    expect(result?.source_kind).toBe('pdf_kpi_line');
+  });
+
+  // Tier C fallback: when no Tier A or Tier B, use original ranking.
+  test('[Fix 10 / Tier C fallback] xlsx quarterly unknown wins when no Tier B', () => {
+    const q3 = fact('revenue', 16_000, { source_kind: 'xlsx', period_label: '3Q2026', period_type: 'unknown' });
+    const deckRev = deckFact('revenue', 30_000, { period_label: 'current', period_type: 'unknown' });
+    const result = selectCanonicalRevenueFact([q3, deckRev]);
+    // xlsx (source rank 10) beats deck (source rank 1) via Tier C
+    expect(result?.source_kind).toBe('xlsx');
+  });
+
+  test('[Fix 10] projected kpi_tile (tscope=projected) is NOT in Tier B', () => {
+    const projKpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      temporal_scope: 'projected',
+    });
+    const q4 = fact('revenue', 21_750, { source_kind: 'xlsx', period_label: '4Q2026', period_type: 'unknown' });
+    // projected kpi_tile is excluded from Tier B by isProjectedFact; falls through to Tier C
+    const result = selectCanonicalRevenueFact([projKpi, q4]);
+    // Tier C: xlsx wins (kpi_tile is projected and filtered by requireNonProjected)
+    expect(result?.source_kind).toBe('xlsx');
+  });
+});
+
+// ─── Fix 10b: unit='number' kpi_tile inclusion ────────────────────────────────
+describe("selectCanonicalRevenueFact — unit='number' kpi_tile facts (Fix 10b / StackFactor)", () => {
+  test('kpi_tile revenue with unit=number is selected (not filtered out)', () => {
+    const kpiNum = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number', // real StackFactor DB value
+    });
+    const result = selectCanonicalRevenueFact([kpiNum]);
+    expect(result).toBeDefined();
+    expect(result?.value).toBe(23_000);
+    expect(result?.source_kind).toBe('kpi_tile');
+  });
+
+  test('kpi_tile unit=number beats xlsx quarterly unknown (Tier B wins over Tier C)', () => {
+    const kpiNum = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+    });
+    const q4 = fact('revenue', 21_750, { source_kind: 'xlsx', period_label: '4Q2026', period_type: 'unknown' });
+    const result = selectCanonicalRevenueFact([kpiNum, q4]);
+    // Tier B: kpi_tile selected even though unit=number
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+
+  test('kpi_tile unit=number beats large xlsx col_X noise facts (StackFactor regression)', () => {
+    const kpiNum = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+    });
+    // Simulates col_M "Sales" salary-row noise — high confidence but not Tier B
+    const colNoise = fact('revenue', 145_000, {
+      source_kind: 'xlsx',
+      period_label: 'col_M',
+      period_type: 'unknown',
+      confidence: 'high',
+    });
+    const result = selectCanonicalRevenueFact([kpiNum, colNoise]);
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+
+  test('unit=number fact is NOT selected when isProjectedFact is true', () => {
+    const projNum = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+      temporal_scope: 'projected', // projected kpi_tile — excluded from Tier B
+    });
+    const result = selectCanonicalRevenueFact([projNum]);
+    // Only fact is projected kpi_tile — Tier B and Tier C (requireNonProjected) both fail
+    expect(result).toBeUndefined();
   });
 });

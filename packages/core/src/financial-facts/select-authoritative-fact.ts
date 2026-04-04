@@ -85,6 +85,15 @@ export function isCorruptedFact(fact: FinancialFactV1): CorruptionCheckResult {
     return { corrupted: true, reason: 'invalid_column_index_period' };
   }
 
+  // Guard 5 — dollar-denomination row label (XLSX header artefact)
+  // When an XLSX parser reads a denomination header row ("$000", "$0000", meaning
+  // "values in this table are in thousands") as a period cell, the resulting fact
+  // has a period_label that is a dollar sign followed by zeros.
+  // No valid financial period is named "$000" or "$0000".
+  if (/^\$0+$/.test(fact.period_label)) {
+    return { corrupted: true, reason: 'invalid_denomination_period' };
+  }
+
   return { corrupted: false };
 }
 
@@ -298,7 +307,10 @@ export function selectCanonicalRevenueFact(
   const revenueFacts = cleanFacts.filter(
     (f) =>
       (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
-      f.unit === 'currency' &&
+      // Accept both 'currency' and 'number' units: kpi_tile revenue facts are stored
+      // with unit='number' (monetary value, no explicit currency tag) but are canonical
+      // revenue metrics (revenue/arr/mrr are intrinsically monetary regardless of tag).
+      (f.unit === 'currency' || f.unit === 'number') &&
       f.value > 0,
   );
 
@@ -323,8 +335,44 @@ export function selectCanonicalRevenueFact(
     return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], revenueFacts, { requireNonProjected: true });
   }
 
-  // Only select non-projected facts: projection-only deals must not leak a
-  // projected value into the current-revenue headline.
+  // ── Three-tier selection for non-monthly revenue facts ──────────────────────
+  //
+  // Tier A — confirmed income-statement-grade data (annual or TTM period_type).
+  //   These are the highest-quality revenue facts: a completed fiscal year or trailing-
+  //   twelve-month figure from an XLSX income statement or PDF financial table.
+  //   When any Tier A non-projected fact exists, it is always the canonical selection.
+  const tierAFacts = nonMonthlyFacts.filter(
+    (f) => f.period_type === 'annual' || f.period_type === 'ttm',
+  );
+  if (tierAFacts.length > 0) {
+    const tierAResult = selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], tierAFacts, { requireNonProjected: true });
+    if (tierAResult != null) return tierAResult;
+  }
+
+  // Tier B — current-signal KPI facts (kpi_tile, pdf_kpi_line).
+  //   When no confirmed annual/TTM income-statement fact exists, a non-projected KPI
+  //   tile is the most reliable "actual current traction" signal: the company itself
+  //   reported this as their live key performance indicator, not an ambiguous model
+  //   projection. A quarterly or unknown-period XLSX entry with unclear temporal scope
+  //   must NOT outrank a directly measured KPI tile.
+  //
+  //   This pass only fires when Tier A is empty, ensuring it never overrides a
+  //   confirmed annual income-statement figure.
+  const tierBFacts = nonMonthlyFacts.filter(
+    (f) =>
+      (f.source_kind === 'kpi_tile' || f.source_kind === 'pdf_kpi_line') &&
+      !isProjectedFact(f) &&
+      !isProvisionalFact(f),
+  );
+  if (tierBFacts.length > 0) {
+    const tierBResult = selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], tierBFacts, { requireNonProjected: true });
+    if (tierBResult != null) return tierBResult;
+  }
+
+  // Tier C — best available from all remaining non-monthly facts.
+  //   Fallback to the original source/confidence/period ranking across everything.
+  //   Only select non-projected facts: projection-only deals must not leak a
+  //   projected value into the current-revenue headline.
   return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], nonMonthlyFacts, { requireNonProjected: true });
 }
 

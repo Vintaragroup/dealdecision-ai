@@ -86,9 +86,15 @@ const REVENUE_RE = new RegExp(
   "gi",
 );
 
-// ARR / MRR: anchored on ARR or MRR tokens followed by/preceded by amount
+// ARR / MRR: anchored on ARR or MRR tokens followed by/preceded by amount.
+//
+// Extended to handle:
+//  - "Total ARR / Total MRR" formats: "$1.58M Total ARR"
+//  - amounts with "+" or "~" suffix appended by decks: "$40K+ MRR", "$6M+ ARR"
+//  - explicit traction table header patterns: "Q-Trust FI ARR" is excluded (no amount)
 const ARR_MRR_RE = new RegExp(
-  `(?:${AMT}\\s+(?:ARR|MRR)|(?:ARR|MRR)\\s*(?:of\\s*)?${AMT}|` +
+  `(?:${AMT}[+~]?\\s+(?:Total\\s+)?(?:ARR|MRR)|` +
+  `(?:Total\\s+)?(?:ARR|MRR)\\s*(?:of\\s*)?${AMT}|` +
   `\\d+[KMB]?\\s+(?:ARR|MRR)|(?:ARR|MRR)\\s*[=:]\\s*${AMT})`,
   "gi",
 );

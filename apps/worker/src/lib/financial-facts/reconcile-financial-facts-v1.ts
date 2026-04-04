@@ -50,10 +50,20 @@ function dbg(msg: string, data?: unknown): void {
  * Projected facts should NOT be used as inputs for mathematical derivations
  * (e.g. runway from cash + burn) because the derived fact would silently
  * inherit projection uncertainty without marking it as such in the output.
+ *
+ * Two detection paths:
+ *   1. Explicit: temporal_scope = "projected" | "scenario" | "target"
+ *   2. Period label heuristic: ordinal year labels ("Year N") are always future
+ *      projections in XLSX financial models.  This catches derived facts that
+ *      did not propagate temporal_scope from their projected source fact.
  */
 function isProjectedFact(f: FinancialFactV1): boolean {
   const scope = f.temporal_scope ?? "unknown";
-  return scope === "projected" || scope === "scenario" || scope === "target";
+  if (scope === "projected" || scope === "scenario" || scope === "target") return true;
+  // Period label heuristic: ordinal year labels ("Year 1", "Year 12", etc.)
+  // always represent future projections in XLSX financial models.
+  if (/^Year\s+\d+$/i.test((f.period_label ?? "").trim())) return true;
+  return false;
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -434,6 +444,9 @@ export function reconcileFinancialFactsV1(
           derivation_rule: "burn_rate_from_cash_outflow_operating",
           semantic_family: "liquidity",
           semantic_role: "derived",
+          // Propagate projected scope: even though Rule 4 allows projected inputs,
+          // the derived fact must be tagged so downstream selectors can filter it.
+          ...(isProjectedFact(coFact) ? { temporal_scope: "projected" as const } : {}),
         };
 
         derived.push(derivedFact);
@@ -488,6 +501,8 @@ export function reconcileFinancialFactsV1(
                 derivation_rule: "runway_months_from_cash_and_outflow",
                 semantic_family: "liquidity",
                 semantic_role: "derived",
+                // Propagate projected scope from either the outflow or cash source.
+                ...(isProjectedFact(coFact) || isProjectedFact(cashFact) ? { temporal_scope: "projected" as const } : {}),
               };
               derived.push(runwayFact);
               dbg("Rule 4b derived runway_months", { period: coFact.period_label, value: runwayFact.value });

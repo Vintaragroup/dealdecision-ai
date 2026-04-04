@@ -148,6 +148,11 @@ const CROSS_SOURCE_RANK: Record<CrossSourceReconciliationStatus, number> = {
 export function isProjectedFact(fact: FinancialFactV1): boolean {
   const scope = fact.temporal_scope;
   if (scope === 'projected' || scope === 'scenario' || scope === 'target') return true;
+  // Ordinal year labels ("Year 1", "Year 12", etc.) are always future projections
+  // in XLSX financial models, even when temporal_scope was not propagated (e.g. on
+  // derived facts that lost provenance context after DB round-trip).
+  if (/^Year\s+\d+$/i.test((fact.period_label ?? '').trim())) return true;
+  // Calendar year: "FY2027" or "2027" when current year is 2026.
   // Use digit-boundary lookahead/lookbehind so "FY2027" matches but "2024-2027" doesn't
   // spuriously match on "2024" when the current year is 2026.
   const yr = fact.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
@@ -306,7 +311,7 @@ export function selectCanonicalRevenueFact(
 
   // Only select non-projected facts: projection-only deals must not leak a
   // projected value into the current-revenue headline.
-  return selectAuthoritativeFact(CANONICAL_REVENUE_KEYS, nonMonthlyFacts, { requireNonProjected: true });
+  return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], nonMonthlyFacts, { requireNonProjected: true });
 }
 
 // ─── Alternative fact discovery ───────────────────────────────────────────────

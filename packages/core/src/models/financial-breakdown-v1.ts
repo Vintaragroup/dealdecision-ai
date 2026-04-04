@@ -24,7 +24,9 @@ import {
   selectAlternativeFact,
   filterCorruptedFacts,
   isProjectedFact,
+  isProvisionalFact,
   isCorruptedFact,
+  selectCanonicalRevenueFact,
 } from '../financial-facts/select-authoritative-fact.js';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
@@ -227,6 +229,52 @@ const PROJECTION_REVENUE_KEYS = ['revenue', 'arr', 'mrr'];
 const PROJECTION_EXPENSE_KEYS = ['operating_expense', 'opex', 'total_expenses', 'total_costs'];
 const PROJECTION_EBITDA_KEYS = ['ebitda', 'net_income', 'operating_income'];
 
+// ─── Current-state fact selection ─────────────────────────────────────────────
+
+/**
+ * Select the best current-state fact for a headline field (burn_rate, runway, cash).
+ *
+ * Applies a strict priority ladder to prevent projected or provisional facts from
+ * headlining current_state fields when better alternatives exist:
+ *
+ *   Pass 1 — Non-projected + non-provisional (explicit measured truth, highest quality)
+ *   Pass 2 — Non-projected + is_derived (workbook-derived proxy beats deck-low-conf)
+ *   Pass 3 — Non-projected + any (deck-low-conf is last resort when nothing else exists)
+ *   → undefined   when ALL facts for these keys are projected (StackFactor guard)
+ *
+ * Why three passes?
+ * - Pass 2 exists so a workbook-derived burn proxy (source_kind='unknown', is_derived=true)
+ *   beats a deck+low-confidence $250/mo pricing artifact (DealDecision guard).
+ * - Pass 3 retains deck-low-conf as a last resort so coverage is not silently dropped.
+ *
+ * @param metricKeys  The metric keys to select from (e.g. ['burn_rate', 'monthly_burn']).
+ * @param cleanFacts  Already corruption-filtered FinancialFactV1[].
+ */
+function selectCurrentStateFact(
+  metricKeys: string[],
+  cleanFacts: FinancialFactV1[],
+): FinancialFactV1 | undefined {
+  const nonProjected = cleanFacts.filter((f) => !isProjectedFact(f));
+  if (!nonProjected.some((f) => metricKeys.includes(f.metric_key))) return undefined;
+
+  // Pass 1: non-projected, non-provisional (explicit, structured truth)
+  const pass1 = selectAuthoritativeFact(
+    metricKeys,
+    nonProjected.filter((f) => !isProvisionalFact(f)),
+  );
+  if (pass1) return pass1;
+
+  // Pass 2: non-projected, derived workbook proxy (beats deck-low-conf)
+  const pass2 = selectAuthoritativeFact(
+    metricKeys,
+    nonProjected.filter((f) => f.is_derived === true),
+  );
+  if (pass2) return pass2;
+
+  // Pass 3: any non-projected fact (deck-low-conf only option)
+  return selectAuthoritativeFact(metricKeys, nonProjected);
+}
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function toMetricPoint(f: FinancialFactV1, selection_reason?: string | null): FinancialMetricPoint {
@@ -389,17 +437,39 @@ function _build(input: {
 
   // ── Section 1: Current Financial State ──────────────────────────────────
 
-  const revFact = selectAuthoritativeFact(['revenue', 'arr', 'mrr'], facts, { requireNonProjected: true });
-  const burnFact = selectAuthoritativeFact(['burn_rate', 'monthly_burn', 'net_burn'], facts);
-  const runwayFact = selectAuthoritativeFact(['runway_months', 'runway'], facts);
-  const cashFact = selectAuthoritativeFact(['cash', 'cash_on_hand', 'cash_and_equivalents'], facts);
+  // Canonical revenue selection: uses the shared selectCanonicalRevenueFact selector
+  // (defined in select-authoritative-fact.ts) so this path always agrees with
+  // structured_summary.revenue, which is populated by injectCanonicalRevenueIntoStructuredSummary.
+  const revFact = selectCanonicalRevenueFact(rawFacts);
+
+  // Current-state burn/runway/cash: use selectCurrentStateFact to enforce the
+  // three-pass priority ladder (non-projected > non-provisional > any non-projected).
+  // Projected facts are NEVER selected as current_state headline values (StackFactor guard).
+  const BURN_KEYS = ['burn_rate', 'monthly_burn', 'net_burn'];
+  const RUNWAY_KEYS = ['runway_months', 'runway'];
+  const CASH_KEYS = ['cash', 'cash_on_hand', 'cash_and_equivalents'];
+
+  const burnFact = selectCurrentStateFact(BURN_KEYS, facts);
+  const runwayFact = selectCurrentStateFact(RUNWAY_KEYS, facts);
+  const cashFact = selectCurrentStateFact(CASH_KEYS, facts);
+
+  // When no non-projected burn/runway exists, surface the best projected value
+  // as an alternative (with selection_reason='projected_only') so the existence of
+  // forward-looking data is not silently dropped from the report.
+  const projectedBurnFact = burnFact == null
+    ? selectAuthoritativeFact(BURN_KEYS, facts, { requireProjected: true })
+    : null;
+  const projectedRunwayFact = runwayFact == null
+    ? selectAuthoritativeFact(RUNWAY_KEYS, facts, { requireProjected: true })
+    : null;
+
   const grossMarginFact = selectAuthoritativeFact(['gross_margin', 'gross_margin_pct', 'gross_margin_percent'], facts, { requireNonProjected: true });
 
   // ── Phase 2: Alternative fact discovery ────────────────────────────────────
 
   // Alternative burn: surface workbook-derived proxy when primary is deck/low-conf.
   const alternativeBurnFact = selectAlternativeFact(
-    ['burn_rate', 'monthly_burn', 'net_burn'],
+    BURN_KEYS,
     facts,
     burnFact,
   );
@@ -407,9 +477,12 @@ function _build(input: {
   const burnIsWeak =
     burnFact != null &&
     (burnFact.source_kind === 'deck' || burnFact.confidence === 'low' || burnFact.is_derived === true);
+  // Selection reason reflects whether the primary is deck-provisional or workbook-derived.
   const burnPrimarySelectionReason =
     burnIsWeak && alternativeBurnFact != null
-      ? 'Deck-sourced burn rate (low confidence). Workbook-derived operating proxy available — see alternative_burn_fact.'
+      ? burnFact!.source_kind === 'deck'
+        ? 'Deck-sourced burn rate (low confidence). Workbook-derived operating proxy available — see alternative_burn_fact.'
+        : 'Workbook-derived burn proxy. Alternative estimate available — see alternative_burn_fact.'
       : null;
   const burnAltSelectionReason =
     alternativeBurnFact != null
@@ -734,11 +807,20 @@ function _build(input: {
     },
     burn_runway: {
       monthly_burn: burnFact ? toMetricPoint(burnFact, burnPrimarySelectionReason) : undefined,
-      // Phase 2: alternative burn when primary is weak (deck-only / low-confidence).
+      // Phase 2 / Fix #7: alternative burn slot has two distinct use-cases:
+      //   (a) primary is provisional (deck/derived) — surface the workbook alternative
+      //   (b) no non-projected burn exists — surface the projected fact as projected_only
+      //       so the data is not silently dropped, but is clearly labeled.
       alternative_burn_fact: alternativeBurnFact
         ? toMetricPoint(alternativeBurnFact, burnAltSelectionReason)
-        : undefined,
+        : projectedBurnFact
+          ? toMetricPoint(projectedBurnFact, 'projected_only')
+          : undefined,
       runway_months: runwayFact ? toMetricPoint(runwayFact) : undefined,
+      // Fix #7: when no non-projected runway exists, surface the projected runway as projected_only.
+      ...(runwayFact == null && projectedRunwayFact != null
+        ? { runway_months: toMetricPoint(projectedRunwayFact, 'projected_only') }
+        : {}),
       cash: cashFact ? toMetricPoint(cashFact) : undefined,
       summary: burnRunwaySummary,
       confidence: burnRunwayConf,

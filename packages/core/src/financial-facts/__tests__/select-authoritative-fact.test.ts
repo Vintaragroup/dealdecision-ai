@@ -158,6 +158,50 @@ describe('isCorruptedFact', () => {
       expect(isCorruptedFact(f).corrupted).toBe(false);
     });
   });
+
+  // ── Guard 4 — column-index period label ─────────────────────────────────
+
+  describe('column-index period label guard (Guard 4)', () => {
+    test.each([
+      ['col_M', 13715.34],
+      ['col_A', 5000],
+      ['col_Z', 9999],
+      ['col_13', 7500],
+      ['column_4', 1000],
+    ] as const)('period_label=%s → corrupted with reason invalid_column_index_period', (label, value) => {
+      const f = fact('revenue', value, { period_label: label, period_type: 'unknown' });
+      expect(isCorruptedFact(f).corrupted).toBe(true);
+      expect(isCorruptedFact(f).reason).toBe('invalid_column_index_period');
+    });
+
+    test('col_M fact is removed by filterCorruptedFacts', () => {
+      const good = fact('revenue', 461_000, { period_label: '2026', period_type: 'annual' });
+      const bad = fact('revenue', 13_715, { period_label: 'col_M', period_type: 'unknown' });
+      expect(filterCorruptedFacts([good, bad])).toEqual([good]);
+    });
+
+    test('selectAuthoritativeFact never returns a col_M fact', () => {
+      const colFact = fact('revenue', 13_715, { period_label: 'col_M', period_type: 'unknown' });
+      expect(selectAuthoritativeFact('revenue', [colFact])).toBeUndefined();
+    });
+
+    test('col_M is rejected even when it is the only candidate', () => {
+      const f = fact('revenue', 99_000, { period_label: 'col_M', period_type: 'unknown' });
+      expect(selectAuthoritativeFact(['revenue', 'arr', 'mrr'], [f])).toBeUndefined();
+    });
+
+    // Negative: valid labels must NOT be flagged as column-index artefacts
+    test.each([
+      ['current', 500_000],
+      ['FY2024', 1_000_000],
+      ['2026', 3_337_000],
+      ['TTM', 800_000],
+      ['September', 8_000],
+    ] as const)('valid period_label=%s is NOT flagged as column-index', (label, value) => {
+      const f = fact('revenue', value, { period_label: label });
+      expect(isCorruptedFact(f).reason).not.toBe('invalid_column_index_period');
+    });
+  });
 });
 
 // ─── selectAuthoritativeFact: corrupted data rejection ───────────────────────

@@ -15,6 +15,8 @@ import {
   filterCorruptedFacts,
   isCorruptedFact,
   isProjectedFact,
+  selectCanonicalRevenueFact,
+  CANONICAL_REVENUE_KEYS,
 } from '../financial-facts/select-authoritative-fact.js';
 import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
 import { inferStageExpectationsProfileV1, type StageExpectationsProfileV1 } from '../models/stage-expectations-profile.js';
@@ -1774,56 +1776,78 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
  * All other xlsx revenue candidates are preserved in the candidates list for
  * audit trails. Deck-derived candidates keep their existing selected=false state.
  */
-function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financialFacts: FinancialFactV1[]): void {
-  const REVENUE_KEYS = ['revenue', 'arr', 'mrr'];
+/**
+ * Injects the canonical revenue FinancialFactV1 (any source kind) into structured_summary.revenue.
+ *
+ * Uses selectCanonicalRevenueFact — the same selector as financial_breakdown_v1.current_state.revenue —
+ * so both report paths always reflect the same underlying fact.
+ *
+ * Replaces the former injectXlsxRevenueIntoStructuredSummary which only considered xlsx-sourced
+ * facts (source_kind === 'xlsx'). The removed filter was the root cause of the Qredible divergence:
+ * PDF-extracted FinancialFactV1 records (source_kind='pdf_table') were visible in financial_breakdown
+ * but not in structured_summary, causing scoring to miss confirmed revenue data.
+ */
+function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, financialFacts: FinancialFactV1[]): void {
+  // Use the canonical selector — all source kinds, monthly guard included.
+  const best = selectCanonicalRevenueFact(financialFacts);
 
-  // Strip corrupted facts before any consideration.
-  const cleanFacts = filterCorruptedFacts(financialFacts);
-
-  // Collect all xlsx-sourced revenue facts with valid positive currency values.
-  const xlsxRevenue = cleanFacts.filter(
-    (f) =>
-      REVENUE_KEYS.includes(f.metric_key) &&
-      f.source_kind === 'xlsx' &&
-      f.unit === 'currency' &&
-      f.value > 0
-  );
-  if (xlsxRevenue.length === 0) return;
+  if (best == null) {
+    // No canonical selection — check if monthly-only case to surface the signal.
+    const cleanFacts = filterCorruptedFacts(financialFacts);
+    const revenueFacts = cleanFacts.filter(
+      (f) =>
+        (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
+        f.unit === 'currency' &&
+        f.value > 0,
+    );
+    if (revenueFacts.length > 0 && revenueFacts.every((f) => f.period_type === 'monthly')) {
+      if (structuredSummary.revenue == null) {
+        structuredSummary.revenue = { selection_reason: 'monthly_only' };
+      } else if (structuredSummary.revenue.value == null) {
+        structuredSummary.revenue = { ...structuredSummary.revenue, selection_reason: 'monthly_only' };
+      }
+    }
+    return;
+  }
 
   const confidenceNum = (c: FinancialFactV1['confidence']): number =>
     c === 'high' ? 0.85 : c === 'medium' ? 0.65 : 0.45;
 
-  // Authoritative selection: prefer realized over projected, then by rank.
-  const best = selectAuthoritativeFact(REVENUE_KEYS, xlsxRevenue, { requireNonProjected: true })
-    ?? selectAuthoritativeFact(REVENUE_KEYS, xlsxRevenue);
-
-  if (!best) return;
   const bestConf = confidenceNum(best.confidence);
 
-  const buildXlsxCandidate = (f: FinancialFactV1, selected: boolean) => {
+  // Build a candidate record for any non-corrupted, positive-value revenue fact.
+  const buildFactCandidate = (f: FinancialFactV1, selected: boolean) => {
     const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
     return {
       selected,
       score: confidenceNum(f.confidence),
-      scope: 'company_financials_table',
+      scope: f.source_kind === 'xlsx' ? 'company_financials_table' : 'company_financials',
       subtype: isProjectedFact(f) ? 'forecast' : 'annual',
       year: yearMatch ? Number(yearMatch[1]) : null,
       value_raw: formatUsdShort(f.value),
       amount: f.value,
       currency: f.currency ?? 'USD',
       confidence: confidenceNum(f.confidence),
-      sources: [{ kind: 'xlsx', document_id: f.document_id, metric_key: f.metric_key, period_label: f.period_label }],
+      sources: [{ kind: f.source_kind, document_id: f.document_id, metric_key: f.metric_key, period_label: f.period_label }],
     };
   };
 
-  // Mark the authoritative selection; all other xlsx candidates are shown as alternatives.
-  const xlsxCandidates = xlsxRevenue.map((f) => buildXlsxCandidate(f, f === best));
+  // Collect all non-corrupted, non-monthly revenue facts for the candidate list.
+  const cleanFacts = filterCorruptedFacts(financialFacts);
+  const allRevenueFacts = cleanFacts.filter(
+    (f) =>
+      (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
+      f.unit === 'currency' &&
+      f.value > 0 &&
+      f.period_type !== 'monthly',
+  );
+  const factCandidates = allRevenueFacts.map((f) => buildFactCandidate(f, f === best));
 
   const currentRevenue = structuredSummary?.revenue;
   const currentConf = typeof currentRevenue?.confidence === 'number' ? currentRevenue.confidence : 0;
 
   if (!currentRevenue || currentRevenue.value == null || bestConf >= currentConf) {
-    // XLSX fact wins: use it as the primary selection, keep existing deck candidates for audit.
+    // Financial fact wins (or no deck value present): set as primary selection.
     structuredSummary.revenue = {
       value: {
         amount: best.value,
@@ -1832,21 +1856,21 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
         raw: formatUsdShort(best.value),
       },
       confidence: bestConf,
-      sources: [{ kind: 'xlsx', document_id: best.document_id, metric_key: best.metric_key, period_label: best.period_label }],
+      sources: [{ kind: best.source_kind, document_id: best.document_id, metric_key: best.metric_key, period_label: best.period_label }],
       label: best.period_label ?? null,
-      selection_reason: 'xlsx_financial_fact',
+      selection_reason: best.source_kind === 'xlsx' ? 'xlsx_financial_fact' : 'financial_fact',
       candidates: [
-        ...xlsxCandidates,
+        ...factCandidates,
         ...(Array.isArray(currentRevenue?.candidates) ? currentRevenue.candidates.map((c: any) => ({ ...c, selected: false })) : []),
       ],
     };
   } else {
-    // Deck fact wins on confidence: preserve deck selection but append xlsx candidates.
+    // Deck fact wins on confidence: preserve deck selection, append financial fact candidates.
     if (!structuredSummary.revenue) return;
     const existing = Array.isArray(structuredSummary.revenue.candidates)
       ? structuredSummary.revenue.candidates
       : [];
-    structuredSummary.revenue.candidates = [...existing, ...xlsxCandidates.map((c) => ({ ...c, selected: false }))];
+    structuredSummary.revenue.candidates = [...existing, ...factCandidates.map((c) => ({ ...c, selected: false }))];
   }
 }
 
@@ -1893,9 +1917,9 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 	const base = compileDIOToReport(dio);
   const structuredSummary = buildStructuredSummary(dio, scoreExplanation, opts?.promotedFacts ?? undefined);
 
-  // Inject XLSX-derived revenue facts before revenue display string is computed.
+  // Inject canonical revenue fact (all source kinds) before revenue display string is computed.
   if (opts?.financialFacts && opts.financialFacts.length > 0) {
-    injectXlsxRevenueIntoStructuredSummary(structuredSummary, opts.financialFacts);
+    injectCanonicalRevenueIntoStructuredSummary(structuredSummary, opts.financialFacts);
   }
 
   const revenueDisplay = revenueDisplayFromStructuredSummary(structuredSummary) ?? revenueDisplayFromPromotedFacts(opts?.promotedFacts);
@@ -2063,6 +2087,44 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     financial_breakdown_v1: financialBreakdown,
   });
 
+  // ── Revenue path convergence guard ─────────────────────────────────────────
+  // Both structured_summary.revenue and financial_breakdown_v1.current_state.revenue
+  // must select the same canonical revenue value.  If they diverge after injection,
+  // back-fill structured_summary from the breakdown (the financially richer path) and
+  // record a diagnostic so test assertions and future code reviews can detect regressions.
+  const ssRevenueAmount: number | null = (structuredSummary.revenue?.value as any)?.amount ?? null;
+  const bdRevenueAmount: number | null = financialBreakdown.current_state.revenue?.value ?? null;
+  const revenuePathsConverged =
+    ssRevenueAmount === bdRevenueAmount ||
+    (ssRevenueAmount == null && bdRevenueAmount == null);
+
+  if (!revenuePathsConverged && bdRevenueAmount != null) {
+    // Financial breakdown has a canonical fact that structured_summary missed.
+    // Back-fill so scoring sees the same value as the display layer.
+    const bdRev = financialBreakdown.current_state.revenue!;
+    const bdConf = bdRev.confidence === 'high' ? 0.85 : bdRev.confidence === 'medium' ? 0.65 : 0.45;
+    structuredSummary.revenue = {
+      ...(structuredSummary.revenue ?? {}),
+      value: {
+        amount: bdRevenueAmount,
+        currency: bdRev.currency ?? 'USD',
+        period: bdRev.period_label ?? null,
+        raw: formatUsdShort(bdRevenueAmount),
+      },
+      confidence: bdConf,
+      sources: [{ kind: bdRev.source_kind, period_label: bdRev.period_label }],
+      label: bdRev.period_label ?? null,
+      selection_reason: 'financial_fact_backfill',
+    };
+  }
+
+  const revenueConvergenceDiagnostic = {
+    converged: revenuePathsConverged || (!revenuePathsConverged && bdRevenueAmount != null),
+    structured_summary_amount_before_guard: ssRevenueAmount,
+    financial_breakdown_amount: bdRevenueAmount,
+    backfill_applied: !revenuePathsConverged && bdRevenueAmount != null,
+  };
+
 	return {
 		...base,
     funding_stage_v1: fundingStage,
@@ -2083,6 +2145,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 		metadata: {
 			...(base as any).metadata,
 			score_explanation: scoreExplanationAugmented,
+      revenue_convergence: revenueConvergenceDiagnostic,
 		},
 	};
 }

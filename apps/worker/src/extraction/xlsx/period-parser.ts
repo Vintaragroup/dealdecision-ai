@@ -271,6 +271,57 @@ export function parsePeriodLabel(raw: string): PeriodInfo {
     }
   }
 
+  // ── 13. Named month: "January", "February", …, "December" / "Jan", "Feb" ─
+  // Full and three-letter month abbreviations as standalone tokens.
+  // These appear as column headers in monthly cash-flow models.  They carry
+  // no calendar-year information and are classified as monthly granularity.
+  {
+    if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*$/i.test(s)) {
+      return {
+        normalized: s,
+        period_type: "monthly",
+        year: null,
+        quarter: null,
+        is_projected: false,
+        scope_context: "",
+      };
+    }
+  }
+
+  // ── 14. Named month + 4-digit year: "Sep 2026", "October 2027" ───────────
+  {
+    const m = /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\s+(\d{4})$/i.exec(s);
+    if (m) {
+      const year = Number(m[2]);
+      if (year >= 2000 && year <= 2100) {
+        return {
+          normalized: s,
+          period_type: "monthly",
+          year,
+          quarter: null,
+          is_projected: false,
+          scope_context: "",
+        };
+      }
+    }
+  }
+
+  // ── 15. "Month 1", "Month 3", … "Month 12" ───────────────────────────────
+  // Ordinal month headers used in rolling-model cash-flow sheets where a
+  // calendar date is not specified (e.g. 12-month operational model).
+  {
+    if (/^month\s+\d{1,2}$/i.test(s)) {
+      return {
+        normalized: s,
+        period_type: "monthly",
+        year: null,
+        quarter: null,
+        is_projected: false,
+        scope_context: "",
+      };
+    }
+  }
+
   // ── Fallback ──────────────────────────────────────────────────────────────
   return { ...UNKNOWN_PERIOD, normalized: s };
 }

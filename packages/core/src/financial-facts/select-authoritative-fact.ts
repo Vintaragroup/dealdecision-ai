@@ -72,6 +72,19 @@ export function isCorruptedFact(fact: FinancialFactV1): CorruptionCheckResult {
     }
   }
 
+  // Guard 4 — column-index period label (spreadsheet coordinate artefact)
+  // When the XLSX extractor uses Excel column letters or positional indices as
+  // period headers (e.g. "col_A", "col_M", "col_Z", "col_13", "column_4"), the
+  // resulting fact has no meaningful temporal scope and must be rejected.
+  // No valid financial period is named "col_M" or "column_4".
+  if (
+    /^col_[A-Za-z]+$/i.test(fact.period_label) ||
+    /^col_\d+$/i.test(fact.period_label) ||
+    /^column_\d+$/i.test(fact.period_label)
+  ) {
+    return { corrupted: true, reason: 'invalid_column_index_period' };
+  }
+
   return { corrupted: false };
 }
 
@@ -139,6 +152,28 @@ export function isProjectedFact(fact: FinancialFactV1): boolean {
   // spuriously match on "2024" when the current year is 2026.
   const yr = fact.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
   return yr != null && Number(yr[1]) > new Date().getFullYear();
+}
+
+/**
+ * Returns true when the fact is provisional — i.e. a derived proxy or a
+ * deck-sourced low-confidence claim.
+ *
+ * Provisional facts are not "current-state headline quality". When selecting
+ * current_state fields (burn_rate, runway, cash), non-provisional facts are
+ * always preferred. Provisional facts are still selectedwhen they are the only
+ * available option.
+ *
+ * Provisional signals:
+ *   - `is_derived: true`  — derived via a calculation rule, not directly stated
+ *   - `source_kind === 'deck' && confidence === 'low'`  — unverified deck claim
+ *
+ * Note: `isProjectedFact` is a distinct guard applied before this one.
+ */
+export function isProvisionalFact(fact: FinancialFactV1): boolean {
+  return (
+    fact.is_derived === true ||
+    (fact.source_kind === 'deck' && fact.confidence === 'low')
+  );
 }
 
 // ─── Composite rank score ─────────────────────────────────────────────────────
@@ -215,6 +250,63 @@ export function selectAuthoritativeFact(
  */
 export function filterCorruptedFacts(facts: FinancialFactV1[]): FinancialFactV1[] {
   return facts.filter((f) => !isCorruptedFact(f).corrupted);
+}
+
+// ─── Canonical revenue-fact selection ────────────────────────────────────────
+
+/**
+ * The ordered set of metric keys that represent current-state company revenue.
+ * Used by both report paths to guarantee selection convergence.
+ */
+export const CANONICAL_REVENUE_KEYS: readonly string[] = ['revenue', 'arr', 'mrr'];
+
+/**
+ * Selects the single canonical current-state revenue FinancialFactV1 for a deal.
+ *
+ * This is the **shared selector** used by BOTH:
+ *   - `financial_breakdown_v1.current_state.revenue`  (via buildFinancialBreakdownV1)
+ *   - `structured_summary.revenue`  (via injectCanonicalRevenueIntoStructuredSummary)
+ *
+ * Selection contract (applied in order):
+ *   1. Reject corrupted facts (isCorruptedFact Guards 1–4: non-finite, year-equals-value,
+ *      year-integer-as-currency, column-index period label).
+ *   2. Accept only revenue / arr / mrr metric keys with positive currency values.
+ *   3. Monthly-only guard: if all non-corrupted revenue candidates are monthly-granularity
+ *      (period_type === 'monthly'), return undefined.  A single month must not become
+ *      the annual current-revenue headline.
+ *   4. Prefer non-projected (current / historical) facts over projected ones.
+ *   5. Apply selectAuthoritativeFact source/confidence/period ranking:
+ *      xlsx (10) > pdf_table (5) > pdf_kpi_line (4) > kpi_tile (3) > deck (1).
+ *
+ * All source kinds are eligible — not just xlsx.  This ensures PDF-extracted
+ * FinancialFactV1 records (source_kind='pdf_table' or 'pdf_kpi_line') participate,
+ * fixing Qredible-type divergence where PDF revenue appears in financial_breakdown
+ * but was previously missing from structured_summary.
+ *
+ * @param facts  All FinancialFactV1 records for a deal (raw or pre-filtered — both are safe).
+ */
+export function selectCanonicalRevenueFact(
+  facts: FinancialFactV1[],
+): FinancialFactV1 | undefined {
+  const cleanFacts = filterCorruptedFacts(facts);
+
+  const revenueFacts = cleanFacts.filter(
+    (f) =>
+      (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
+      f.unit === 'currency' &&
+      f.value > 0,
+  );
+
+  if (revenueFacts.length === 0) return undefined;
+
+  // Monthly-only guard: if every revenue candidate is monthly-granularity,
+  // do not surface any of them as the annual current-revenue headline.
+  const nonMonthlyFacts = revenueFacts.filter((f) => f.period_type !== 'monthly');
+  if (nonMonthlyFacts.length === 0) return undefined;
+
+  // Only select non-projected facts: projection-only deals must not leak a
+  // projected value into the current-revenue headline.
+  return selectAuthoritativeFact(CANONICAL_REVENUE_KEYS, nonMonthlyFacts, { requireNonProjected: true });
 }
 
 // ─── Alternative fact discovery ───────────────────────────────────────────────

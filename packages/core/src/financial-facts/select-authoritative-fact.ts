@@ -304,10 +304,24 @@ export function selectCanonicalRevenueFact(
 
   if (revenueFacts.length === 0) return undefined;
 
-  // Monthly-only guard: if every revenue candidate is monthly-granularity,
-  // do not surface any of them as the annual current-revenue headline.
+  // Monthly-only guard: if every revenue candidate is monthly-granularity, do not
+  // surface a sparse monthly snapshot as the annual current-revenue headline.
+  //
+  // Rolling-monthly XLSX exception: when 4+ distinct non-zero monthly periods are
+  // present (e.g. a Jan–Dec rolling model), the guard does not fire. The deal has a
+  // full rolling-monthly financial model and the most authoritative monthly fact IS
+  // the current-revenue headline.
+  //
+  // Threshold < 4 suppresses 1–3 monthly snapshots (a partial quarter or a single
+  // month extracted from a deck or sparse XLSX), which must not become the annual
+  // revenue headline.
   const nonMonthlyFacts = revenueFacts.filter((f) => f.period_type !== 'monthly');
-  if (nonMonthlyFacts.length === 0) return undefined;
+  if (nonMonthlyFacts.length === 0) {
+    const distinctMonthlyPeriods = new Set(revenueFacts.map((f) => f.period_label)).size;
+    if (distinctMonthlyPeriods < 4) return undefined;
+    // Rolling-monthly model: select best monthly fact using standard source/confidence ranking.
+    return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], revenueFacts, { requireNonProjected: true });
+  }
 
   // Only select non-projected facts: projection-only deals must not leak a
   // projected value into the current-revenue headline.

@@ -149,11 +149,9 @@ describe('selectCanonicalRevenueFact — source-kind priority', () => {
 // ─── Monthly-only guard ───────────────────────────────────────────────────────
 
 describe('selectCanonicalRevenueFact — monthly-only guard', () => {
-  // ── WebMax regression ──────────────────────────────────────────────────────
-  // When all non-corrupted revenue candidates are monthly-granularity,
-  // selectCanonicalRevenueFact must return undefined rather than selecting one
-  // month's value as the annual current-revenue headline.
-  test('[WebMax regression] all monthly revenue facts → returns undefined', () => {
+  // Three monthly facts (sparse data, not a rolling model): guard must still fire.
+  // Note: WebMax has 9+ distinct monthly periods — see rolling-model tests below.
+  test('three monthly revenue facts (sparse) → returns undefined', () => {
     const sep = monthlyFact('revenue', 8_000, 'September');
     const oct = monthlyFact('revenue', 9_200, 'October');
     const nov = monthlyFact('revenue', 7_500, 'November');
@@ -178,6 +176,56 @@ describe('selectCanonicalRevenueFact — monthly-only guard', () => {
     const annual = fact('revenue', 1_200_000, { period_type: 'annual', period_label: 'FY2025' });
     const result = selectCanonicalRevenueFact([monthly, annual]);
     expect(result?.period_label).toBe('FY2025');
+  });
+
+  // ── Rolling-monthly XLSX model (Fix 9 — WebMax regression) ────────────────
+  //
+  // WebMax has 9+ distinct named-month records in the XLSX (Jan–Sep actuals).
+  // With 4+ distinct non-zero monthly periods the monthly-only guard must NOT
+  // fire: the most authoritative monthly fact is the current-revenue headline.
+
+  test('[Fix 9 / WebMax] 9 distinct monthly xlsx facts → selects best fact (non-null)', () => {
+    const months = [
+      monthlyFact('revenue', 8_000, 'January'),
+      monthlyFact('revenue', 8_000, 'February'),
+      monthlyFact('revenue', 8_000, 'March'),
+      monthlyFact('revenue', 8_000, 'April'),
+      monthlyFact('revenue', 8_000, 'May'),
+      monthlyFact('revenue', 8_000, 'June'),
+      monthlyFact('revenue', 8_000, 'July'),
+      monthlyFact('revenue', 8_000, 'August'),
+      monthlyFact('revenue', 8_000, 'September'),
+    ];
+    const result = selectCanonicalRevenueFact(months);
+    expect(result).not.toBeUndefined();
+    expect(result?.value).toBe(8_000);
+    expect(result?.source_kind).toBe('xlsx');
+    expect(result?.period_type).toBe('monthly');
+  });
+
+  test('[Fix 9 / WebMax] $0 and $8K facts for same 9 periods → $0 excluded, $8K selected', () => {
+    const periodNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep'];
+    const mixed: ReturnType<typeof monthlyFact>[] = [];
+    for (const p of periodNames) {
+      mixed.push(monthlyFact('revenue', 0, p));      // zero facts must be excluded
+      mixed.push(monthlyFact('revenue', 8_000, p));  // non-zero facts eligible
+    }
+    const result = selectCanonicalRevenueFact(mixed);
+    expect(result).not.toBeUndefined();
+    expect(result?.value).toBe(8_000);
+    expect(result?.source_kind).toBe('xlsx');
+  });
+
+  test('[Fix 9 / WebMax] exactly 4 distinct monthly periods → guard relaxed (selects fact)', () => {
+    const months = [
+      monthlyFact('revenue', 5_000, 'January'),
+      monthlyFact('revenue', 5_000, 'February'),
+      monthlyFact('revenue', 5_000, 'March'),
+      monthlyFact('revenue', 5_000, 'April'),
+    ];
+    const result = selectCanonicalRevenueFact(months);
+    expect(result).not.toBeUndefined();
+    expect(result?.value).toBe(5_000);
   });
 });
 

@@ -12,6 +12,8 @@
  *     headline on either path.
  *   - StackFactor-type divergence (Fix 10): kpi_tile current revenue must win over
  *     projected quarterly xlsx facts with ambiguous temporal scope.
+ *   - DealDecision-type divergence (Fix 11): multi-year proforma XLSX (2026/2027/2028)
+ *     must not surface the current-year column as current-state revenue.
  */
 
 import {
@@ -19,6 +21,7 @@ import {
   isCorruptedFact,
   CANONICAL_REVENUE_KEYS,
   filterCorruptedFacts,
+  detectProformaModelFactIds,
 } from '../select-authoritative-fact';
 import type { FinancialFactV1 } from '../financial-fact-v1';
 
@@ -508,5 +511,137 @@ describe("selectCanonicalRevenueFact — unit='number' kpi_tile facts (Fix 10b /
     const result = selectCanonicalRevenueFact([projNum]);
     // Only fact is projected kpi_tile — Tier B and Tier C (requireNonProjected) both fail
     expect(result).toBeUndefined();
+  });
+});
+
+// ─── Fix 11: Multi-year proforma model detection (DealDecision) ───────────────
+
+describe('detectProformaModelFactIds — proforma model detection', () => {
+  const currentYear = new Date().getFullYear();
+
+  test('returns empty set when no future-year XLSX annual facts present', () => {
+    const onlyCurrent = fact('revenue', 1_000_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
+    });
+    expect(detectProformaModelFactIds([onlyCurrent]).size).toBe(0);
+  });
+
+  test('returns empty set when future year is xlsx but quarterly (not annual)', () => {
+    const current = fact('revenue', 1_000_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
+    });
+    const futureQ = fact('revenue', 2_000_000, {
+      source_kind: 'xlsx', period_label: `Q1 ${currentYear + 1}`, period_type: 'quarterly',
+    });
+    // Quarterly future-year fact does not trigger proforma detection
+    expect(detectProformaModelFactIds([current, futureQ]).size).toBe(0);
+  });
+
+  test('marks current-year XLSX annual fact when future-year XLSX annual exists', () => {
+    const currentRev = fact('revenue', 3_337_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
+    });
+    const futureRev = fact('revenue', 15_502_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 1), period_type: 'annual',
+    });
+    const ids = detectProformaModelFactIds([currentRev, futureRev]);
+    expect(ids.has(currentRev.fact_id)).toBe(true);
+    expect(ids.has(futureRev.fact_id)).toBe(false);
+  });
+
+  test('does NOT mark kpi_tile or pdf_table facts even when xlsx proforma model detected', () => {
+    const kpiFact = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile', period_label: String(currentYear), period_type: 'unknown',
+    });
+    const futureXlsx = fact('revenue', 15_502_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 1), period_type: 'annual',
+    });
+    const ids = detectProformaModelFactIds([kpiFact, futureXlsx]);
+    expect(ids.has(kpiFact.fact_id)).toBe(false);
+  });
+
+  test('does NOT mark historical XLSX facts when proforma model detected', () => {
+    const historical = fact('revenue', 2_500_000, {
+      source_kind: 'xlsx', period_label: String(currentYear - 1), period_type: 'annual',
+      temporal_scope: 'historical',
+    });
+    const currentProforma = fact('revenue', 3_337_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
+    });
+    const future = fact('revenue', 15_502_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 1), period_type: 'annual',
+    });
+    const ids = detectProformaModelFactIds([historical, currentProforma, future]);
+    // Only the current-year untagged fact is marked; historical is safe
+    expect(ids.has(historical.fact_id)).toBe(false);
+    expect(ids.has(currentProforma.fact_id)).toBe(true);
+  });
+});
+
+describe('selectCanonicalRevenueFact — multi-year proforma model detection (Fix 11 / DealDecision)', () => {
+  const currentYear = new Date().getFullYear();
+
+  test('[DealDecision regression] 2026/2027/2028 proforma model → undefined for current_state', () => {
+    // Simulates DealDecision: "Proforma Income Statement V2.xlsx" with only projected years
+    const rev0 = fact('revenue', 3_337_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
+      // temporal_scope absent (null in DB from stale extraction)
+    });
+    const rev1 = fact('revenue', 15_502_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 1), period_type: 'annual',
+    });
+    const rev2 = fact('revenue', 35_778_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 2), period_type: 'annual',
+    });
+    // All facts are from a proforma model — current_state must not surface any of them
+    expect(selectCanonicalRevenueFact([rev0, rev1, rev2])).toBeUndefined();
+  });
+
+  test('historical actual (prior year) survives when multi-year proforma model detected', () => {
+    // Deal has prior-year actuals + current/future projections
+    const actual = fact('revenue', 2_500_000, {
+      source_kind: 'xlsx', period_label: String(currentYear - 1), period_type: 'annual',
+      temporal_scope: 'historical',
+    });
+    const proformaCurrent = fact('revenue', 3_337_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
+    });
+    const proformaFuture = fact('revenue', 15_502_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 1), period_type: 'annual',
+    });
+    // The historical actual must be selected; proforma current-year excluded
+    const result = selectCanonicalRevenueFact([actual, proformaCurrent, proformaFuture]);
+    expect(result).toBeDefined();
+    expect(result?.period_label).toBe(String(currentYear - 1));
+    expect(result?.value).toBe(2_500_000);
+  });
+
+  test('single current-year xlsx annual is NOT treated as proforma (no future years)', () => {
+    // A deal reporting only current-year actuals — must not be excluded
+    const currentActual = fact('revenue', 1_200_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
+    });
+    const result = selectCanonicalRevenueFact([currentActual]);
+    expect(result).toBeDefined();
+    expect(result?.value).toBe(1_200_000);
+  });
+
+  test('kpi_tile current revenue survives when xlsx multi-year proforma model is detected', () => {
+    // kpi_tile is not xlsx → not affected by proforma detection → surfaces via Tier B
+    const kpiCurrent = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile', period_label: 'current', period_type: 'unknown',
+      confidence: 'medium', unit: 'number',
+    });
+    const proformaCurrent = fact('revenue', 3_337_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
+    });
+    const proformaFuture = fact('revenue', 15_502_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 1), period_type: 'annual',
+    });
+    // kpi_tile is not xlsx → not excluded by proforma detection → selected via Tier B
+    const result = selectCanonicalRevenueFact([kpiCurrent, proformaCurrent, proformaFuture]);
+    expect(result).toBeDefined();
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
   });
 });

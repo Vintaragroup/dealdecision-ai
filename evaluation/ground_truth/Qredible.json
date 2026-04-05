@@ -21,8 +21,33 @@
     "ai_evidence_strength": "marketing_only"
   },
   "financials": {
-    "arr": 381000,
-    "burn_rate": 349,
-    "revenue": 7000
+    "_note": "Updated 2026-04-04 per source-doc audit. Doc: PD - Qredible Future of Compliance V6 (v2).pdf. No XLSX available.",
+    "current_state": {
+      "arr":      { "value": 1582164, "evidence": "Traction slide — '$131,847 Total MRR' × 12 = $1,582,164 ARR" },
+      "mrr":      { "value": 131847,  "evidence": "Traction slide — '$131,847 Total MRR'" },
+      "burn_rate": { "value": null,   "evidence": "No burn data in deck — $349 is ISO agent subscription PRICE, not company burn" },
+      "revenue":   { "value": null,   "evidence": "$381K is a network model PROJECTION, not current company revenue" }
+    },
+    "known_misextractions": {
+      "burn_349":     { "evidence": "'$349/month' is ISO agent/Sub-ISO license pricing — must NOT be stored as burn_rate" },
+      "revenue_381k": { "evidence": "$381K MRR from 'network model' slide is a projected future state, not current MRR" },
+      "arr_5120":     { "evidence": "OCR artifact — appears to be garbled '$5.12M ARR' from traction slide" },
+      "revenue_11":   { "evidence": "OCR noise — value of 11 has no source in deck text" }
+    },
+    "raise": { "value": 3000000, "pre_money_valuation": 15000000, "evidence": "$3M on $15M pre-money" },
+    "validation": {
+      "extraction_checks": [
+        { "metric_key": "arr", "expected_value": 1582164, "tolerance_pct": 20, "note": "Traction slide MRR×12 — OCR quality is the only path; accept wide tolerance" },
+        { "metric_key": "mrr", "expected_value": 131847,  "tolerance_pct": 20, "note": "Traction slide '$131,847 Total MRR'" }
+      ],
+      "noise_checks": [
+        { "label": "$349 stored as burn_rate",           "sql_filter": "metric_key = 'burn_rate' AND value BETWEEN 340 AND 360",  "expected_count": 0, "failure_layer": "extraction", "description": "ISO agent license price must not appear as burn_rate" },
+        { "label": "$381K stored as current revenue",   "sql_filter": "metric_key = 'revenue' AND value BETWEEN 370000 AND 390000", "expected_count": 0, "failure_layer": "extraction", "description": "Network model projection must not appear as current revenue" },
+        { "label": "Garbled ARR $5120",                 "sql_filter": "metric_key = 'arr' AND value BETWEEN 4000 AND 6000",       "expected_count": 0, "failure_layer": "extraction", "description": "OCR artifact from traction slide" }
+      ],
+      "report_checks": [
+        { "label": "current_state.burn_rate should be null", "report_path": ["financial_breakdown_v1", "current_state", "burn_rate"], "expected_value": null, "failure_layer": "truth_resolution" }
+      ]
+    }
   }
 }

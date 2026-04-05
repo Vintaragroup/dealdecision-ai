@@ -542,3 +542,118 @@ describe("parseFinancialTable — year-label suppression (G1)", () => {
     expect(metrics.some((m) => m.value === 2025)).toBe(false);
   });
 });
+
+// ─── Cap-table sheet suppression (Fix 12 / StackFactor) ──────────────────────
+
+describe("parseFinancialTable — cap_table sheet suppression (Fix 12)", () => {
+  const CAP_TABLE: FinancialTable = {
+    sheet_name: "Cap Table",
+    table_kind: "cap_table",
+    row_headers: ["Revenue", "ARR", "Common Shares", "Series A Preferred", "Option Pool", "Net Income"],
+    column_headers: ["2024", "2025"],
+    cell_matrix: [
+      [1_000_000, 2_000_000],   // Revenue row — must be suppressed
+      [  800_000, 1_600_000],   // ARR row — must be suppressed
+      [5_000_000, 5_000_000],   // Common Shares
+      [2_000_000, 2_500_000],   // Series A Preferred
+      [  500_000,   600_000],   // Option Pool
+      [  100_000,   250_000],   // Net Income — must be suppressed (ebitda_v1)
+    ],
+    source_page_type: "excel_sheet",
+  };
+
+  it("suppresses revenue_canonical_v1 metrics from cap_table sheets", () => {
+    const metrics = parseFinancialTable(CAP_TABLE, { deal_id: "d-cap", currentYear: CURRENT_YEAR });
+    const revMetrics = metrics.filter((m) => m.field_type === "revenue_canonical_v1");
+    expect(revMetrics).toHaveLength(0);
+  });
+
+  it("suppresses arr_v1 metrics from cap_table sheets", () => {
+    const metrics = parseFinancialTable(CAP_TABLE, { deal_id: "d-cap", currentYear: CURRENT_YEAR });
+    const arrMetrics = metrics.filter((m) => m.field_type === "arr_v1");
+    expect(arrMetrics).toHaveLength(0);
+  });
+
+  it("suppresses ebitda_v1 (Net Income) metrics from cap_table sheets", () => {
+    const metrics = parseFinancialTable(CAP_TABLE, { deal_id: "d-cap", currentYear: CURRENT_YEAR });
+    const ebitdaMetrics = metrics.filter((m) => m.field_type === "ebitda_v1");
+    expect(ebitdaMetrics).toHaveLength(0);
+  });
+
+  it("still emits other_metric_v1 rows from cap_table (share counts etc.)", () => {
+    const metrics = parseFinancialTable(CAP_TABLE, { deal_id: "d-cap", currentYear: CURRENT_YEAR });
+    // Common Shares / Series A / Option Pool are other_metric_v1 — should survive
+    const otherMetrics = metrics.filter((m) => m.field_type === "other_metric_v1");
+    expect(otherMetrics.length).toBeGreaterThan(0);
+  });
+
+  it("does NOT suppress revenue from income_statement sheets (control check)", () => {
+    const incomeTable: FinancialTable = {
+      sheet_name: "P&L",
+      table_kind: "income_statement",
+      row_headers: ["Revenue", "ARR"],
+      column_headers: ["2024", "2025"],
+      cell_matrix: [[1_000_000, 2_000_000], [800_000, 1_600_000]],
+      source_page_type: "excel_sheet",
+    };
+    const metrics = parseFinancialTable(incomeTable, { deal_id: "d-income", currentYear: CURRENT_YEAR });
+    const revMetrics = metrics.filter((m) => m.field_type === "revenue_canonical_v1");
+    expect(revMetrics.length).toBeGreaterThan(0);
+  });
+});
+
+// ─── isStructuralPeriodLabel → metric-promoter drop guard (Fix 12) ───────────
+
+describe("promoteToFinancialFactV1 — structural period label suppression (Fix 12)", () => {
+  it("drops facts with col_X period labels (belt-and-suspenders)", () => {
+    // A table with structural column headers produces metrics with col_C / col_D labels.
+    // Even if somehow the table-detector guard was bypassed, metric-promoter suppresses these.
+    const tableWithColXHeaders: FinancialTable = {
+      sheet_name: "Salary",
+      table_kind: "unknown",
+      row_headers: ["Revenue", "EBITDA"],
+      column_headers: ["col_C", "col_D", "col_M"],
+      cell_matrix: [
+        [100_000, 200_000, 300_000],
+        [ 10_000,  20_000,  30_000],
+      ],
+      source_page_type: "excel_range",
+    };
+    const metrics = parseFinancialTable(tableWithColXHeaders, { deal_id: "d-colx", currentYear: CURRENT_YEAR });
+    const facts = promoteToFinancialFactV1(metrics, { deal_id: "d-colx" });
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    expect(revFacts).toHaveLength(0);
+  });
+
+  it("drops facts with $000 period labels", () => {
+    const tableWith000Headers: FinancialTable = {
+      sheet_name: "Report",
+      table_kind: "income_statement",
+      row_headers: ["Revenue"],
+      column_headers: ["$000", "000s"],
+      cell_matrix: [[5_000, 5_000]],
+      source_page_type: "excel_sheet",
+    };
+    const metrics = parseFinancialTable(tableWith000Headers, { deal_id: "d-000", currentYear: CURRENT_YEAR });
+    const facts = promoteToFinancialFactV1(metrics, { deal_id: "d-000" });
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    expect(revFacts).toHaveLength(0);
+  });
+
+  it("preserves facts with legitimate annual period labels", () => {
+    const validTable: FinancialTable = {
+      sheet_name: "P&L",
+      table_kind: "income_statement",
+      row_headers: ["Revenue"],
+      column_headers: ["2024", "2025"],
+      cell_matrix: [[1_000_000, 2_000_000]],
+      source_page_type: "excel_range",
+    };
+    const metrics = parseFinancialTable(validTable, { deal_id: "d-valid", currentYear: CURRENT_YEAR });
+    const facts = promoteToFinancialFactV1(metrics, { deal_id: "d-valid" });
+    const revFacts = facts.filter((f) => f.metric_key === "revenue");
+    expect(revFacts).toHaveLength(2);
+    expect(revFacts[0]!.period_label).toBe("2024");
+    expect(revFacts[1]!.period_label).toBe("2025");
+  });
+});

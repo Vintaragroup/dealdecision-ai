@@ -266,6 +266,52 @@ export function filterCorruptedFacts(facts: FinancialFactV1[]): FinancialFactV1[
   return facts.filter((f) => !isCorruptedFact(f).corrupted);
 }
 
+// ─── Multi-year proforma model detection ─────────────────────────────────────
+
+/**
+ * Identifies current-year XLSX annual/TTM facts that are part of a multi-year
+ * forward-projection model (e.g. "Proforma Income Statement 2026 / 2027 / 2028").
+ *
+ * Signal: when the candidate pool contains XLSX annual/TTM facts for a FUTURE year,
+ * the current-year column is not a realized operating report — it is the first year
+ * of a budget/proforma model. These facts must not be selected as current-state
+ * revenue even though `isProjectedFact` returns false (which it does when
+ * `temporal_scope` is null and the year equals the current calendar year).
+ *
+ * Safety boundaries:
+ *   - Only applies when XLSX annual/TTM facts for a future year are present.
+ *   - Only marks XLSX annual/TTM facts for the current year as proforma.
+ *   - Never marks historical facts, KPI tiles, PDF-extracted facts, or quarterly facts.
+ *
+ * Returns a Set of fact_ids that should be treated as projected for selection purposes.
+ */
+export function detectProformaModelFactIds(pool: FinancialFactV1[]): Set<string> {
+  const currentYear = new Date().getFullYear();
+
+  // Trigger: at least one XLSX annual/TTM fact covers a future year
+  const hasFutureXlsxAnnualFact = pool.some((f) => {
+    if (f.source_kind !== 'xlsx') return false;
+    if (f.period_type !== 'annual' && f.period_type !== 'ttm') return false;
+    const yr = f.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
+    return yr != null && Number(yr[1]) > currentYear;
+  });
+
+  if (!hasFutureXlsxAnnualFact) return new Set();
+
+  // Collect current-year XLSX annual/TTM facts not already detected as projected
+  const ids = new Set<string>();
+  for (const f of pool) {
+    if (f.source_kind !== 'xlsx') continue;
+    if (f.period_type !== 'annual' && f.period_type !== 'ttm') continue;
+    if (isProjectedFact(f)) continue; // already handled by year > currentYear check
+    const yr = f.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
+    if (yr != null && Number(yr[1]) === currentYear) {
+      ids.add(f.fact_id);
+    }
+  }
+  return ids;
+}
+
 // ─── Canonical revenue-fact selection ────────────────────────────────────────
 
 /**
@@ -288,8 +334,11 @@ export const CANONICAL_REVENUE_KEYS: readonly string[] = ['revenue', 'arr', 'mrr
  *   3. Monthly-only guard: if all non-corrupted revenue candidates are monthly-granularity
  *      (period_type === 'monthly'), return undefined.  A single month must not become
  *      the annual current-revenue headline.
- *   4. Prefer non-projected (current / historical) facts over projected ones.
- *   5. Apply selectAuthoritativeFact source/confidence/period ranking:
+ *   4. Multi-year proforma model guard: if the pool contains XLSX annual facts for a
+ *      future year, any current-year XLSX annual facts are treated as projected budget
+ *      data (not realized actuals) and excluded from current-state selection.
+ *   5. Prefer non-projected (current / historical) facts over projected ones.
+ *   6. Apply selectAuthoritativeFact source/confidence/period ranking:
  *      xlsx (10) > pdf_table (5) > pdf_kpi_line (4) > kpi_tile (3) > deck (1).
  *
  * All source kinds are eligible — not just xlsx.  This ensures PDF-extracted
@@ -337,11 +386,21 @@ export function selectCanonicalRevenueFact(
 
   // ── Three-tier selection for non-monthly revenue facts ──────────────────────
   //
+  // Multi-year proforma model guard: if the pool contains XLSX annual/TTM facts for
+  // a future year, current-year XLSX annual facts are budget projections (not realized
+  // actuals) and must be excluded from current-state selection. This handles deals like
+  // DealDecision where a "Proforma Income Statement 2026/2027/2028" XLSX produces a
+  // current-year row that has null temporal_scope but is not a realized operating figure.
+  const proformaModelFactIds = detectProformaModelFactIds(nonMonthlyFacts);
+  const nonProformaFacts = proformaModelFactIds.size > 0
+    ? nonMonthlyFacts.filter((f) => !proformaModelFactIds.has(f.fact_id))
+    : nonMonthlyFacts;
+
   // Tier A — confirmed income-statement-grade data (annual or TTM period_type).
   //   These are the highest-quality revenue facts: a completed fiscal year or trailing-
   //   twelve-month figure from an XLSX income statement or PDF financial table.
   //   When any Tier A non-projected fact exists, it is always the canonical selection.
-  const tierAFacts = nonMonthlyFacts.filter(
+  const tierAFacts = nonProformaFacts.filter(
     (f) => f.period_type === 'annual' || f.period_type === 'ttm',
   );
   if (tierAFacts.length > 0) {
@@ -358,7 +417,7 @@ export function selectCanonicalRevenueFact(
   //
   //   This pass only fires when Tier A is empty, ensuring it never overrides a
   //   confirmed annual income-statement figure.
-  const tierBFacts = nonMonthlyFacts.filter(
+  const tierBFacts = nonProformaFacts.filter(
     (f) =>
       (f.source_kind === 'kpi_tile' || f.source_kind === 'pdf_kpi_line') &&
       !isProjectedFact(f) &&
@@ -373,7 +432,7 @@ export function selectCanonicalRevenueFact(
   //   Fallback to the original source/confidence/period ranking across everything.
   //   Only select non-projected facts: projection-only deals must not leak a
   //   projected value into the current-revenue headline.
-  return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], nonMonthlyFacts, { requireNonProjected: true });
+  return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], nonProformaFacts, { requireNonProjected: true });
 }
 
 // ─── Alternative fact discovery ───────────────────────────────────────────────

@@ -220,6 +220,35 @@ function isProjectedHeader(s: string): boolean {
   return /\b\d{4}[Ee]\b/.test(s) || /\bfy\s*\d{4}[Ee]\b/i.test(s);
 }
 
+/**
+ * Returns true when a column header string is a structural/non-period artifact
+ * rather than a genuine financial period label.
+ *
+ * Suppressed patterns:
+ *   - Column coordinate labels:   "col_A", "col_B", …, "col_AA" (from excel_range Fallback 2)
+ *   - Denomination markers ($000): "$000", "$000s", "000s", "(000s)", "($000)"
+ *   - Scale abbreviations:         "$M", "$MM", "€M", "$K", etc. (pure scale stand-alone tokens)
+ *   - Empty / whitespace only
+ *
+ * Does NOT suppress legitimate period strings like "2024", "Q1 2024", "TTM",
+ * scenario labels like "Base" / "Upside", or month names like "January".
+ */
+export function isStructuralColumnHeader(header: string): boolean {
+  const s = header.trim();
+  if (!s) return true;
+  // Column coordinate placeholders: col_A, col_B, …, col_AA, col_BC, etc.
+  if (/^col_[A-Za-z]+$/.test(s)) return true;
+  // Denomination markers: $000, $000s, 000s, 000, (000s), ($000), ₹000s, etc.
+  if (/^[$€£¥₹]?\s*0{2,}s?$/i.test(s)) return true;
+  if (/^\([$€£¥₹]?\s*0{2,}s?\)$/i.test(s)) return true;
+  // Pure scale abbreviations used as column banners: $M, $MM, €M, $K, £B, etc.
+  // These are denomination markers, not period labels.
+  if (/^[$€£¥₹]\s*m{1,2}$/i.test(s)) return true;
+  if (/^[$€£¥₹]\s*k$/i.test(s)) return true;
+  if (/^[$€£¥₹]\s*b$/i.test(s)) return true;
+  return false;
+}
+
 // ─── excel_range (rows_preview) handler ──────────────────────────────────────
 
 /**
@@ -337,6 +366,16 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
         break;
       }
     }
+  }
+
+  // Structural label guard: if every period label resolved to a column-coordinate
+  // placeholder (col_C, col_D, col_M, etc.) the table has no usable financial
+  // period context.  These originate from salary schedules, headcount tables,
+  // cap-table allocation sheets, or vesting schedules that never had a
+  // period-header row.  Suppressing here prevents hundreds of junk revenue facts
+  // with period_label="col_C" / "col_M" from reaching the facts table.
+  if (periodLabels.length > 0 && periodLabels.every((l) => isStructuralColumnHeader(l))) {
+    return null;
   }
 
   if (periodKeys.length < MIN_COL_HEADERS) return null;
@@ -510,7 +549,12 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
 
   // ── Step 1: Separate label column from value columns ──────────────────
   const labelCol = headers[0]!;
-  const valueCols = headers.slice(1);
+  const rawValueCols = headers.slice(1);
+  // Filter out structural/denomination column headers ($000, col_X, etc.).
+  // These are workbook formatting markers, not financial period labels.
+  // Unit scale detection still works because scaleScanTexts includes the
+  // full headers array (including the structural headers before filtering).
+  const valueCols = rawValueCols.filter((h) => !isStructuralColumnHeader(h));
   if (valueCols.length < MIN_COL_HEADERS) return null;
 
   // ── Step 2: Build row headers + cell matrix ───────────────────────────

@@ -20,6 +20,34 @@
     "ai_evidence_strength": "none"
   },
   "financials": {
-    "revenue": 0
+    "_note": "Updated 2026-04-04 per source-doc audit. Docs: SF Financial Model 25FEB2026.xlsx, SF CapTable 25FEB2026.xlsx, StackFactor-Investor-Deck-final-Feb4-2026.pdf",
+    "current_state": {
+      "revenue": { "value": 23000, "source_kind": "kpi_tile", "evidence": "Deck KPI tile — '$23K ARR' (live, beta product)" },
+      "cash":    { "value": 44000, "source_kind": "kpi_tile", "evidence": "Deck KPI tile — '$44K cash'" },
+      "burn_rate": { "value": null, "evidence": "No actual burn data in source docs — only Year 12 XLSX projection available" },
+      "runway_months": { "value": null, "evidence": "Derived from projected values only — not a current-state signal" }
+    },
+    "valid_projections": {
+      "booked_revenue_2026": { "value": 1100000, "source": "deck", "evidence": "Deck 'PROJECTED FINANCIALS' slide — Booked Revenue 2026" },
+      "booked_revenue_2027": { "value": 4200000, "source": "deck", "evidence": "Deck 'PROJECTED FINANCIALS' slide — Booked Revenue 2027" },
+      "recognized_revenue_2026": { "value": 461000, "source": "deck", "evidence": "Deck 'PROJECTED FINANCIALS' slide — Recognized Revenue 2026" }
+    },
+    "raise": { "value": 2500000, "instrument": "SAFE", "discount_pct": 20, "evidence": "$2.5M Pre-Seed SAFE, 20% discount" },
+    "validation": {
+      "extraction_checks": [
+        { "metric_key": "revenue", "expected_value": 23000, "tolerance_pct": 15, "allowed_source_kinds": ["kpi_tile"], "note": "KPI tile ARR must be extracted" },
+        { "metric_key": "cash",    "expected_value": 44000, "tolerance_pct": 15, "allowed_source_kinds": ["kpi_tile"], "note": "KPI tile cash must be extracted" }
+      ],
+      "noise_checks": [
+        { "label": "col_X revenue noise",         "sql_filter": "metric_key = 'revenue' AND period_label ~ '^col_[A-Za-z]+$'",  "expected_count": 0, "failure_layer": "extraction", "fix_ref": "Fix 12" },
+        { "label": "$000 denomination noise",    "sql_filter": "metric_key = 'revenue' AND period_label ~ '^\\$?0{2,}s?$'",     "expected_count": 0, "failure_layer": "extraction", "fix_ref": "Fix 12" },
+        { "label": "cap_table revenue facts",    "sql_filter": "metric_key = 'revenue' AND sheet_name ILIKE '%cap%table%'",   "expected_count": 0, "failure_layer": "extraction", "fix_ref": "Fix 12" }
+      ],
+      "report_checks": [
+        { "label": "current_state.revenue", "report_path": ["financial_breakdown_v1", "current_state", "revenue"], "expected_value": 23000, "tolerance_pct": 15 },
+        { "label": "current_state.burn_rate should be null", "report_path": ["financial_breakdown_v1", "current_state", "burn_rate"], "expected_value": null },
+        { "label": "current_state.cash",    "report_path": ["financial_breakdown_v1", "current_state", "cash"],    "expected_value": 44000, "tolerance_pct": 15 }
+      ]
+    }
   }
 }

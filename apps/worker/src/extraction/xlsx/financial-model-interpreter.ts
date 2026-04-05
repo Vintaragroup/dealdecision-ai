@@ -80,7 +80,9 @@ const ROW_LABEL_RULES: Array<{ pattern: RegExp; field_type: FieldTypeV1 }> = [
   { pattern: /\bcogs\b|\bcost\s+of\s+(?:goods|revenue|sales)\b/i, field_type: "cogs_v1" },
   { pattern: /\bop(?:erating)?\s+exp(?:enses?)?\b|\bopex\b/i,     field_type: "opex_v1" },
   { pattern: /\bexpenses?\s+(?:fixed|variable)\b/i,               field_type: "opex_v1" },
-  { pattern: /\bpayroll\b|\bsalaries\b|\bwages\b/i,               field_type: "opex_v1" },
+  { pattern: /\bpayroll\b|\bsalaries\b|\bwages\b|\bsalary\b|\bcompensation\b|\bcomp\s+expense\b/i, field_type: "opex_v1" },
+  // Headcount / personnel rows (salary schedule sheets). Must precede catch-all.
+  { pattern: /\bheadcount\b|\bemployee\s+(?:cost|name|salary|compensation|count|fte)\b|\bpersonnel\b|\bstaff(?:ing)?\s+(?:cost|expense)\b/i, field_type: "opex_v1" },
   // Catch-all
   { pattern: /.*/,                                                  field_type: "other_metric_v1" },
 ];
@@ -201,6 +203,27 @@ export interface ParseFinancialTableOptions {
 }
 
 /**
+ * Revenue / income / burn field types that should NOT be emitted from a
+ * cap-table sheet. Cap tables track equity ownership, share classes, and
+ * dilution — they do not carry operating P&L metrics. When the sheet
+ * classifier correctly identifies a table as `cap_table`, suppress these
+ * field types to prevent share-count or vesting rows from polluting the
+ * revenue fact pool.
+ */
+const CAP_TABLE_SUPPRESSED_FIELDS = new Set<FieldTypeV1>([
+  "revenue_canonical_v1",
+  "forecast_revenue_v1",
+  "booked_revenue_v1",
+  "recognized_revenue_v1",
+  "arr_v1",
+  "mrr_v1",
+  "ebitda_v1",
+  "burn_rate_v1",
+  "runway_months_v1",
+  "total_expenses_v1",
+]);
+
+/**
  * Convert a `FinancialTable` into typed metrics.
  *
  * Each non-null cell in the table produces at most one TypedMetric.
@@ -241,6 +264,11 @@ export function parseFinancialTable(
 
     const { field_type, typing_reason, typing_confidence } = resolveFieldType(rowLabel);
     if (typing_confidence < minConf) continue;
+
+    // Cap-table sheets must not emit P&L / operating metrics. Equity schedules,
+    // vesting tables, and share-class rows produce numeric values that can match
+    // revenue / EBITDA patterns — suppress them at the sheet-kind boundary.
+    if (table.table_kind === "cap_table" && CAP_TABLE_SUPPRESSED_FIELDS.has(field_type)) continue;
 
     for (let colIdx = 0; colIdx < colMeta.length; colIdx++) {
       const cellValue = row[colIdx];

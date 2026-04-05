@@ -10,5 +10,33 @@
     "ai_claims_present": true,
     "ai_evidence_strength": "strong"
   },
-  "financials": {}
+  "financials": {
+    "_note": "Updated 2026-04-04 per source-doc audit. Docs: DealDecision AI Income Statement V1.xlsx (V1), DealDecision AI Proforma Income Statement V2.xlsx (V2), pitch deck Jan 2026.",
+    "current_state": {
+      "revenue":   { "value": null, "evidence": "Company is pre-revenue at time of pitch (Jan 2026 pre-seed). XLSX shows 2026 PROFORMA plan — not historical actuals." },
+      "burn_rate": { "value": null, "evidence": "$251K/month derived from 2026 proforma expenses — forward-looking plan, not actual burn. Treat as projected." }
+    },
+    "proforma_projections": {
+      "total_revenue_2026_v1":   { "value": 3337000,  "source": "xlsx", "doc": "Income Statement V1",   "evidence": "V1 Total Revenues 2026" },
+      "total_revenue_2026_v2":   { "value": 1503000,  "source": "xlsx", "doc": "Proforma V2",           "evidence": "V2 Total Revenues 2026" },
+      "total_expenses_2026_v1":  { "value": 3018437,  "source": "xlsx", "doc": "Income Statement V1",   "evidence": "V1 Total Expenses 2026" },
+      "total_expenses_2026_v2":  { "value": 1998790,  "source": "xlsx", "doc": "Proforma V2",           "evidence": "V2 Total Expenses 2026" },
+      "implied_monthly_burn_v1": { "value": 251536,   "note": "Total Expenses V1 / 12 — not a labeled row" },
+      "implied_monthly_burn_v2": { "value": 166566,   "note": "Total Expenses V2 / 12 — not a labeled row" }
+    },
+    "raise": { "value": 2000000, "evidence": "$2M pre-seed" },
+    "validation": {
+      "extraction_checks": [
+        { "metric_key": "revenue",   "expected_value": 3337000, "tolerance_pct": 10, "allowed_source_kinds": ["xlsx"], "note": "V1 proforma revenue must be extracted (even though it is projection)" },
+        { "metric_key": "burn_rate", "expected_value": 251536,  "tolerance_pct": 15, "allowed_source_kinds": ["xlsx", "structured_derived"], "note": "Implied monthly burn from V1 expenses" }
+      ],
+      "noise_checks": [
+        { "label": "$250 deck burn stored", "sql_filter": "metric_key = 'burn_rate' AND value BETWEEN 200 AND 300 AND source_kind = 'deck'", "expected_count": 0, "failure_layer": "extraction", "fix_ref": "Fix 6", "description": "$250 deck mention is a pricing/subscription value, not burn — Fix 6 must suppress it" }
+      ],
+      "report_checks": [
+        { "label": "current_state.burn_rate should NOT be deck $250", "report_path": ["financial_breakdown_v1", "current_state", "burn_rate", "source_kind"], "expected_string": "deck", "expected_absent": true, "failure_layer": "compiler" },
+        { "label": "current_state.revenue should reflect XLSX (proforma flagged)", "report_path": ["financial_breakdown_v1", "current_state", "revenue", "value"], "expected_value": 3337000, "tolerance_pct": 10, "note": "V1 proforma should be selected over deck" }
+      ]
+    }
+  }
 }

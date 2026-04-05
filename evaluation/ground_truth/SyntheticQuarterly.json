@@ -1,0 +1,133 @@
+{
+  "_schema": "ground_truth_v1",
+  "_status": "PLACEHOLDER — awaiting real deal ingestion",
+  "_coverage_rationale": "REF-DEAL-7: Company with quarterly actuals + annual forecast rows + mixed currency/unit labeling in the same XLSX workbook. Tests three failure modes that none of the existing 4 deals exercise: (1) quarterly period labels ('Q1 2024', 'Q3 2024 Actual') vs annual labels ('FY2025E') in identical columns — verifies the system builds correct period_type and picks LTM actuals, not Q1 data, for current state; (2) mixed unit labeling — one sheet in whole dollars, another sheet in $000s — verifies the scale-detection guard prevents a $3,200 (thousands) number from being stored as $3,200 instead of $3,200,000; (3) multi-currency — XLSX has USD revenue and GBP cost-of-goods at a stated exchange rate — verifies the system normalizes to USD before computing burn or gross margin.",
+  "_failure_modes_targeted": [
+    "Quarter-as-current: Q1 actual selected as current_state instead of most-recent LTM or trailing-twelve-months total",
+    "Quarter-inflation: four quarterly rows summed incorrectly into an annualized figure 4x actual revenue",
+    "Scale-mixing: one XLSX sheet using $000s denomination, another using whole dollars — both on the same workbook",
+    "Multi-currency: USD revenue sheet + GBP COGS sheet; burn_rate computed in wrong currency",
+    "Forward annual mixed with quarterly actuals: 'FY2025E' budget row adjacent to Q4 2024 actual — compiler prefers the budget year over the actual trailing data",
+    "Unit label guard miss: a row labeled 'Q3 2024 Revenue ($000s)' being extracted as revenue=Q3value instead of Q3value*1000"
+  ],
+  "_onboarding_status": "NOT STARTED — see evaluation/ground_truth/ONBOARDING_CHECKLIST.md",
+  "deal_name": "SyntheticQuarterly",
+  "deal_id": "__PLACEHOLDER__",
+  "slots": {
+    "company_description": "__FILL IN from deal product profile or pitch deck__",
+    "solution_summary": "__FILL IN__",
+    "target_customer": "__FILL IN__",
+    "product_type": "__FILL IN__",
+    "delivery_model": "__FILL IN__",
+    "product_maturity": "Scaling",
+    "ai_claims_present": "__FILL IN__",
+    "ai_evidence_strength": "__FILL IN__"
+  },
+  "financials": {
+    "_note": "Target shape: XLSX with columns 'Q1 2024', 'Q2 2024', 'Q3 2024', 'Q4 2024', 'FY2024 Actual', 'FY2025E' and at least two sheets — one revenue sheet in whole dollars, one cost sheet in $000s. fx_rate_note should record the stated USD/GBP exchange rate if present.",
+    "_required_xlsx_shape": {
+      "sheets_needed": ["Revenue (whole dollars)", "Costs ($000s)", "optionally: FX assumptions tab"],
+      "period_columns_revenue": ["Q1 2024", "Q2 2024", "Q3 2024", "Q4 2024", "FY2024 Actual", "FY2025E"],
+      "period_columns_costs":   ["Q1 2024 ($000s)", "Q2 2024 ($000s)", "Q3 2024 ($000s)", "Q4 2024 ($000s)", "FY2024 Actual ($000s)", "FY2025E ($000s)"],
+      "required_rows": ["Total Revenue", "Cost of Goods Sold", "Gross Profit", "Total Operating Expenses", "EBITDA"]
+    },
+    "_currency_note": "__FILL IN — state which sheets are USD vs GBP and the stated exchange rate if provided__",
+    "current_state": {
+      "revenue": {
+        "value": "__FILL IN — FY2024 Actual total revenue (full year, NOT one quarter, in USD whole dollars)__",
+        "source_kind": "xlsx",
+        "evidence": "__FILL IN — specify sheet name + row + column__",
+        "period_label": "FY2024 Actual"
+      },
+      "burn_rate": {
+        "value": "__FILL IN — FY2024 Actual total opex / 12 (in USD, after FX conversion if costs are in GBP)__",
+        "source_kind": "xlsx",
+        "evidence": "__FILL IN__"
+      },
+      "gross_margin_pct": {
+        "value": "__FILL IN — FY2024 Actual gross margin % (Revenue - COGS) / Revenue__",
+        "source_kind": "xlsx",
+        "evidence": "__FILL IN__"
+      }
+    },
+    "quarterly_actuals": {
+      "_note": "Record individual quarterly actual values here for reference — these should NOT appear as current_state values",
+      "q1_2024_revenue": { "value": "__FILL IN__", "evidence": "__FILL IN__" },
+      "q2_2024_revenue": { "value": "__FILL IN__", "evidence": "__FILL IN__" },
+      "q3_2024_revenue": { "value": "__FILL IN__", "evidence": "__FILL IN__" },
+      "q4_2024_revenue": { "value": "__FILL IN__", "evidence": "__FILL IN__" }
+    },
+    "forward_projections": {
+      "revenue_fy2025e": { "value": "__FILL IN__", "source_kind": "xlsx", "period_label": "FY2025E" }
+    },
+    "raise": { "value": "__FILL IN__", "evidence": "__FILL IN__" },
+    "validation": {
+      "_note": "The critical test here is that FY2024 Actual wins over Q4 2024 actual AND over FY2025E. All three may be present — verify the compiler's period_type labeling and truth-selection ordering is correct.",
+      "extraction_checks": [
+        {
+          "metric_key": "revenue",
+          "expected_value": "__FILL IN — FY2024 Actual total (full year)__",
+          "tolerance_pct": 10,
+          "allowed_source_kinds": ["xlsx"],
+          "period_label_hint": "FY2024 Actual",
+          "note": "Must be the full-year actual, not Q4-only or the FY2025E estimate"
+        },
+        {
+          "metric_key": "burn_rate",
+          "expected_value": "__FILL IN — monthly opex from FY2024 Actual ($000s sheet converted to USD)__",
+          "tolerance_pct": 15,
+          "allowed_source_kinds": ["xlsx", "structured_derived"],
+          "note": "Derived from costs sheet ($000s) with scale correction × 1000 and FX conversion if applicable"
+        }
+      ],
+      "noise_checks": [
+        {
+          "label": "Single-quarter revenue stored as current-state annual",
+          "sql_filter": "metric_key = 'revenue' AND period_label ILIKE 'Q% 2024' AND value > __FILL_IN_ANNUAL_THRESHOLD__",
+          "expected_count": 0,
+          "failure_layer": "compiler",
+          "description": "A quarterly revenue fact should never be stored with a value close to the full-year total. FILL_IN_ANNUAL_THRESHOLD should be ~75% of expected annual revenue."
+        },
+        {
+          "label": "$000s scale confusion: sub-1000 revenue row for a company with >$1M revenue",
+          "sql_filter": "metric_key = 'revenue' AND value < 1000 AND source_kind = 'xlsx'",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "If the cost sheet denomination is $000s and a revenue figure leaks from that sheet unscaled, it will appear orders-of-magnitude too small. Threshold: update if company revenue is legitimately sub-$1K."
+        },
+        {
+          "label": "FY2025E revenue promoted as current-state (forecast over actual)",
+          "sql_filter": "metric_key = 'revenue' AND period_label ILIKE '%2025E%' AND confidence = 'high'",
+          "expected_count": 0,
+          "failure_layer": "compiler",
+          "description": "Forecast estimate rows must not receive confidence=high — actual rows should dominate truth-selection"
+        }
+      ],
+      "report_checks": [
+        {
+          "label": "current_state.revenue must be FY2024 Actual (not quarterly, not forecast)",
+          "report_path": ["financial_breakdown_v1", "current_state", "revenue", "value"],
+          "expected_value": "__FILL IN — FY2024 Actual total__",
+          "tolerance_pct": 10,
+          "failure_layer": "compiler",
+          "note": "If system returns the FY2025E estimate or a single quarter, that is a temporal confusion failure"
+        },
+        {
+          "label": "current_state.revenue source_kind must be xlsx",
+          "report_path": ["financial_breakdown_v1", "current_state", "revenue", "source_kind"],
+          "expected_string": "xlsx",
+          "expected_absent": false,
+          "failure_layer": "compiler"
+        },
+        {
+          "label": "current_state.burn_rate must be USD-denominated (post-FX)",
+          "report_path": ["financial_breakdown_v1", "current_state", "burn_rate", "value"],
+          "expected_value": "__FILL IN — USD burn rate__",
+          "tolerance_pct": 20,
+          "failure_layer": "compiler",
+          "note": "Wider tolerance here to allow for FX conversion variance; the key test is magnitude — GBP-only burn would be ~1.25x lower"
+        }
+      ]
+    }
+  }
+}

@@ -82,6 +82,22 @@ REFERENCE_DEALS: dict[str, dict] = {
         "deal_id":          "b21b894e-4020-46bd-b753-93b2d2d5fa8f",
         "ground_truth_file": "Qredible.json",
     },
+    # ── Scaffold deals — NOT YET ACTIVE ──────────────────────────────────────
+    # Uncomment and fill in deal_id when onboarding is complete.
+    # See evaluation/ground_truth/ONBOARDING_CHECKLIST.md for the full procedure.
+    #
+    # "SyntheticActuals": {        # REF-DEAL-5: actuals + forecast in same XLSX
+    #     "deal_id":           "__PLACEHOLDER__",
+    #     "ground_truth_file": "SyntheticActuals.json",
+    # },
+    # "SyntheticKPI": {            # REF-DEAL-6: deck-only with pricing traps
+    #     "deal_id":           "__PLACEHOLDER__",
+    #     "ground_truth_file": "SyntheticKPI.json",
+    # },
+    # "SyntheticQuarterly": {      # REF-DEAL-7: quarterly actuals + mixed currency
+    #     "deal_id":           "__PLACEHOLDER__",
+    #     "ground_truth_file": "SyntheticQuarterly.json",
+    # },
 }
 
 # ─── DB helpers ───────────────────────────────────────────────────────────────

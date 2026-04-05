@@ -1,0 +1,114 @@
+{
+  "_schema": "ground_truth_v1",
+  "_status": "PLACEHOLDER — awaiting real deal ingestion",
+  "_coverage_rationale": "REF-DEAL-6: Deck-only company (no XLSX) with a dense KPI slide and multiple pricing traps. Tests the system's ability to read a KPI-heavy deck without mistaking pricing tiers, license fees, or market-size numbers for company revenue. The existing deck-only deal (Qredible) has only a few key figures; this profile targets a deck with 4+ pricing mentions, a competitor comparison table, and a market size slide all on the same page as the traction KPIs. It also exercises multi-metric traction: DAU, WAU, paid users, MRR, LTV, CAC — verifying the system picks the right fields for each metric_key rather than the highest-value number.",
+  "_failure_modes_targeted": [
+    "Pricing trap: '$99/month per seat' becoming burn_rate or revenue via deck NLP",
+    "Market size trap: '$4.2B TAM' promoted to revenue by a deck fact labeler that sees a large dollar figure",
+    "Competitor ARR trap: deck says 'Competitor X does $50M ARR' — system assigns that as company ARR",
+    "LTV/CAC trap: '$1,200 LTV' vs '$120 CAC' — LTV inflated to MRR or ARR",
+    "Multi-currency: deck mixes USD MRR with GBP-denominated enterprise contract values — both must map to the same currency",
+    "Wrong MRR selection: deck lists 3 MRR figures (total, recurring, expansion) — system must pick total MRR not the highest"
+  ],
+  "_onboarding_status": "NOT STARTED — see evaluation/ground_truth/ONBOARDING_CHECKLIST.md",
+  "deal_name": "SyntheticKPI",
+  "deal_id": "__PLACEHOLDER__",
+  "slots": {
+    "company_description": "__FILL IN from deal product profile or pitch deck__",
+    "solution_summary": "__FILL IN__",
+    "target_customer": "__FILL IN__",
+    "product_type": "__FILL IN__",
+    "delivery_model": "SaaS",
+    "product_maturity": "__FILL IN__",
+    "ai_claims_present": "__FILL IN__",
+    "ai_evidence_strength": "__FILL IN__"
+  },
+  "financials": {
+    "_note": "Target shape: PDF deck only, no XLSX. Deck must have: (1) a KPI slide with at least 3 traction metrics (e.g. MRR, paid users, ARR), (2) a pricing page with multiple price points, (3) a competitor comparison table with competitor revenue/ARR figures, (4) a market opportunity slide with TAM/SAM/SOM figures. The 'correct' company financials come ONLY from the traction slide — all other figures are noise.",
+    "_required_deck_shape": {
+      "slides_needed": ["Traction / KPIs slide", "Pricing slide", "Market size / TAM slide", "Competitive landscape slide"],
+      "traction_kpis": ["__FILL IN — list the KPI tiles that should be extracted__"],
+      "pricing_traps": ["__FILL IN — list every price point on the pricing slide__"],
+      "market_numbers": ["__FILL IN — list TAM/SAM/SOM dollar figures__"],
+      "competitor_numbers": ["__FILL IN — list any competitor revenue/ARR figures shown in deck__"]
+    },
+    "current_state": {
+      "mrr":      { "value": "__FILL IN — total MRR from traction slide__", "source_kind": "kpi_tile", "evidence": "__FILL IN__" },
+      "arr":      { "value": "__FILL IN — mrr * 12 or explicit ARR if stated__", "source_kind": "kpi_tile", "evidence": "__FILL IN__" },
+      "revenue":  { "value": null, "evidence": "No historical revenue actuals in deck — MRR and ARR are KPI metrics. revenue field should be null or equal to MRR if system promotes it." },
+      "burn_rate": { "value": null, "evidence": "__FILL IN — if no burn data in deck, must be null; if deck mentions monthly opex, record it here__" }
+    },
+    "known_noise": {
+      "pricing_page_values":    { "evidence": "__FILL IN — list pricing tier values that must NOT appear as burn_rate or revenue__" },
+      "tam_saw_values":         { "evidence": "__FILL IN — list market-size figures that must NOT appear as company revenue or ARR__" },
+      "competitor_arr_values":  { "evidence": "__FILL IN — list competitor revenue/ARR figures from competitive landscape slide__" },
+      "ltv_cac_values":         { "evidence": "__FILL IN — list LTV/CAC values from deck (must not become revenue or MRR)__" }
+    },
+    "raise": { "value": "__FILL IN__", "evidence": "__FILL IN__" },
+    "validation": {
+      "_note": "Every noise_check here corresponds to a specific pricing trap or market-size trap on a specific deck slide. Fill in after reviewing actual deck.",
+      "extraction_checks": [
+        {
+          "metric_key": "mrr",
+          "expected_value": "__FILL IN — traction slide MRR (integer dollars)__",
+          "tolerance_pct": 15,
+          "allowed_source_kinds": ["kpi_tile", "deck"],
+          "note": "Traction-slide MRR — must not be contaminated by pricing page or competitor data"
+        },
+        {
+          "metric_key": "arr",
+          "expected_value": "__FILL IN — traction slide ARR or mrr*12__",
+          "tolerance_pct": 15,
+          "allowed_source_kinds": ["kpi_tile", "deck"],
+          "note": "If deck states ARR explicitly, use that. Otherwise compute mrr*12 as expected_value."
+        }
+      ],
+      "noise_checks": [
+        {
+          "label": "Pricing trap 1 — tier price stored as revenue",
+          "sql_filter": "metric_key = 'revenue' AND value = __FILL_IN_PRICE_TIER_1__",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "__FILL IN — e.g. '$99/month' from pricing slide must not appear as revenue fact__"
+        },
+        {
+          "label": "Pricing trap 2 — tier price stored as burn_rate",
+          "sql_filter": "metric_key = 'burn_rate' AND value = __FILL_IN_PRICE_TIER_2__",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "__FILL IN — e.g. '$299/seat/month' pricing tier must not appear as burn_rate__"
+        },
+        {
+          "label": "TAM/market-size stored as company revenue",
+          "sql_filter": "metric_key IN ('revenue','arr') AND value > __FILL_IN_TAM_LOWER_BOUND__",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "__FILL IN — any figure larger than company ARR by >10x is likely a market-size value; set FILL_IN_TAM_LOWER_BOUND to 10x expected ARR__"
+        },
+        {
+          "label": "Competitor ARR stored as company ARR",
+          "sql_filter": "metric_key = 'arr' AND value = __FILL_IN_COMPETITOR_ARR__",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "__FILL IN — competitor revenue figure from competitive landscape slide__"
+        }
+      ],
+      "report_checks": [
+        {
+          "label": "current_state.mrr should be traction-slide MRR",
+          "report_path": ["financial_breakdown_v1", "current_state", "mrr", "value"],
+          "expected_value": "__FILL IN — same as extraction_checks[0].expected_value__",
+          "tolerance_pct": 15,
+          "failure_layer": "compiler"
+        },
+        {
+          "label": "current_state.revenue must not be a market-size figure",
+          "report_path": ["financial_breakdown_v1", "current_state", "revenue", "value"],
+          "expected_value": null,
+          "failure_layer": "compiler",
+          "note": "If revenue is null in deck (traction is MRR-based), current_state.revenue should be null. Update to the correct value if deal has an explicit revenue figure."
+        }
+      ]
+    }
+  }
+}

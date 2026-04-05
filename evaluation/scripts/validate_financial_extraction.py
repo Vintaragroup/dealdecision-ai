@@ -82,22 +82,23 @@ REFERENCE_DEALS: dict[str, dict] = {
         "deal_id":          "b21b894e-4020-46bd-b753-93b2d2d5fa8f",
         "ground_truth_file": "Qredible.json",
     },
-    # ── Scaffold deals — NOT YET ACTIVE ──────────────────────────────────────
-    # Uncomment and fill in deal_id when onboarding is complete.
-    # See evaluation/ground_truth/ONBOARDING_CHECKLIST.md for the full procedure.
-    #
-    # "SyntheticActuals": {        # REF-DEAL-5: actuals + forecast in same XLSX
-    #     "deal_id":           "__PLACEHOLDER__",
-    #     "ground_truth_file": "SyntheticActuals.json",
-    # },
-    # "SyntheticKPI": {            # REF-DEAL-6: deck-only with pricing traps
-    #     "deal_id":           "__PLACEHOLDER__",
-    #     "ground_truth_file": "SyntheticKPI.json",
-    # },
-    # "SyntheticQuarterly": {      # REF-DEAL-7: quarterly actuals + mixed currency
-    #     "deal_id":           "__PLACEHOLDER__",
-    #     "ground_truth_file": "SyntheticQuarterly.json",
-    # },
+    # ── Synthetic fixture deals ───────────────────────────────────────────────
+    # These have no live DB row. The validate script runs spec coherence checks
+    # (Layer 0) instead of DB / API checks.
+    # Behavioral assertions live in the corresponding Vitest test file.
+    # See evaluation/ground_truth/ONBOARDING_CHECKLIST.md.
+    "SyntheticActuals": {        # REF-DEAL-5: actuals + forecast in same XLSX
+        "deal_id":           "00000000-0000-4000-8000-000000000001",
+        "ground_truth_file": "SyntheticActuals.json",
+    },
+    "SyntheticKPI": {            # REF-DEAL-6: deck-only with KPI tiles and heavy noise
+        "deal_id":           "00000000-0000-4000-8000-000000000002",
+        "ground_truth_file": "SyntheticKPI.json",
+    },
+    "SyntheticQuarterly": {      # REF-DEAL-7: quarterly actuals + mixed denomination + GBP burn
+        "deal_id":           "00000000-0000-4000-8000-000000000003",
+        "ground_truth_file": "SyntheticQuarterly.json",
+    },
 }
 
 # ─── DB helpers ───────────────────────────────────────────────────────────────
@@ -323,6 +324,84 @@ def check_report_field(
     return False, obj, "FAIL — no valid comparison criteria configured"
 
 
+# ─── Spec coherence checks (synthetic fixture mode) ──────────────────────────
+
+_PLACEHOLDER_MARKERS = ("__FILL", "__PLACEHOLDER", "FILL IN")
+
+
+def _is_placeholder(v: Any) -> bool:
+    """Return True if the value looks like an unfilled placeholder."""
+    if v is None:
+        return False
+    if isinstance(v, str):
+        return any(m in v for m in _PLACEHOLDER_MARKERS)
+    return False
+
+
+def check_spec_coherence(gt: dict) -> list[tuple[bool, str, str]]:
+    """
+    Layer 0 — SPEC COHERENCE (synthetic fixture mode)
+
+    Verifies that all check specs in the ground truth JSON are fully populated
+    (no remaining __FILL IN__ placeholders, concrete expected_values, valid paths).
+
+    Returns a list of (passed, label, message) tuples.
+    """
+    results: list[tuple[bool, str, str]] = []
+    validation = (gt.get("financials") or {}).get("validation") or {}
+
+    for i, chk in enumerate(validation.get("extraction_checks", [])):
+        metric = chk.get("metric_key", f"#check{i}")
+        label = f"[SPEC] extraction_checks[{i}] {metric}"
+        ev = chk.get("expected_value")
+        if _is_placeholder(ev):
+            results.append((False, label, f"FAIL — expected_value is still a placeholder: {ev!r}"))
+        elif ev is None and chk.get("note", "").lower().find("absent") == -1:
+            results.append((False, label, "FAIL — expected_value is null without an 'absent' intent note"))
+        elif not isinstance(ev, (int, float)) and ev is not None:
+            results.append((False, label, f"FAIL — expected_value must be numeric, got {type(ev).__name__}: {ev!r}"))
+        else:
+            results.append((True, label, f"PASS — expected_value={ev} (concrete)"))
+
+    for i, chk in enumerate(validation.get("noise_checks", [])):
+        lab = chk.get("label", f"#noise{i}")
+        label = f"[SPEC] noise_checks[{i}] '{lab}'"
+        sql = chk.get("sql_filter", "")
+        if not sql or _is_placeholder(sql):
+            results.append((False, label, f"FAIL — sql_filter is empty or placeholder: {sql!r}"))
+        else:
+            results.append((True, label, f"PASS — sql_filter is concrete"))
+
+    for i, chk in enumerate(validation.get("report_checks", [])):
+        lab = chk.get("label", f"#report{i}")
+        label = f"[SPEC] report_checks[{i}] '{lab}'"
+        path = chk.get("report_path", [])
+        ev = chk.get("expected_value")
+        es = chk.get("expected_string")
+        absent = chk.get("expected_absent", False)
+
+        if not path:
+            results.append((False, label, "FAIL — report_path is empty"))
+            continue
+        if _is_placeholder(ev) or _is_placeholder(es):
+            results.append((False, label, f"FAIL — expected_value or expected_string is a placeholder"))
+            continue
+        if ev is None and es is None and not absent and not (ev is None and not es and not absent):
+            results.append((False, label, "FAIL — no expected_value, expected_string, or expected_absent=True defined"))
+            continue
+        results.append((True, label, f"PASS — report_path={path}, criteria defined"))
+
+    # Confirm deal_id and _synthetic flag are present
+    deal_id = gt.get("deal_id", "")
+    label_id = "[SPEC] deal_id is concrete"
+    if not deal_id or _is_placeholder(deal_id):
+        results.append((False, label_id, f"FAIL — deal_id is placeholder or missing: {deal_id!r}"))
+    else:
+        results.append((True, label_id, f"PASS — deal_id={deal_id}"))
+
+    return results
+
+
 # ─── Per-deal runner ──────────────────────────────────────────────────────────
 
 LAYER_LABEL = {
@@ -366,6 +445,35 @@ def run_deal_validation(
     validation = (gt.get("financials") or {}).get("validation")
     if not validation:
         result["error"] = "No 'financials.validation' section in ground truth file"
+        return result
+
+    # ── Synthetic fixture mode ─────────────────────────────────────────────────
+    # When a ground truth file has "_synthetic": true, the deal has no live DB row.
+    # Skip DB/API checks; run spec coherence (Layer 0) instead.
+    if gt.get("_synthetic"):
+        coherence_results = check_spec_coherence(gt)
+        for passed, label, message in coherence_results:
+            tag = "PASS" if passed else "FAIL"
+            result["findings"].append({
+                "label":   label,
+                "layer":   "L0-SPEC",
+                "status":  tag,
+                "value":   None,
+                "message": message,
+                "note":    "synthetic fixture — no live DB row",
+            })
+            if passed:
+                result["pass_count"] += 1
+            else:
+                result["fail_count"] += 1
+        result["findings"].append({
+            "label":   "[INFO] Behavioral tests",
+            "layer":   "L0-SPEC",
+            "status":  "INFO",
+            "value":   None,
+            "message": "Behavioral validation in apps/worker/src/lib/financial-facts/__tests__/synthetic-actuals-fixture.test.ts",
+            "note":    "Run: pnpm vitest run --testPathPattern synthetic-actuals-fixture",
+        })
         return result
 
     # Fetch report once per deal
@@ -433,7 +541,7 @@ def run_deal_validation(
 # ─── Markdown report ──────────────────────────────────────────────────────────
 
 LAYER_ORDER = ["L1-EXTRACTION", "L2-NOISE", "L2-TRUTH", "L3-COMPILER", "L4-SCORING"]
-STATUS_EMOJI = {"PASS": "✅", "FAIL": "❌"}
+STATUS_EMOJI = {"PASS": "✅", "FAIL": "❌", "INFO": "ℹ️"}
 
 
 def format_deal_section(r: dict) -> str:

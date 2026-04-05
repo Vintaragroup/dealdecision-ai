@@ -1,0 +1,105 @@
+{
+  "deal_id": "05042123-6c4f-4dcb-9131-a95fce3cd28c",
+  "deal_name": "ToxyScreen",
+  "mode": "deal_understanding_audit",
+  "source_type": "pdf_only",
+  "_synthetic": false,
+
+  "ground_truth": {
+    "what_company_does": "Provides a non-invasive oral fluid test to detect lead exposure, replacing traditional blood-based testing methods.",
+
+    "business_model": "Medical device / diagnostic testing (B2B healthcare / public sector)",
+
+    "revenue_model": "Likely revenue from sale of test kits and/or lab processing services (not explicitly stated in deck)",
+
+    "go_to_market": "Institutional distribution through schools, public health programs, Medicaid programs, and healthcare providers",
+
+    "target_customer": "Children requiring lead testing, with buyers including public health agencies, schools, and healthcare providers",
+
+    "traction_summary": "No explicit traction metrics provided; deck focuses on problem scale and solution benefits",
+
+    "market_positioning": "Positions itself as a solution to low compliance in mandated lead testing due to barriers in traditional blood testing",
+
+    "competitive_differentiation": "Non-invasive testing, easier collection, reduced cost, no medical waste, and higher claimed accuracy versus blood testing",
+
+    "key_strengths": [
+      "Clear and urgent public health problem",
+      "Non-invasive solution reduces friction and increases compliance",
+      "Strong usability advantages (no needles, no trained staff required)",
+      "Can be deployed in decentralized environments (schools, community sites)"
+    ],
+
+    "key_risks": [
+      "No clear revenue model presented",
+      "No traction or adoption metrics",
+      "Requires regulatory approval and clinical validation",
+      "Accuracy claims may require strong evidence to be trusted",
+      "Go-to-market execution dependent on government and institutional adoption"
+    ],
+
+    "investor_relevance_notes": [
+      "This is a regulated medical/diagnostic product, not a typical SaaS business",
+      "Primary risk is validation and adoption, not technology alone",
+      "Distribution likely requires partnerships with healthcare systems or public agencies",
+      "Market is large but access is policy-driven"
+    ]
+  },
+
+  "validation": {
+    "_schema": "deal_understanding_audit_v1",
+    "understanding_checks": [
+      {
+        "label": "business_model identifies medical, diagnostic, or testing product",
+        "field": "business_model",
+        "check_type": "contains_any",
+        "expected_terms": ["medical", "testing", "diagnostic", "health", "drug"],
+        "layer": "L1-FIDELITY"
+      },
+      {
+        "label": "what_company_does identifies testing or screening product",
+        "field": "what_company_does",
+        "check_type": "contains_any",
+        "expected_terms": ["test", "screen", "detect", "drug", "toxicology", "medical"],
+        "layer": "L1-FIDELITY"
+      }
+    ],
+
+    "consistency_checks": [
+      {
+        "label": "business_model and revenue_model are both populated",
+        "check_type": "both_non_empty",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "layer": "L2-UNDERSTANDING"
+      }
+    ],
+
+    "hallucination_checks": [
+      {
+        "label": "business_model does not incorrectly claim SaaS",
+        "field": "business_model",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["saas", "subscription platform", "monthly saas"],
+        "layer": "L4-HALLUCINATION"
+      },
+      {
+        "label": "traction_summary does not invent ARR or MRR metrics",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["arr mentioned", "mrr mentioned", "customers paying"],
+        "layer": "L4-HALLUCINATION"
+      }
+    ],
+
+    "completeness_checks": [
+      { "label": "what_company_does is populated", "field": "what_company_does", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "business_model is populated", "field": "business_model", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "revenue_model is populated", "field": "revenue_model", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "go_to_market is populated", "field": "go_to_market", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "target_customer is populated", "field": "target_customer", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "traction_summary is populated", "field": "traction_summary", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "market_positioning is populated", "field": "market_positioning", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "competitive_differentiation is populated", "field": "competitive_differentiation", "check_type": "not_empty", "layer": "L5-COMPLETENESS" }
+    ]
+  }
+}

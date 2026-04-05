@@ -1,0 +1,106 @@
+{
+  "deal_id": "bcd59d33-7887-41cd-80b9-742bc5ba945a",
+  "deal_name": "Verse",
+  "mode": "deal_understanding_audit",
+  "source_type": "pdf_only",
+  "_synthetic": false,
+
+  "ground_truth": {
+    "what_company_does": "A premium non-alcoholic functional beverage designed for social settings as a healthier alternative to alcohol and mixers.",
+
+    "business_model": "Consumer packaged goods (CPG) company selling beverages through on-premise venues and retail distribution",
+
+    "revenue_model": "Per-unit beverage sales to venues and distributors, with revenue driven by product velocity and repeat purchases",
+
+    "go_to_market": "Direct sales to nightlife venues and hospitality operators followed by expansion through distributors and retail channels",
+
+    "target_customer": "Hospitality venues such as nightclubs, restaurants, and hotels, with end consumers being health-conscious social drinkers",
+
+    "traction_summary": "Early traction with approximately $100K run-rate, initial venue adoption, and product usage in high-end venues, but most forward revenue is based on LOIs and pipeline rather than realized sales",
+
+    "market_positioning": "Premium healthy social beverage positioned as a replacement or complement to alcohol in social environments",
+
+    "competitive_differentiation": "Combination of functional ingredients, premium branding, and positioning as a status-enhancing non-alcoholic beverage",
+
+    "key_strengths": [
+      "Clear wedge into nightlife and premium on-premise venues",
+      "Early signs of product-market fit through venue usage",
+      "Strong founder network in hospitality and nightlife",
+      "Premium branding and positioning aligned with target demographic"
+    ],
+
+    "key_risks": [
+      "Low actual revenue relative to projected pipeline",
+      "Reliance on LOIs and projected sales rather than confirmed revenue",
+      "Highly competitive beverage market with low barriers to entry",
+      "Unproven repeat purchase behavior at scale",
+      "Distribution execution risk"
+    ],
+
+    "investor_relevance_notes": [
+      "This is an early-stage CPG company with initial traction but limited revenue scale",
+      "Key question is whether venue-level demand translates into repeatable consumer demand",
+      "Pipeline and LOIs should not be treated as realized revenue",
+      "Success depends heavily on distribution and brand strength",
+      "Unit economics and margins are not clearly defined in the deck"
+    ]
+  },
+
+  "validation": {
+    "_schema": "deal_understanding_audit_v1",
+    "understanding_checks": [
+      {
+        "label": "business_model identifies CPG / beverage / consumer product",
+        "field": "business_model",
+        "check_type": "contains_any",
+        "expected_terms": ["beverage", "cpg", "consumer", "product", "brand", "wholesale"],
+        "layer": "L1-FIDELITY"
+      },
+      {
+        "label": "go_to_market identifies on-premise or hospitality channel",
+        "field": "go_to_market",
+        "check_type": "contains_any",
+        "expected_terms": ["venue", "restaurant", "nightclub", "hospitality", "on-premise", "bar"],
+        "layer": "L1-FIDELITY"
+      }
+    ],
+
+    "consistency_checks": [
+      {
+        "label": "business_model and revenue_model are both populated",
+        "check_type": "both_non_empty",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "layer": "L2-UNDERSTANDING"
+      }
+    ],
+
+    "hallucination_checks": [
+      {
+        "label": "traction_summary does not treat LOIs as realized revenue",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["$4m revenue", "secured revenue"],
+        "layer": "L4-HALLUCINATION"
+      },
+      {
+        "label": "traction_summary does not claim pipeline as achieved revenue",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["$9m revenue achieved", "pipeline revenue"],
+        "layer": "L4-HALLUCINATION"
+      }
+    ],
+
+    "completeness_checks": [
+      { "label": "what_company_does is populated", "field": "what_company_does", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "business_model is populated", "field": "business_model", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "revenue_model is populated", "field": "revenue_model", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "go_to_market is populated", "field": "go_to_market", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "target_customer is populated", "field": "target_customer", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "traction_summary is populated", "field": "traction_summary", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "market_positioning is populated", "field": "market_positioning", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
+      { "label": "competitive_differentiation is populated", "field": "competitive_differentiation", "check_type": "not_empty", "layer": "L5-COMPLETENESS" }
+    ]
+  }
+}

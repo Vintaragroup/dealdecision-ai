@@ -25,6 +25,13 @@ export type FinancialCoverageProfileV1 = {
     source_path?: string;
     snippet?: string;
   }>>;
+  /**
+   * Normalized 0–100 coverage quality score.
+   * Derived from coverage flag count (out of 8) weighted by confidence level.
+   * confidence_mult: high=1.0, medium=0.85, low=0.65.
+   * Used by the report compiler to blend financial data quality into overallScore.
+   */
+  score?: number;
   notes?: string[];
 };
 
@@ -364,6 +371,17 @@ export function inferFinancialCoverageProfileV1(input: {
   if (hasXlsx) notes.push('xlsx_present');
   if (usedXlsxPath || usedXlsxFacts) notes.push('xlsx_evidence_used');
   if (notes.length > 0) out.notes = notes;
+
+  // Compute normalized coverage quality score 0–100 (Fix 15)
+  // Weighted by confidence: high=1.0, medium=0.85, low=0.65
+  const _COVERAGE_SCORE_KEYS: (keyof FinancialCoverageProfileV1['coverage'])[] = [
+    'historical_revenue_present', 'forecast_revenue_present', 'income_statement_present',
+    'burn_rate_present', 'runway_present', 'unit_economics_present',
+    'balance_sheet_present', 'cash_flow_present',
+  ];
+  const _trueFlags = _COVERAGE_SCORE_KEYS.filter((k) => out.coverage[k]).length;
+  const _CONF_MULT: Record<string, number> = { high: 1.0, medium: 0.85, low: 0.65 };
+  out.score = Math.round((_trueFlags / _COVERAGE_SCORE_KEYS.length) * 100 * (_CONF_MULT[out.confidence] ?? 0.65));
 
   return out;
 }

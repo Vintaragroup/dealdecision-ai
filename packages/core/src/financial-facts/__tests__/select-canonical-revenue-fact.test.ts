@@ -581,8 +581,10 @@ describe('detectProformaModelFactIds — proforma model detection', () => {
 describe('selectCanonicalRevenueFact — multi-year proforma model detection (Fix 11 / DealDecision)', () => {
   const currentYear = new Date().getFullYear();
 
-  test('[DealDecision regression] 2026/2027/2028 proforma model → undefined for current_state', () => {
-    // Simulates DealDecision: "Proforma Income Statement V2.xlsx" with only projected years
+  test('[Fix 14 / Tier D] 2026/2027/2028 proforma model → earliest proforma year surfaced', () => {
+    // Simulates DealDecision: "Proforma Income Statement V2.xlsx" with 2026/2027/2028 facts.
+    // Fix 11 originally returned undefined; Fix 14 (Tier D) surfaces the 2026 proforma
+    // fact so the UI shows a labelled projection instead of null revenue.
     const rev0 = fact('revenue', 3_337_000, {
       source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
       // temporal_scope absent (null in DB from stale extraction)
@@ -593,8 +595,12 @@ describe('selectCanonicalRevenueFact — multi-year proforma model detection (Fi
     const rev2 = fact('revenue', 35_778_000, {
       source_kind: 'xlsx', period_label: String(currentYear + 2), period_type: 'annual',
     });
-    // All facts are from a proforma model — current_state must not surface any of them
-    expect(selectCanonicalRevenueFact([rev0, rev1, rev2])).toBeUndefined();
+    // Tier D fires: returns earliest proforma year (currentYear = $3,337,000)
+    const result = selectCanonicalRevenueFact([rev0, rev1, rev2]);
+    expect(result).toBeDefined();
+    expect(result?.value).toBe(3_337_000);
+    expect(result?.period_label).toBe(String(currentYear));
+    expect(result?.source_kind).toBe('xlsx');
   });
 
   test('historical actual (prior year) survives when multi-year proforma model detected', () => {
@@ -643,5 +649,96 @@ describe('selectCanonicalRevenueFact — multi-year proforma model detection (Fi
     expect(result).toBeDefined();
     expect(result?.source_kind).toBe('kpi_tile');
     expect(result?.value).toBe(23_000);
+  });
+});
+
+// ─── Fix 14: Tier D proforma fallback — DealDecision pattern ─────────────────
+
+describe('selectCanonicalRevenueFact — Tier D proforma fallback (Fix 14 / DealDecision)', () => {
+  const currentYear = new Date().getFullYear();
+
+  test('[Tier D] 2026/2027/2028 xlsx annual returns 2026 (earliest proforma year)', () => {
+    // Core DealDecision fixture: three proforma xlsx annual facts with no historical actuals.
+    // Tiers A/B/C all return undefined because the 2026 fact is proforma (excluded by
+    // detectProformaModelFactIds) and 2027/2028 are projected (excluded by requireNonProjected).
+    // Tier D must surface the 2026 fact as the best available revenue proxy.
+    const rev2026 = fact('revenue', 3_337_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual', confidence: 'medium',
+    });
+    const rev2027 = fact('revenue', 15_502_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 1), period_type: 'annual', confidence: 'medium',
+    });
+    const rev2028 = fact('revenue', 35_778_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 2), period_type: 'annual', confidence: 'medium',
+    });
+    const result = selectCanonicalRevenueFact([rev2026, rev2027, rev2028]);
+    expect(result).toBeDefined();
+    expect(result?.value).toBe(3_337_000);
+    expect(result?.period_label).toBe(String(currentYear));
+    expect(result?.source_kind).toBe('xlsx');
+  });
+
+  test('[Tier D] among tied source/confidence, picks earliest year (most conservative)', () => {
+    // Tier D year-rank discriminator: when two proforma facts exist with same source/confidence,
+    // the one with the earlier calendar year (closest to current period) wins.
+    const olderProforma = fact('revenue', 2_000_000, {
+      source_kind: 'xlsx', period_label: `FY${currentYear}`, period_type: 'annual', confidence: 'medium',
+    });
+    const newerProjected = fact('revenue', 5_000_000, {
+      source_kind: 'xlsx', period_label: `FY${currentYear + 1}`, period_type: 'annual', confidence: 'medium',
+    });
+    // olderProforma (currentYear) is the only proforma fact; newerProjected is future-year.
+    // Tier D returns olderProforma since it's the only one in proformaFacts.
+    const result = selectCanonicalRevenueFact([olderProforma, newerProjected]);
+    expect(result).toBeDefined();
+    expect(result?.value).toBe(2_000_000);
+    expect(result?.period_label).toBe(`FY${currentYear}`);
+  });
+
+  test('[Tier D no-fire] projection-only model with NO current-year fact → undefined', () => {
+    // Future-only facts (no current-year xlsx annual) → proformaModelFactIds is empty
+    // → Tier D does NOT fire → correctly returns undefined.
+    const future1 = fact('revenue', 3_000_000, {
+      source_kind: 'xlsx', period_label: `FY${currentYear + 1}`, period_type: 'annual',
+    });
+    const future2 = fact('revenue', 6_000_000, {
+      source_kind: 'xlsx', period_label: `FY${currentYear + 2}`, period_type: 'annual',
+    });
+    expect(selectCanonicalRevenueFact([future1, future2])).toBeUndefined();
+  });
+
+  test('[Tier D no-fire] StackFactor kpi_tile pattern → Tier B wins, Tier D never fires', () => {
+    // StackFactor: kpi_tile 'current' + xlsx quarterly unknowns — no annual current-year fact.
+    // detectProformaModelFactIds gets non-monthly facts which are quarterly unknowns;
+    // hasFutureXlsxAnnualFact = false (no annual period_type). proformaModelFactIds is empty.
+    // Tier B returns kpi_tile. Tier D never fires. Regression guard.
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile', period_label: 'current', period_type: 'unknown',
+      confidence: 'medium', unit: 'number',
+    });
+    const q4 = fact('revenue', 21_750, {
+      source_kind: 'xlsx', period_label: '4Q2026', period_type: 'unknown',
+    });
+    const result = selectCanonicalRevenueFact([kpi, q4]);
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+
+  test('[Tier D no-fire] historical actual present → Tier A wins, Tier D skipped', () => {
+    // When a historical fact (prior year actuals) is present alongside proforma years,
+    // Tier A selects the historical fact first. Tier D must NOT fire.
+    const historical = fact('revenue', 2_500_000, {
+      source_kind: 'xlsx', period_label: String(currentYear - 1), period_type: 'annual',
+      temporal_scope: 'historical',
+    });
+    const proformaCurrent = fact('revenue', 3_337_000, {
+      source_kind: 'xlsx', period_label: String(currentYear), period_type: 'annual',
+    });
+    const proformaFuture = fact('revenue', 15_502_000, {
+      source_kind: 'xlsx', period_label: String(currentYear + 1), period_type: 'annual',
+    });
+    const result = selectCanonicalRevenueFact([historical, proformaCurrent, proformaFuture]);
+    expect(result?.value).toBe(2_500_000);
+    expect(result?.period_label).toBe(String(currentYear - 1));
   });
 });

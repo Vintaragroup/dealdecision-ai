@@ -1178,3 +1178,76 @@ describe('Phase 2 — Backward compatibility: existing FinancialMetricPoint fiel
     expect(typeof rev?.source_kind).toBe('string');
   });
 });
+
+// ─── Fix 14: proforma-only XLSX model (DealDecision pattern) ─────────────────
+
+describe('buildFinancialBreakdownV1 — proforma-only XLSX model (Fix 14 / DealDecision)', () => {
+  const currentYear = new Date().getFullYear();
+
+  function proformaFact(metric_key: string, value: number, year: number): ReturnType<typeof fact> {
+    return fact(metric_key, value, {
+      source_kind: 'xlsx',
+      period_label: String(year),
+      period_type: 'annual',
+      confidence: 'medium',
+      // temporal_scope absent — same as DealDecision DB state after stale extraction
+    });
+  }
+
+  let bd: ReturnType<typeof buildFinancialBreakdownV1>;
+  beforeEach(() => {
+    bd = buildFinancialBreakdownV1({
+      financial_facts: [
+        proformaFact('revenue', 3_337_000, currentYear),
+        proformaFact('revenue', 15_502_000, currentYear + 1),
+        proformaFact('revenue', 35_778_000, currentYear + 2),
+        // Burn rate: structured_derived 2026 — must be preserved
+        fact('burn_rate', 251_536, {
+          source_kind: 'structured_derived',
+          period_label: String(currentYear),
+          period_type: 'monthly',
+          confidence: 'medium',
+          is_derived: true,
+        }),
+      ],
+      financial_coverage_v1: xlsxCoverage({ forecast_revenue_present: true }),
+    });
+  });
+
+  test('current_state.revenue is defined (not null)', () => {
+    expect(bd.current_state.revenue).toBeDefined();
+  });
+
+  test('current_state.revenue.value is the earliest proforma year ($3,337,000)', () => {
+    expect(bd.current_state.revenue?.value).toBe(3_337_000);
+  });
+
+  test('current_state.revenue.is_projected is true', () => {
+    expect(bd.current_state.revenue?.is_projected).toBe(true);
+  });
+
+  test('current_state.revenue.is_provisional is true', () => {
+    expect(bd.current_state.revenue?.is_provisional).toBe(true);
+  });
+
+  test('current_state.revenue.selection_reason is proforma_projection_fallback', () => {
+    expect(bd.current_state.revenue?.selection_reason).toBe('proforma_projection_fallback');
+  });
+
+  test('has_current_state is true (proforma revenue counts as financial state)', () => {
+    expect(bd.has_current_state).toBe(true);
+  });
+
+  test('burn_rate structured_derived fact is preserved', () => {
+    expect(bd.current_state.burn_rate?.value).toBe(251_536);
+    expect(bd.current_state.burn_rate?.source_kind).toBe('structured_derived');
+  });
+
+  test('current_state.revenue.period_label is the current year', () => {
+    expect(bd.current_state.revenue?.period_label).toBe(String(currentYear));
+  });
+
+  test('current_state.revenue.source_kind is xlsx', () => {
+    expect(bd.current_state.revenue?.source_kind).toBe('xlsx');
+  });
+});

@@ -55,6 +55,48 @@ describe("extractDeckFinancialSignalsV1 — ARR_MRR_RE (extended patterns)", () 
   });
 });
 
+describe("extractDeckFinancialSignalsV1 — column-format traction extraction", () => {
+  // Simulates Qredible-style traction slide where OCR reads all dollar values
+  // (top row) before all metric labels (bottom row) in a single text block.
+  const QREDIBLE_TRACTION_TEXT =
+    "$1,748 $125,630 $4,469 $131,847 $1,582,164 " +
+    "Client HQ MRR 170 Retail Locations MRR Reseller/B2B MRR Total MRR Total ARR";
+
+  it("extracts $131,847 as Total MRR from column-format traction text", () => {
+    const result = extractDeckFinancialSignalsV1([page(QREDIBLE_TRACTION_TEXT)]);
+    const texts = result!.arr_mrr_mentions.map((m) => m.text);
+    expect(texts.some((t) => t.includes("131,847") && /total/i.test(t))).toBe(true);
+  });
+
+  it("extracts $1,582,164 as Total ARR from column-format traction text", () => {
+    const result = extractDeckFinancialSignalsV1([page(QREDIBLE_TRACTION_TEXT)]);
+    const texts = result!.arr_mrr_mentions.map((m) => m.text);
+    expect(texts.some((t) => t.includes("1,582,164") && /total/i.test(t))).toBe(true);
+  });
+
+  it("places column-total mentions BEFORE base mentions in arr_mrr_mentions", () => {
+    // Column-total synthetic mentions should appear before base mentions in the list
+    // so that downstream selectors can efficiently find them.
+    const result = extractDeckFinancialSignalsV1([
+      page("$40K+ MRR & Growing  Active pipeline $6M+ ARR"),      // bare mentions
+      page(QREDIBLE_TRACTION_TEXT),                                 // column-total mentions
+    ]);
+    const mentions = result!.arr_mrr_mentions;
+    // Column-total mentions (containing "Total") should appear in the list
+    expect(mentions.some((m) => /Total/i.test(m.text) && /MRR/i.test(m.text))).toBe(true);
+    expect(mentions.some((m) => /Total/i.test(m.text) && /\bARR\b/i.test(m.text))).toBe(true);
+  });
+
+  it("does NOT produce column-total mentions when 'Total MRR/ARR' is absent", () => {
+    const result = extractDeckFinancialSignalsV1([
+      page("$40K+ MRR  $500K ARR  Client A MRR $1.2M"),
+    ]);
+    const texts = result?.arr_mrr_mentions.map((m) => m.text) ?? [];
+    // No "Total" in any mention because the page has no "Total MRR/ARR" label
+    expect(texts.every((t) => !/Total/i.test(t))).toBe(true);
+  });
+});
+
 describe("extractDeckFinancialSignalsV1 — BURN_RE (pricing safety)", () => {
   it('does NOT capture "$349/month per-agent pricing" as a burn mention', () => {
     const result = extractDeckFinancialSignalsV1([

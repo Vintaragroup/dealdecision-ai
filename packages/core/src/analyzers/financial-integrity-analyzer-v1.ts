@@ -556,6 +556,7 @@ export function computeFinancialIntegrityV1(
   return {
     computed_at,
     completeness_score,
+    score: completeness_score,
     missing_critical,
     missing_supplementary,
     flags,

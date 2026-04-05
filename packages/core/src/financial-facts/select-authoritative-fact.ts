@@ -432,7 +432,45 @@ export function selectCanonicalRevenueFact(
   //   Fallback to the original source/confidence/period ranking across everything.
   //   Only select non-projected facts: projection-only deals must not leak a
   //   projected value into the current-revenue headline.
-  return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], nonProformaFacts, { requireNonProjected: true });
+  const tierCResult = selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], nonProformaFacts, { requireNonProjected: true });
+  if (tierCResult != null) return tierCResult;
+
+  // Tier D — proforma-model projection fallback (Fix 14 / DealDecision pattern).
+  //
+  // When ALL of Tiers A/B/C return undefined — because every non-monthly fact is
+  // either (a) inside the proforma pool (excluded by detectProformaModelFactIds) or
+  // (b) a future-year projected fact (excluded by requireNonProjected) — the breakdown
+  // would otherwise surface null revenue and hide all financial signal.
+  //
+  // This tier surfaces the earliest-year proforma XLSX fact as the best available
+  // revenue proxy so the UI can present a labelled projection rather than nothing.
+  //
+  // CALLER CONTRACT: any fact returned from Tier D MUST be treated as a forward
+  // projection (is_projected=true, is_provisional=true). The `toMetricPoint` call
+  // in financial-breakdown-v1.ts is responsible for applying those flags.
+  //
+  // Selection: highest source/confidence ranking, then earliest calendar year
+  // (most conservative, closest-to-current estimate).
+  if (proformaModelFactIds.size > 0) {
+    const proformaFacts = nonMonthlyFacts.filter((f) => proformaModelFactIds.has(f.fact_id));
+    if (proformaFacts.length > 0) {
+      const getYr = (f: FinancialFactV1): number => {
+        const m = f.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
+        return m ? Number(m[1]) : 9999;
+      };
+      return proformaFacts.reduce((best, cur) => {
+        const bSrc = SRC_RANK[best.source_kind] ?? 0;
+        const cSrc = SRC_RANK[cur.source_kind] ?? 0;
+        if (cSrc !== bSrc) return cSrc > bSrc ? cur : best;
+        const bConf = CONF_RANK[best.confidence] ?? 0;
+        const cConf = CONF_RANK[cur.confidence] ?? 0;
+        if (cConf !== bConf) return cConf > bConf ? cur : best;
+        return getYr(cur) < getYr(best) ? cur : best; // prefer earlier year
+      });
+    }
+  }
+
+  return undefined;
 }
 
 // ─── Alternative fact discovery ───────────────────────────────────────────────

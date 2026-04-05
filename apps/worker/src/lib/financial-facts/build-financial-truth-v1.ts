@@ -140,11 +140,14 @@ function dbg(msg: string, data?: unknown): void {
  * Returns null when no parseable dollar amount is found.
  */
 function parseDeckAmount(text: string): number | null {
-  const match = /\$([\d,]+(?:\.\d+)?)\s*([KMBTkmbt]?)/.exec(text);
+  // No \s* between number and suffix: financial suffixes (K/M/B) are always
+  // directly adjacent to the number. This prevents the "T" in "Total" from
+  // being matched as the trillion (1e12) multiplier.
+  const match = /\$([\d,]+(?:\.\d+)?)([KMBkmb]?)/.exec(text);
   if (!match) return null;
   const raw = parseFloat(match[1]!.replace(/,/g, ""));
   if (!isFinite(raw) || raw <= 0) return null;
-  const multipliers: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
+  const multipliers: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9 };
   const suffix = match[2]?.toLowerCase() ?? "";
   return raw * (multipliers[suffix] ?? 1);
 }
@@ -565,25 +568,39 @@ function getDeckValue(
 
   switch (metric) {
     case "arr": {
-      // Only accept arr_mrr_mentions that reference ARR / annual recurring.
-      // Prevents an MRR mention (e.g. "$381K MRR") from being stored as the
-      // ARR deck value.
+      // Prefer the largest "Total ARR"-labeled mention (matches fact-registry
+      // selection logic). Falls back to the first plain ARR mention.
+      // This prevents a smaller column-total from a different slide from
+      // shadowing the correct traction-slide Total ARR value.
+      let bestTotal: number | null = null;
+      let firstMatch: number | null = null;
       for (const m of signals.arr_mrr_mentions) {
         if (!/\bARR\b|annual\s+recurring/i.test(m.text)) continue;
         const v = parseDeckAmount(m.text);
-        if (v != null) return v;
+        if (v == null) continue;
+        if (/\bTotal\b/i.test(m.text)) {
+          if (bestTotal === null || v > bestTotal) bestTotal = v;
+        } else if (firstMatch === null) {
+          firstMatch = v;
+        }
       }
-      return null;
+      return bestTotal ?? firstMatch;
     }
     case "mrr": {
-      // Only accept arr_mrr_mentions that reference MRR / monthly recurring.
-      // Prevents an ARR mention from being stored as the MRR deck value.
+      // Prefer the largest "Total MRR"-labeled mention; fall back to first MRR.
+      let bestTotal: number | null = null;
+      let firstMatch: number | null = null;
       for (const m of signals.arr_mrr_mentions) {
         if (!/\bMRR\b|monthly\s+recurring/i.test(m.text)) continue;
         const v = parseDeckAmount(m.text);
-        if (v != null) return v;
+        if (v == null) continue;
+        if (/\bTotal\b/i.test(m.text)) {
+          if (bestTotal === null || v > bestTotal) bestTotal = v;
+        } else if (firstMatch === null) {
+          firstMatch = v;
+        }
       }
-      return null;
+      return bestTotal ?? firstMatch;
     }
     case "revenue": {
       // Defense-in-depth: skip any revenue mention whose text also appears in

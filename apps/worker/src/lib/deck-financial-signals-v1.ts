@@ -161,6 +161,106 @@ function collectMentions(
   return results;
 }
 
+// ─── Column-format traction extraction ───────────────────────────────────────
+
+/**
+ * Extract ARR/MRR from column-format traction slides where OCR reads all
+ * dollar values (top row) before all metric labels (bottom row).
+ *
+ * Example OCR output from a traction KPI tile grid:
+ *   "$1,748 $125,630 $4,469 $131,847 $1,582,164
+ *    Client HQ MRR  170 Retail Locations MRR  Reseller/B2B MRR  Total MRR  Total ARR"
+ *
+ * The Nth dollar value in the sequence corresponds to the Nth label.
+ * This function identifies "Total MRR" / "Total ARR" ordinal positions and
+ * emits synthetic mentions like "$131,847 Total MRR" / "$1,582,164 Total ARR".
+ *
+ * These synthetic mentions are merged into arr_mrr_mentions so that the
+ * downstream selector can prefer them over aspirational/pipeline values.
+ */
+function extractColumnTotalMentions(
+  page: DeckSignalPage,
+): DeckFinancialMention[] {
+  const { text, document_id, page_index } = page;
+  if (!text || !/Total\s+(?:MRR|ARR)/i.test(text)) return [];
+
+  const results: DeckFinancialMention[] = [];
+  const seen = new Set<string>();
+
+  for (const targetMetric of ["MRR", "ARR"] as const) {
+    // Match: 2+ consecutive $values followed by a non-$ label section ending
+    // with the target "Total MRR" / "Total ARR" label.
+    // [^$\n]{5,300}? — lazy, so it stops at the shortest match containing the label.
+    const blockRE = new RegExp(
+      `(?:\\$[\\d,]+(?:\\.\\d+)?\\s*[KkMmBbTt]?\\s*){2,}[^$\\n]{5,300}?\\bTotal\\s+${targetMetric}\\b`,
+      "gi",
+    );
+
+    blockRE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+
+    while ((m = blockRE.exec(text)) !== null) {
+      const block = m[0];
+
+      // Extract all dollar values from the matched block in order.
+      const valueRE = /\$[\d,]+(?:\.\d+)?\s*[KkMmBbTt]?/g;
+      const values: string[] = [];
+      let vm: RegExpExecArray | null;
+      while ((vm = valueRE.exec(block)) !== null) {
+        values.push(vm[0].trim().replace(/\s+/g, ""));
+      }
+      if (values.length < 2) continue;
+
+      // Label section: text in the block after the last dollar value.
+      let lastValEnd = 0;
+      const lastValRE = /\$[\d,]+(?:\.\d+)?\s*[KkMmBbTt]?/g;
+      let lv: RegExpExecArray | null;
+      while ((lv = lastValRE.exec(block)) !== null) lastValEnd = lv.index + lv[0].length;
+      const labelSection = block.slice(lastValEnd);
+
+      // Find positions of "Total MRR" / "Total ARR" in the label section.
+      // Record the character index of the ARR/MRR keyword within each Total match.
+      const totalRE = new RegExp(`\\bTotal\\s+(MRR|ARR)\\b`, "gi");
+      const totalPositions = new Map<number, string>(); // kwdOffset → keyword
+      let tm: RegExpExecArray | null;
+      totalRE.lastIndex = 0;
+      while ((tm = totalRE.exec(labelSection)) !== null) {
+        const kwdOffset = tm.index + tm[0].indexOf(tm[1]!);
+        totalPositions.set(kwdOffset, tm[1]!.toUpperCase());
+      }
+
+      // Walk all MRR/ARR label occurrences in order; each increments the ordinal.
+      const labelRE = /\b(?:MRR|ARR)\b/gi;
+      let ordinal = 0;
+      let targetOrdinal = -1;
+      let lm: RegExpExecArray | null;
+      labelRE.lastIndex = 0;
+      while ((lm = labelRE.exec(labelSection)) !== null) {
+        ordinal++;
+        const kwd = totalPositions.get(lm.index);
+        if (kwd === targetMetric) {
+          targetOrdinal = ordinal;
+          break;
+        }
+      }
+
+      if (targetOrdinal < 1 || targetOrdinal > values.length) continue;
+
+      const pairedValue = values[targetOrdinal - 1]!;
+      const syntheticText = `${pairedValue} Total ${targetMetric}`;
+
+      const key = `${document_id}:${page_index}:${syntheticText}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      results.push({ text: syntheticText, doc_id: document_id, page_index });
+      break; // one mention per target metric per blockRE pass
+    }
+  }
+
+  return results;
+}
+
 /**
  * Extract deck financial signals from raw DPU text pages.
  *
@@ -173,7 +273,13 @@ export function extractDeckFinancialSignalsV1(
   if (pages.length === 0) return null;
 
   const revenue_mentions   = collectMentions(pages, REVENUE_RE);
-  const arr_mrr_mentions   = collectMentions(pages, ARR_MRR_RE);
+  // Base ARR/MRR mentions from direct pattern matches.
+  const base_arr_mrr       = collectMentions(pages, ARR_MRR_RE);
+  // Supplement with column-format totals (e.g. traction KPI tile grids where
+  // all values appear before all labels in OCR row-scan order).
+  const column_totals      = pages.flatMap((p) => extractColumnTotalMentions(p));
+  // Merge: put column totals FIRST so they win in "prefer Total" selection.
+  const arr_mrr_mentions   = [...column_totals, ...base_arr_mrr];
   const burn_mentions      = collectMentions(pages, BURN_RE);
   const runway_mentions    = collectMentions(pages, RUNWAY_RE);
   const margin_mentions    = collectMentions(pages, MARGIN_RE);

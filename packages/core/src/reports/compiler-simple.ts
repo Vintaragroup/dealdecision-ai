@@ -1893,6 +1893,7 @@ function buildEmptyFinancialIntegrityV1(): FinancialIntegrityV1 {
   return {
     computed_at: new Date().toISOString(),
     completeness_score: 0,
+    score: 0,
     missing_critical: [
       'revenue', 'arr', 'mrr', 'burn_rate', 'cash',
       'runway_months', 'raise_amount', 'pre_money_valuation',
@@ -2017,6 +2018,11 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   if (Array.isArray(opts?.financialFacts) && opts.financialFacts.length > 0) {
     financialIntegrityV1 = { ...financialIntegrityV1, has_facts: true };
   }
+  // Backfill score field if absent (Fix 15 — DIO-stored values from before Fix 15 lack score).
+  // score is an alias for completeness_score. Safe to apply on every path.
+  if ((financialIntegrityV1.score == null) && financialIntegrityV1.completeness_score != null) {
+    financialIntegrityV1 = { ...financialIntegrityV1, score: financialIntegrityV1.completeness_score };
+  }
 
   const underwritingReadiness = buildUnderwritingReadinessV1({
     financial_breakdown_v1: financialBreakdown,
@@ -2121,6 +2127,9 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
       sources: [{ kind: bdRev.source_kind, period_label: bdRev.period_label }],
       label: bdRev.period_label ?? null,
       selection_reason: 'financial_fact_backfill',
+      // Propagate projection flag so the UI knows this is a forward-looking figure
+      // (e.g. DealDecision proforma-only model where Tier D surfaces the 2026 budget).
+      ...(bdRev.is_projected ? { is_projected: true, is_provisional: true } : {}),
     };
   }
 
@@ -2131,8 +2140,28 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     backfill_applied: !revenuePathsConverged && bdRevenueAmount != null,
   };
 
+	// ── Financial data quality score blend (Fix 15) ────────────────────────────
+  // Blend the base overallScore (persisted DIO value) with a financial data quality
+  // signal derived from financial_integrity_v1.completeness_score (verified fact
+  // completeness) and financial_coverage_v1.score (coverage flag density × confidence).
+  // Only activates when financial_facts are present (has_facts=true).
+  // Weight: 70% existing score + 30% quality signal.
+  const _fiCompleteness = financialIntegrityV1.completeness_score;
+  const _covScoreRaw = financialCoverage.score ?? 0;
+  const _baseOverall: number =
+    typeof (base as any).overallScore === 'number' && Number.isFinite((base as any).overallScore)
+      ? (base as any).overallScore
+      : 0;
+  let _adjustedOverallScore: number = _baseOverall;
+  if (financialIntegrityV1.has_facts && _fiCompleteness != null) {
+    const _qualityScore = Math.round(0.45 * _fiCompleteness + 0.55 * _covScoreRaw);
+    _adjustedOverallScore = Math.round(0.70 * _baseOverall + 0.30 * _qualityScore);
+  }
+
 	return {
 		...base,
+    overallScore: _adjustedOverallScore,
+    grade: scoreToGrade(_adjustedOverallScore),
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
     financial_breakdown_v1: financialBreakdown,

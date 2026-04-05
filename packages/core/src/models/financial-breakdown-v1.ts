@@ -27,6 +27,8 @@ import {
   isProvisionalFact,
   isCorruptedFact,
   selectCanonicalRevenueFact,
+  detectProformaModelFactIds,
+  CANONICAL_REVENUE_KEYS,
 } from '../financial-facts/select-authoritative-fact.js';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
@@ -277,8 +279,12 @@ function selectCurrentStateFact(
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-function toMetricPoint(f: FinancialFactV1, selection_reason?: string | null): FinancialMetricPoint {
-  const projected = isProjectedFact(f);
+function toMetricPoint(
+  f: FinancialFactV1,
+  selection_reason?: string | null,
+  opts?: { force_projected?: boolean },
+): FinancialMetricPoint {
+  const projected = isProjectedFact(f) || (opts?.force_projected ?? false);
   const isDerived = f.is_derived === true;
   const isDeckLowConf = f.source_kind === 'deck' && f.confidence === 'low';
   return {
@@ -442,6 +448,27 @@ function _build(input: {
   // structured_summary.revenue, which is populated by injectCanonicalRevenueIntoStructuredSummary.
   const revFact = selectCanonicalRevenueFact(rawFacts);
 
+  // Detect if the selected revenue fact was returned via Tier D (proforma-model fallback).
+  // When it was, toMetricPoint must carry is_projected=true because isProjectedFact()
+  // returns false for current-year facts even when they are proforma budget figures.
+  //
+  // We re-run detectProformaModelFactIds against the same non-monthly revenue pool
+  // that selectCanonicalRevenueFact uses internally. This is a pure function call
+  // so the double evaluation is safe and cheap.
+  const _proformaCheckPool = revFact != null
+    ? filterCorruptedFacts(rawFacts).filter(
+        (f) =>
+          (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
+          (f.period_type === 'annual' || f.period_type === 'ttm'),
+      )
+    : [];
+  const _proformaModelFactIds =
+    _proformaCheckPool.length > 0
+      ? detectProformaModelFactIds(_proformaCheckPool)
+      : new Set<string>();
+  const revFactIsProforma =
+    revFact != null && _proformaModelFactIds.has(revFact.fact_id);
+
   // Current-state burn/runway/cash: use selectCurrentStateFact to enforce the
   // three-pass priority ladder (non-projected > non-provisional > any non-projected).
   // Projected facts are NEVER selected as current_state headline values (StackFactor guard).
@@ -506,7 +533,7 @@ function _build(input: {
     'missing';
 
   const csParts: string[] = [];
-  if (revFact) csParts.push(`Revenue: ${fmtC(revFact.value, revFact.currency)} (${revFact.period_label}, ${revFact.confidence} confidence, source: ${revFact.source_kind})`);
+  if (revFact) csParts.push(`Revenue: ${fmtC(revFact.value, revFact.currency)} (${revFact.period_label}, ${revFact.confidence} confidence, source: ${revFact.source_kind}${revFactIsProforma ? ' — proforma projection' : ''})`);
   if (burnFact) {
     const burnSuffix = burnIsWeak && alternativeBurnFact ? ' [deck-sourced; workbook proxy available]' : '';
     csParts.push(`Monthly burn: ${fmtC(burnFact.value, burnFact.currency)}${burnSuffix}`);
@@ -748,9 +775,10 @@ function _build(input: {
 
   if (revFact) {
     const arrNote = arrFact ? `, with ARR of ${fmtC(arrFact.value, arrFact.currency)}` : '';
-    narrativeParts.push(
-      `Current revenue is ${fmtC(revFact.value, revFact.currency)} (${revFact.period_label}, ${revFact.confidence} confidence)${arrNote}.`
-    );
+    const revLabel = revFactIsProforma
+      ? `Proforma projected revenue is ${fmtC(revFact.value, revFact.currency)} (${revFact.period_label}, ${revFact.confidence} confidence — proforma projection)`
+      : `Current revenue is ${fmtC(revFact.value, revFact.currency)} (${revFact.period_label}, ${revFact.confidence} confidence)`;
+    narrativeParts.push(`${revLabel}${arrNote}.`);
   }
 
   if (projPeriods.length > 0) {
@@ -772,7 +800,13 @@ function _build(input: {
     has_projections,
     has_cap_table,
     current_state: {
-      revenue: revFact ? toMetricPoint(revFact) : undefined,
+      revenue: revFact
+        ? toMetricPoint(
+            revFact,
+            revFactIsProforma ? 'proforma_projection_fallback' : null,
+            revFactIsProforma ? { force_projected: true } : undefined,
+          )
+        : undefined,
       burn_rate: burnFact ? toMetricPoint(burnFact, burnPrimarySelectionReason) : undefined,
       runway_months: runwayFact ? toMetricPoint(runwayFact) : undefined,
       cash: cashFact ? toMetricPoint(cashFact) : undefined,

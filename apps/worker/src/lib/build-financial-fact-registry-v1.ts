@@ -475,28 +475,44 @@ export function buildFinancialFactRegistryV1(
       {
         metric_key: "arr",
         label: "ARR (deck)",
-        // Prefer the mention with the LARGEST dollar amount among those that
-        // explicitly reference "ARR" / "annual recurring".
-        // Rationale: OCR garble (e.g. "$5120 ARR" from a table fragment) produces
-        // small spurious values; the real traction figure ("$1.58M Total ARR") is
-        // significantly larger and should win.
-        mention: largestMentionMatch(
-          ds.arr_mrr_mentions,
-          (t) => /\bARR\b|annual\s+recurring/i.test(t),
-        ),
+        // Selection priority for ARR:
+        //  1. Prefer "Total ARR" labelled mentions — these are aggregate traction summaries
+        //     (e.g. "$1,582,164 Total ARR" from a traction KPI tile) rather than pipeline
+        //     or projection values (e.g. "$6M+ ARR" from an "Active Pipeline" slide).
+        //     Among multiple "Total ARR" mentions (e.g. one from a projection table and one
+        //     from the real traction slide), the LARGEST wins — current traction is typically
+        //     the most recent and highest disclosed actuals in the deck.
+        //  2. Fall back to the LARGEST ARR mention to suppress OCR noise (e.g. "$5120 ARR").
+        mention: (() => {
+          const totalMention = largestMentionMatch(
+            ds.arr_mrr_mentions,
+            (t) => /\bARR\b|annual\s+recurring/i.test(t) && /\bTotal\b/i.test(t),
+          );
+          return totalMention ?? largestMentionMatch(
+            ds.arr_mrr_mentions,
+            (t) => /\bARR\b|annual\s+recurring/i.test(t),
+          );
+        })(),
         unit: "currency",
       },
       {
         metric_key: "mrr",
         label: "MRR (deck)",
-        // Prefer the mention with the LARGEST dollar amount among those that
-        // explicitly reference "MRR" / "monthly recurring".
-        // This surfaces the real current traction figure rather than per-company
-        // example rows or garbled fragments.
-        mention: largestMentionMatch(
-          ds.arr_mrr_mentions,
-          (t) => /\bMRR\b|monthly\s+recurring/i.test(t),
-        ),
+        // Selection priority for MRR:
+        //  1. Prefer "Total MRR" labelled mentions — aggregate traction (e.g. "$131,847 Total MRR")
+        //     over per-segment model projections (e.g. "$381K MRR" network economics slide).
+        //     Among multiple "Total MRR" mentions, the LARGEST wins.
+        //  2. Fall back to the LARGEST MRR mention to suppress OCR noise.
+        mention: (() => {
+          const totalMention = largestMentionMatch(
+            ds.arr_mrr_mentions,
+            (t) => /\bMRR\b|monthly\s+recurring/i.test(t) && /\bTotal\b/i.test(t),
+          );
+          return totalMention ?? largestMentionMatch(
+            ds.arr_mrr_mentions,
+            (t) => /\bMRR\b|monthly\s+recurring/i.test(t),
+          );
+        })(),
         unit: "currency",
       },
     ];

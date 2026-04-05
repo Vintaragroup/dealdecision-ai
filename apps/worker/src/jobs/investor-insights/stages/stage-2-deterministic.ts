@@ -1251,6 +1251,43 @@ function extractDpuText(payload: unknown): string | null {
 }
 
 /**
+ * Deduplicate workbook facts by (metric_key, period_label, source_kind).
+ *
+ * Multiple XLSX rows (e.g. "Sales 1" $8K vs "Sales 4" $0) can produce
+ * conflicting FinancialFactV1 entries for the same period because `makeFactId`
+ * in metric-promoter includes `value_raw` in the hash, giving each row a
+ * distinct fact_id.  Without this dedup, both facts accumulate in the DB.
+ *
+ * Resolution order per group:
+ *  1. Non-zero value beats zero value.
+ *  2. Higher absolute value wins.
+ *  3. Lexicographically smaller fact_id (deterministic tiebreaker).
+ */
+function deduplicateWorkbookFacts(facts: FinancialFactV1[]): FinancialFactV1[] {
+	const best = new Map<string, FinancialFactV1>();
+	for (const f of facts) {
+		const key = `${f.metric_key}:${f.period_label}:${f.source_kind}`;
+		const existing = best.get(key);
+		if (!existing) {
+			best.set(key, f);
+			continue;
+		}
+		const existingIsZero = existing.value === 0;
+		const incomingIsZero = f.value === 0;
+		if (existingIsZero && !incomingIsZero) {
+			best.set(key, f); // non-zero beats zero
+		} else if (!existingIsZero && incomingIsZero) {
+			// keep existing non-zero
+		} else if (Math.abs(f.value) > Math.abs(existing.value)) {
+			best.set(key, f); // higher absolute value wins
+		} else if (Math.abs(f.value) === Math.abs(existing.value) && f.fact_id < existing.fact_id) {
+			best.set(key, f); // deterministic tiebreaker
+		}
+	}
+	return Array.from(best.values());
+}
+
+/**
  * Load DPU page texts and evidence snippets for Stage 1 slot extraction.
  * Best-effort: DPU load failure sets dpuLoadFailed=true; all slots become NotComputable.
 
@@ -1546,7 +1583,7 @@ async function loadInsightSlotInputs(
 		saasKpis:         _bestKpi,
 		bankTransactions,
 		deckFinancialSignals,
-		workbookFacts,
+		workbookFacts: deduplicateWorkbookFacts(workbookFacts),
 		dealTractionFacts,
 		documentTitles,
 	};
@@ -3949,4 +3986,6 @@ export {
 	isValuationMatchTainted,
 	detectValuationPostInTextSources,
 	// Fix #4: Truth-state gate — applyTruthGatesV1 is already an `export function` above.
+	// Fix 17: workbook fact dedup — exported for unit tests
+	deduplicateWorkbookFacts,
 };

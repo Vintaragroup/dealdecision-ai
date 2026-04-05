@@ -152,3 +152,69 @@ describe("deduplicateWorkbookFacts — OB-3 regression", () => {
 		expect(result[0]!.fact_id).toBe("fact-a"); // lexicographically smaller
 	});
 });
+
+// ─── BC-3 adversarial edge cases (Fix 17 extensions) ─────────────────────────
+
+describe("deduplicateWorkbookFacts — BC-3 adversarial edge cases", () => {
+	it("negative value beats zero (higher absolute value wins)", () => {
+		// A negative P&L / cash-flow figure (-$8K loss) should beat $0 —
+		// the resolution rule is abs(v) not sign(v).
+		const facts = [
+			makeFact({ fact_id: "fact-a", metric_key: "ebitda", period_label: "September", value: 0 }),
+			makeFact({ fact_id: "fact-b", metric_key: "ebitda", period_label: "September", value: -8000 }),
+		];
+		const result = deduplicateWorkbookFacts(facts);
+		expect(result).toHaveLength(1);
+		expect(result[0]!.value).toBe(-8000);
+	});
+
+	it("positive value beats negative when positive has larger absolute value", () => {
+		const facts = [
+			makeFact({ fact_id: "fact-a", metric_key: "ebitda", period_label: "Q3", value: 10_000 }),
+			makeFact({ fact_id: "fact-b", metric_key: "ebitda", period_label: "Q3", value: -5_000 }),
+		];
+		const result = deduplicateWorkbookFacts(facts);
+		expect(result).toHaveLength(1);
+		expect(result[0]!.value).toBe(10_000);
+	});
+
+	it("triple collision (0, mid, high) — highest absolute value wins", () => {
+		// Three same-period facts: $0, $5K, $8K — $8K must win
+		const facts = [
+			makeFact({ fact_id: "fact-a", metric_key: "revenue", period_label: "October", value: 0 }),
+			makeFact({ fact_id: "fact-b", metric_key: "revenue", period_label: "October", value: 5_000 }),
+			makeFact({ fact_id: "fact-c", metric_key: "revenue", period_label: "October", value: 8_000 }),
+		];
+		const result = deduplicateWorkbookFacts(facts);
+		expect(result).toHaveLength(1);
+		expect(result[0]!.value).toBe(8_000);
+	});
+
+	it("does not deduplicate facts with empty string period_label as the same as non-empty", () => {
+		// Empty period_label is a distinct key from a named period — must not collapse
+		const facts = [
+			makeFact({ fact_id: "fact-a", metric_key: "revenue", period_label: "",          value: 0 }),
+			makeFact({ fact_id: "fact-b", metric_key: "revenue", period_label: "September", value: 8_000 }),
+		];
+		const result = deduplicateWorkbookFacts(facts);
+		expect(result).toHaveLength(2);
+	});
+
+	it("mixed multi-period: zero + non-zero per period independently resolved", () => {
+		// Three periods, each has one zero and one non-zero — each period should keep its non-zero
+		const facts = [
+			makeFact({ fact_id: "jan-0", metric_key: "revenue", period_label: "January",  value: 0 }),
+			makeFact({ fact_id: "jan-1", metric_key: "revenue", period_label: "January",  value: 3_000 }),
+			makeFact({ fact_id: "feb-0", metric_key: "revenue", period_label: "February", value: 0 }),
+			makeFact({ fact_id: "feb-1", metric_key: "revenue", period_label: "February", value: 4_500 }),
+			makeFact({ fact_id: "mar-0", metric_key: "revenue", period_label: "March",    value: 0 }),
+			makeFact({ fact_id: "mar-1", metric_key: "revenue", period_label: "March",    value: 6_000 }),
+		];
+		const result = deduplicateWorkbookFacts(facts);
+		expect(result).toHaveLength(3);
+		const byPeriod = Object.fromEntries(result.map((f) => [f.period_label, f.value]));
+		expect(byPeriod["January"]).toBe(3_000);
+		expect(byPeriod["February"]).toBe(4_500);
+		expect(byPeriod["March"]).toBe(6_000);
+	});
+});

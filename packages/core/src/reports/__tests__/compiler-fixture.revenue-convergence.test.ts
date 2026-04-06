@@ -70,6 +70,16 @@ const pdfFact = (key: string, value: number, overrides?: Partial<FinancialFactV1
 const monthlyFact = (key: string, value: number, periodLabel: string) =>
   financialFact(key, value, { period_type: 'monthly', period_label: periodLabel });
 
+const kpiTileFact = (key: string, value: number, overrides?: Partial<FinancialFactV1>) =>
+  financialFact(key, value, {
+    source_kind: 'kpi_tile',
+    confidence: 'medium',
+    document_id: 'doc-kpi',
+    period_label: 'current',
+    period_type: 'unknown',
+    ...overrides,
+  });
+
 // ─── Helper: extract amounts from compiled report ─────────────────────────────
 
 function reportRevenue(report: any) {
@@ -256,5 +266,36 @@ describe('mixed PDF + XLSX — xlsx wins via source hierarchy', () => {
     // Both paths should select the xlsx fact (source rank 10 vs 5)
     expect(ssAmount).toBe(461_000);
     expect(bdAmount).toBe(461_000);
+  });
+});
+
+describe('high-magnitude weak-source trust gate', () => {
+  test('suppresses uncorroborated kpi_tile outlier from canonical revenue', () => {
+    const facts: FinancialFactV1[] = [
+      kpiTileFact('revenue', 375_000_000),
+    ];
+
+    const report = compileDIOToReportWithPromotedFacts(minimalDio(), {
+      promotedFacts: [],
+      financialFacts: facts,
+    });
+
+    expect(report.structured_summary?.revenue?.value?.amount ?? null).toBeNull();
+    expect(report.financial_breakdown_v1?.current_state?.revenue?.value ?? null).toBeNull();
+  });
+
+  test('retains high-magnitude value when corroborated by strong source', () => {
+    const facts: FinancialFactV1[] = [
+      kpiTileFact('revenue', 120_000_000),
+      pdfFact('revenue', 118_000_000, { confidence: 'high', period_label: 'FY2025', period_type: 'annual' }),
+    ];
+
+    const report = compileDIOToReportWithPromotedFacts(minimalDio(), {
+      promotedFacts: [],
+      financialFacts: facts,
+    });
+
+    expect(report.structured_summary?.revenue?.value?.amount).toBe(118_000_000);
+    expect(report.financial_breakdown_v1?.current_state?.revenue?.value).toBe(118_000_000);
   });
 });

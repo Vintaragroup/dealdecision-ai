@@ -128,6 +128,30 @@ const CONF_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 
 const PERIOD_RANK: Record<string, number> = { annual: 4, ttm: 3, quarterly: 2, monthly: 1, unknown: 0 };
 
+const WEAK_REVENUE_SOURCE_KINDS = new Set<string>(['kpi_tile', 'chart_pixel']);
+const STRONG_REVENUE_SOURCE_KINDS = new Set<string>(['xlsx', 'pdf_table', 'pdf_kpi_line']);
+
+function isHighMagnitudeWeakRevenueFactWithoutCorroboration(
+  candidate: FinancialFactV1,
+  pool: FinancialFactV1[],
+): boolean {
+  if (!WEAK_REVENUE_SOURCE_KINDS.has(candidate.source_kind)) return false;
+  if (!(candidate.value >= 100_000_000)) return false;
+  if (candidate.confidence === 'high') return false;
+
+  const hasStrongCorroboration = pool.some((other) => {
+    if (other.fact_id === candidate.fact_id) return false;
+    if (!STRONG_REVENUE_SOURCE_KINDS.has(other.source_kind)) return false;
+    if (!Number.isFinite(other.value) || other.value <= 0) return false;
+
+    // Treat sources as corroborating when they are within +/-50%.
+    const relDelta = Math.abs(other.value - candidate.value) / Math.max(candidate.value, 1);
+    return relDelta <= 0.5;
+  });
+
+  return !hasStrongCorroboration;
+}
+
 /**
  * Cross-source reconciliation ranking bonus/penalty.
  *
@@ -337,8 +361,11 @@ export const CANONICAL_REVENUE_KEYS: readonly string[] = ['revenue', 'arr', 'mrr
  *   4. Multi-year proforma model guard: if the pool contains XLSX annual facts for a
  *      future year, any current-year XLSX annual facts are treated as projected budget
  *      data (not realized actuals) and excluded from current-state selection.
- *   5. Prefer non-projected (current / historical) facts over projected ones.
- *   6. Apply selectAuthoritativeFact source/confidence/period ranking:
+ *   5. Trust guard: suppress uncorroborated high-magnitude weak-source KPI tiles
+ *      (`kpi_tile` / `chart_pixel`) to avoid OCR packaging/visual outliers becoming
+ *      canonical current revenue.
+ *   6. Prefer non-projected (current / historical) facts over projected ones.
+ *   7. Apply selectAuthoritativeFact source/confidence/period ranking:
  *      xlsx (10) > pdf_table (5) > pdf_kpi_line (4) > kpi_tile (3) > deck (1).
  *
  * All source kinds are eligible — not just xlsx.  This ensures PDF-extracted
@@ -396,11 +423,17 @@ export function selectCanonicalRevenueFact(
     ? nonMonthlyFacts.filter((f) => !proformaModelFactIds.has(f.fact_id))
     : nonMonthlyFacts;
 
+  const trustFilteredFacts = nonProformaFacts.filter(
+    (f) => !isHighMagnitudeWeakRevenueFactWithoutCorroboration(f, nonProformaFacts),
+  );
+
+  if (trustFilteredFacts.length === 0) return undefined;
+
   // Tier A — confirmed income-statement-grade data (annual or TTM period_type).
   //   These are the highest-quality revenue facts: a completed fiscal year or trailing-
   //   twelve-month figure from an XLSX income statement or PDF financial table.
   //   When any Tier A non-projected fact exists, it is always the canonical selection.
-  const tierAFacts = nonProformaFacts.filter(
+  const tierAFacts = trustFilteredFacts.filter(
     (f) => f.period_type === 'annual' || f.period_type === 'ttm',
   );
   if (tierAFacts.length > 0) {
@@ -417,7 +450,7 @@ export function selectCanonicalRevenueFact(
   //
   //   This pass only fires when Tier A is empty, ensuring it never overrides a
   //   confirmed annual income-statement figure.
-  const tierBFacts = nonProformaFacts.filter(
+  const tierBFacts = trustFilteredFacts.filter(
     (f) =>
       (f.source_kind === 'kpi_tile' || f.source_kind === 'pdf_kpi_line') &&
       !isProjectedFact(f) &&
@@ -432,7 +465,7 @@ export function selectCanonicalRevenueFact(
   //   Fallback to the original source/confidence/period ranking across everything.
   //   Only select non-projected facts: projection-only deals must not leak a
   //   projected value into the current-revenue headline.
-  const tierCResult = selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], nonProformaFacts, { requireNonProjected: true });
+  const tierCResult = selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], trustFilteredFacts, { requireNonProjected: true });
   if (tierCResult != null) return tierCResult;
 
   // Tier D — proforma-model projection fallback (Fix 14 / DealDecision pattern).

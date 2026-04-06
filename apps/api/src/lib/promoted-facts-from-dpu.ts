@@ -319,9 +319,36 @@ function hasRevenueTokenNearAmount(bullet: string, amountIndex: number, windowTo
 	const start = Math.max(0, amountIndex - windowTokens);
 	const end = Math.min(tokens.length, amountIndex + windowTokens + 1);
 	for (let i = start; i < end; i++) {
-		if (tokens[i] === 'revenue') return true;
+		if (tokens[i] === 'revenue' || tokens[i] === 'arr' || tokens[i] === 'mrr' || tokens[i] === 'sales' || tokens[i] === 'gmv') return true;
 	}
 	return false;
+}
+
+function hasRevenueSignal(text: string): boolean {
+	const t = String(text ?? '').toLowerCase();
+	return /\b(revenue|arr|mrr|sales|gmv)\b/.test(t);
+}
+
+function isExternalContractMoneyContext(text: string): boolean {
+	const t = String(text ?? '').toLowerCase();
+	if (!t) return false;
+	return /\b(cost\s+to\s+acquire|fully\s+guaranteed|draft\s+picks?|game\s+suspension|contract\s+value|contract)\b/.test(t);
+}
+
+function isPackagingOrUnitMoneyContext(text: string): boolean {
+	const t = String(text ?? '').toLowerCase();
+	if (!t) return false;
+	if (/\b\d{2,4}\s*(ml|oz|fl\s*oz|g|kg|lb|lbs)\b/.test(t)) return true;
+	if (/\b(cans?|bottles?|packs?)\b/.test(t) && /\b(ml|oz|fl\s*oz)\b/.test(t)) return true;
+	return false;
+}
+
+function isHypotheticalMarketShareMoneyContext(text: string): boolean {
+	const t = String(text ?? '').toLowerCase();
+	if (!t) return false;
+	const hasQuestioning = /\?|\b(help\s+me\s+understand|what\s+if|would|could|assum(?:e|ing|ption|ptions)|imply)\b/.test(t);
+	const hasMarketSizing = /\b(tam|sam|som|market\s+share|users?|annual\s+recurring\s+revenue|arr)\b/.test(t);
+	return hasQuestioning && hasMarketSizing;
 }
 
 function isOpportunityStyle(text: string): boolean {
@@ -527,14 +554,21 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 					titleLower.includes('projections') ||
 					(typeof year === 'number' && year >= currentYear);
 
-				// Intent gating for revenue_v1: Financial/Performance title, OR revenue token near the amount.
-				// Allow forecast slides to contribute forecast subtype even if revenue token is absent (used for growth_outlook_v1).
-				const hasRevenueNear = amountTokenIndex >= 0 ? hasRevenueTokenNearAmount(bullet, amountTokenIndex, 10) : bulletLower.includes('revenue');
-				const revenueAllowed = titleIsFinancialOrPerformance || hasRevenueNear || (isForecast && titleLower.includes('forecast'));
+				const hasRevenueInBullet = hasRevenueSignal(bulletLower);
+				const hasRevenueNear = amountTokenIndex >= 0
+					? hasRevenueTokenNearAmount(bullet, amountTokenIndex, 10)
+					: hasRevenueInBullet;
+
+				// Intent gating for revenue_v1: require explicit revenue signal in or near the money context.
+				const revenueAllowed = hasRevenueNear || hasRevenueInBullet;
 				if (!revenueAllowed) continue;
 
-				// Proximity rule: require "revenue" in the same bullet as the amount unless it's explicitly a Financials/Performance slide.
-				if (!titleIsFinancialOrPerformance && !bulletLower.includes('revenue') && !isForecast) continue;
+				// Keep forecast tagging only when revenue signal is present, never as a free pass.
+				if (isForecast && !hasRevenueInBullet && !hasRevenueNear) continue;
+
+				if (isExternalContractMoneyContext(bulletLower) && !hasRevenueInBullet) continue;
+				if (isPackagingOrUnitMoneyContext(bulletLower) && !hasRevenueInBullet) continue;
+				if (isHypotheticalMarketShareMoneyContext(bulletLower) && !titleIsFinancialOrPerformance) continue;
 
 				const attribution = detectMarketingAttribution(bulletLower, slideContextLower);
 				const isAttributed = attribution != null;
@@ -1123,6 +1157,22 @@ function parseRaiseFromSlides(rows: Array<{ row: DpuRow; slideText: string; slid
 	valuation: number | null;
 	primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null };
 } | null {
+	const hasRaiseIntent = (text: string): boolean =>
+		/\b(raise|raising|fundrais(?:e|ing)|funding|financing|capital\s+raise|seeking\s+(?:capital|investment)|the\s+ask|we\s+are\s+raising)\b|\b(?:seed|pre[-\s]?seed|series\s*[a-z]|funding|financing)\s+round\b/i.test(text);
+
+	const hasFinancingAnchor = (text: string): boolean =>
+		/\b(seed|pre[-\s]?seed|series\s*[a-z]|safe|convertible|equity|dilution|pre[-\s]?money|post[-\s]?money|valuation|financing)\b|\b(?:seed|pre[-\s]?seed|series\s*[a-z]|funding|financing)\s+round\b/i.test(text);
+
+	const isSportsTransactionContext = (text: string): boolean =>
+		/\b(cost\s+to\s+acquire|fully\s+guaranteed|draft\s+picks?|game\s+suspension|trade|sportsbook)\b/i.test(text);
+
+	const isHypotheticalArrContext = (text: string): boolean => {
+		const lower = String(text ?? '').toLowerCase();
+		const hasQuestioning = /\?|\b(help\s+me\s+understand|what\s+if|would|could|assum(?:e|ing|ption|ptions)|imply)\b/.test(lower);
+		const hasMarketSizing = /\b(arr|annual\s+recurring\s+revenue|tam|sam|som|market\s+share|users?)\b/.test(lower);
+		return hasQuestioning && hasMarketSizing;
+	};
+
 	const preference = (r: { slideTitle: string | null; slideText: string }): number => {
 		const title = String(r.slideTitle ?? "").toLowerCase();
 		let score = 0;
@@ -1136,10 +1186,15 @@ function parseRaiseFromSlides(rows: Array<{ row: DpuRow; slideText: string; slid
 		.map((r) => {
 			const text = r.slideText;
 			const lower = text.toLowerCase();
-			if (!lower.includes("raise") && !lower.includes("fund") && !lower.includes("valuation") && !lower.includes("$")) return null;
+			const titleLower = String(r.slideTitle ?? '').toLowerCase();
+			if (!text.includes('$')) return null;
+			if (!hasRaiseIntent(`${titleLower} ${lower}`)) return null;
+			if (isSportsTransactionContext(`${titleLower} ${lower}`)) return null;
+			if (isHypotheticalArrContext(`${titleLower} ${lower}`) && !hasFinancingAnchor(`${titleLower} ${lower}`)) return null;
 
 			// Prefer the money token closest to the word "raise" if present.
 			let amount: number | null = null;
+			let bestMoneyHitIndex: number | null = null;
 			const raiseIx = lower.includes("raise") ? lower.indexOf("raise") : -1;
 			const moneyRe = /\$\s*\d+(?:\.\d+)?\s*(?:mm|m|million|mn|bn|b|k|thousand)?/gi;
 			const moneyHits: Array<{ token: string; index: number }> = [];
@@ -1149,12 +1204,35 @@ function parseRaiseFromSlides(rows: Array<{ row: DpuRow; slideText: string; slid
 				if (token && index >= 0) moneyHits.push({ token, index });
 			}
 			if (moneyHits.length === 0) return null;
-			if (raiseIx >= 0) {
-				moneyHits.sort((a, b) => Math.abs(a.index - raiseIx) - Math.abs(b.index - raiseIx));
-				amount = parseMoneyToken(moneyHits[0].token);
-			} else {
-				amount = parseMoneyToken(moneyHits[0].token);
-			}
+
+			const scoredMoneyHits = moneyHits
+				.map((hit) => {
+					const windowStart = Math.max(0, hit.index - 70);
+					const windowEnd = Math.min(text.length, hit.index + 100);
+					const windowText = text.slice(windowStart, windowEnd);
+					const windowLower = windowText.toLowerCase();
+
+					let score = 0;
+					if (raiseIx >= 0) score += Math.max(0, 8 - Math.min(8, Math.floor(Math.abs(hit.index - raiseIx) / 18)));
+					if (hasRaiseIntent(windowLower)) score += 8;
+					if (hasFinancingAnchor(windowLower)) score += 3;
+					if (windowLower.includes('valuation')) score += 1;
+					if (/\b(use\s+of\s+funds|allocation)\b/.test(windowLower)) score -= 2;
+					if (/\b(arr|annual\s+recurring\s+revenue|revenue|tam|sam|som|market\s+share|users?)\b/.test(windowLower)) score -= 7;
+					if (/\?|\b(help\s+me\s+understand|what\s+if|would|could|assum(?:e|ing|ption|ptions)|imply)\b/.test(windowLower)) score -= 7;
+
+					return { hit, score, amount: parseMoneyToken(hit.token), windowLower };
+				})
+				.filter((x) => typeof x.amount === 'number' && Number.isFinite(x.amount) && x.amount! > 0)
+				.sort((a, b) => b.score - a.score || a.hit.index - b.hit.index);
+
+			const bestHit = scoredMoneyHits[0];
+			if (!bestHit) return null;
+			if (bestHit.score < 4) return null;
+			if (!hasRaiseIntent(bestHit.windowLower)) return null;
+
+			amount = bestHit.amount;
+			bestMoneyHitIndex = bestHit.hit.index;
 			if (!amount) return null;
 			let valuation: number | null = null;
 			// Look for valuation amount immediately adjacent to the word "valuation".
@@ -1162,6 +1240,14 @@ function parseRaiseFromSlides(rows: Array<{ row: DpuRow; slideText: string; slid
 			const after = text.match(/\bvaluation\b[^$]{0,20}(\$\s*\d+(?:\.\d+)?\s*(?:mm|m|million|mn|bn|b|k|thousand)?)/i);
 			if (before?.[1]) valuation = parseMoneyToken(before[1]);
 			else if (after?.[1]) valuation = parseMoneyToken(after[1]);
+
+			if (bestMoneyHitIndex != null) {
+				const contextStart = Math.max(0, bestMoneyHitIndex - 80);
+				const contextEnd = Math.min(text.length, bestMoneyHitIndex + 120);
+				const context = text.slice(contextStart, contextEnd).toLowerCase();
+				if (isHypotheticalArrContext(context) && !hasFinancingAnchor(context)) return null;
+			}
+
 			return {
 				amount,
 				valuation,

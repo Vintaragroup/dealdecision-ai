@@ -104,7 +104,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 17; // bumped: Fix 15b — fi.score backfill for pre-Fix15 storedIntegrity values
+const REPORT_COMPILER_VERSION = 19; // bumped: apply numeric trust-gate suppression/fallback on cached report rebuild
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -1751,6 +1751,148 @@ function ensureStructuredRevenueSelectionReason(report: any): void {
   }
 }
 
+export function applyStructuredNumericTrustGates(report: any): void {
+  try {
+    if (!report || typeof report !== 'object') return;
+    const structured = (report as any).structured_summary;
+    if (!structured || typeof structured !== 'object') return;
+
+    const sourceText = (sources: any[]): string =>
+      (Array.isArray(sources) ? sources : [])
+        .map((s) => {
+          if (!s || typeof s !== 'object') return '';
+          return [
+            String((s as any).note_snippet ?? ''),
+            String((s as any).snippet ?? ''),
+            String((s as any).slide_title ?? ''),
+          ]
+            .join(' ')
+            .trim();
+        })
+        .filter((x) => x.length > 0)
+        .join(' ')
+        .toLowerCase();
+
+    const sourceKinds = (sources: any[]): Set<string> =>
+      new Set(
+        (Array.isArray(sources) ? sources : [])
+          .map((s) => (s && typeof s === 'object' ? String((s as any).kind ?? '').trim().toLowerCase() : ''))
+          .filter(Boolean)
+      );
+
+    const isExternalContractLike = (text: string): boolean =>
+      /\b(cost\s+to\s+acquire|fully\s+guaranteed|draft\s+picks?|game\s+suspension|contract\s+value|sportsbook|trade)\b/.test(text);
+
+    const isMarketSizingHypothetical = (text: string): boolean =>
+      /\b(tam|sam|som|market\s+share|users?|arr|annual\s+recurring\s+revenue)\b/.test(text) &&
+      /\?|\b(help\s+me\s+understand|what\s+if|would|could|assum(?:e|ing|ption|ptions)|imply)\b/.test(text);
+
+    const isPackagingLike = (text: string): boolean =>
+      /\b\d{2,4}\s*(ml|oz|fl\s*oz|g|kg|lb|lbs)\b/.test(text) ||
+      (/\b(cans?|bottles?|packs?)\b/.test(text) && /\b(ml|oz|fl\s*oz)\b/.test(text));
+
+    // Raise trust gate: drop large promoted raises sourced from clearly non-financing contexts.
+    try {
+      const raise = (structured as any).raise;
+      if (raise && typeof raise === 'object') {
+        const amountRaw = (raise as any)?.value_json?.amount?.amount;
+        const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
+        const sources = Array.isArray((raise as any).sources) ? (raise as any).sources : [];
+        const kinds = sourceKinds(sources);
+        const text = sourceText(sources);
+        const suspiciousContext = isExternalContractLike(text) || isMarketSizingHypothetical(text);
+        if (amount != null && amount >= 50_000_000 && kinds.has('promoted_fact') && suspiciousContext) {
+          (raise as any).value = null;
+          if ((raise as any).value_json && typeof (raise as any).value_json === 'object') {
+            (raise as any).value_json = {
+              ...(raise as any).value_json,
+              amount: {
+                amount: null,
+                currency: (raise as any).value_json?.amount?.currency ?? 'USD',
+              },
+            };
+          }
+          (raise as any).suppressed_reason = 'low_trust_raise_context';
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // Revenue trust gate: suppress weak-source outliers and fall back to safer candidates when present.
+    try {
+      const revenue = (structured as any).revenue;
+      if (revenue && typeof revenue === 'object') {
+        const candidates: any[] = Array.isArray((revenue as any).candidates) ? (revenue as any).candidates : [];
+
+        const hasStrongCorroboration = (candidate: any): boolean => {
+          const amount = typeof candidate?.amount === 'number' && Number.isFinite(candidate.amount) ? candidate.amount : null;
+          if (amount == null || amount <= 0) return false;
+          return candidates.some((other) => {
+            if (!other || other === candidate) return false;
+            const otherAmount = typeof other?.amount === 'number' && Number.isFinite(other.amount) ? other.amount : null;
+            if (otherAmount == null || otherAmount <= 0) return false;
+            const kinds = sourceKinds(other?.sources ?? []);
+            const hasStrongKind = ['xlsx', 'pdf_table', 'pdf_kpi_line', 'input_metric'].some((k) => kinds.has(k));
+            if (!hasStrongKind) return false;
+            const relDelta = Math.abs(otherAmount - amount) / Math.max(amount, 1);
+            return relDelta <= 0.5;
+          });
+        };
+
+        const isSuspiciousRevenueCandidate = (candidate: any): boolean => {
+          const amount = typeof candidate?.amount === 'number' && Number.isFinite(candidate.amount) ? candidate.amount : null;
+          if (amount == null || amount < 100_000_000) return false;
+
+          const kinds = sourceKinds(candidate?.sources ?? []);
+          const text = sourceText(candidate?.sources ?? []);
+          const confidence = typeof candidate?.confidence === 'number' && Number.isFinite(candidate.confidence) ? candidate.confidence : 0;
+
+          if (kinds.has('promoted_fact') && (isExternalContractLike(text) || isMarketSizingHypothetical(text) || isPackagingLike(text))) {
+            return true;
+          }
+
+          const weakKpi = kinds.has('kpi_tile') || kinds.has('chart_pixel');
+          if (weakKpi && confidence <= 0.65 && !hasStrongCorroboration(candidate)) {
+            return true;
+          }
+
+          return false;
+        };
+
+        const selected = candidates.find((c) => c && c.selected === true) ?? null;
+        if (selected && isSuspiciousRevenueCandidate(selected)) {
+          const fallback = candidates.find((c) => c && c !== selected && !isSuspiciousRevenueCandidate(c)) ?? null;
+          if (fallback) {
+            const nextAmount = typeof fallback.amount === 'number' && Number.isFinite(fallback.amount) ? fallback.amount : null;
+            (revenue as any).value = {
+              amount: nextAmount,
+              currency: typeof fallback.currency === 'string' && fallback.currency.trim() ? fallback.currency : ((revenue as any)?.value?.currency ?? 'USD'),
+              period: (revenue as any)?.value?.period ?? null,
+              raw: typeof fallback.value_raw === 'string' && fallback.value_raw.trim() ? fallback.value_raw : null,
+            };
+            (revenue as any).confidence = typeof fallback.confidence === 'number' && Number.isFinite(fallback.confidence)
+              ? fallback.confidence
+              : (revenue as any).confidence;
+            (revenue as any).sources = Array.isArray(fallback.sources) ? fallback.sources : [];
+            (revenue as any).selection_reason = 'trust_gate_fallback';
+            (revenue as any).candidates = candidates.map((c) => ({ ...c, selected: c === fallback }));
+          } else {
+            (revenue as any).value = null;
+            (revenue as any).sources = [];
+            (revenue as any).selection_reason = 'suppressed_low_trust_revenue';
+            (revenue as any).candidates = candidates.map((c) => ({ ...c, selected: false }));
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  } catch {
+    // ignore
+  }
+}
+
 function ensureStructuredSummaryKpis(report: any): void {
   try {
     if (!report || typeof report !== 'object') return;
@@ -2718,6 +2860,7 @@ export async function registerReportRoutes(
           // Goal: provide stable hero/overview/deep and citations without overlay drift.
           try {
             if (report && typeof report === 'object' && (report as any).structured_summary && typeof (report as any).structured_summary === 'object') {
+              applyStructuredNumericTrustGates(report);
               const det = buildDeterministicDealSummaryV1FromStructuredSummary({
                 structured_summary: (report as any).structured_summary,
               });
@@ -2956,6 +3099,7 @@ export async function registerReportRoutes(
           try {
             // Ensure excerpt contains the stable deterministic KPI shapes required by the narration guard.
             // These are deterministic, shape-only normalizations and must not change underlying extracted values.
+            applyStructuredNumericTrustGates(report);
             ensureStructuredRevenueSelectionReason(report);
             ensureStructuredSummaryKpis(report);
             // Ensure excerpt sees the deterministic deal_summary_v1 subtree as well.
@@ -2979,6 +3123,7 @@ export async function registerReportRoutes(
         }
 
         if (report && typeof report === 'object') {
+          applyStructuredNumericTrustGates(report);
           ensureStructuredRevenueSelectionReason(report);
           ensureStructuredSummaryKpis(report);
           // Keep deal_summary nested under the compiled report as well.
@@ -3345,6 +3490,7 @@ export async function registerReportRoutes(
         }
 
         // Backward compatibility: normalize structured KPI shape (order matters).
+        applyStructuredNumericTrustGates(report);
         ensureStructuredRevenueSelectionReason(report);
         ensureStructuredSummaryKpis(report);
 
@@ -3426,6 +3572,8 @@ export async function registerReportRoutes(
             } catch {
               // ignore
             }
+
+            applyStructuredNumericTrustGates(report);
 
             const det = buildDeterministicDealSummaryV1FromStructuredSummary({
               structured_summary: (report as any).structured_summary,

@@ -1,0 +1,334 @@
+{
+  "deal_name": "WebMax",
+  "deal_id": "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
+  "_synthetic": false,
+  "mode": "real_document",
+  "source_type": "pdf",
+  "_schema": "deal_understanding_ground_truth_v1",
+  "ground_truth": {
+    "what_company_does": "WebMax is a digital mortgage technology company that uses predictive scoring, workflow automation, and CRM-integrated tools to help lenders, realtors, and borrowers improve mortgage conversion and engagement.",
+    "problem": "Mortgage lenders and realtors lack centralized insight into borrower activity, follow-up is inconsistent, workflows are fragmented, and collaboration between parties is weak, leading to missed opportunities and lower conversion.",
+    "solution": "WebMax provides unified automation and predictive intelligence across lenders, realtors, and borrowers, including borrower-readiness scoring, workflow automation, trigger-based re-engagement, and relationship tools.",
+    "why_now": "The company is repositioning around predictive borrower-readiness scoring and workflow intelligence for a market that needs better conversion, automation, and CRM-connected collaboration.",
+    "business_model": "B2B SaaS and mortgage workflow software business with a platform, enterprise licensing, AI scoring add-ons, and white-label partnership opportunities.",
+    "revenue_model": "Revenue comes from SaaS platform subscriptions, enterprise licensing, AI scoring add-ons, and white-label or reseller partnership channels.",
+    "traction_summary": "The deck cites a 50 percent demo-to-close rate, 20 to 300 percent lift in qualification prediction, a growing partner-driven pipeline, high borrower workflow completion rates, and active reseller distribution.",
+    "risks": "Key risks include proving the durability of performance improvements, dependence on partner and reseller distribution, integration execution with CRM and LOS systems, and competitive pressure in mortgage software.",
+    "target_customer": "The core users and buyers are mortgage lenders, loan officers, realtors, and related mortgage ecosystem participants who need better borrower engagement and conversion tools.",
+    "go_to_market": "WebMax goes to market through reseller partnerships, CRM integration channels, direct SaaS sales, partner activation, and rapid deployment into mortgage workflows.",
+    "market_positioning": "WebMax positions itself as a CRM-agnostic digital mortgage solution combining predictive scoring, automation, and next-best-action guidance for the mortgage ecosystem.",
+    "competitive_differentiation": "Its differentiation includes CRM-agnostic integration, predictive borrower-readiness scoring, automation across lenders-realtors-borrowers, learning from funded-loan outcomes, and channel-ready deployment.",
+    "investor_relevance_notes": [
+      "This is a mortgage software and workflow automation SaaS business, not a lender or balance-sheet credit business.",
+      "A strong understanding should clearly identify predictive scoring, CRM integration, and borrower workflow automation as the core product.",
+      "The traction slides cite conversion and prediction-lift metrics, but the deck does not provide hard booked revenue figures.",
+      "The go-to-market motion depends heavily on reseller and partner distribution through platforms like Shape and Relcu.",
+      "Important diligence areas include customer conversion proof, reseller dependence, integration depth, and whether the performance claims are repeatable at scale."
+    ]
+  },
+  "validation": {
+    "_schema": "deal_understanding_validation_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-WEBMAX-001",
+        "label": "correctly identifies WebMax as mortgage technology SaaS",
+        "check_type": "contains_any",
+        "field": "what_company_does",
+        "expected_terms": [
+          "mortgage technology",
+          "digital mortgage",
+          "workflow automation",
+          "predictive scoring",
+          "lenders",
+          "borrowers"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-002",
+        "label": "captures the core solution as predictive scoring and automation",
+        "check_type": "contains_any",
+        "field": "solution",
+        "expected_terms": [
+          "predictive",
+          "automation",
+          "borrower readiness",
+          "workflow",
+          "lenders",
+          "realtors"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-003",
+        "label": "frames business model as SaaS and enterprise software",
+        "check_type": "contains_any",
+        "field": "business_model",
+        "expected_terms": [
+          "saas",
+          "enterprise licensing",
+          "ai scoring",
+          "white-label",
+          "platform",
+          "software"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-004",
+        "label": "revenue model reflects software monetization",
+        "check_type": "contains_any",
+        "field": "revenue_model",
+        "expected_terms": [
+          "saas",
+          "licensing",
+          "add-ons",
+          "white-label",
+          "subscriptions",
+          "partners"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-005",
+        "label": "go to market includes reseller or partner distribution",
+        "check_type": "contains_any",
+        "field": "go_to_market",
+        "expected_terms": [
+          "reseller",
+          "partners",
+          "crm",
+          "shape",
+          "relcu",
+          "distribution"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-006",
+        "label": "target customer includes lenders and realtors",
+        "check_type": "contains_any",
+        "field": "target_customer",
+        "expected_terms": [
+          "lenders",
+          "realtors",
+          "loan officers",
+          "borrowers",
+          "mortgage",
+          "buyers"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-007",
+        "label": "traction references conversion and prediction metrics",
+        "check_type": "contains_any",
+        "field": "traction_summary",
+        "expected_terms": [
+          "50%",
+          "demo-to-close",
+          "20-300%",
+          "pipeline",
+          "completion rates",
+          "partner-driven"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-008",
+        "label": "why now reflects the pivot to borrower-readiness intelligence",
+        "check_type": "contains_any",
+        "field": "why_now",
+        "expected_terms": [
+          "pivot",
+          "borrower readiness",
+          "predictive",
+          "conversion",
+          "automation",
+          "crm"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-009",
+        "label": "market positioning includes CRM-agnostic predictive workflow angle",
+        "check_type": "contains_any",
+        "field": "market_positioning",
+        "expected_terms": [
+          "crm-agnostic",
+          "predictive scoring",
+          "next best action",
+          "automation",
+          "mortgage",
+          "workflow"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-010",
+        "label": "competitive differentiation includes data and outcome learning",
+        "check_type": "contains_any",
+        "field": "competitive_differentiation",
+        "expected_terms": [
+          "crm-agnostic",
+          "funded-loan outcomes",
+          "predictive scoring",
+          "automation",
+          "integrates",
+          "next best action"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-011",
+        "label": "risks mention partner dependence or proof of uplift",
+        "check_type": "contains_any",
+        "field": "risks",
+        "expected_terms": [
+          "reseller",
+          "partner",
+          "integration",
+          "performance",
+          "repeatable",
+          "competitive"
+        ]
+      },
+      {
+        "id": "L1-WEBMAX-012",
+        "label": "problem identifies fragmented mortgage workflows",
+        "check_type": "contains_any",
+        "field": "problem",
+        "expected_terms": [
+          "lack of insight",
+          "poor follow-up",
+          "manual marketing",
+          "fragmented",
+          "missed opportunities",
+          "engagement"
+        ]
+      }
+    ],
+    "consistency_checks": [
+      {
+        "id": "L2-WEBMAX-013",
+        "label": "business model and revenue model share SaaS monetization terms",
+        "check_type": "term_alignment",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "expected_shared_terms": [
+          "saas",
+          "licensing",
+          "add-ons",
+          "white-label",
+          "platform"
+        ],
+        "min_shared": 1
+      },
+      {
+        "id": "L2-WEBMAX-014",
+        "label": "what company does and solution stay aligned on mortgage automation",
+        "check_type": "term_alignment",
+        "field_a": "what_company_does",
+        "field_b": "solution",
+        "expected_shared_terms": [
+          "mortgage",
+          "predictive",
+          "automation",
+          "workflow",
+          "borrower"
+        ],
+        "min_shared": 1
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "id": "L4-WEBMAX-015",
+        "label": "does not misclassify as lender or credit fund",
+        "check_type": "must_not_contain",
+        "field": "business_model",
+        "prohibited_patterns": [
+          "mortgage lender",
+          "balance sheet lender",
+          "credit fund",
+          "loan book owner",
+          "direct originator capital provider"
+        ]
+      },
+      {
+        "id": "L4-WEBMAX-016",
+        "label": "does not invent hard booked revenue figures absent from deck",
+        "check_type": "must_not_contain",
+        "field": "traction_summary",
+        "prohibited_patterns": [
+          "$10m arr",
+          "$5m revenue",
+          "$20m revenue",
+          "profitable today"
+        ]
+      },
+      {
+        "id": "L4-WEBMAX-017",
+        "label": "does not treat performance lift claims as guaranteed financial results",
+        "check_type": "must_not_contain",
+        "field": "traction_summary",
+        "prohibited_patterns": [
+          "guaranteed conversion uplift",
+          "guaranteed revenue increase",
+          "certain underwriting outcome"
+        ]
+      },
+      {
+        "id": "L4-WEBMAX-018",
+        "label": "does not confuse AI feature set with consumer fintech or payments company",
+        "check_type": "must_not_contain",
+        "field": "business_model",
+        "prohibited_patterns": [
+          "consumer fintech",
+          "payments network",
+          "card interchange",
+          "embedded finance issuer"
+        ]
+      }
+    ],
+    "completeness_checks": [
+      {
+        "id": "L5-WEBMAX-019",
+        "label": "what_company_does is not empty",
+        "check_type": "not_empty",
+        "field": "what_company_does"
+      },
+      {
+        "id": "L5-WEBMAX-020",
+        "label": "problem is not empty",
+        "check_type": "not_empty",
+        "field": "problem"
+      },
+      {
+        "id": "L5-WEBMAX-021",
+        "label": "solution is not empty",
+        "check_type": "not_empty",
+        "field": "solution"
+      },
+      {
+        "id": "L5-WEBMAX-022",
+        "label": "why_now is not empty",
+        "check_type": "not_empty",
+        "field": "why_now"
+      },
+      {
+        "id": "L5-WEBMAX-023",
+        "label": "business_model is not empty",
+        "check_type": "not_empty",
+        "field": "business_model"
+      },
+      {
+        "id": "L5-WEBMAX-024",
+        "label": "revenue_model is not empty",
+        "check_type": "not_empty",
+        "field": "revenue_model"
+      },
+      {
+        "id": "L5-WEBMAX-025",
+        "label": "traction_summary is not empty",
+        "check_type": "not_empty",
+        "field": "traction_summary"
+      },
+      {
+        "id": "L5-WEBMAX-026",
+        "label": "risks is not empty",
+        "check_type": "not_empty",
+        "field": "risks"
+      }
+    ]
+  }
+}

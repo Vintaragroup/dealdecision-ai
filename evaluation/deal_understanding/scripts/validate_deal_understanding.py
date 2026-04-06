@@ -97,15 +97,20 @@ REFERENCE_DEALS: dict[str, dict] = {
         "deal_id":           "0e8fa8ae-94fa-4ab7-ab66-39c07651d089",
         "ground_truth_file": "MagarianFund.json",
     },
-    # ── Live deals ────────────────────────────────────────────────────────────
+    # ── Third-audit deals (third3-audit) ─────────────────────────────────────
+    "3ICE": {
+        "deal_id":           "61ef36dd-391a-4a4e-b30b-1f5d1f19f91e",
+        "ground_truth_file": "3ICE.json",
+    },
+    "WebMax": {
+        "deal_id":           "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
+        "ground_truth_file": "WebMax.json",
+    },
+    # ── Pending live deals ───────────────────────────────────────────────────
     # TODO (DDA-UNDERSTANDING): uncomment once understanding endpoint is live.
     # "DealDecision": {
     #     "deal_id":           "517be946-cab9-4bc1-8982-9522ff9dab32",
     #     "ground_truth_file": "DealDecision.json",
-    # },
-    # "WebMax": {
-    #     "deal_id":           "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
-    #     "ground_truth_file": "WebMax.json",
     # },
 }
 

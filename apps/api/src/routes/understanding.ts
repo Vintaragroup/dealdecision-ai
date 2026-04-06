@@ -292,6 +292,28 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       signals.push(next);
     }
 
+    // Returns true when a risk string is a generic LLM placeholder rather than an
+    // extracted business risk (e.g. "Missing evidence for key metrics...",
+    // "Low confidence score suggests..."). Filtered before DPU distribution fallback.
+    function isGenericRiskEntry(s: unknown): boolean {
+      return (
+        typeof s === "string" &&
+        /^(missing evidence|low confidence score|lacks?\s)/i.test((s as string).trim())
+      );
+    }
+
+    // Returns true when all traction signals match a generic placeholder pattern
+    // (e.g. "Growth mentioned", "Customers mentioned"). When true, DPU traction
+    // slide text is preferred over these low-information signals.
+    function isGenericTractionSignals(signals: unknown): boolean {
+      if (!Array.isArray(signals) || signals.length === 0) return true;
+      return signals.every(
+        (s): s is string =>
+          typeof s === "string" &&
+          /^(growth|customers?|pilots?|partnerships?|traction)\s+mentioned\.?$/i.test(s.trim()),
+      );
+    }
+
     // Per-segment DPU text — joins all pages for a given segment key.
     const dpuJoin = (key: string): string =>
       (dpuBySegment[key] ?? []).join(" ").replace(/\s+/g, " ").trim();
@@ -399,10 +421,12 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       problem:
         asStr(overviewV2?.product_solution) !== rejectRoadmap(asStr(overviewV2?.product_solution))
           ? asStr(overviewV2?.market_icp) || asStr(dealSummarySummary?.one_liner)
-          : asStr(dealSummarySummary?.one_liner) ||
+          : dpuJoin("solution") ||
+            asStr(dealSummarySummary?.one_liner) ||
             asStr(reportSS?.deal_summary_v1?.tiers?.hero),
 
       solution:
+        dpuJoin("solution") ||
         rejectRoadmap(asStr(overviewV2?.product_solution)) ||
         asStr(overviewV2?.market_icp),
 
@@ -422,12 +446,12 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         dpuProductText ||
         firstKnown(
           overviewV2?.business_model,
-          reportSS?.business_model?.value,
           archetypeV1?.value,
+          reportSS?.business_model?.value,
         ) ||
         asStr(overviewV2?.business_model) ||
-        asStr(reportSS?.business_model?.value) ||
-        asStr(archetypeV1?.value),
+        asStr(archetypeV1?.value) ||
+        asStr(reportSS?.business_model?.value),
 
       // Strip sentences that pair a large-dollar amount (≥$50M) with hypothetical/projection
       // language (e.g. "yielding ~$139M ARR") — these are forward-looking assertions surfaced
@@ -444,11 +468,15 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         asStr(overviewV2?.go_to_market),
 
       traction_summary:
-        joinArray(overviewV2?.traction_signals) ||
+        (isGenericTractionSignals(overviewV2?.traction_signals) ? "" : joinArray(overviewV2?.traction_signals)) ||
         dpuTractionText ||
+        joinArray(overviewV2?.traction_signals) ||
         asStr(overviewV2?.traction_metrics),
 
       risks:
+        joinArray(dealSummaryV2Risks.filter((r) => !isGenericRiskEntry(r))) ||
+        joinArray((overviewV2?.key_risks_detected as unknown[] ?? []).filter((r) => !isGenericRiskEntry(r))) ||
+        dpuJoin("distribution") ||
         joinArray(dealSummaryV2Risks) ||
         joinArray(overviewV2?.key_risks_detected),
 
@@ -462,12 +490,14 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
           trustedRaiseValue,
         );
         return asStr(overviewV2?.market_icp) ||
+          dpuTractionText ||
           primary ||
           asStr(reportSS?.deal_summary_v1?.tiers?.deep);
       })(),
 
       competitive_differentiation:
         asStr(overviewV2?.market_icp) ||
+        dpuJoin("solution") ||
         rejectRoadmap(asStr(overviewV2?.product_solution)) ||
         asStr(reportSS?.deal_summary_v1?.tiers?.overview),
 

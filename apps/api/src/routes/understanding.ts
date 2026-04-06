@@ -300,15 +300,23 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       const trimmed = (s as string).trim();
       return (
         /^(missing evidence|low confidence score|lacks?\s|competition poses a significant risk)/i.test(trimmed) ||
-        /^competition$/i.test(trimmed)
+        /^competition$/i.test(trimmed) ||
+        /could affect long-term/i.test(trimmed) ||
+        /may impact user\s+trust/i.test(trimmed) ||
+        /^retention\s+risk$/i.test(trimmed) ||
+        /^security\s*(\/|and)\s*privacy/i.test(trimmed)
       );
     }
 
     // Returns true when all traction signals match a generic placeholder pattern
-    // (e.g. "Growth mentioned", "Customers mentioned"). When true, DPU traction
-    // slide text is preferred over these low-information signals.
+    // (e.g. "Growth mentioned", "ARR mentioned", "Retention / churn mentioned"). When true,
+    // DPU financials/traction slide text is preferred over these low-information signals.
     function isGenericTractionSignals(signals: unknown): boolean {
       if (!Array.isArray(signals) || signals.length === 0) return true;
+      // Fast path: every signal ends with "mentioned" — these are pure category labels
+      // with no embedded values ("ARR mentioned", "Revenue mentioned", etc.).
+      if (signals.every((s): s is string => typeof s === "string" && /\bmentioned\.?$/i.test(s.trim()))) return true;
+      // Legacy: original narrow pattern for well-known "X mentioned" forms.
       return signals.every(
         (s): s is string =>
           typeof s === "string" &&
@@ -326,10 +334,71 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     const dpuTractionText   = dpuJoin("traction");   // traction slides: GTV, users, organic, B2B2C
     const dpuFinancialsText = dpuJoin("financials"); // financials slides: shared expenses, ARPU
 
+    // Financials DPU text qualified for traction-summary use — only when the financials
+    // segment contains actual numeric metrics (e.g. "$29M+", "18,000+") rather than
+    // qualitative slide content (testimonials, text-only slides).  This lets startup deals
+    // whose KPI/metrics slide is classified as "financials" surface real traction values
+    // while avoiding customer-testimonial slides polluting the traction_summary field.
+    const dpuFinancialsWithMetrics =
+      /\b\d[\d,]*\s*[KkMmBb+]|[€$£]\d[\d,]*[KkMmBb]?|\b\d{4,}\b/.test(dpuFinancialsText)
+        ? dpuFinancialsText
+        : "";
+
+    // Market DPU text qualified for GTM use — filtered out when the segment is clearly a
+    // market-size / TAM slide ("billion" / "trillion") or a use-of-funds / headcount slide
+    // ("employee benefits" is a strong signal the page describes an org or budget breakdown
+    // rather than a GTM strategy, e.g. a use-of-funds roadmap misclassified as "market").
+    const dpuMarketForGTM =
+      /\b(billion|trillion)\b|\$\s*\d+\s*B\b/i.test(dpuJoin("market")) ||
+      /\bemployee benefits\b|\buse of funds\b/i.test(dpuJoin("market"))
+        ? ""
+        : dpuJoin("market");
+
     // Roadmap OCR guard: product_solution text extracted from a product-roadmap slide (not a
     // current-state product description) is rejected so the field falls through to better data.
     const ROADMAP_OCR_RE = /\b(product\s+roadmap|q[1-4]\s+20\d\d|Goal:\s*(growth|revenue|engagement))\b/i;
     const rejectRoadmap = (text: string): string => ROADMAP_OCR_RE.test(text) ? "" : text;
+
+    // DPU business_model segment — exists in SMB/CIM deals where the classifier assigns a
+    // dedicated "business model" page (e.g. HVAC service description in a broker CIM).
+    const dpuBusinessModelText = dpuJoin("business_model");
+
+    // Broker disclaimer guard: CIM documents append a legal disclaimer paragraph to the
+    // market_icp DIO field ("Buyer is advised to consult their financial advisor...").  When
+    // detected, suppress so downstream fields fall through to substantive content.
+    const BROKER_DISCLAIMER_RE = /buyer is advised to consult|financial advisor to review and verify/i;
+    const cleanMarketIcp = BROKER_DISCLAIMER_RE.test(asStr(overviewV2?.market_icp))
+      ? ""
+      : asStr(overviewV2?.market_icp);
+
+    // DIO business_model hallucination guard: when the DIO phase1 mis-classifies a business
+    // as "real estate investment" (e.g. because a CIM mentions an ancillary property sale),
+    // suppress the value so the field falls through to DPU-sourced content instead.
+    const REAL_ESTATE_INVESTMENT_RE = /\breal estate investment\b/i;
+    const cleanDIOBizModel = REAL_ESTATE_INVESTMENT_RE.test(asStr(overviewV2?.business_model))
+      ? ""
+      : asKnownStr(overviewV2?.business_model);
+
+    // Report structured_summary business_model guard — only trust the extracted label when the
+    // archetype extractor had positive confidence.  A zero-confidence archetype indicates
+    // extraction failure; the promoted business_model fact in that case is often a mis-applied
+    // label (e.g. "Wholesale/Retail" from a distribution/channel slide rather than a model slide).
+    const cleanReportBizModel = (archetypeV1?.confidence ?? 0) > 0
+      ? asKnownStr(reportSS?.business_model?.value)
+      : "";
+
+    // Financials DPU for target_customer use — P&L expense tables (containing "Gross Sales",
+    // "Total Expenses", "Income Before Tax") describe financial performance, not customer
+    // segments.  Suppress them so the field falls through to ICP or GTM content.
+    const dpuFinancialsForCustomer = /gross sales|total expenses|income before tax/i.test(dpuFinancialsText)
+      ? ""
+      : dpuFinancialsText;
+
+    // Solution DPU for competitive_differentiation use — CIM title/cover pages ("Confidential
+    // Business Memorandum", "listed for sale by", "Business Intermediary") don't describe
+    // differentiation.  Suppress them so the field falls through to DPU business_model content.
+    const CIM_COVER_RE = /confidential business memorandum|business intermediary|listed for sale by/i;
+    const dpuSolutionForDiff = CIM_COVER_RE.test(dpuJoin("solution")) ? "" : dpuJoin("solution");
 
     const investmentEvidenceSnippets = Array.isArray(execSummaryV1?.evidence)
       ? (execSummaryV1.evidence as Array<{ snippet?: unknown }>)
@@ -415,9 +484,10 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     const understanding = {
       what_company_does:
         dpuJoin("distribution") ||
+        cleanMarketIcp ||
+        dpuBusinessModelText ||
         rejectRoadmap(asStr(overviewV2?.product_solution)) ||
         asStr(overviewV2?.go_to_market) ||
-        asStr(overviewV2?.market_icp) ||
         asStr(overviewV2?.business_model) ||
         asStr(dealSummarySummary?.one_liner) ||
         asStr(reportSS?.deal_summary_v1?.tiers?.hero) ||
@@ -425,15 +495,18 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
       problem:
         asStr(overviewV2?.product_solution) !== rejectRoadmap(asStr(overviewV2?.product_solution))
-          ? asStr(overviewV2?.market_icp) || asStr(dealSummarySummary?.one_liner)
+          ? asStr(overviewV2?.market_icp) || dpuJoin("distribution") || asStr(dealSummarySummary?.one_liner)
           : dpuJoin("solution") ||
+            asStr(overviewV2?.market_icp) ||
+            dpuJoin("distribution") ||
             asStr(dealSummarySummary?.one_liner) ||
             asStr(reportSS?.deal_summary_v1?.tiers?.hero),
 
       solution:
         dpuJoin("solution") ||
-        rejectRoadmap(asStr(overviewV2?.product_solution)) ||
-        asStr(overviewV2?.market_icp),
+        asStr(overviewV2?.market_icp) ||
+        dpuJoin("distribution") ||
+        rejectRoadmap(asStr(overviewV2?.product_solution)),
 
       why_now:
         dpuTractionText ||
@@ -444,42 +517,52 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         dpuProductText ||
         firstKnown(
           archetypeV1?.value,
-          reportSS?.business_model?.value,
+          cleanReportBizModel,
         ) ||
-        asKnownStr(overviewV2?.business_model) ||
-        dpuJoin("financials"),
+        cleanDIOBizModel ||
+        dpuBusinessModelText ||
+        dpuJoin("financials") ||
+        dpuJoin("distribution"),
 
       revenue_model:
         dpuProductText ||
         firstKnown(
-          overviewV2?.business_model,
+          cleanDIOBizModel,
           archetypeV1?.value,
-          reportSS?.business_model?.value,
+          cleanReportBizModel,
         ) ||
+        dpuBusinessModelText ||
         dpuJoin("financials") ||
-        asStr(overviewV2?.business_model) ||
-        asStr(archetypeV1?.value) ||
-        asStr(reportSS?.business_model?.value),
+        dpuJoin("distribution"),
 
       // Strip sentences that pair a large-dollar amount (≥$50M) with hypothetical/projection
       // language (e.g. "yielding ~$139M ARR") — these are forward-looking assertions surfaced
       // from GTM slides, not reported facts.  Fall back to DPU traction then market_icp when
       // stripping removes all content so the field remains populated.
+      // dpuMarketForGTM: the DPU market segment filtered to exclude TAM/market-size slides
+      // (e.g. "$65 billion used car finance market") so that genuine GTM content (events,
+      // broadcast, channel partners) surfaces first without being displaced by traction text.
       go_to_market:
         stripHypotheticalDollarProjectionSentences(asStr(overviewV2?.go_to_market)) ||
-        dpuJoin("market") ||
+        dpuMarketForGTM ||
         dpuJoin("distribution") ||
         dpuTractionText ||
+        dpuJoin("market") ||
         asStr(overviewV2?.market_icp),
 
+      // DPU financials segment often contains per-customer spend, shared-expense context, or
+      // ARPU data — better descriptors of customer segments than generic ICP language.
+      // dpuFinancialsForCustomer: P&L expense tables are suppressed here — they describe
+      // financial performance, not customer segments (see guard above).
       target_customer:
-        dpuFinancialsText ||
-        asStr(overviewV2?.market_icp) ||
+        dpuFinancialsForCustomer ||
+        cleanMarketIcp ||
         asStr(overviewV2?.go_to_market),
 
       traction_summary:
         (isGenericTractionSignals(overviewV2?.traction_signals) ? "" : joinArray(overviewV2?.traction_signals)) ||
         dpuJoin("distribution") ||
+        dpuFinancialsWithMetrics ||
         dpuTractionText ||
         joinArray(overviewV2?.traction_signals) ||
         asStr(overviewV2?.traction_metrics),
@@ -508,8 +591,10 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       })(),
 
       competitive_differentiation:
-        asStr(overviewV2?.market_icp) ||
-        dpuJoin("solution") ||
+        cleanMarketIcp ||
+        dpuSolutionForDiff ||
+        dpuBusinessModelText ||
+        dpuJoin("distribution") ||
         rejectRoadmap(asStr(overviewV2?.product_solution)) ||
         asStr(reportSS?.deal_summary_v1?.tiers?.overview),
 

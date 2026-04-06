@@ -1,0 +1,58 @@
+{
+  "deal_name": "OCRHeavyBenchmark",
+  "deal_id": null,
+  "source_type": "ocr_scanned_pdf",
+  "source_docs": [
+    "REPLACE_ME.pdf"
+  ],
+  "ground_truth": {
+    "what_company_does": "REPLACE_ME",
+    "problem": "REPLACE_ME",
+    "solution": "REPLACE_ME",
+    "why_now": "REPLACE_ME",
+    "business_model": "REPLACE_ME",
+    "revenue_model": "REPLACE_ME",
+    "go_to_market": "REPLACE_ME",
+    "target_customer": "REPLACE_ME",
+    "traction_summary": "REPLACE_ME",
+    "market_positioning": "REPLACE_ME",
+    "competitive_differentiation": "REPLACE_ME",
+    "risks": "REPLACE_ME"
+  },
+  "validation": {
+    "_schema": "deal_understanding_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-OCR-001",
+        "layer": "L1-FIDELITY",
+        "field": "what_company_does",
+        "check_type": "contains_any",
+        "expected_terms": ["REPLACE_ME_1", "REPLACE_ME_2"]
+      }
+    ],
+    "consistency_checks": [],
+    "hallucination_checks": [
+      {
+        "id": "L4-OCR-002",
+        "layer": "L4-HALLUCINATION",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["invented metric", "unsupported number", "fake arr"]
+      }
+    ],
+    "completeness_checks": [
+      { "id": "L5-OCR-003", "layer": "L5-COMPLETENESS", "field": "what_company_does", "check_type": "not_empty" },
+      { "id": "L5-OCR-004", "layer": "L5-COMPLETENESS", "field": "business_model", "check_type": "not_empty" },
+      { "id": "L5-OCR-005", "layer": "L5-COMPLETENESS", "field": "risks", "check_type": "not_empty" }
+    ]
+  },
+  "investor_relevance_notes": [
+    "A strong understanding should identify low-confidence OCR areas and avoid overclaiming exact numbers.",
+    "The system should prefer conservative summaries when source text is noisy or partially unreadable.",
+    "Important diligence areas include verifying all numeric claims directly from scanned tables."
+  ],
+  "benchmark_overrides": {
+    "expected_ocr_primary": true,
+    "relaxed_completeness_threshold": true
+  }
+}

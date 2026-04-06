@@ -1,0 +1,136 @@
+{
+  "deal_name": "Carmoola",
+  "deal_id": "da96b5a9-e5b2-46c1-a6ef-da037f876426",
+  "source_type": "growth_stage_fintech_deck",
+  "source_docs": [
+    "PD - Carmoola - Series B Teaser (Oct 25).pdf"
+  ],
+  "ground_truth": {
+    "what_company_does": "Direct-to-consumer car finance and mobility platform that lets consumers arrange car finance upfront through a digital app experience.",
+    "problem": "Consumers distrust dealership finance, face opaque terms, and encounter outdated finance workflows.",
+    "solution": "AI-powered, digital-first car finance experience with fast approval, transparent financing, vehicle history checks, instant payment, and servicing in-app.",
+    "why_now": "Car-buying behavior is shifting online and finance-first, trust in incumbents is low, and AI / fintech infrastructure enables better user experience.",
+    "business_model": "Consumer fintech / mobility platform / lender-enabled finance platform",
+    "revenue_model": "Revenue from car finance and related lending economics, with future cross-sell into insurance, marketplace, and ownership-wallet products.",
+    "go_to_market": "Direct, comparison sites, partners, and AI-powered acquisition / pricing channels.",
+    "target_customer": "Used-car buyers seeking transparent direct-to-consumer financing.",
+    "traction_summary": "$0 to roughly $28M-$29M ARR in 3 years, about 18,000 active customers, about $350M cars financed, 11-month CAC payback, and strong NPS.",
+    "market_positioning": "Direct-to-consumer alternative to dealership-led car financing, with strong UX, AI, and capital-light scaling model.",
+    "competitive_differentiation": "Fast approval, AI decisioning, proprietary technology stack, strong NPS, efficient unit economics, and capital-light forward-flow model.",
+    "risks": "Credit performance, CAC durability, funding and cost-of-capital risk, execution on adjacent expansion, and regulatory / lending market dynamics."
+  },
+  "validation": {
+    "_schema": "deal_understanding_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-CAR-001",
+        "layer": "L1-FIDELITY",
+        "field": "what_company_does",
+        "check_type": "contains_any",
+        "expected_terms": ["car finance", "mobility", "consumer", "digital", "direct-to-consumer"]
+      },
+      {
+        "id": "L1-CAR-002",
+        "layer": "L1-FIDELITY",
+        "field": "problem",
+        "check_type": "contains_any",
+        "expected_terms": ["trust", "dealership", "opaque", "finance experience", "consumer"]
+      },
+      {
+        "id": "L1-CAR-003",
+        "layer": "L1-FIDELITY",
+        "field": "solution",
+        "check_type": "contains_any",
+        "expected_terms": ["ai", "approved", "digital", "vehicle history", "instant"]
+      },
+      {
+        "id": "L1-CAR-004",
+        "layer": "L1-FIDELITY",
+        "field": "why_now",
+        "check_type": "contains_any",
+        "expected_terms": ["online", "finance-first", "ai", "fintech infrastructure", "trust"]
+      },
+      {
+        "id": "L1-CAR-005",
+        "layer": "L1-FIDELITY",
+        "field": "traction_summary",
+        "check_type": "contains_any",
+        "expected_terms": ["28m", "29m", "18,000", "350m", "11 months", "nps"]
+      },
+      {
+        "id": "L1-CAR-006",
+        "layer": "L1-FIDELITY",
+        "field": "go_to_market",
+        "check_type": "contains_any",
+        "expected_terms": ["direct", "comparison", "partners", "acquisition", "cac"]
+      },
+      {
+        "id": "L1-CAR-007",
+        "layer": "L1-FIDELITY",
+        "field": "competitive_differentiation",
+        "check_type": "contains_any",
+        "expected_terms": ["ai", "proprietary", "nps", "capital-light", "decisioning"]
+      },
+      {
+        "id": "L1-CAR-008",
+        "layer": "L1-FIDELITY",
+        "field": "risks",
+        "check_type": "contains_any",
+        "expected_terms": ["credit", "cac", "capital", "funding", "regulatory", "execution"]
+      }
+    ],
+    "consistency_checks": [
+      {
+        "id": "L2-CAR-009",
+        "layer": "L2-UNDERSTANDING",
+        "check_type": "term_alignment",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "expected_shared_terms": ["finance", "consumer", "lending", "platform"],
+        "min_shared": 1
+      },
+      {
+        "id": "L2-CAR-010",
+        "layer": "L2-UNDERSTANDING",
+        "check_type": "term_alignment",
+        "field_a": "problem",
+        "field_b": "solution",
+        "expected_shared_terms": ["finance", "consumer", "digital", "car"],
+        "min_shared": 1
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "id": "L4-CAR-011",
+        "layer": "L4-HALLUCINATION",
+        "field": "revenue_model",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["media rights", "property lease", "sde", "hvac service"]
+      },
+      {
+        "id": "L4-CAR-012",
+        "layer": "L4-HALLUCINATION",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["1b gtv", "200 paid subscriber", "2.5m offering price"]
+      }
+    ],
+    "completeness_checks": [
+      { "id": "L5-CAR-013", "layer": "L5-COMPLETENESS", "field": "what_company_does", "check_type": "not_empty" },
+      { "id": "L5-CAR-014", "layer": "L5-COMPLETENESS", "field": "problem", "check_type": "not_empty" },
+      { "id": "L5-CAR-015", "layer": "L5-COMPLETENESS", "field": "solution", "check_type": "not_empty" },
+      { "id": "L5-CAR-016", "layer": "L5-COMPLETENESS", "field": "why_now", "check_type": "not_empty" },
+      { "id": "L5-CAR-017", "layer": "L5-COMPLETENESS", "field": "business_model", "check_type": "not_empty" },
+      { "id": "L5-CAR-018", "layer": "L5-COMPLETENESS", "field": "revenue_model", "check_type": "not_empty" },
+      { "id": "L5-CAR-019", "layer": "L5-COMPLETENESS", "field": "traction_summary", "check_type": "not_empty" },
+      { "id": "L5-CAR-020", "layer": "L5-COMPLETENESS", "field": "risks", "check_type": "not_empty" }
+    ]
+  },
+  "investor_relevance_notes": [
+    "This is a direct-to-consumer car-finance and mobility platform, not a generic SaaS business.",
+    "A strong understanding should separate current traction from forward-looking 2030 revenue projections.",
+    "Important diligence areas include credit performance, funding costs, CAC durability, repeat usage, and regulatory exposure.",
+    "The system should recognize the capital-light forward-flow model and not confuse it with a balance-sheet-heavy lender only.",
+    "Expansion into insurance, marketplace, and ownership wallet should be treated as roadmap or adjacency, not current core revenue."
+  ]
+}

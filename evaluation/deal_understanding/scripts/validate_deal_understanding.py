@@ -106,6 +106,19 @@ REFERENCE_DEALS: dict[str, dict] = {
         "deal_id":           "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
         "ground_truth_file": "WebMax.json",
     },
+    # ── four4-audit deals ─────────────────────────────────────────────────────
+    "BlackHorse": {
+        "deal_id":           "62c1eb0e-a046-4288-a6e7-4d528d04fe4c",
+        "ground_truth_file": "BlackHorse.json",
+    },
+    "Carmoola": {
+        "deal_id":           "da96b5a9-e5b2-46c1-a6ef-da037f876426",
+        "ground_truth_file": "Carmoola.json",
+    },
+    "Complyant": {
+        "deal_id":           "cc1ddde7-2553-42ed-bc98-09e52c4137cd",
+        "ground_truth_file": "Complyant.json",
+    },
     # ── Pending live deals ───────────────────────────────────────────────────
     # TODO (DDA-UNDERSTANDING): uncomment once understanding endpoint is live.
     # "DealDecision": {

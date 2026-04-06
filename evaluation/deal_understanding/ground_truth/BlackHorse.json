@@ -1,0 +1,134 @@
+{
+  "deal_name": "Black Horse Service Solutions",
+  "deal_id": "62c1eb0e-a046-4288-a6e7-4d528d04fe4c",
+  "source_type": "smb_cim",
+  "source_docs": [
+    "Black-Horse-CIM.pdf"
+  ],
+  "ground_truth": {
+    "what_company_does": "HVAC and plumbing service and installation business serving primarily residential customers in New Jersey.",
+    "problem": "Customers need reliable HVAC and plumbing repair, replacement, and installation services.",
+    "solution": "Provides residential-focused HVAC and plumbing services with service technicians, installers, wrapped vehicles, and flat-rate pricing.",
+    "why_now": "Not explicitly a venture-style why-now; investment case is based on established operating history, customer service reputation, and recent growth.",
+    "business_model": "Service business / local home services",
+    "revenue_model": "Project and service-call revenue from HVAC and plumbing work; mostly residential service and installation.",
+    "go_to_market": "Local demand generation, existing customer base, service reputation, and operational dispatch / CRM workflow.",
+    "target_customer": "Residential homeowners; limited commercial customers.",
+    "traction_summary": "TTM sales of about $3.45M with reported SDE of about $428.7k; 160 change-outs in the last 12 months.",
+    "market_positioning": "Established local operator with long operating history and significant residential mix.",
+    "competitive_differentiation": "Longevity, service reputation, flat-rate pricing, existing fleet/equipment, and operating infrastructure.",
+    "risks": "Messy financial presentation, questionable gross margin presentation, key-person dependence, labor dependence, local competition, and need to verify recast adjustments."
+  },
+  "validation": {
+    "_schema": "deal_understanding_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-BH-001",
+        "layer": "L1-FIDELITY",
+        "field": "what_company_does",
+        "check_type": "contains_any",
+        "expected_terms": ["hvac", "plumbing", "service", "installation", "residential"]
+      },
+      {
+        "id": "L1-BH-002",
+        "layer": "L1-FIDELITY",
+        "field": "business_model",
+        "check_type": "contains_any",
+        "expected_terms": ["service business", "home services", "hvac", "plumbing"]
+      },
+      {
+        "id": "L1-BH-003",
+        "layer": "L1-FIDELITY",
+        "field": "revenue_model",
+        "check_type": "contains_any",
+        "expected_terms": ["service", "installation", "project", "call", "repair"]
+      },
+      {
+        "id": "L1-BH-004",
+        "layer": "L1-FIDELITY",
+        "field": "target_customer",
+        "check_type": "contains_any",
+        "expected_terms": ["residential", "homeowners", "commercial"]
+      },
+      {
+        "id": "L1-BH-005",
+        "layer": "L1-FIDELITY",
+        "field": "traction_summary",
+        "check_type": "contains_any",
+        "expected_terms": ["3.45", "160", "428", "sde", "change outs"]
+      },
+      {
+        "id": "L1-BH-006",
+        "layer": "L1-FIDELITY",
+        "field": "competitive_differentiation",
+        "check_type": "contains_any",
+        "expected_terms": ["flat rate", "wrapped", "fleet", "reputation", "history"]
+      },
+      {
+        "id": "L1-BH-007",
+        "layer": "L1-FIDELITY",
+        "field": "risks",
+        "check_type": "contains_any",
+        "expected_terms": ["financial", "recast", "owner", "labor", "competition"]
+      }
+    ],
+    "consistency_checks": [
+      {
+        "id": "L2-BH-008",
+        "layer": "L2-UNDERSTANDING",
+        "check_type": "term_alignment",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "expected_shared_terms": ["service", "hvac", "plumbing"],
+        "min_shared": 1
+      },
+      {
+        "id": "L2-BH-009",
+        "layer": "L2-UNDERSTANDING",
+        "check_type": "term_alignment",
+        "field_a": "what_company_does",
+        "field_b": "target_customer",
+        "expected_shared_terms": ["residential", "service", "plumbing", "hvac"],
+        "min_shared": 1
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "id": "L4-BH-010",
+        "layer": "L4-HALLUCINATION",
+        "field": "business_model",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["saas", "ai platform", "marketplace", "fintech"]
+      },
+      {
+        "id": "L4-BH-011",
+        "layer": "L4-HALLUCINATION",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["arr", "mrr", "users", "nps"]
+      },
+      {
+        "id": "L4-BH-012",
+        "layer": "L4-HALLUCINATION",
+        "field": "revenue_model",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["subscription", "ad revenue", "financing spread"]
+      }
+    ],
+    "completeness_checks": [
+      { "id": "L5-BH-013", "layer": "L5-COMPLETENESS", "field": "what_company_does", "check_type": "not_empty" },
+      { "id": "L5-BH-014", "layer": "L5-COMPLETENESS", "field": "business_model", "check_type": "not_empty" },
+      { "id": "L5-BH-015", "layer": "L5-COMPLETENESS", "field": "revenue_model", "check_type": "not_empty" },
+      { "id": "L5-BH-016", "layer": "L5-COMPLETENESS", "field": "target_customer", "check_type": "not_empty" },
+      { "id": "L5-BH-017", "layer": "L5-COMPLETENESS", "field": "traction_summary", "check_type": "not_empty" },
+      { "id": "L5-BH-018", "layer": "L5-COMPLETENESS", "field": "risks", "check_type": "not_empty" }
+    ]
+  },
+  "investor_relevance_notes": [
+    "This is a local home-services business, not a SaaS or marketplace company.",
+    "The system should distinguish revenue, recast earnings, and SDE instead of collapsing them into one metric.",
+    "A strong understanding should surface the questionable 100% gross margin presentation as a diligence flag rather than accept it blindly.",
+    "Important diligence areas include customer concentration, owner dependence, labor quality, fleet condition, and validation of recast adjustments.",
+    "The investment case depends more on durable local cash flow and operational quality than on venture-style growth narratives."
+  ]
+}

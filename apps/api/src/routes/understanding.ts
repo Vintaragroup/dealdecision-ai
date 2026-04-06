@@ -296,9 +296,11 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     // extracted business risk (e.g. "Missing evidence for key metrics...",
     // "Low confidence score suggests..."). Filtered before DPU distribution fallback.
     function isGenericRiskEntry(s: unknown): boolean {
+      if (typeof s !== "string") return false;
+      const trimmed = (s as string).trim();
       return (
-        typeof s === "string" &&
-        /^(missing evidence|low confidence score|lacks?\s)/i.test((s as string).trim())
+        /^(missing evidence|low confidence score|lacks?\s|competition poses a significant risk)/i.test(trimmed) ||
+        /^competition$/i.test(trimmed)
       );
     }
 
@@ -310,7 +312,9 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       return signals.every(
         (s): s is string =>
           typeof s === "string" &&
-          /^(growth|customers?|pilots?|partnerships?|traction)\s+mentioned\.?$/i.test(s.trim()),
+          /^(?:growth|customers?|pilots?|partnerships?|traction)(?:\s*[\/&,]\s*(?:growth|customers?|pilots?|partnerships?|traction))*\s+mentioned\.?$/i.test(
+            s.trim(),
+          ),
       );
     }
 
@@ -410,6 +414,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
     const understanding = {
       what_company_does:
+        dpuJoin("distribution") ||
         rejectRoadmap(asStr(overviewV2?.product_solution)) ||
         asStr(overviewV2?.go_to_market) ||
         asStr(overviewV2?.market_icp) ||
@@ -432,7 +437,8 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
       why_now:
         dpuTractionText ||
-        asStr(overviewV2?.market_icp),
+        asStr(overviewV2?.market_icp) ||
+        dpuJoin("financials"),
 
       business_model:
         dpuProductText ||
@@ -440,7 +446,8 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
           archetypeV1?.value,
           reportSS?.business_model?.value,
         ) ||
-        asStr(overviewV2?.business_model),
+        asKnownStr(overviewV2?.business_model) ||
+        dpuJoin("financials"),
 
       revenue_model:
         dpuProductText ||
@@ -449,6 +456,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
           archetypeV1?.value,
           reportSS?.business_model?.value,
         ) ||
+        dpuJoin("financials") ||
         asStr(overviewV2?.business_model) ||
         asStr(archetypeV1?.value) ||
         asStr(reportSS?.business_model?.value),
@@ -459,6 +467,8 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       // stripping removes all content so the field remains populated.
       go_to_market:
         stripHypotheticalDollarProjectionSentences(asStr(overviewV2?.go_to_market)) ||
+        dpuJoin("market") ||
+        dpuJoin("distribution") ||
         dpuTractionText ||
         asStr(overviewV2?.market_icp),
 
@@ -469,6 +479,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
       traction_summary:
         (isGenericTractionSignals(overviewV2?.traction_signals) ? "" : joinArray(overviewV2?.traction_signals)) ||
+        dpuJoin("distribution") ||
         dpuTractionText ||
         joinArray(overviewV2?.traction_signals) ||
         asStr(overviewV2?.traction_metrics),
@@ -476,7 +487,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       risks:
         joinArray(dealSummaryV2Risks.filter((r) => !isGenericRiskEntry(r))) ||
         joinArray((overviewV2?.key_risks_detected as unknown[] ?? []).filter((r) => !isGenericRiskEntry(r))) ||
-        dpuJoin("distribution") ||
+        [dpuJoin("distribution"), dpuJoin("financials")].filter(Boolean).join(" ").trim() ||
         joinArray(dealSummaryV2Risks) ||
         joinArray(overviewV2?.key_risks_detected),
 
@@ -490,6 +501,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
           trustedRaiseValue,
         );
         return asStr(overviewV2?.market_icp) ||
+          dpuJoin("distribution") ||
           dpuTractionText ||
           primary ||
           asStr(reportSS?.deal_summary_v1?.tiers?.deep);

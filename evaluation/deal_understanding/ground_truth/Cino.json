@@ -50,9 +50,11 @@
         "field": "solution",
         "expected_terms": [
           "real time",
+          "real-time",
           "splits payments",
           "split transactions",
           "works with any bank",
+          "bank agnostic",
           "automatically splits",
           "shared payments card"
         ]

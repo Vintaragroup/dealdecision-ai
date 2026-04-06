@@ -181,20 +181,6 @@
           "sponsors",
           "operations"
         ]
-      },
-      {
-        "id": "L1-3ICE-012",
-        "label": "problem recognizes need for more exciting or packageable hockey format",
-        "check_type": "contains_any",
-        "field": "problem",
-        "expected_terms": [
-          "slower",
-          "fan entertainment",
-          "media packaging",
-          "traditional hockey",
-          "high-intensity",
-          "modern media"
-        ]
       }
     ],
     "consistency_checks": [

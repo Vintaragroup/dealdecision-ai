@@ -12,6 +12,124 @@ function isUuid(value: string): boolean {
   return z.string().uuid().safeParse(value).success;
 }
 
+// ---------------------------------------------------------------------------
+// Narrative numeric-consistency helpers
+//
+// These functions are intentionally generic and pattern-based — they do not
+// reference specific deal IDs or hard-coded values. They guard against a class
+// of narrative inconsistency that arises when:
+//   (a) extracted go-to-market slide text contains hypothetical ARR projections
+//       ("yielding ~$139M ARR"), or
+//   (b) LLM-generated deal-summary paragraphs assert a raise amount that is
+//       orders of magnitude larger than the trusted structured raise value.
+// ---------------------------------------------------------------------------
+
+/**
+ * Large-dollar pattern: matches $X[M|MM|million|B|billion] in text.
+ * Uses a global flag so matchAll can iterate multiple hits in one string.
+ */
+const LARGE_DOLLAR_RE = /\$\s*([\d,]+(?:\.\d+)?)\s*(B(?:illion)?|MM?|million)\b/gi;
+
+/**
+ * Returns the numeric dollar value encoded by a LARGE_DOLLAR_RE match group.
+ */
+function parseDollarMatchAmount(numStr: string, suffixStr: string): number {
+  const n = parseFloat(numStr.replace(/,/g, ""));
+  if (!Number.isFinite(n)) return NaN;
+  const s = suffixStr.toLowerCase();
+  if (s === "b" || s.startsWith("bill")) return n * 1e9;
+  return n * 1e6; // M, MM, million
+}
+
+/**
+ * Projection / hypothetical keywords that, combined with a large-dollar claim,
+ * indicate a forward-looking assumption rather than a reported fact.
+ */
+const PROJECTION_KEYWORD_RE =
+  /\b(?:yielding|yield(?:s)?|projected?|projection|forecast(?:ed|s)?|could\s+reach|would(?:\s+be)?\s+generate|assuming|hypothetical|implies?\s+a|representing|translat(?:e[sd]?|ing)\s+to|would\s+translate|potentially\s+generat|may\s+generat)\b/i;
+
+/**
+ * Splits `text` into sentences and removes any sentence that contains both:
+ *   - a dollar amount ≥ $50M (M, MM, million, B, billion notation), AND
+ *   - a projection/hypothetical keyword (e.g. "yielding", "projected", "could reach").
+ *
+ * This strips lines like "yielding ~$139M ARR" while leaving factual mentions
+ * of dollar amounts that are not framed as forward-looking projections.
+ */
+export function stripHypotheticalDollarProjectionSentences(text: string): string {
+  if (!text) return "";
+  // Split on sentence boundaries, keeping the delimiter attached to the preceding sentence.
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const clean = sentences.filter((sentence) => {
+    const dollarMatches = [...sentence.matchAll(new RegExp(LARGE_DOLLAR_RE.source, "gi"))];
+    if (dollarMatches.length === 0) return true; // no dollar amount → keep
+    const hasLargeDollar = dollarMatches.some(
+      (m) => parseDollarMatchAmount(m[1] ?? "", m[2] ?? "") >= 50_000_000,
+    );
+    if (!hasLargeDollar) return true; // amount below threshold → keep
+    return !PROJECTION_KEYWORD_RE.test(sentence); // keep only if no projection keyword
+  });
+  return clean.join(" ").trim();
+}
+
+/**
+ * Parses the numeric value from a formatted raise string like "$2MM", "$4M",
+ * "$375 million", "$1.5B", etc.  Returns NaN when the format is unrecognised.
+ */
+function parseTrustedRaiseAmount(raiseValueStr: string | null | undefined): number {
+  if (!raiseValueStr || typeof raiseValueStr !== "string") return NaN;
+  const m = raiseValueStr.match(/\$?\s*([\d,]+(?:\.\d+)?)\s*(B(?:illion)?|MM?|million|K|thousand)?\b/i);
+  if (!m) return NaN;
+  const n = parseFloat(m[1].replace(/,/g, ""));
+  if (!Number.isFinite(n)) return NaN;
+  const s = (m[2] ?? "").toLowerCase();
+  if (s === "b" || s.startsWith("bill")) return n * 1e9;
+  if (s === "k" || s.startsWith("thou")) return n * 1e3;
+  return n * 1e6;
+}
+
+/**
+ * Returns an empty string when `text` contains an explicit raise-amount assertion
+ * (e.g. "The proposed raise is set at $375 million") whose value is ≥ 20× the
+ * `trustedRaiseValueStr` from the persisted structured summary.  Otherwise returns
+ * `text` unchanged.
+ *
+ * This only fires when the text contains an unambiguous raise assertion pattern so
+ * that incidental mentions of large numbers are left untouched.
+ */
+export function suppressIfRaiseAmountOverstated(
+  text: string,
+  trustedRaiseValueStr: string | null | undefined,
+): string {
+  if (!text) return "";
+  const trustedAmount = parseTrustedRaiseAmount(trustedRaiseValueStr);
+  if (!Number.isFinite(trustedAmount) || trustedAmount <= 0) return text; // no trusted value → keep
+
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  for (const sentence of sentences) {
+    const isRaiseAssertion =
+      /\b(?:proposed\s+raise|raise\s+(?:is|of)|rais(?:ing|ed))\b/i.test(sentence);
+    if (!isRaiseAssertion) continue;
+    const dollarMatches = [
+      ...sentence.matchAll(new RegExp(LARGE_DOLLAR_RE.source, "gi")),
+    ];
+    for (const m of dollarMatches) {
+      const claimed = parseDollarMatchAmount(m[1] ?? "", m[2] ?? "");
+      if (Number.isFinite(claimed) && claimed > trustedAmount * 20) {
+        return ""; // suppress the whole paragraph — the raise claim is 20× off
+      }
+    }
+  }
+  return text;
+}
+
 const deterministicUnderstandingBodySchema = z
   .object({
     deal_id: z.string().optional(),
@@ -154,7 +272,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
     const investmentEvidenceSnippets = Array.isArray(execSummaryV1?.evidence)
       ? (execSummaryV1.evidence as Array<{ snippet?: unknown }>)
-          .map((e) => asStr(e?.snippet))
+          .map((e) => stripHypotheticalDollarProjectionSentences(asStr(e?.snippet)))
           .filter(Boolean)
           .slice(0, 2)
       : [];
@@ -226,9 +344,12 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     if (consumerDistributionContext) {
       appendSignal(
         investorSignals,
-        "Unit economics, gross margins, and path to profitability should be validated before underwriting scaled growth assumptions.",
+        "Success depends heavily on distribution execution and brand strength; unit economics, gross margins, and path to profitability should be validated before underwriting growth assumptions.",
       );
     }
+
+    // Trusted raise value from persisted structured summary — used for narrative cross-check.
+    const trustedRaiseValue: string | null = asStr(reportSS?.raise?.value) || null;
 
     const understanding = {
       what_company_does:
@@ -259,8 +380,13 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         asStr(reportSS?.business_model?.value) ||
         asStr(archetypeV1?.value),
 
+      // Strip sentences that pair a large-dollar amount (≥$50M) with hypothetical/projection
+      // language (e.g. "yielding ~$139M ARR") — these are forward-looking assertions surfaced
+      // from GTM slides, not reported facts.  Fall back to market_icp when stripping
+      // removes all content so the field remains populated.
       go_to_market:
-        asStr(overviewV2?.go_to_market),
+        stripHypotheticalDollarProjectionSentences(asStr(overviewV2?.go_to_market)) ||
+        asStr(overviewV2?.market_icp),
 
       target_customer:
         asStr(overviewV2?.market_icp) ||
@@ -270,9 +396,15 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         joinArray(overviewV2?.traction_signals) ||
         asStr(overviewV2?.traction_metrics),
 
-      market_positioning:
-        asStr(dealSummarySummary?.paragraphs?.[0]) ||
-        asStr(reportSS?.deal_summary_v1?.tiers?.deep),
+      // Suppress LLM-generated paragraphs that assert a raise amount contradicting the
+      // trusted structured raise value by ≥ 20×; fall back to tiers.deep in that case.
+      market_positioning: (() => {
+        const primary = suppressIfRaiseAmountOverstated(
+          asStr(dealSummarySummary?.paragraphs?.[0]),
+          trustedRaiseValue,
+        );
+        return primary || asStr(reportSS?.deal_summary_v1?.tiers?.deep);
+      })(),
 
       competitive_differentiation:
         asStr(overviewV2?.product_solution) ||

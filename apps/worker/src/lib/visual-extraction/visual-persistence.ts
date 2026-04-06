@@ -611,6 +611,15 @@ function readPageOcrAttemptedFromExtractionMetadata(extractionMetadata: unknown)
 	return coerceBoolOrNull(m?.page_ocr_attempted);
 }
 
+function readTextProbeDecisionFromExtractionMetadata(extractionMetadata: unknown): string | null {
+	const m = extractionMetadata && typeof extractionMetadata === "object" ? (extractionMetadata as any) : null;
+	const d1 = typeof m?.pdf_text_probe?.decision === "string" ? String(m.pdf_text_probe.decision).trim() : "";
+	if (d1) return d1;
+	const d2 = typeof m?.textProbe?.decision === "string" ? String(m.textProbe.decision).trim() : "";
+	if (d2) return d2;
+	return null;
+}
+
 /**
  * Computes whether vision-worker fallback is allowed for this document.
  * Policy:
@@ -661,6 +670,7 @@ export function computeVisionRoutingDecisionV1(params: {
 
 	const needsOcr = readNeedsOcrFromExtractionMetadata(params.extraction_metadata);
 	const pageOcrAttempted = readPageOcrAttemptedFromExtractionMetadata(params.extraction_metadata);
+	const textProbeDecision = readTextProbeDecisionFromExtractionMetadata(params.extraction_metadata);
 
 	let visionFallbackAllowed = false;
 	let reason = "unknown_disallowed";
@@ -692,6 +702,11 @@ export function computeVisionRoutingDecisionV1(params: {
 		if (forceOcr) {
 			visionFallbackAllowed = true;
 			reason = "force_ocr";
+		} else if (textProbeDecision === "text_ok_skip_ocr") {
+			// Native PDF text is authoritative for text-rich PDFs; keep visual extraction on
+			// for structured/chart/table/image assets only.
+			visionFallbackAllowed = true;
+			reason = "pdf_text_ok_visual_structured_only";
 		} else if (weakCoverageOrLowContent) {
 			visionFallbackAllowed = true;
 			reason = "pdf_weak_coverage_or_low_content";
@@ -721,6 +736,7 @@ export function computeVisionRoutingDecisionV1(params: {
 		reason,
 		inputs: {
 			force_ocr: forceOcr,
+			text_probe_decision: textProbeDecision,
 			needs_ocr: needsOcr,
 			page_ocr_attempted: pageOcrAttempted,
 			full_text_len: fullTextLen,

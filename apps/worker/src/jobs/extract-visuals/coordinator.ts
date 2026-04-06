@@ -60,6 +60,27 @@ import { makeDevLogger, updateJob } from "../../lib/worker-utils";
 
 const devLog = makeDevLogger();
 
+function stripOcrFieldsForNativeTextPriority(response: any): any {
+	if (!response || typeof response !== "object") return response;
+	const out: any = { ...response };
+	delete out.ocr_text;
+	delete out.ocr_blocks;
+	delete out.ocr;
+	if (Array.isArray(out.assets)) {
+		out.assets = out.assets.map((asset: any) => {
+			if (!asset || typeof asset !== "object") return asset;
+			const a: any = { ...asset };
+			if (a.extraction && typeof a.extraction === "object") {
+				a.extraction = { ...a.extraction };
+				delete a.extraction.ocr_text;
+				delete a.extraction.ocr_blocks;
+			}
+			return a;
+		});
+	}
+	return out;
+}
+
 // ── Coordinator ──────────────────────────────────────────────────────────────
 
 export async function runExtractVisualsCoordinator(job: Job) {
@@ -1028,6 +1049,14 @@ export async function runExtractVisualsCoordinator(job: Job) {
 		const fullTextIsEmpty = fullTextRaw.trim().length === 0;
 		const fullTextAbsentReason = typeof docMeta?.full_text_absent_reason === "string" ? docMeta.full_text_absent_reason : null;
 		const extractionMetaObj = (docMeta as any)?.extraction_metadata;
+		const textProbeDecision = (() => {
+			if (!extractionMetaObj || typeof extractionMetaObj !== "object") return null;
+			const d1 = (extractionMetaObj as any)?.pdf_text_probe?.decision;
+			if (typeof d1 === "string" && d1.trim().length > 0) return d1.trim();
+			const d2 = (extractionMetaObj as any)?.textProbe?.decision;
+			if (typeof d2 === "string" && d2.trim().length > 0) return d2.trim();
+			return null;
+		})();
 		const ingestMarkedNeedsOcr = (() => {
 			if (!extractionMetaObj || typeof extractionMetaObj !== "object") return false;
 			const needs = (extractionMetaObj as any).needsOcr;
@@ -1045,6 +1074,7 @@ export async function runExtractVisualsCoordinator(job: Job) {
 				fullTextIsEmpty ||
 				(typeof fullTextAbsentReason === "string" && fullTextAbsentReason.trim().length > 0)
 			);
+		const nativeTextPriorityMode = isPdf && textProbeDecision === "text_ok_skip_ocr" && !forceOcr;
 		const caps = getDocumentCapabilities({ kindHint: docKind });
 		if (!caps.supports_visual_extraction) {
 			// Explicitly record why this doc is not processed (avoid silent success).
@@ -2649,43 +2679,61 @@ export async function runExtractVisualsCoordinator(job: Job) {
 
 			// Per-page text guarantee: if structured extraction yields little/no usable text and OCR wasn't requested,
 			// run a local OCR fallback (tesseract) and attach ocr_text onto the response so persistence + DPU can use it.
-			// Also emit per-page text length diagnostics.
-			try {
-				const ensured = await ensureOcrFallbackForVisionResponse({
-					response: resolvedResponse as any,
-					pageImageUri: !needsOcr && typeof safe_image_uri === "string" ? safe_image_uri : null,
-					minPrimaryChars: 40,
-					minOcrChars: 20,
-					logger: console,
-					logMeta: {
-						deal_id: dealIdForVision,
-						document_id: docId,
-						page_index: i,
-						extractor_version: pageExtractorVersion,
-						needs_ocr: needsOcr,
-					},
-					force: false,
-				});
-				// Only apply local OCR mutations when we didn't already ask the vision service for OCR.
-				if (!needsOcr) {
-					resolvedResponse = ensured.response as any;
+			// For text_ok PDFs, enforce native-text priority by stripping OCR fields so OCR cannot become primary.
+			if (!nativeTextPriorityMode) {
+				try {
+					const ensured = await ensureOcrFallbackForVisionResponse({
+						response: resolvedResponse as any,
+						pageImageUri: !needsOcr && typeof safe_image_uri === "string" ? safe_image_uri : null,
+						minPrimaryChars: 40,
+						minOcrChars: 20,
+						logger: console,
+						logMeta: {
+							deal_id: dealIdForVision,
+							document_id: docId,
+							page_index: i,
+							extractor_version: pageExtractorVersion,
+							needs_ocr: needsOcr,
+						},
+						force: false,
+					});
+					// Only apply local OCR mutations when we didn't already ask the vision service for OCR.
+					if (!needsOcr) {
+						resolvedResponse = ensured.response as any;
+					}
+					console.log(
+						JSON.stringify({
+							event: "VISION_PAGE_TEXT_LENS",
+							deal_id: dealIdForVision,
+							document_id: docId,
+							page_index: i,
+							primary_text_len: ensured.diag.primary_text_len,
+							ocr_text_len: ensured.diag.ocr_text_len,
+							final_page_text_len: ensured.diag.final_page_text_len,
+							fallback_used: (!needsOcr) && ensured.diag.fallback_used,
+							needs_ocr: needsOcr,
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// Best-effort; never block persistence on diagnostics/OCR helper.
 				}
-				console.log(
-					JSON.stringify({
-						event: "VISION_PAGE_TEXT_LENS",
-						deal_id: dealIdForVision,
-						document_id: docId,
-						page_index: i,
-						primary_text_len: ensured.diag.primary_text_len,
-						ocr_text_len: ensured.diag.ocr_text_len,
-						final_page_text_len: ensured.diag.final_page_text_len,
-						fallback_used: (!needsOcr) && ensured.diag.fallback_used,
-						needs_ocr: needsOcr,
-						ts: new Date().toISOString(),
-					})
-				);
-			} catch {
-				// Best-effort; never block persistence on diagnostics/OCR helper.
+			} else {
+				resolvedResponse = stripOcrFieldsForNativeTextPriority(resolvedResponse as any);
+				try {
+					console.log(
+						JSON.stringify({
+							event: "NATIVE_TEXT_PRIORITY_OCR_SUPPRESSED",
+							deal_id: dealIdForVision,
+							document_id: docId,
+							page_index: i,
+							probe_decision: textProbeDecision,
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// ignore
+				}
 			}
 
 			const ocrDiag = (() => {

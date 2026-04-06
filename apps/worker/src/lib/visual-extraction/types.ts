@@ -152,6 +152,7 @@ export type VisionRoutingDecisionV1 = {
 	reason: string;
 	inputs: {
 		force_ocr?: boolean;
+		text_probe_decision?: string | null;
 		needs_ocr: boolean | null;
 		page_ocr_attempted: boolean | null;
 		full_text_len: number | null;

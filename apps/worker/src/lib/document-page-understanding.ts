@@ -1110,8 +1110,32 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 		// text PDFs (textProbe.decision='text_ok_skip_ocr') where vision extraction
 		// skips OCR and leaves page_text empty.
 		try {
+			let shouldOverwriteFromNativePdf = false;
+			if (hasDocument) {
+				try {
+					const { rows: probeRows } = await pool.query<{ extraction_metadata: any }>(
+						"SELECT extraction_metadata FROM public.documents WHERE id = $1::uuid LIMIT 1",
+						[documentId]
+					);
+					const extractionMetadata = probeRows?.[0]?.extraction_metadata;
+					const probeDecision = extractionMetadata && typeof extractionMetadata === "object"
+						? (extractionMetadata as any)?.pdf_text_probe?.decision ?? (extractionMetadata as any)?.textProbe?.decision
+						: null;
+					shouldOverwriteFromNativePdf = typeof probeDecision === "string" && probeDecision === "text_ok_skip_ocr";
+				} catch {
+					shouldOverwriteFromNativePdf = false;
+				}
+			}
+
 			const enrichArgs = hasDocument
-				? { documentId, dealId: dealIdForLogs || undefined, pageStart, pageEnd, version }
+				? {
+					documentId,
+					dealId: dealIdForLogs || undefined,
+					pageStart,
+					pageEnd,
+					version,
+					overwriteOcrFromNativePdf: shouldOverwriteFromNativePdf,
+				}
 				: { dealId, version, overwriteOcrFromNativePdf: true };
 			const { enriched } = await enrichDpuWithEmbeddedPdfText(pool, enrichArgs);
 			if (enriched > 0) {
@@ -1125,12 +1149,56 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 							page_start: hasDocument ? pageStart : null,
 							page_end: hasDocument ? pageEnd : null,
 							version,
+							native_text_priority_mode: shouldOverwriteFromNativePdf,
 							enriched,
 							ts: new Date().toISOString(),
 						})
 					);
 				} catch {
 					// ignore
+				}
+			}
+
+			if (hasDocument && shouldOverwriteFromNativePdf) {
+				try {
+					const { rows: violationRows } = await pool.query<{ violations: string | number }>(
+						`WITH native_pages AS (
+							SELECT
+								d.id AS document_id,
+								(p.ordinality - 1)::int AS page_index
+							  FROM public.documents d,
+							  jsonb_array_elements(COALESCE(d.full_content->'pages', '[]'::jsonb)) WITH ORDINALITY AS p(value, ordinality)
+							 WHERE d.id = $1::uuid
+							   AND length(BTRIM(COALESCE(p.value->>'text', ''))) >= 25
+						)
+						SELECT COUNT(*)::bigint AS violations
+						  FROM public.document_page_understanding dpu
+						  JOIN native_pages np
+						    ON np.document_id = dpu.document_id
+						   AND np.page_index = dpu.page_index
+						 WHERE dpu.document_id = $1::uuid
+						   AND dpu.version = $2::text
+						   AND COALESCE(dpu.payload->'quality_flags'->>'used_ocr_fallback', 'false') = 'true'`,
+						[documentId, version]
+					);
+					const violationsRaw = violationRows?.[0]?.violations ?? 0;
+					const violations = typeof violationsRaw === "string" ? Number.parseInt(violationsRaw, 10) : Number(violationsRaw);
+					if (Number.isFinite(violations) && violations > 0) {
+						console.warn(
+							JSON.stringify({
+								event: "NATIVE_TEXT_PRIORITY_VIOLATION",
+								document_id: documentId,
+								deal_id: dealIdForLogs || null,
+								page_start: pageStart,
+								page_end: pageEnd,
+								version,
+								violations,
+								ts: new Date().toISOString(),
+							})
+						);
+					}
+				} catch {
+					// best-effort guardrail only
 				}
 			}
 		} catch {

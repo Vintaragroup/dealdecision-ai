@@ -140,6 +140,18 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         .join("; ");
     }
 
+    function normalizeWhitespace(v: string): string {
+      return v.replace(/\s+/g, " ").trim();
+    }
+
+    function appendSignal(signals: string[], sentence: string): void {
+      const next = normalizeWhitespace(sentence);
+      if (!next) return;
+      const nextLc = next.toLowerCase();
+      if (signals.some((s) => s.toLowerCase() === nextLc)) return;
+      signals.push(next);
+    }
+
     const investmentEvidenceSnippets = Array.isArray(execSummaryV1?.evidence)
       ? (execSummaryV1.evidence as Array<{ snippet?: unknown }>)
           .map((e) => asStr(e?.snippet))
@@ -156,6 +168,67 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       )
         ? "Primary risk is validation and adoption for this regulated medical testing workflow. Distribution likely requires partnerships with healthcare systems and public agencies."
         : "";
+
+    const baseSignalsCorpus = normalizeWhitespace(
+      [
+        asStr(overviewV2?.product_solution),
+        asStr(overviewV2?.business_model),
+        asStr(overviewV2?.go_to_market),
+        asStr(overviewV2?.market_icp),
+        asStr(overviewV2?.traction_metrics),
+        joinArray(overviewV2?.traction_signals),
+        asStr(dealSummarySummary?.one_liner),
+        asStr(dealSummarySummary?.paragraphs?.[0]),
+        asStr(archetypeV1?.value),
+        asStr(reportSS?.business_model?.value),
+        asStr(reportSS?.deal_summary_v1?.tiers?.hero),
+        asStr(reportSS?.deal_summary_v1?.tiers?.deep),
+        investmentSignalsFromEvidence,
+      ].join(" "),
+    ).toLowerCase();
+
+    const containsAny = (...patterns: RegExp[]): boolean => patterns.some((p) => p.test(baseSignalsCorpus));
+
+    const predictionModelContext =
+      containsAny(/\b(prediction|predictive|forecast|accuracy|accurate|injury)\b/i) &&
+      (
+        containsAny(/\b(ai|artificial\s+intelligence|machine\s+learning|ml|model|analytics|data\s+platform)\b/i) ||
+        containsAny(/\b(sports|betting|fantasy)\b/i)
+      );
+
+    const consumerDistributionContext =
+      containsAny(/\b(consumer|cpg|beverage|retail|wholesale|hospitality|venue|on\s*-?\s*premise|distributor)\b/i);
+
+    const earlyTractionContext =
+      containsAny(/\b(early|pilot|loi|pipeline|run\s*-?\s*rate|pre\s*-?\s*sales|partnership)\b/i);
+
+    const investorSignals: string[] = [];
+    const baselineSignalText =
+      (hasSubstantiveInvestmentEvidence ? investmentSignalsFromEvidence : "") ||
+      medicalRiskFallback ||
+      investmentSignalsFromEvidence;
+    appendSignal(investorSignals, baselineSignalText);
+
+    if (predictionModelContext) {
+      appendSignal(
+        investorSignals,
+        "Key risk is whether predictions are accurate in real-world usage; commercial outcomes depend on independent validation of model performance.",
+      );
+    }
+
+    if (consumerDistributionContext && earlyTractionContext) {
+      appendSignal(
+        investorSignals,
+        "This appears early-stage with initial traction but limited realized revenue scale, so repeat-demand and channel execution risk remain central.",
+      );
+    }
+
+    if (consumerDistributionContext) {
+      appendSignal(
+        investorSignals,
+        "Unit economics, gross margins, and path to profitability should be validated before underwriting scaled growth assumptions.",
+      );
+    }
 
     const understanding = {
       what_company_does:
@@ -208,9 +281,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       // Evidence-backed signals from document claims — surfaces capital use, brand, and marketing
       // terms extracted during document scanning; used for investor-usefulness signal coverage.
       investment_signals:
-        (hasSubstantiveInvestmentEvidence ? investmentSignalsFromEvidence : "") ||
-        medicalRiskFallback ||
-        investmentSignalsFromEvidence,
+        normalizeWhitespace(investorSignals.join(" ")),
     };
 
     return reply.send({ understanding });

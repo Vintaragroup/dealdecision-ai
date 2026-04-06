@@ -665,8 +665,20 @@ export function computeVisionRoutingDecisionV1(params: {
 	let visionFallbackAllowed = false;
 	let reason = "unknown_disallowed";
 	if (isOffice) {
-		visionFallbackAllowed = false;
-		reason = "office_disallowed";
+		// Allow vision extraction for PowerPoint decks with very low text density
+		// (image-heavy slides where native text extraction yields <100 chars/page).
+		// Excel and Word remain blocked.
+		const isPowerpoint = docKind === "powerpoint";
+		const lowTextPerPage = totalPages != null && totalPages > 0
+			? fullTextLen / totalPages < 100
+			: isPowerpoint && fullTextLen < 200;
+		if (isPowerpoint && lowTextPerPage) {
+			visionFallbackAllowed = true;
+			reason = "office_low_text_allow_extract_visuals";
+		} else {
+			visionFallbackAllowed = false;
+			reason = "office_disallowed";
+		}
 	} else if (isImage) {
 		visionFallbackAllowed = true;
 		reason = "image_allowed";

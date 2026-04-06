@@ -4,7 +4,7 @@ import { sanitizeText } from "@dealdecision/core";
 import { getPool } from "../lib/db";
 import { enqueuePersistedJob } from "../lib/job-enqueue";
 import { makeJobId } from "../lib/job-id";
-import { populateDocumentPageUnderstandingFromVisualExtractions } from "../lib/document-page-understanding";
+import { populateDocumentPageUnderstandingFromVisualExtractions, enrichDpuWithEmbeddedPdfText } from "../lib/document-page-understanding";
 import { promoteSlideFactsFromDocumentPageUnderstanding } from "../lib/promote-slide-facts";
 import { populatePageRegistryV1 } from "../lib/page-registry/populate-page-registry-v1";
 import { populateDealFactRegistryV1 } from "../lib/deal-facts/populate-deal-fact-registry-v1";
@@ -197,6 +197,41 @@ export async function populateDocumentPageUnderstandingProcessor(job: Job) {
 
 				await updateJob(job, "succeeded", `No visual assets found after retries (attempt=${retryAttempt})`, 100);
 				return { ok: false, reason: "no_assets_after_retries", attempt: retryAttempt, version };
+			}
+		}
+
+		// PDF native text promotion: for PDFs where the text probe determined native text is
+		// sufficient (text_ok_skip_ocr), promote full_content page text over any existing OCR-derived
+		// DPU content. This is a best-effort step — never blocks job completion.
+		if (docId) {
+			const textProbeDecision = (extractionMetadataRaw as any)?.pdf_text_probe?.decision
+				?? (extractionMetadataRaw as any)?.textProbe?.decision
+				?? null;
+			if (textProbeDecision === "text_ok_skip_ocr") {
+				try {
+					const promoted = await enrichDpuWithEmbeddedPdfText(pool as any, {
+						documentId: docId,
+						dealId: resolvedDealId ?? undefined,
+						pageStart,
+						pageEnd,
+						version,
+						overwriteOcrFromNativePdf: true,
+					});
+					console.log(
+						JSON.stringify({
+							event: "DPU_PDF_NATIVE_TEXT_PROMOTED",
+							deal_id: resolvedDealId ?? null,
+							document_id: docId,
+							page_start: pageStart,
+							page_end: pageEnd,
+							version,
+							enriched: promoted.enriched,
+							ts: new Date().toISOString(),
+						})
+					);
+				} catch {
+					// best-effort: do not fail the job
+				}
 			}
 		}
 

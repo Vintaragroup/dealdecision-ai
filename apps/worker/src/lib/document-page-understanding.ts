@@ -1112,7 +1112,7 @@ export async function populateDocumentPageUnderstandingFromVisualExtractions(
 		try {
 			const enrichArgs = hasDocument
 				? { documentId, dealId: dealIdForLogs || undefined, pageStart, pageEnd, version }
-				: { dealId, version };
+				: { dealId, version, overwriteOcrFromNativePdf: true };
 			const { enriched } = await enrichDpuWithEmbeddedPdfText(pool, enrichArgs);
 			if (enriched > 0) {
 				try {
@@ -1218,12 +1218,22 @@ export function resolveBestDpuPageText(candidates: {
 }
 
 /**
- * Post-upsert enrichment: for DPU rows where page_text is currently empty, pull
- * per-page text from documents.full_content.pages[i].text and UPDATE the payload.
+ * Post-upsert enrichment: pull per-page text from documents.full_content.pages[i].text
+ * and UPDATE matching DPU rows.
  *
- * Handles text PDFs (textProbe.decision = "text_ok_skip_ocr") where vision extraction
- * never produces OCR text. Safety rules enforced by SQL:
+ * Two modes:
+ *
+ * Normal mode (overwriteOcrFromNativePdf = false, default):
  *   - Only updates rows where payload->>'page_text' = '' (never overwrites existing text)
+ *   - Handles text PDFs where vision extraction skips OCR and leaves page_text empty
+ *
+ * Override mode (overwriteOcrFromNativePdf = true):
+ *   - Updates ALL rows with native PDF text, even when they already have OCR text
+ *   - Used when pdf_text_probe.decision = "text_ok_skip_ocr" to demote OCR in favour of
+ *     the higher-quality native pdftotext layer
+ *   - Sets confidence to 1.0 (native text is considered fully reliable)
+ *
+ * In both modes:
  *   - Only uses pdf pages where length(trim(text)) >= minPdfTextLength (default 25)
  *   - Sets source.extractor = "worker.pdf", page_type = "pdf_text"
  *   - Sets quality_flags.used_pdf_text = true, page_text_empty = false
@@ -1238,6 +1248,12 @@ export async function enrichDpuWithEmbeddedPdfText(
 		version?: string;
 		/** Minimum trimmed char count for PDF page text to be used (default: 25) */
 		minPdfTextLength?: number;
+		/**
+		 * When true, override existing OCR-derived DPU rows with native PDF text.
+		 * Use only when pdf_text_probe.decision = "text_ok_skip_ocr".
+		 * Defaults to false (only fills empty page_text rows).
+		 */
+		overwriteOcrFromNativePdf?: boolean;
 	}
 ): Promise<{ enriched: number }> {
 	const version = (args.version ?? "page_understanding_v1").trim();
@@ -1245,35 +1261,73 @@ export async function enrichDpuWithEmbeddedPdfText(
 		typeof args.minPdfTextLength === "number" && Number.isFinite(args.minPdfTextLength)
 			? Math.max(1, Math.floor(args.minPdfTextLength))
 			: 25;
+	const overwriteOcr = Boolean(args.overwriteOcrFromNativePdf);
 	const hasDocumentId = typeof args.documentId === "string" && args.documentId.trim().length > 0;
 	const hasDealId = !hasDocumentId && typeof args.dealId === "string" && args.dealId.trim().length > 0;
 	if (!hasDocumentId && !hasDealId) return { enriched: 0 };
 
 	// Patch page_text, normalized_text, text_blocks.text_snippet, page_type, source.extractor,
-	// and quality_flags in a single jsonb expression. The || merge at the top level replaces
-	// quality_flags with the original flags augmented by used_pdf_text=true, page_text_empty=false.
-	const jsonbSetChain = [
-		`jsonb_set(`,
-		`  jsonb_set(`,
-		`    jsonb_set(`,
-		`      jsonb_set(`,
-		`        jsonb_set(`,
-		`          dpu.payload,`,
-		`          '{page_text}', to_jsonb(pp.pdf_text)`,
-		`        ),`,
-		`        '{normalized_text}', to_jsonb(pp.pdf_text)`,
-		`      ),`,
-		`      '{text_blocks,text_snippet}', to_jsonb(LEFT(pp.pdf_text, 900))`,
-		`    ),`,
-		`    '{page_type}', '"pdf_text"'::jsonb`,
-		`  ),`,
-		`  '{source,extractor}', '"worker.pdf"'::jsonb`,
-		`) || jsonb_build_object(`,
-		`  'quality_flags',`,
-		`  COALESCE(dpu.payload->'quality_flags', '{}'::jsonb)`,
-		`    || '{"used_pdf_text": true, "page_text_empty": false}'::jsonb`,
-		`)`,
-	].join("\n\t\t");
+	// confidence, and quality_flags in a single jsonb expression.
+	// In override mode (overwriteOcr=true), confidence is set to 1.0 to reflect native text reliability.
+	const confidencePatch = overwriteOcr
+		? [
+			`  jsonb_set(`,
+			`    jsonb_set(`,
+			`      jsonb_set(`,
+			`        jsonb_set(`,
+			`          jsonb_set(`,
+			`            dpu.payload,`,
+			`            '{page_text}', to_jsonb(pp.pdf_text)`,
+			`          ),`,
+			`          '{normalized_text}', to_jsonb(pp.pdf_text)`,
+			`        ),`,
+			`        '{text_blocks,text_snippet}', to_jsonb(LEFT(pp.pdf_text, 900))`,
+			`      ),`,
+			`      '{page_type}', '"pdf_text"'::jsonb`,
+			`    ),`,
+			`    '{source,extractor}', '"worker.pdf"'::jsonb`,
+			`  ),`,
+			`  '{confidence}', '1.0'::jsonb`,
+			`) || jsonb_build_object(`,
+			`  'quality_flags',`,
+			`  COALESCE(dpu.payload->'quality_flags', '{}'::jsonb)`,
+			`    || '{"used_pdf_text": true, "used_ocr_fallback": false, "page_text_empty": false}'::jsonb`,
+			`)`,
+		  ]
+		: [
+			`jsonb_set(`,
+			`  jsonb_set(`,
+			`    jsonb_set(`,
+			`      jsonb_set(`,
+			`        jsonb_set(`,
+			`          dpu.payload,`,
+			`          '{page_text}', to_jsonb(pp.pdf_text)`,
+			`        ),`,
+			`        '{normalized_text}', to_jsonb(pp.pdf_text)`,
+			`      ),`,
+			`      '{text_blocks,text_snippet}', to_jsonb(LEFT(pp.pdf_text, 900))`,
+			`    ),`,
+			`    '{page_type}', '"pdf_text"'::jsonb`,
+			`  ),`,
+			`  '{source,extractor}', '"worker.pdf"'::jsonb`,
+			`) || jsonb_build_object(`,
+			`  'quality_flags',`,
+			`  COALESCE(dpu.payload->'quality_flags', '{}'::jsonb)`,
+			`    || '{"used_pdf_text": true, "page_text_empty": false}'::jsonb`,
+			`)`,
+		  ];
+	const jsonbSetChain = (overwriteOcr ? `jsonb_set(\n\t\t` : ``) + confidencePatch.join("\n\t\t");
+
+	// In override mode: update ALL rows with native PDF text regardless of existing page_text.
+	// In normal mode: only fill rows where page_text is currently empty.
+	const pageTextFilter = overwriteOcr ? `` : `\n	   AND COALESCE(dpu.payload->>'page_text', '') = ''`;
+
+	// Deal-wide override mode: restrict to documents where the text probe confirmed native text is
+	// sufficient. Prevents overwriting OCR with sparse/empty native text for documents that actually
+	// need OCR (text_sparse_needs_ocr).
+	const dealWideProbeFilter = (overwriteOcr && !args.documentId)
+		? `\n\t   AND (d.extraction_metadata->'pdf_text_probe'->>'decision' = 'text_ok_skip_ocr'\n\t        OR d.extraction_metadata->'textProbe'->>'decision' = 'text_ok_skip_ocr')`
+		: ``;
 
 	let sql: string;
 	let queryParams: Array<string | number>;
@@ -1310,8 +1364,7 @@ updated AS (
 	  FROM pdf_pages pp
 	 WHERE dpu.document_id = pp.document_id
 	   AND dpu.page_index = pp.page_index
-	   AND dpu.version = ${versionParam}::text
-	   AND COALESCE(dpu.payload->>'page_text', '') = ''
+	   AND dpu.version = ${versionParam}::text${pageTextFilter}
 	RETURNING 1
 )
 SELECT COUNT(*)::bigint AS enriched FROM updated;`;
@@ -1328,7 +1381,7 @@ SELECT COUNT(*)::bigint AS enriched FROM updated;`;
 	  FROM public.documents d,
 	  jsonb_array_elements(COALESCE(d.full_content->'pages', '[]'::jsonb)) WITH ORDINALITY AS p(value, ordinality)
 	 WHERE d.deal_id = $1::uuid
-	   AND length(BTRIM(COALESCE(p.value->>'text', ''))) >= $2::int
+	   AND length(BTRIM(COALESCE(p.value->>'text', ''))) >= $2::int${dealWideProbeFilter}
 ),
 updated AS (
 	UPDATE public.document_page_understanding dpu
@@ -1338,8 +1391,7 @@ updated AS (
 	  FROM pdf_pages pp
 	 WHERE dpu.document_id = pp.document_id
 	   AND dpu.page_index = pp.page_index
-	   AND dpu.version = $3::text
-	   AND COALESCE(dpu.payload->>'page_text', '') = ''
+	   AND dpu.version = $3::text${pageTextFilter}
 	RETURNING 1
 )
 SELECT COUNT(*)::bigint AS enriched FROM updated;`;

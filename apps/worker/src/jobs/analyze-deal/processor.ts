@@ -801,7 +801,14 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 				title: doc.title,
 				type: analysisType,
 				full_text: enrichedFullText.trim() ? enrichedFullText : null,
-				...(minimalFullContent ? { full_content: minimalFullContent } : {}),
+				// For pitch_deck: use the pre-built minimalFullContent (words-only projection).
+				// For PPTX-format docs classified as "other" (full_content has slides array):
+				// pass the raw full_content so extractPagesFromFullContent can extract slide text.
+				...(minimalFullContent
+					? { full_content: minimalFullContent }
+					: (doc.full_content && typeof doc.full_content === "object" && Array.isArray((doc.full_content as any).slides)
+						? { full_content: doc.full_content }
+						: {})),
 			};
 		});
 

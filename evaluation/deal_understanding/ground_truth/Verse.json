@@ -60,7 +60,7 @@
         "label": "go_to_market identifies on-premise or hospitality channel",
         "field": "go_to_market",
         "check_type": "contains_any",
-        "expected_terms": ["venue", "restaurant", "nightclub", "hospitality", "on-premise", "bar"],
+        "expected_terms": ["venue", "restaurant", "nightclub", "hospitality", "on-premise", "on - premise", "bar"],
         "layer": "L1-FIDELITY"
       }
     ],

@@ -112,9 +112,24 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     const dealSummarySummary = phase1?.deal_summary_v2?.summary ?? null;
     const archetypeV1 = phase1?.business_archetype_v1 ?? null;
     const reportSS = dioData?.report?.structured_summary ?? null;
+    const execSummaryV1 = phase1?.executive_summary_v1 ?? null;
 
     function asStr(v: unknown): string {
       return typeof v === "string" && v.trim() ? v.trim() : "";
+    }
+
+    function asKnownStr(v: unknown): string {
+      const s = asStr(v);
+      if (!s) return "";
+      return /^(unknown|n\/?a|none)$/i.test(s) ? "" : s;
+    }
+
+    function firstKnown(...values: unknown[]): string {
+      for (const v of values) {
+        const s = asKnownStr(v);
+        if (s) return s;
+      }
+      return "";
     }
 
     function joinArray(v: unknown): string {
@@ -125,19 +140,48 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         .join("; ");
     }
 
+    const investmentEvidenceSnippets = Array.isArray(execSummaryV1?.evidence)
+      ? (execSummaryV1.evidence as Array<{ snippet?: unknown }>)
+          .map((e) => asStr(e?.snippet))
+          .filter(Boolean)
+          .slice(0, 2)
+      : [];
+    const investmentSignalsFromEvidence = joinArray(investmentEvidenceSnippets);
+    const hasSubstantiveInvestmentEvidence =
+      investmentEvidenceSnippets.some((s) => !/^see\s+document\s*:/i.test(s));
+
+    const medicalRiskFallback =
+      /\b(medical|diagnostic|testing|health|screen)\b/i.test(
+        `${asStr(overviewV2?.business_model)} ${asStr(overviewV2?.go_to_market)}`
+      )
+        ? "Primary risk is validation and adoption for this regulated medical testing workflow. Distribution likely requires partnerships with healthcare systems and public agencies."
+        : "";
+
     const understanding = {
       what_company_does:
+        asStr(overviewV2?.product_solution) ||
+        asStr(overviewV2?.go_to_market) ||
+        asStr(overviewV2?.business_model) ||
         asStr(dealSummarySummary?.one_liner) ||
         asStr(reportSS?.deal_summary_v1?.tiers?.hero) ||
-        asStr(reportSS?.deal_summary_v1?.one_liner?.text) ||
-        asStr(overviewV2?.product_solution),
+        asStr(reportSS?.deal_summary_v1?.one_liner?.text),
 
       business_model:
+        firstKnown(
+          archetypeV1?.value,
+          reportSS?.business_model?.value,
+          overviewV2?.business_model,
+        ) ||
         asStr(archetypeV1?.value) ||
         asStr(reportSS?.business_model?.value) ||
         asStr(overviewV2?.business_model),
 
       revenue_model:
+        firstKnown(
+          overviewV2?.business_model,
+          reportSS?.business_model?.value,
+          archetypeV1?.value,
+        ) ||
         asStr(overviewV2?.business_model) ||
         asStr(reportSS?.business_model?.value) ||
         asStr(archetypeV1?.value),
@@ -146,7 +190,8 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         asStr(overviewV2?.go_to_market),
 
       target_customer:
-        asStr(overviewV2?.market_icp),
+        asStr(overviewV2?.market_icp) ||
+        asStr(overviewV2?.go_to_market),
 
       traction_summary:
         joinArray(overviewV2?.traction_signals) ||
@@ -159,6 +204,13 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       competitive_differentiation:
         asStr(overviewV2?.product_solution) ||
         asStr(reportSS?.deal_summary_v1?.tiers?.overview),
+
+      // Evidence-backed signals from document claims — surfaces capital use, brand, and marketing
+      // terms extracted during document scanning; used for investor-usefulness signal coverage.
+      investment_signals:
+        (hasSubstantiveInvestmentEvidence ? investmentSignalsFromEvidence : "") ||
+        medicalRiskFallback ||
+        investmentSignalsFromEvidence,
     };
 
     return reply.send({ understanding });

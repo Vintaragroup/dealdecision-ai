@@ -1,0 +1,325 @@
+{
+  "deal_name": "Cino",
+  "deal_id": "0fcec035-9aa3-4f6e-88fa-818c323add09",
+  "_synthetic": false,
+  "mode": "real_document",
+  "source_type": "pdf",
+  "_schema": "deal_understanding_ground_truth_v1",
+  "ground_truth": {
+    "what_company_does": "Cino is a consumer fintech company building a shared-payments platform and card that lets multiple people split transactions in real time across banks.",
+    "problem": "Most everyday costs are shared, but consumers do not have a simple way to pay together at the point of purchase. Existing card and finance flows are built for single payers, creating friction for couples, friends, travel groups, rent, groceries, subscriptions, and other shared expenses.",
+    "solution": "Cino offers a real-time shared-payments card and app that automatically splits purchases across participants, works with any bank, and is designed to make paying together seamless.",
+    "why_now": "Consumer finance behavior is shifting online and finance-first, trust in the traditional model is low, and AI plus fintech infrastructure now enable better user experience, automated decisioning, and scalable consumer acquisition.",
+    "business_model": "Consumer fintech payments platform with interchange, FX fee revenue, and planned premium subscription features; positioned as a shared-payments infrastructure and consumer card product.",
+    "revenue_model": "Current monetization comes from card economics including interchange and FX fees, with premium features planned as an additional subscription revenue stream.",
+    "traction": "The deck states 330k active users, €1B GTV, and €27M revenue, alongside strong engagement and retention metrics such as 17 transactions per user per month, 80% organic growth, and 5x GTV growth in 12 months.",
+    "risks": "Key risks include heavy dependence on continued viral and network-driven growth, uncertainty around long-term monetization of future products, projection-heavy TAM and expansion narratives, and the execution/regulatory demands of scaling a consumer fintech platform.",
+    "target_customer": "Consumers with shared expenses such as couples, friends, travel groups, roommates, and other users who want to split payments in real time.",
+    "go_to_market": "Cino grows through organic network effects, content-led acquisition, and B2B2C partnerships with platforms and merchants that benefit from multi-player payment conversion.",
+    "market_positioning": "Cino positions itself as the first real-time shared-payments card and as a consumer-centric alternative to traditional payment flows built for single payers.",
+    "competitive_differentiation": "Its differentiation is real-time payment splitting across banks, a bank-agnostic shared-payments experience, consumer-friendly product design, and a data- and AI-enabled payments platform.",
+    "investor_relevance_notes": [
+      "This is a consumer fintech and payments infrastructure play, not a SaaS company.",
+      "The deck contains meaningful real metrics like users, GTV, and revenue, but it also contains many forward-looking TAM, expansion, and product-layer projections.",
+      "A strong understanding should clearly separate current monetization from future monetization and avoid treating roadmap products as current business lines.",
+      "The core diligence question is whether shared payments becomes a durable consumer behavior with repeat usage and defensible economics, not just a novelty feature.",
+      "Important diligence areas include retention, CAC efficiency, monetization mix, regulatory complexity, and whether network effects truly create defensibility."
+    ]
+  },
+  "validation": {
+    "_schema": "deal_understanding_validation_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-CINO-001",
+        "label": "correctly identifies Cino as shared-payments consumer fintech",
+        "check_type": "contains_any",
+        "field": "what_company_does",
+        "expected_terms": [
+          "shared payments",
+          "pay together",
+          "split payments",
+          "split transactions",
+          "consumer fintech",
+          "payments platform"
+        ]
+      },
+      {
+        "id": "L1-CINO-002",
+        "label": "captures real-time payment splitting solution",
+        "check_type": "contains_any",
+        "field": "solution",
+        "expected_terms": [
+          "real time",
+          "splits payments",
+          "split transactions",
+          "works with any bank",
+          "automatically splits",
+          "shared payments card"
+        ]
+      },
+      {
+        "id": "L1-CINO-003",
+        "label": "frames business model as payments not SaaS",
+        "check_type": "contains_any",
+        "field": "business_model",
+        "expected_terms": [
+          "payments",
+          "consumer fintech",
+          "interchange",
+          "card",
+          "subscription",
+          "premium features"
+        ]
+      },
+      {
+        "id": "L1-CINO-004",
+        "label": "revenue model distinguishes current and planned monetization",
+        "check_type": "contains_any",
+        "field": "revenue_model",
+        "expected_terms": [
+          "interchange",
+          "fx",
+          "premium",
+          "subscription",
+          "planned",
+          "current monetization"
+        ]
+      },
+      {
+        "id": "L1-CINO-005",
+        "label": "go to market includes organic or partnership-led growth",
+        "check_type": "contains_any",
+        "field": "go_to_market",
+        "expected_terms": [
+          "organic",
+          "network effects",
+          "content",
+          "b2b2c",
+          "partners",
+          "merchant"
+        ]
+      },
+      {
+        "id": "L1-CINO-006",
+        "label": "target customer reflects people with shared expenses",
+        "check_type": "contains_any",
+        "field": "target_customer",
+        "expected_terms": [
+          "couples",
+          "friends",
+          "shared expenses",
+          "travel groups",
+          "roommates",
+          "consumers"
+        ]
+      },
+      {
+        "id": "L2-CINO-007",
+        "label": "traction uses real current metrics from deck",
+        "check_type": "contains_any",
+        "field": "traction",
+        "expected_terms": [
+          "330k",
+          "1b gtv",
+          "€27m",
+          "active users",
+          "revenue",
+          "gtv"
+        ]
+      },
+      {
+        "id": "L2-CINO-008",
+        "label": "why now mentions behavior shift or AI and fintech infrastructure",
+        "check_type": "contains_any",
+        "field": "why_now",
+        "expected_terms": [
+          "consumer behaviour",
+          "online",
+          "finance first",
+          "ai",
+          "fintech infrastructure",
+          "trust"
+        ]
+      },
+      {
+        "id": "L3-CINO-009",
+        "label": "market positioning explains first-mover shared-payments angle",
+        "check_type": "contains_any",
+        "field": "market_positioning",
+        "expected_terms": [
+          "first",
+          "shared payments",
+          "pay together",
+          "consumer alternative",
+          "single payer",
+          "real time"
+        ]
+      },
+      {
+        "id": "L3-CINO-010",
+        "label": "competitive differentiation includes bank agnostic or real-time infra",
+        "check_type": "contains_any",
+        "field": "competitive_differentiation",
+        "expected_terms": [
+          "bank agnostic",
+          "real time",
+          "shared payments",
+          "splits transactions",
+          "ai",
+          "data"
+        ]
+      },
+      {
+        "id": "L3-CINO-011",
+        "label": "risks mention projection or monetization or regulatory uncertainty",
+        "check_type": "contains_any",
+        "field": "risks",
+        "expected_terms": [
+          "projection",
+          "monetization",
+          "regulatory",
+          "network effects",
+          "execution",
+          "retention"
+        ]
+      }
+    ],
+    "consistency_checks": [
+      {
+        "id": "L4-CINO-012",
+        "label": "business model and revenue model both reflect payments monetization",
+        "check_type": "cross_field_shared_terms",
+        "fields": [
+          "business_model",
+          "revenue_model"
+        ],
+        "expected_terms": [
+          "interchange",
+          "payments",
+          "card",
+          "subscription",
+          "premium"
+        ]
+      },
+      {
+        "id": "L4-CINO-013",
+        "label": "what company does and solution remain aligned on shared payments",
+        "check_type": "cross_field_shared_terms",
+        "fields": [
+          "what_company_does",
+          "solution"
+        ],
+        "expected_terms": [
+          "shared",
+          "split",
+          "payments",
+          "real time",
+          "together"
+        ]
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "id": "L4-CINO-014",
+        "label": "does not misclassify as SaaS-only software business",
+        "check_type": "not_contains_any",
+        "field": "business_model",
+        "prohibited_patterns": [
+          "saas only",
+          "b2b saas",
+          "enterprise saas",
+          "workflow software",
+          "crm platform"
+        ]
+      },
+      {
+        "id": "L4-CINO-015",
+        "label": "does not turn TAM or roadmap into current revenue fact",
+        "check_type": "not_contains_any",
+        "field": "traction",
+        "prohibited_patterns": [
+          "€155m",
+          "€200m",
+          "€125m",
+          "€500m revenue by 2030",
+          "future rails revenue",
+          "social spending hub revenue"
+        ]
+      },
+      {
+        "id": "L4-CINO-016",
+        "label": "does not invent profitability",
+        "check_type": "not_contains_any",
+        "field": "risks",
+        "prohibited_patterns": [
+          "already profitable",
+          "fully profitable today",
+          "stable margins already proven",
+          "mature profitability"
+        ]
+      },
+      {
+        "id": "L4-CINO-017",
+        "label": "does not treat future products as existing launched business lines",
+        "check_type": "not_contains_any",
+        "field": "revenue_model",
+        "prohibited_patterns": [
+          "insurance is a current core revenue stream",
+          "marketplace is a current core revenue stream",
+          "shared payment rails already monetized at scale",
+          "checkout product already drives major revenue"
+        ]
+      }
+    ],
+    "completeness_checks": [
+      {
+        "id": "L5-CINO-018",
+        "label": "what_company_does is not empty",
+        "check_type": "not_empty",
+        "field": "what_company_does"
+      },
+      {
+        "id": "L5-CINO-019",
+        "label": "problem is not empty",
+        "check_type": "not_empty",
+        "field": "problem"
+      },
+      {
+        "id": "L5-CINO-020",
+        "label": "solution is not empty",
+        "check_type": "not_empty",
+        "field": "solution"
+      },
+      {
+        "id": "L5-CINO-021",
+        "label": "why_now is not empty",
+        "check_type": "not_empty",
+        "field": "why_now"
+      },
+      {
+        "id": "L5-CINO-022",
+        "label": "business_model is not empty",
+        "check_type": "not_empty",
+        "field": "business_model"
+      },
+      {
+        "id": "L5-CINO-023",
+        "label": "revenue_model is not empty",
+        "check_type": "not_empty",
+        "field": "revenue_model"
+      },
+      {
+        "id": "L5-CINO-024",
+        "label": "traction is not empty",
+        "check_type": "not_empty",
+        "field": "traction"
+      },
+      {
+        "id": "L5-CINO-025",
+        "label": "risks is not empty",
+        "check_type": "not_empty",
+        "field": "risks"
+      }
+    ]
+  }
+}

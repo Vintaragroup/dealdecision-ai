@@ -5,6 +5,7 @@
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "allowSyntheticDefaultImports": true,
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
       "vitest": ["./node_modules/vitest"],

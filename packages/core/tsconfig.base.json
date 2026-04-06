@@ -11,6 +11,7 @@
     "strict": true,
     "types": ["node"],
     "outDir": "dist",
-    "downlevelIteration": true
+    "downlevelIteration": true,
+    "ignoreDeprecations": "6.0"
   }
 }

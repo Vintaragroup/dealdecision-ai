@@ -1,0 +1,81 @@
+name: deal-understanding-regression
+
+on:
+  pull_request:
+    paths:
+      - 'apps/api/**'
+      - 'apps/worker/**'
+      - 'packages/core/**'
+      - 'evaluation/deal_understanding/**'
+      - 'scripts/deal-understanding-regression.ts'
+      - '.github/workflows/deal-understanding-regression.yml'
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: "Override API base URL for benchmark validation"
+        required: false
+        type: string
+
+jobs:
+  regression-gate:
+    name: Deal Understanding Regression Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve API base URL
+        id: resolve-api
+        shell: bash
+        env:
+          INPUT_API_BASE_URL: ${{ github.event.inputs.api_base_url }}
+          SECRET_API_BASE_URL: ${{ secrets.DEAL_UNDERSTANDING_API_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          API_BASE_URL="${INPUT_API_BASE_URL:-}"
+          if [ -z "$API_BASE_URL" ]; then
+            API_BASE_URL="${SECRET_API_BASE_URL:-}"
+          fi
+
+          if [ -z "$API_BASE_URL" ]; then
+            echo "Missing API base URL. Set workflow input 'api_base_url' or secret DEAL_UNDERSTANDING_API_BASE_URL." >&2
+            exit 1
+          fi
+
+          echo "api_base_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Enable corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run deal understanding regression gate
+        env:
+          DEAL_UNDERSTANDING_API_BASE_URL: ${{ steps.resolve-api.outputs.api_base_url }}
+          BENCHMARK_AUTH_TOKEN: ${{ secrets.DEAL_UNDERSTANDING_BENCHMARK_AUTH_TOKEN }}
+          PYTHON_BIN: python3
+        run: pnpm deal-understanding-regression
+
+      - name: Upload regression artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deal-understanding-regression-${{ github.sha }}
+          path: artifacts/deal-understanding-regression/**
+          if-no-files-found: warn
+          retention-days: 30

@@ -72,6 +72,7 @@
     "proof:multisource-financials:3deals": "pnpm --filter worker proof:multisource-financials:3deals",
     "verify:governed-summary-cache": "pnpm --filter worker verify:governed-summary-cache",
     "proof:dpu-stale": "node scripts/proof_dpu_stale_recovery.mjs",
+    "deal-understanding-regression": "tsx scripts/deal-understanding-regression.ts",
 
     "playwright:install": "playwright install chromium",
     "test:ui": "playwright test",

@@ -112,6 +112,27 @@ Auth notes:
 - If your API requires auth, provide `AUTH_TOKEN` (Bearer token).
 - For local/dev docker, you can set `DISABLE_CLERK_AUTH=1` (non-production only).
 
+### Deal understanding regression gate
+
+Run the benchmark gate against an API that contains the benchmark deals (Palm, Probility, Verse, ToxyScreen):
+
+- `DEAL_UNDERSTANDING_API_BASE_URL=http://localhost:9001 pnpm deal-understanding-regression`
+
+Optional auth token (if your benchmark API requires auth):
+
+- `DEAL_UNDERSTANDING_API_BASE_URL=https://api.example.com BENCHMARK_AUTH_TOKEN=... pnpm deal-understanding-regression`
+
+Outputs are written to a timestamped folder under:
+
+- `artifacts/deal-understanding-regression/<timestamp>/`
+
+The gate fails when any of the following is true:
+
+- validator exits non-zero
+- any required benchmark row is missing
+- Palm/Probility/Verse/ToxyScreen counts differ from required thresholds
+- any cross-deal summary row reports failing checks
+
 ---
 
 ## Configuration File Map

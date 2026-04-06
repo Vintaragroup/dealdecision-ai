@@ -228,9 +228,31 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     const phase1 = dioData?.dio?.phase1 ?? null;
     const overviewV2 = phase1?.deal_overview_v2 ?? null;
     const dealSummarySummary = phase1?.deal_summary_v2?.summary ?? null;
+    const dealSummaryV2Risks: unknown[] = Array.isArray(phase1?.deal_summary_v2?.risks)
+      ? (phase1!.deal_summary_v2.risks as unknown[])
+      : [];
     const archetypeV1 = phase1?.business_archetype_v1 ?? null;
     const reportSS = dioData?.report?.structured_summary ?? null;
     const execSummaryV1 = phase1?.executive_summary_v1 ?? null;
+
+    // DPU page text by segment key — supplementary fallback for fields not populated by DIO.
+    const dpuResult = await pool.query(
+      `SELECT payload->'structured'->>'segment_key' as seg, payload->>'page_text' as txt
+         FROM document_page_understanding
+        WHERE deal_id = $1
+          AND payload->>'page_text' IS NOT NULL
+        ORDER BY page_index`,
+      [dealId],
+    );
+    const dpuBySegment: Record<string, string[]> = {};
+    for (const row of dpuResult.rows ?? []) {
+      const seg: string = row.seg ?? "";
+      const txt: string = row.txt ?? "";
+      if (seg && txt) {
+        if (!dpuBySegment[seg]) dpuBySegment[seg] = [];
+        dpuBySegment[seg].push(txt);
+      }
+    }
 
     function asStr(v: unknown): string {
       return typeof v === "string" && v.trim() ? v.trim() : "";
@@ -269,6 +291,19 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       if (signals.some((s) => s.toLowerCase() === nextLc)) return;
       signals.push(next);
     }
+
+    // Per-segment DPU text — joins all pages for a given segment key.
+    const dpuJoin = (key: string): string =>
+      (dpuBySegment[key] ?? []).join(" ").replace(/\s+/g, " ").trim();
+
+    const dpuProductText    = dpuJoin("product");    // revenue model slide: interchange, FX, premium
+    const dpuTractionText   = dpuJoin("traction");   // traction slides: GTV, users, organic, B2B2C
+    const dpuFinancialsText = dpuJoin("financials"); // financials slides: shared expenses, ARPU
+
+    // Roadmap OCR guard: product_solution text extracted from a product-roadmap slide (not a
+    // current-state product description) is rejected so the field falls through to better data.
+    const ROADMAP_OCR_RE = /\b(product\s+roadmap|q[1-4]\s+20\d\d|Goal:\s*(growth|revenue|engagement))\b/i;
+    const rejectRoadmap = (text: string): string => ROADMAP_OCR_RE.test(text) ? "" : text;
 
     const investmentEvidenceSnippets = Array.isArray(execSummaryV1?.evidence)
       ? (execSummaryV1.evidence as Array<{ snippet?: unknown }>)
@@ -353,24 +388,38 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
     const understanding = {
       what_company_does:
-        asStr(overviewV2?.product_solution) ||
+        rejectRoadmap(asStr(overviewV2?.product_solution)) ||
         asStr(overviewV2?.go_to_market) ||
+        asStr(overviewV2?.market_icp) ||
         asStr(overviewV2?.business_model) ||
         asStr(dealSummarySummary?.one_liner) ||
         asStr(reportSS?.deal_summary_v1?.tiers?.hero) ||
         asStr(reportSS?.deal_summary_v1?.one_liner?.text),
 
+      problem:
+        asStr(overviewV2?.product_solution) !== rejectRoadmap(asStr(overviewV2?.product_solution))
+          ? asStr(overviewV2?.market_icp) || asStr(dealSummarySummary?.one_liner)
+          : asStr(dealSummarySummary?.one_liner) ||
+            asStr(reportSS?.deal_summary_v1?.tiers?.hero),
+
+      solution:
+        rejectRoadmap(asStr(overviewV2?.product_solution)) ||
+        asStr(overviewV2?.market_icp),
+
+      why_now:
+        dpuTractionText ||
+        asStr(overviewV2?.market_icp),
+
       business_model:
+        dpuProductText ||
         firstKnown(
           archetypeV1?.value,
           reportSS?.business_model?.value,
-          overviewV2?.business_model,
         ) ||
-        asStr(archetypeV1?.value) ||
-        asStr(reportSS?.business_model?.value) ||
         asStr(overviewV2?.business_model),
 
       revenue_model:
+        dpuProductText ||
         firstKnown(
           overviewV2?.business_model,
           reportSS?.business_model?.value,
@@ -382,32 +431,44 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
       // Strip sentences that pair a large-dollar amount (≥$50M) with hypothetical/projection
       // language (e.g. "yielding ~$139M ARR") — these are forward-looking assertions surfaced
-      // from GTM slides, not reported facts.  Fall back to market_icp when stripping
-      // removes all content so the field remains populated.
+      // from GTM slides, not reported facts.  Fall back to DPU traction then market_icp when
+      // stripping removes all content so the field remains populated.
       go_to_market:
         stripHypotheticalDollarProjectionSentences(asStr(overviewV2?.go_to_market)) ||
+        dpuTractionText ||
         asStr(overviewV2?.market_icp),
 
       target_customer:
+        dpuFinancialsText ||
         asStr(overviewV2?.market_icp) ||
         asStr(overviewV2?.go_to_market),
 
       traction_summary:
         joinArray(overviewV2?.traction_signals) ||
+        dpuTractionText ||
         asStr(overviewV2?.traction_metrics),
+
+      risks:
+        joinArray(dealSummaryV2Risks) ||
+        joinArray(overviewV2?.key_risks_detected),
 
       // Suppress LLM-generated paragraphs that assert a raise amount contradicting the
       // trusted structured raise value by ≥ 20×; fall back to tiers.deep in that case.
+      // Use market_icp first as it typically captures the positioning narrative ("first X
+      // that does Y") more precisely than an LLM-generated summary built from incomplete data.
       market_positioning: (() => {
         const primary = suppressIfRaiseAmountOverstated(
           asStr(dealSummarySummary?.paragraphs?.[0]),
           trustedRaiseValue,
         );
-        return primary || asStr(reportSS?.deal_summary_v1?.tiers?.deep);
+        return asStr(overviewV2?.market_icp) ||
+          primary ||
+          asStr(reportSS?.deal_summary_v1?.tiers?.deep);
       })(),
 
       competitive_differentiation:
-        asStr(overviewV2?.product_solution) ||
+        asStr(overviewV2?.market_icp) ||
+        rejectRoadmap(asStr(overviewV2?.product_solution)) ||
         asStr(reportSS?.deal_summary_v1?.tiers?.overview),
 
       // Evidence-backed signals from document claims — surfaces capital use, brand, and marketing

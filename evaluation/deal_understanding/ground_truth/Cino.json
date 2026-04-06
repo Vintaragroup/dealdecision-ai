@@ -21,7 +21,7 @@
     "investor_relevance_notes": [
       "This is a consumer fintech and payments infrastructure play, not a SaaS company.",
       "The deck contains meaningful real metrics like users, GTV, and revenue, but it also contains many forward-looking TAM, expansion, and product-layer projections.",
-      "A strong understanding should clearly separate current monetization from future monetization and avoid treating roadmap products as current business lines.",
+      "Interchange and FX fees represent current monetization; roadmap products like the Social Spending Hub and shared-payment rails are forward projections, not realized revenue streams, and should not be treated as current business lines.",
       "The core diligence question is whether shared payments becomes a durable consumer behavior with repeat usage and defensible economics, not just a novelty feature.",
       "Important diligence areas include retention, CAC efficiency, monetization mix, regulatory complexity, and whether network effects truly create defensibility."
     ]
@@ -117,7 +117,7 @@
         "id": "L2-CINO-007",
         "label": "traction uses real current metrics from deck",
         "check_type": "contains_any",
-        "field": "traction",
+        "field": "traction_summary",
         "expected_terms": [
           "330k",
           "1b gtv",

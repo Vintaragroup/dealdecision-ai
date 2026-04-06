@@ -89,6 +89,10 @@ REFERENCE_DEALS: dict[str, dict] = {
         "deal_id":           "bcd59d33-7887-41cd-80b9-742bc5ba945a",
         "ground_truth_file": "Verse.json",
     },
+    "Cino": {
+        "deal_id":           "0fcec035-9aa3-4f6e-88fa-818c323add09",
+        "ground_truth_file": "Cino.json",
+    },
     # ── Live deals ────────────────────────────────────────────────────────────
     # TODO (DDA-UNDERSTANDING): uncomment once understanding endpoint is live.
     # "DealDecision": {

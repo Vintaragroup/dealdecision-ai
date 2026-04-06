@@ -188,41 +188,39 @@
       {
         "id": "L4-CINO-012",
         "label": "business model and revenue model both reflect payments monetization",
-        "check_type": "cross_field_shared_terms",
-        "fields": [
-          "business_model",
-          "revenue_model"
-        ],
-        "expected_terms": [
+        "check_type": "term_alignment",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "expected_shared_terms": [
           "interchange",
           "payments",
           "card",
           "subscription",
           "premium"
-        ]
+        ],
+        "min_shared": 1
       },
       {
         "id": "L4-CINO-013",
         "label": "what company does and solution remain aligned on shared payments",
-        "check_type": "cross_field_shared_terms",
-        "fields": [
-          "what_company_does",
-          "solution"
-        ],
-        "expected_terms": [
+        "check_type": "term_alignment",
+        "field_a": "what_company_does",
+        "field_b": "solution",
+        "expected_shared_terms": [
           "shared",
           "split",
           "payments",
           "real time",
           "together"
-        ]
+        ],
+        "min_shared": 1
       }
     ],
     "hallucination_checks": [
       {
         "id": "L4-CINO-014",
         "label": "does not misclassify as SaaS-only software business",
-        "check_type": "not_contains_any",
+        "check_type": "must_not_contain",
         "field": "business_model",
         "prohibited_patterns": [
           "saas only",
@@ -235,7 +233,7 @@
       {
         "id": "L4-CINO-015",
         "label": "does not turn TAM or roadmap into current revenue fact",
-        "check_type": "not_contains_any",
+        "check_type": "must_not_contain",
         "field": "traction",
         "prohibited_patterns": [
           "€155m",
@@ -249,7 +247,7 @@
       {
         "id": "L4-CINO-016",
         "label": "does not invent profitability",
-        "check_type": "not_contains_any",
+        "check_type": "must_not_contain",
         "field": "risks",
         "prohibited_patterns": [
           "already profitable",
@@ -261,7 +259,7 @@
       {
         "id": "L4-CINO-017",
         "label": "does not treat future products as existing launched business lines",
-        "check_type": "not_contains_any",
+        "check_type": "must_not_contain",
         "field": "revenue_model",
         "prohibited_patterns": [
           "insurance is a current core revenue stream",
@@ -310,9 +308,9 @@
       },
       {
         "id": "L5-CINO-024",
-        "label": "traction is not empty",
+        "label": "traction_summary is not empty",
         "check_type": "not_empty",
-        "field": "traction"
+        "field": "traction_summary"
       },
       {
         "id": "L5-CINO-025",

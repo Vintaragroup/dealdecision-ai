@@ -1,3 +1,10 @@
+// TODO: deprecated — scheduled for removal after unification.
+// This file uses MockMCPClient + MockEvidenceService from the Phase 4 orchestration
+// prototype. It is NOT on the active ingestion → extraction → report path.
+// The canonical decision layer (packages/core/src/scoring/canonical-decision.ts) does
+// not source data from these routes. Do not add new features here.
+// Active report path: POST/GET /api/v1/deals/:deal_id/investor-insights/*
+
 /**
  * Orchestration Routes - Phase 4
  * 

@@ -89,6 +89,9 @@ export function DashboardContent({ darkMode, onNavigate, onDealClick, onNewDeal 
             name: deal?.name || 'Unknown Deal',
             company: (deal?.company ?? deal?.company_name ?? deal?.companyName ?? deal?.name) || 'Unknown Company',
             score,
+            // TODO [CANONICAL-MIGRATION P2]: status derived from raw list score.
+            // canonical_decision is not available here (requires per-deal orchestrator-report fetch).
+            // Migrate when the /deals list endpoint can return canonical_decision summary.
             status: score >= 75 ? 'go' : score >= 50 ? 'hold' : 'no-go',
             stage: deal?.stage || 'intake',
             lastUpdated: 'Recently',

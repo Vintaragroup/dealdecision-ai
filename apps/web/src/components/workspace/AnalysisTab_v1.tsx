@@ -63,9 +63,12 @@ export function AnalysisTab({
 
   const vcScoringV2 = orchData?.report?.vc_scoring_v2 ?? null;
   const ventureLensV1 = orchData?.report?.venture_lens_v1 ?? null;
+  // Canonical decision — preferred source for score/verdict when available
+  const canonicalDecision = orchData?.report?.canonical_decision ?? null;
 
-  // Primary score — V3 > V2 > workspace
+  // Primary score — canonical > V3 > V2 > workspace
   const primaryScore =
+    canonicalDecision?.score ??
     ventureLensV1?.final_investment_score ??
     vcScoringV2?.vc_composite_score ??
     workspaceScore ??

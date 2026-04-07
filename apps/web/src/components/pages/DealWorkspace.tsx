@@ -1585,7 +1585,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   // [VERDICT-CONTRACT] Single canonical workspace verdict — resolveWorkspaceVerdict
   // encapsulates the full priority chain so DealWorkspace has one decision path.
+  // orchReport: headerOrchData already fetched at workspace level for the header tiles.
+  // Passing it here wires canonical_decision (step 0) into the verdict resolver.
   const _workspaceVerdict = resolveWorkspaceVerdict({
+    orchReport: headerOrchData ?? null,
     report: reportFromApi,
     score: fundamentalsScore0_100,
     phase1Signals: hasPhase1Signals

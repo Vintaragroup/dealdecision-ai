@@ -238,6 +238,7 @@ export async function registerDealCoreRoutes(
 		fundability_decision_v1: any | null;
 		phase_b_latest_run: any | null;
     phase_b_history: any | null;
+    canonical_decision_v1: any | null;
     }>(
       `SELECT d.*,
               latest.dio_id,
@@ -261,7 +262,8 @@ export async function registerDealCoreRoutes(
 				  latest.fundability_decision_v1,
               phaseb.phase_b_latest_run,
     					phaseb.phase_b_history,
-              stats.run_count
+              stats.run_count,
+              iir.canonical_decision_v1
          FROM deals d
          LEFT JOIN LATERAL (
            SELECT dio_id,
@@ -344,6 +346,13 @@ export async function registerDealCoreRoutes(
              FROM deal_intelligence_objects
             WHERE deal_id = d.id
          ) stats ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT (report_payload -> 'canonical_decision_v1') AS canonical_decision_v1
+             FROM investor_insight_reports
+            WHERE deal_id = d.id
+            ORDER BY updated_at DESC
+            LIMIT 1
+         ) iir ON TRUE
         WHERE ${whereClauses.join(" AND ")}
         ORDER BY d.created_at DESC`,
       params
@@ -373,6 +382,7 @@ export async function registerDealCoreRoutes(
     phase1_claims: null,
     phase_b_latest_run: (row as any).phase_b_latest_run,
 		phase_b_history: (row as any).phase_b_history,
+    canonical_decision_v1: (row as any).canonical_decision_v1 ?? null,
     }, mode));
   });
 
@@ -443,6 +453,15 @@ export async function registerDealCoreRoutes(
       [dealId]
     );
 
+    const { rows: iirCanonicalRows } = await pool.query<{ canonical_decision_v1: any | null }>(
+      `SELECT (report_payload -> 'canonical_decision_v1') AS canonical_decision_v1
+         FROM investor_insight_reports
+        WHERE deal_id = $1
+        ORDER BY updated_at DESC
+        LIMIT 1`,
+      [dealId]
+    );
+
     const dioRows: Array<DIOAggregateRow & { overall_score_resolved?: any }> = [];
     if (latestDioRows[0]) {
       const latest = latestDioRows[0];
@@ -500,6 +519,7 @@ export async function registerDealCoreRoutes(
         phase_b_history: phaseBHistory,
         last_analyzed_at: dioStatsRows[0]?.last_analyzed_at ?? null,
         run_count: dioStatsRows[0]?.run_count ?? 0,
+        canonical_decision_v1: iirCanonicalRows[0]?.canonical_decision_v1 ?? null,
       });
     }
 

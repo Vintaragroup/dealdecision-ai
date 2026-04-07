@@ -2577,6 +2577,37 @@ export async function apiGetInvestorInsights(dealId: string): Promise<InvestorIn
  * Minimal web-side type for the ddai_orchestrator_report_v1 JSON contract.
  * Mirrors packages/core OrchestratorReportV1 without a direct import dependency.
  */
+
+// ─── Canonical Decision (mirrors packages/core CanonicalDecision) ────────────
+
+/** 5-band canonical verdict — source of truth for all user-facing decision displays. */
+export type CanonicalVerdictWeb =
+  | 'strong_yes'
+  | 'yes'
+  | 'watch'
+  | 'pass'
+  | 'strong_pass';
+
+/**
+ * Unified decision output from resolveCanonicalDecision().
+ * Absent on cached reports generated before this field was added.
+ */
+export type CanonicalDecisionWeb = {
+  score: number;
+  verdict: CanonicalVerdictWeb;
+  confidence: number;
+  drivers: string[];
+  risks: string[];
+  conflict_detected: boolean;
+  resolver_note: string;
+  source_breakdown: {
+    overall_score?: number | null;
+    ORS?: number | null;
+    venture_lens?: number | null;
+    vc_composite?: number | null;
+  };
+};
+
 export type OrchestratorReportDecision = {
   label: 'GO' | 'CONSIDER' | 'NO_GO';
   confidence_band: 'High' | 'Medium' | 'Low';
@@ -2656,6 +2687,12 @@ export type OrchestratorReportV1 = {
     warnings: string[];
     inputs_present: Record<string, boolean>;
   };
+  /**
+   * Canonical Decision — unified resolver output from resolveCanonicalDecision().
+   * This is the primary source of truth for all user-facing score/verdict displays.
+   * Absent on older cached reports; UI must fall back to decision.label / scores.
+   */
+  canonical_decision?: CanonicalDecisionWeb | null;
   /**
    * Venture Lens V1 — conviction scoring layer on top of V2.
    * Five venture dimensions: Team · Market · Product · Traction · Upside.

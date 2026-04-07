@@ -9,6 +9,13 @@
  *   1. report.metadata.score_band_v2.overall_score  (calibrated post-band score)
  *   2. report.overallScore                          (pre-calibration)
  *   3. null                                         (not scored)
+ *
+ * TODO [CANONICAL-MIGRATION P2]: This resolver reads from the /report path only
+ * (score_band_v2 → report.overallScore). It does not have access to canonical_decision
+ * because that comes from the orchestrator-report path which is a separate API call.
+ * Migration requires: either (a) include canonical_decision.score in the /report response,
+ * or (b) accept an optional orchReport parameter and check canonical_decision.score first.
+ * Until then, canonical_decision.score is surfaced via AnalysisTab_v1.tsx (primaryScore).
  */
 export type ResolvedScore = {
   /** Rounded integer 0-100, or null when no score is available. */

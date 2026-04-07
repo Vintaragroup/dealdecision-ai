@@ -5,6 +5,7 @@
  * Replaces duplicated inline derivation in DealWorkspace.tsx.
  *
  * Priority chain (first match wins):
+ *   0. orchReport.canonical_decision.verdict              → map 5-band → 4-verdict
  *   1. report.metadata.hard_pass_guardrail_v2.triggered  → HARD_PASS
  *   2. report.metadata.decision_v1.label                 → map 6-band → 4-verdict
  *   3. phase1Signals.recommendation (pre-report state)   → keyword match → verdict
@@ -12,9 +13,13 @@
  *   5. default                                           → PASS
  */
 
+import { mapCanonicalVerdictToWorkspace } from './canonicalVerdictDisplay';
+import type { CanonicalDecisionWeb } from './apiClient';
+
 export type WorkspaceVerdict = 'HARD_PASS' | 'FUND' | 'CONSIDER' | 'PASS';
 
 export type WorkspaceVerdictSource =
+  | 'canonical_decision'
   | 'guardrail'
   | 'decision_v1'
   | 'phase1_signals'
@@ -74,6 +79,7 @@ function scoreToVerdict(score: number): WorkspaceVerdict {
 /**
  * Resolve the canonical workspace verdict from the available data sources.
  *
+ * - `orchReport`    — orchestrator-report response (contains canonical_decision). May be null.
  * - `report`        — the raw report API object (`reportFromApi`). May be null/undefined.
  * - `score`         — the current canonical score 0–100, or null.
  * - `phase1Signals` — pre-report LLM signals (used only when report is absent). May be null.
@@ -81,11 +87,18 @@ function scoreToVerdict(score: number): WorkspaceVerdict {
  * Pure function — safe in useMemo, tests, and outside React.
  */
 export function resolveWorkspaceVerdict(args: {
+  orchReport?: { canonical_decision?: CanonicalDecisionWeb | null } | null;
   report: unknown;
   score: number | null;
   phase1Signals: { recommendation: string | null; score: number | null } | null;
 }): ResolvedWorkspaceVerdict {
-  const { report, score, phase1Signals } = args;
+  const { orchReport, report, score, phase1Signals } = args;
+
+  // ── 0. Canonical decision (highest authority when available) ───────────────
+  const canonicalVerdict = orchReport?.canonical_decision?.verdict;
+  if (canonicalVerdict) {
+    return { verdict: mapCanonicalVerdictToWorkspace(canonicalVerdict), source: 'canonical_decision' };
+  }
 
   // ── 1. Hard-pass guardrail (overrides everything) ──────────────────────────
   if (report && typeof report === 'object') {

@@ -1,6 +1,10 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
 export type ScoreSourceV1 = 'legacy' | 'fundability_v1';
+// TODO [CANONICAL-MIGRATION P3]: ScoreSourceV1 predates canonical_decision. The 'legacy'
+// option maps to deals.score / fundability_v1.  A future 'canonical_decision' option could
+// let users explicitly prefer canonical_decision.score everywhere, but requires verifying
+// the canonical score is available across all consumers before surfacing this toggle.
 
 type ScoreSourceContextValue = {
   scoreSource: ScoreSourceV1;

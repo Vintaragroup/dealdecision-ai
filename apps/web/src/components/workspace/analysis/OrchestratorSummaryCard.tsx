@@ -22,6 +22,10 @@ import {
 } from 'lucide-react';
 import { useOrchestratorReport } from '../../../hooks/useOrchestratorReport';
 import type { OrchestratorReportV1 } from '../../../lib/apiClient';
+import {
+  getCanonicalVerdictLabel,
+  getCanonicalVerdictColors,
+} from '../../../lib/canonicalVerdictDisplay';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Prop types
@@ -133,7 +137,7 @@ function CardContent({
 }) {
   const [showRaw, setShowRaw] = useState(false);
 
-  const { decision, scores, document_confidence, stage_context } = report;
+  const { decision, scores, document_confidence, stage_context, canonical_decision } = report;
   const ors = scores.overall_recommendation_score;
   const urss = scores.risk_severity_score;
   const dci = document_confidence.score;
@@ -142,9 +146,60 @@ function CardContent({
   const colors = decisionColors(decision.label, darkMode);
   const { Icon } = colors;
 
+  // Canonical decision display (preferred when available)
+  const cd = canonical_decision ?? null;
+  const cdColors = cd ? getCanonicalVerdictColors(cd.verdict, darkMode) : null;
+  const cdLabel = cd ? getCanonicalVerdictLabel(cd.verdict) : null;
+
   return (
     <div className="space-y-4">
-      {/* Header row: decision badge + ORS */}
+      {/* ── Canonical Decision header (when available) ── */}
+      {cd && cdColors && cdLabel && (
+        <div
+          className={`rounded-xl border p-3 space-y-2 ${cdColors.bg}`}
+          data-testid="canonical-decision-header"
+        >
+          <div className="flex items-center gap-3 flex-wrap">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-bold ${cdColors.bg} ${cdColors.text}`}
+              data-testid="canonical-verdict-badge"
+              data-verdict={cd.verdict}
+            >
+              {cdLabel}
+            </span>
+            <div className={`flex items-center gap-1.5 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+              <span className="text-xs font-medium uppercase tracking-wide opacity-60">Canonical Score</span>
+              <span className="font-bold text-lg tabular-nums" data-testid="canonical-score">{Math.round(cd.score)}</span>
+              <span className="text-xs opacity-50">/100</span>
+            </div>
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium
+              ${cd.confidence >= 0.7
+                ? (darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-700')
+                : cd.confidence >= 0.45
+                  ? (darkMode ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-700')
+                  : (darkMode ? 'bg-gray-500/10 text-gray-400' : 'bg-gray-100 text-gray-600')
+              }`}
+              data-testid="canonical-confidence"
+            >
+              {Math.round(cd.confidence * 100)}% confidence
+            </span>
+            {cd.conflict_detected && (
+              <span
+                className={`flex items-center gap-1 text-xs ${darkMode ? 'text-amber-400' : 'text-amber-700'}`}
+                data-testid="canonical-conflict-flag"
+              >
+                <AlertTriangle size={11} />
+                Signals diverge
+              </span>
+            )}
+          </div>
+          {cd.resolver_note && (
+            <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{cd.resolver_note}</p>
+          )}
+        </div>
+      )}
+
+      {/* Header row: legacy decision badge + ORS (supporting signal) */}
       <div className="flex items-center gap-3 flex-wrap">
         {/* Decision badge */}
         <div

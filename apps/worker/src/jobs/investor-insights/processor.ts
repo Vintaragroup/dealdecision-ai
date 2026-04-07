@@ -108,6 +108,7 @@ import {
 import {
 	buildRenderPackage,
 	persistReport,
+	applyCanonicalDecisionV1,
 } from "./stages/stage-4-render-package";
 import { runIntelligenceStage } from "./stages/stage-5-intelligence";
 import { runDpuOcrBackfillForDeal } from "../../lib/dpu-ocr-backfill-v1";
@@ -461,6 +462,9 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				ts: new Date().toISOString(),
 			}));
 		}
+
+		// Best-effort: persist canonical decision summary (non-blocking).
+		await applyCanonicalDecisionV1(pool, reportId, dealId, validatedPkg);
 
 		return {
 			ok: true,
@@ -850,6 +854,9 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			}));
 		}
 
+		// Best-effort: persist canonical decision summary (non-blocking).
+		await applyCanonicalDecisionV1(pool, egReportId, dealId, validatedPkg);
+
 		console.log(
 			JSON.stringify({
 				event: "INVESTOR_INSIGHTS_EVIDENCE_GATE_FAIL_COMPLETE",
@@ -1182,6 +1189,9 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			ts: new Date().toISOString(),
 		}));
 	}
+
+	// Best-effort: persist canonical decision summary (non-blocking).
+	await applyCanonicalDecisionV1(pool, reportId, dealId, validatedPkg);
 
 	console.log(
 		JSON.stringify({

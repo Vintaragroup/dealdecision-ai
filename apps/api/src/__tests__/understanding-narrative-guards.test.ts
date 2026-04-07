@@ -1,8 +1,7 @@
 /**
  * understanding-narrative-guards.test.ts
  *
- * Regression lock for the two narrative numeric-consistency guards added to
- * apps/api/src/routes/understanding.ts:
+ * Regression lock for the narrative guards in understanding.ts:
  *
  *   1. stripHypotheticalDollarProjectionSentences — removes sentences that combine
  *      a large-dollar amount (≥$50M) with hypothetical/projection keywords.
@@ -10,9 +9,14 @@
  *   2. suppressIfRaiseAmountOverstated — suppresses LLM-generated paragraphs that
  *      assert a raise amount ≥ 20× larger than the trusted structured raise value.
  *
- * These tests lock the exact bad-value cases from the known incidents:
+ *   3. rejectIfNumericDominated — returns "" when >40% of tokens (min 8 tokens)
+ *      are bare numeric values, catching XLSX chart-coordinate leaks like the
+ *      StackFactor go_to_market "25 729.21875 1139.53125..." incident.
+ *
+ * Known incidents locked by these tests:
  *   - Probility go_to_market: "yielding ~$139M ARR"
  *   - Verse market_positioning: "proposed raise is set at $375 million through a SAFE agreement"
+ *   - StackFactor go_to_market: "25 729.21875 1139.53125 1560.9375..." (XLSX chart series)
  */
 
 import { test } from 'node:test';
@@ -21,6 +25,7 @@ import assert from 'node:assert/strict';
 import {
   stripHypotheticalDollarProjectionSentences,
   suppressIfRaiseAmountOverstated,
+  rejectIfNumericDominated,
 } from '../routes/understanding';
 
 // ---------------------------------------------------------------------------
@@ -128,4 +133,53 @@ test('suppress: keeps Probility market_positioning (no raise assertion in text)'
 
 test('suppress: returns empty string for empty input', () => {
   assert.strictEqual(suppressIfRaiseAmountOverstated('', '$2MM'), '');
+});
+
+// ---------------------------------------------------------------------------
+// rejectIfNumericDominated
+// ---------------------------------------------------------------------------
+
+test('rejectIfNumericDominated: returns "" for StackFactor XLSX chart coordinate series (exact incident)', () => {
+  const input =
+    '25 729.21875 1139.53125 1560.9375 2211.5241555606617 2644.589080810547 3223.2895890526147 Channel Partners ($000) 25 100 150 200';
+  assert.strictEqual(rejectIfNumericDominated(input), '');
+});
+
+test('rejectIfNumericDominated: returns "" for XLSX "For Charts" backing data', () => {
+  const input = 'Sheet For Charts Total Number 2 5 11 20 35 Total End Users 200 1800 3500 6000 10000';
+  assert.strictEqual(rejectIfNumericDominated(input), '');
+});
+
+test('rejectIfNumericDominated: keeps legitimate narrative GTM text', () => {
+  const input =
+    'We target enterprise fund managers through warm introductions via investor networks, conference demos, and LinkedIn outbound to fund ops leads.';
+  assert.ok(rejectIfNumericDominated(input).length > 0);
+});
+
+test('rejectIfNumericDominated: keeps text with incidental numbers (below 40% numeric tokens)', () => {
+  const input =
+    'Our go-to-market strategy focuses on 3 channels: direct enterprise sales, channel partners in 4 regions, and inbound from 2 large platforms.';
+  assert.ok(rejectIfNumericDominated(input).length > 0);
+});
+
+test('rejectIfNumericDominated: keeps short text regardless of numeric density (fewer than 8 tokens)', () => {
+  // 4 tokens, all numbers — but too short to trigger the guard
+  const input = '25 729.21 1139.53 1560.94';
+  assert.strictEqual(rejectIfNumericDominated(input), input);
+});
+
+test('rejectIfNumericDominated: returns "" for empty input', () => {
+  assert.strictEqual(rejectIfNumericDominated(''), '');
+});
+
+test('rejectIfNumericDominated: rejects text over the 40% numeric threshold', () => {
+  // 5 numeric tokens out of 10 total = 50% — above threshold
+  const input = 'Channel 100 200 300 400 500 Strategy inbound outbound direct';
+  assert.strictEqual(rejectIfNumericDominated(input), '');
+});
+
+test('rejectIfNumericDominated: keeps text at exactly the 40% boundary (not strictly greater)', () => {
+  // 4 numeric tokens / 10 total = 40% — NOT > 40%, should pass
+  const input = 'Channel Partners 100 200 Strategy inbound outbound direct enterprise sales';
+  assert.ok(rejectIfNumericDominated(input).length > 0);
 });

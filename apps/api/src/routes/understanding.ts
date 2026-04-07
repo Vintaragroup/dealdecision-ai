@@ -49,6 +49,29 @@ const PROJECTION_KEYWORD_RE =
   /\b(?:yielding|yield(?:s)?|projected?|projection|forecast(?:ed|s)?|could\s+reach|would(?:\s+be)?\s+generate|assuming|hypothetical|implies?\s+a|representing|translat(?:e[sd]?|ing)\s+to|would\s+translate|potentially\s+generat|may\s+generat)\b/i;
 
 /**
+ * Returns "" when `text` is dominated by numeric or floating-point tokens,
+ * which indicates XLSX chart-backing coordinates or raw spreadsheet cell data
+ * leaked into a narrative field (e.g. "25 729.21875 1139.53125 1560.9375…"
+ * from an XLSX chart source column, or "Sheet: For Charts 2 5 11 200 1800…"
+ * from a revenue projection table).
+ *
+ * Guard fires when ALL of the following are true:
+ *   - text has at least 8 whitespace-delimited tokens
+ *   - more than 40% of those tokens are pure numeric values
+ *     (integers, decimals, or negative numbers; optionally with commas)
+ *
+ * Short strings (< 8 tokens) are left untouched to avoid false positives on
+ * legitimate short financial references like "$2M raise" or "Q3 2026".
+ */
+export function rejectIfNumericDominated(text: string): string {
+  if (!text) return "";
+  const tokens = text.trim().split(/\s+/);
+  if (tokens.length < 8) return text;
+  const numericCount = tokens.filter((t) => /^-?[\d,]*\.?\d+$/.test(t)).length;
+  return numericCount / tokens.length > 0.4 ? "" : text;
+}
+
+/**
  * Splits `text` into sentences and removes any sentence that contains both:
  *   - a dollar amount ≥ $50M (M, MM, million, B, billion notation), AND
  *   - a projection/hypothetical keyword (e.g. "yielding", "projected", "could reach").
@@ -236,21 +259,49 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     const execSummaryV1 = phase1?.executive_summary_v1 ?? null;
 
     // DPU page text by segment key — supplementary fallback for fields not populated by DIO.
+    // MIME type is joined so that narrative fields can exclude spreadsheet-origin pages.
     const dpuResult = await pool.query(
-      `SELECT payload->'structured'->>'segment_key' as seg, payload->>'page_text' as txt
-         FROM document_page_understanding
-        WHERE deal_id = $1
-          AND payload->>'page_text' IS NOT NULL
-        ORDER BY page_index`,
+      `SELECT dpu.payload->'structured'->>'segment_key' as seg,
+              dpu.payload->>'page_text' as txt,
+              COALESCE(docs.mime_type, '') as doc_mime_type
+         FROM document_page_understanding dpu
+         LEFT JOIN documents docs ON docs.id = dpu.document_id
+        WHERE dpu.deal_id = $1
+          AND dpu.payload->>'page_text' IS NOT NULL
+        ORDER BY dpu.page_index`,
       [dealId],
     );
+    // MIME pattern for spreadsheet files (XLSX / XLS).  Pages originating from
+    // spreadsheet documents must not win narrative understanding fields because
+    // XLSX cells — budget rows, revenue projections, chart-backing series — are
+    // tabular financial data that is never appropriate as narrative content.
+    const SPREADSHEET_MIME_RE = /spreadsheetml|vnd\.ms-excel/i;
+    // Content-level guard — catches orphaned DPU rows whose parent document record
+    // was deleted or is missing from the documents table (mime_type = NULL after
+    // LEFT JOIN).  Excel cell-range headers ("Sheet1 A1:T40") are uniquely produced
+    // by the XLSX extraction pipeline and never appear in narrative PDF pages.
+    const SPREADSHEET_PAGE_CONTENT_RE = /\bSheet\d+\s+[A-Z]+\d+:[A-Z]+\d+\b/;
+
     const dpuBySegment: Record<string, string[]> = {};
+    // Narrative-only segment map: excludes pages from spreadsheet documents so
+    // that XLSX budget sheets, allocation tables, and chart data cannot win
+    // fields like what_company_does, traction_summary, go_to_market, etc.
+    const dpuNarrativeBySegment: Record<string, string[]> = {};
     for (const row of dpuResult.rows ?? []) {
       const seg: string = row.seg ?? "";
       const txt: string = row.txt ?? "";
+      const mimeType: string = row.doc_mime_type ?? "";
       if (seg && txt) {
         if (!dpuBySegment[seg]) dpuBySegment[seg] = [];
         dpuBySegment[seg].push(txt);
+        // Exclude a page if either: (a) its document has a spreadsheet MIME type, or
+        // (b) the page text itself contains Excel cell-range notation — the latter
+        // covers orphaned DPU rows whose parent document no longer exists in `documents`.
+        const isSpreadsheetPage = SPREADSHEET_MIME_RE.test(mimeType) || SPREADSHEET_PAGE_CONTENT_RE.test(txt);
+        if (!isSpreadsheetPage) {
+          if (!dpuNarrativeBySegment[seg]) dpuNarrativeBySegment[seg] = [];
+          dpuNarrativeBySegment[seg].push(txt);
+        }
       }
     }
 
@@ -330,29 +381,50 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     const dpuJoin = (key: string): string =>
       (dpuBySegment[key] ?? []).join(" ").replace(/\s+/g, " ").trim();
 
-    const dpuProductText    = dpuJoin("product");    // revenue model slide: interchange, FX, premium
-    const dpuTractionText   = dpuJoin("traction");   // traction slides: GTV, users, organic, B2B2C
-    const dpuFinancialsText = dpuJoin("financials"); // financials slides: shared expenses, ARPU
+    // Joins pages from narrative (non-spreadsheet) documents only.
+    // Always prefer this over dpuJoin() for narrative understanding fields so
+    // that XLSX-sourced pages cannot win company description, traction, GTM, etc.
+    const dpuNarrativeJoin = (key: string): string =>
+      (dpuNarrativeBySegment[key] ?? []).join(" ").replace(/\s+/g, " ").trim();
 
-    // Financials DPU text qualified for traction-summary use — only when the financials
-    // segment contains actual numeric metrics (e.g. "$29M+", "18,000+") rather than
-    // qualitative slide content (testimonials, text-only slides).  This lets startup deals
-    // whose KPI/metrics slide is classified as "financials" surface real traction values
-    // while avoiding customer-testimonial slides polluting the traction_summary field.
+    // Narrative product/traction text (non-XLSX sources only).
+    const dpuProductText    = dpuNarrativeJoin("product");
+    const dpuTractionText   = dpuNarrativeJoin("traction");
+
+    // Full financials text (all sources including XLSX) — kept for financial
+    // analysis contexts (dpuFinancialsForCustomer phrase guard, raw numeric checks).
+    const dpuFinancialsText = dpuJoin("financials");
+
+    // Narrative-only financials — deck/PPTX financial slides classified as
+    // financials (e.g. KPI tiles, raise-terms slides) without XLSX rows.
+    const dpuNarrativeFinancialsText = dpuNarrativeJoin("financials");
+
+    // Narrative financials with metrics — deck KPI/metrics slides classified as
+    // financials that contain actual numeric values (e.g. "$29M+", "18,000+").
+    // XLSX pro-forma tables are excluded, so only deck slide content can win.
+    const dpuNarrativeFinancialsWithMetrics =
+      /\b\d[\d,]*\s*[KkMmBb+]|[€$£]\d[\d,]*[KkMmBb]?|\b\d{4,}\b/.test(dpuNarrativeFinancialsText)
+        ? dpuNarrativeFinancialsText
+        : "";
+
+    // (Legacy: full financials with metrics — kept for financial analysis paths
+    //  that intentionally include XLSX numeric rows, but not used in narrative fields.)
     const dpuFinancialsWithMetrics =
       /\b\d[\d,]*\s*[KkMmBb+]|[€$£]\d[\d,]*[KkMmBb]?|\b\d{4,}\b/.test(dpuFinancialsText)
         ? dpuFinancialsText
         : "";
+    void dpuFinancialsWithMetrics; // retained for potential financial-only consumers
 
     // Market DPU text qualified for GTM use — filtered out when the segment is clearly a
     // market-size / TAM slide ("billion" / "trillion") or a use-of-funds / headcount slide
     // ("employee benefits" is a strong signal the page describes an org or budget breakdown
     // rather than a GTM strategy, e.g. a use-of-funds roadmap misclassified as "market").
+    // Uses narrative join to exclude any XLSX pages classified as "market".
     const dpuMarketForGTM =
-      /\b(billion|trillion)\b|\$\s*\d+\s*B\b/i.test(dpuJoin("market")) ||
-      /\bemployee benefits\b|\buse of funds\b/i.test(dpuJoin("market"))
+      /\b(billion|trillion)\b|\$\s*\d+\s*B\b/i.test(dpuNarrativeJoin("market")) ||
+      /\bemployee benefits\b|\buse of funds\b/i.test(dpuNarrativeJoin("market"))
         ? ""
-        : dpuJoin("market");
+        : dpuNarrativeJoin("market");
 
     // Roadmap OCR guard: product_solution text extracted from a product-roadmap slide (not a
     // current-state product description) is rejected so the field falls through to better data.
@@ -367,9 +439,27 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     // market_icp DIO field ("Buyer is advised to consult their financial advisor...").  When
     // detected, suppress so downstream fields fall through to substantive content.
     const BROKER_DISCLAIMER_RE = /buyer is advised to consult|financial advisor to review and verify/i;
-    const cleanMarketIcp = BROKER_DISCLAIMER_RE.test(asStr(overviewV2?.market_icp))
-      ? ""
-      : asStr(overviewV2?.market_icp);
+
+    // TAM/SAM/SOM market-size contamination guard: when the DIO market_icp field contains
+    // a TAM/SAM/SOM heading followed by a dollar-denominated size figure, the extractor
+    // captured a market-sizing slide rather than an ICP/customer description.
+    // Example: "TAM DevSecOps + GRC ... $8.2B SAM — SDLC governance..."
+    const TAM_SAM_SOM_RE = /\b(?:TAM|SAM|SOM)\b[^.]*\$[\d.]+\s*[BMbmkK]\b/;
+
+    // Slide-layout OCR junk guard: isolated digit pairs embedded in text ("10 10
+    // Intelligence", "13 Pricing") combined with bullet-point characters (•·●) indicate
+    // the text was OCR'd from a visually-rendered slide or product UI screenshot and
+    // contains no usable ICP content.
+    const SLIDE_LAYOUT_OCR_RE = /\s\d{1,3}\s+\d{1,3}\s+\w/;
+    const BULLET_CHAR_RE = /[•·●]/;
+
+    const icp = asStr(overviewV2?.market_icp);
+    const cleanMarketIcp =
+      BROKER_DISCLAIMER_RE.test(icp) ||
+      TAM_SAM_SOM_RE.test(icp) ||
+      (SLIDE_LAYOUT_OCR_RE.test(icp) && BULLET_CHAR_RE.test(icp))
+        ? ""
+        : icp;
 
     // DIO business_model hallucination guard: when the DIO phase1 mis-classifies a business
     // as "real estate investment" (e.g. because a CIM mentions an ancillary property sale),
@@ -383,16 +473,47 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     // archetype extractor had positive confidence.  A zero-confidence archetype indicates
     // extraction failure; the promoted business_model fact in that case is often a mis-applied
     // label (e.g. "Wholesale/Retail" from a distribution/channel slide rather than a model slide).
-    const cleanReportBizModel = (archetypeV1?.confidence ?? 0) > 0
-      ? asKnownStr(reportSS?.business_model?.value)
-      : "";
+    // Additionally reject known contamination labels regardless of confidence: "Wholesale/Retail"
+    // is a frequent mis-classification for SaaS/software companies when a channel or distribution
+    // slide is processed without adjacent model context.
+    const CONTAMINATED_BIZ_MODEL_RE = /^wholesale[\s\/]retail$|^real estate investment$/i;
+    const cleanReportBizModel =
+      (archetypeV1?.confidence ?? 0) > 0 &&
+      !CONTAMINATED_BIZ_MODEL_RE.test(asStr(reportSS?.business_model?.value))
+        ? asKnownStr(reportSS?.business_model?.value)
+        : "";
 
-    // Financials DPU for target_customer use — P&L expense tables (containing "Gross Sales",
-    // "Total Expenses", "Income Before Tax") describe financial performance, not customer
-    // segments.  Suppress them so the field falls through to ICP or GTM content.
+    // Traction signals from the DIO LLM extraction can contain raw spreadsheet cell-range
+    // content when the LLM was fed XLSX pages (e.g. "Sheet1 A1:T40 Headers: col_A, col_B…").
+    // Filter each signal through two guards before using them in traction_summary:
+    //   1. SPREADSHEET_SIGNAL_RE — rejects Excel cell-range notation and pipe-table rows
+    //   2. rejectIfNumericDominated — rejects numeric-series strings (>40 % numeric tokens)
+    const SPREADSHEET_SIGNAL_RE = /\bSheet\d+\s+[A-Z]+\d+:[A-Z]+\d+\b|\|\s*\|[\s|]{6,}\|/;
+    const cleanTractionSignals = Array.isArray(overviewV2?.traction_signals)
+      ? (overviewV2!.traction_signals as unknown[]).filter((s): s is string => {
+          if (typeof s !== "string" || !s.trim()) return false;
+          if (SPREADSHEET_SIGNAL_RE.test(s)) return false;
+          if (rejectIfNumericDominated(s) === "" && s.trim().length > 0) return false;
+          return true;
+        })
+      : [];
+
+    // Narrative financials for target_customer — applies the P&L phrase guard to
+    // narrative (non-XLSX) financial pages only.  This ensures that XLSX allocation
+    // tables, payroll sheets, and expense models cannot win target_customer even when
+    // their column labels differ from the narrow phrase regex (e.g. "Fixed/Variable"
+    // vs "Total Expenses").  XLSX pages are excluded upstream via SPREADSHEET_MIME_RE.
+    const dpuNarrativeFinancialsForCustomer =
+      /gross sales|total expenses|income before tax/i.test(dpuNarrativeFinancialsText)
+        ? ""
+        : dpuNarrativeFinancialsText;
+
+    // (Legacy: full financials for customer — retained for reference.  Not used in
+    //  target_customer chain; replaced by dpuNarrativeFinancialsForCustomer above.)
     const dpuFinancialsForCustomer = /gross sales|total expenses|income before tax/i.test(dpuFinancialsText)
       ? ""
       : dpuFinancialsText;
+    void dpuFinancialsForCustomer; // retained for potential financial-only consumers
 
     // Solution DPU for competitive_differentiation use — CIM title/cover pages ("Confidential
     // Business Memorandum", "listed for sale by", "Business Intermediary") don't describe
@@ -428,7 +549,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         asStr(dealSummarySummary?.one_liner),
         asStr(dealSummarySummary?.paragraphs?.[0]),
         asStr(archetypeV1?.value),
-        asStr(reportSS?.business_model?.value),
+        cleanReportBizModel,  // guarded version — excludes contaminated labels like "Wholesale/Retail"
         asStr(reportSS?.deal_summary_v1?.tiers?.hero),
         asStr(reportSS?.deal_summary_v1?.tiers?.deep),
         investmentSignalsFromEvidence,
@@ -483,7 +604,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
     const understanding = {
       what_company_does:
-        dpuJoin("distribution") ||
+        dpuNarrativeJoin("distribution") ||
         cleanMarketIcp ||
         dpuBusinessModelText ||
         rejectRoadmap(asStr(overviewV2?.product_solution)) ||
@@ -495,23 +616,23 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
       problem:
         asStr(overviewV2?.product_solution) !== rejectRoadmap(asStr(overviewV2?.product_solution))
-          ? asStr(overviewV2?.market_icp) || dpuJoin("distribution") || asStr(dealSummarySummary?.one_liner)
-          : dpuJoin("solution") ||
+          ? asStr(overviewV2?.market_icp) || dpuNarrativeJoin("distribution") || asStr(dealSummarySummary?.one_liner)
+          : dpuNarrativeJoin("solution") ||
             asStr(overviewV2?.market_icp) ||
-            dpuJoin("distribution") ||
+            dpuNarrativeJoin("distribution") ||
             asStr(dealSummarySummary?.one_liner) ||
             asStr(reportSS?.deal_summary_v1?.tiers?.hero),
 
       solution:
-        dpuJoin("solution") ||
+        dpuNarrativeJoin("solution") ||
         asStr(overviewV2?.market_icp) ||
-        dpuJoin("distribution") ||
+        dpuNarrativeJoin("distribution") ||
         rejectRoadmap(asStr(overviewV2?.product_solution)),
 
       why_now:
         dpuTractionText ||
         asStr(overviewV2?.market_icp) ||
-        dpuJoin("financials"),
+        dpuNarrativeFinancialsText,
 
       business_model:
         dpuProductText ||
@@ -521,8 +642,8 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         ) ||
         cleanDIOBizModel ||
         dpuBusinessModelText ||
-        dpuJoin("financials") ||
-        dpuJoin("distribution"),
+        dpuNarrativeFinancialsText ||
+        dpuNarrativeJoin("distribution"),
 
       revenue_model:
         dpuProductText ||
@@ -532,8 +653,8 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
           cleanReportBizModel,
         ) ||
         dpuBusinessModelText ||
-        dpuJoin("financials") ||
-        dpuJoin("distribution"),
+        dpuNarrativeFinancialsText ||
+        dpuNarrativeJoin("distribution"),
 
       // Strip sentences that pair a large-dollar amount (≥$50M) with hypothetical/projection
       // language (e.g. "yielding ~$139M ARR") — these are forward-looking assertions surfaced
@@ -543,34 +664,34 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       // (e.g. "$65 billion used car finance market") so that genuine GTM content (events,
       // broadcast, channel partners) surfaces first without being displaced by traction text.
       go_to_market:
-        stripHypotheticalDollarProjectionSentences(asStr(overviewV2?.go_to_market)) ||
+        stripHypotheticalDollarProjectionSentences(rejectIfNumericDominated(asStr(overviewV2?.go_to_market))) ||
         dpuMarketForGTM ||
-        dpuJoin("distribution") ||
+        dpuNarrativeJoin("distribution") ||
         dpuTractionText ||
-        dpuJoin("market") ||
+        dpuNarrativeJoin("market") ||
         asStr(overviewV2?.market_icp),
 
-      // DPU financials segment often contains per-customer spend, shared-expense context, or
-      // ARPU data — better descriptors of customer segments than generic ICP language.
-      // dpuFinancialsForCustomer: P&L expense tables are suppressed here — they describe
-      // financial performance, not customer segments (see guard above).
+      // DPU narrative financials often contains per-customer spend, shared-expense context, or
+      // ARPU data from deck KPI slides — better descriptors of customer segments than generic
+      // ICP language.  XLSX allocation/payroll tables and expense models are excluded upstream
+      // via the narrative filter so they cannot win this field regardless of their column labels.
       target_customer:
-        dpuFinancialsForCustomer ||
+        dpuNarrativeFinancialsForCustomer ||
         cleanMarketIcp ||
-        asStr(overviewV2?.go_to_market),
+        rejectIfNumericDominated(asStr(overviewV2?.go_to_market)),
 
       traction_summary:
-        (isGenericTractionSignals(overviewV2?.traction_signals) ? "" : joinArray(overviewV2?.traction_signals)) ||
-        dpuJoin("distribution") ||
-        dpuFinancialsWithMetrics ||
+        (isGenericTractionSignals(cleanTractionSignals) ? "" : joinArray(cleanTractionSignals)) ||
+        dpuNarrativeJoin("distribution") ||
+        dpuNarrativeFinancialsWithMetrics ||
         dpuTractionText ||
-        joinArray(overviewV2?.traction_signals) ||
+        joinArray(cleanTractionSignals) ||
         asStr(overviewV2?.traction_metrics),
 
       risks:
         joinArray(dealSummaryV2Risks.filter((r) => !isGenericRiskEntry(r))) ||
         joinArray((overviewV2?.key_risks_detected as unknown[] ?? []).filter((r) => !isGenericRiskEntry(r))) ||
-        [dpuJoin("distribution"), dpuJoin("financials")].filter(Boolean).join(" ").trim() ||
+        [dpuNarrativeJoin("distribution"), dpuNarrativeJoin("financials")].filter(Boolean).join(" ").trim() ||
         joinArray(dealSummaryV2Risks) ||
         joinArray(overviewV2?.key_risks_detected),
 
@@ -583,8 +704,8 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
           asStr(dealSummarySummary?.paragraphs?.[0]),
           trustedRaiseValue,
         );
-        return asStr(overviewV2?.market_icp) ||
-          dpuJoin("distribution") ||
+        return cleanMarketIcp ||
+          dpuNarrativeJoin("distribution") ||
           dpuTractionText ||
           primary ||
           asStr(reportSS?.deal_summary_v1?.tiers?.deep);
@@ -594,7 +715,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         cleanMarketIcp ||
         dpuSolutionForDiff ||
         dpuBusinessModelText ||
-        dpuJoin("distribution") ||
+        dpuNarrativeJoin("distribution") ||
         rejectRoadmap(asStr(overviewV2?.product_solution)) ||
         asStr(reportSS?.deal_summary_v1?.tiers?.overview),
 

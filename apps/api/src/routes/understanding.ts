@@ -194,8 +194,20 @@ function classifyLongFormPdfPageHeading(pageText: string): string {
 
   // Why-now / traction timing signals
   if (
-    /\bacquirer appetite\b|\bwhy now\b|\bmarket (timing|window|momentum)\b|\bindustry (momentum|landscape|trends?)\b/.test(header)
+    /\bacquirer appetite\b|\bwhy now\b|\bmarket (timing|window|momentum)\b|\bindustry (momentum|landscape|trends?)\b/.test(header) ||
+    // "at-a-glance" pattern covers both compact ("at-a-glance") and OCR-spaced
+    // forms ("At - A - Glance") produced when hyphens are extracted with
+    // surrounding spaces.
+    /\bat\s*-?\s*a\s*-?\s*glance\b|\bcompany (highlights?|snapshot|metrics)\b|\bkey (metrics|highlights)\b/.test(header)
   ) return "traction";
+
+  // Solution / product-description — how-it-works and problem-framing slides.
+  if (
+    /\bhow it works?\b|\bour (?:solution|technology|platform)\b|\bproduct overview\b|\bone (?:solution|platform)\b/.test(header) ||
+    // "Aims to solve / address" slides describe the company's core problem-solution
+    // thesis and provide substantive narrative for the solution understanding field.
+    /\baims? to (?:solve|address|transform)\b|\b(?:solving|addressing) (?:a|the|one of the)\b/.test(header)
+  ) return "solution";
 
   // Team
   if (/\b(leadership|management|founding|advisory) team\b|\bkey personnel\b/.test(header)) return "team";
@@ -506,6 +518,18 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     const dpuProductText    = dpuNarrativeJoin("product");
     const dpuTractionText   = dpuNarrativeJoin("traction");
 
+    // Chart-OCR guard for product text used in business/revenue model fields.
+    // Deck pages classified as "product" may be market-penetration expansion slides
+    // whose text is dominated by chart axis sequences (e.g. "0.10% 0.09% 0.08%..."
+    // or "5000 4500 4000 3500 3000...") rather than narrative product descriptions.
+    // When detected, suppress product text from business_model and revenue_model so
+    // those chains fall through to the second-pass business_model narrative instead.
+    // Patterns:
+    //   (?:\d\.\d{2}%\s+){3,}  — 3+ adjacent decimal-percentage tokens (chart y-axis)
+    //   (?:\d{3,5}\s+){5,}     — 5+ adjacent 3-5 digit numbers (numeric chart axis)
+    const CHART_OCR_RE = /(?:\d\.\d{2}%\s+){3,}|(?:\d{3,5}\s+){5,}/;
+    const dpuProductTextForBizModel = CHART_OCR_RE.test(dpuProductText) ? "" : dpuProductText;
+
     // Full financials text (all sources including XLSX) — kept for financial
     // analysis contexts (dpuFinancialsForCustomer phrase guard, raw numeric checks).
     const dpuFinancialsText = dpuJoin("financials");
@@ -729,7 +753,7 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
 
     const medicalRiskFallback =
       /\b(medical|diagnostic|testing|health|screen)\b/i.test(
-        `${asStr(overviewV2?.business_model)} ${asStr(overviewV2?.go_to_market)}`
+        `${asStr(overviewV2?.business_model)} ${asStr(overviewV2?.go_to_market)} ${asStr(overviewV2?.market_icp)}`
       )
         ? "Primary risk is validation and adoption for this regulated medical testing workflow. Distribution likely requires partnerships with healthcare systems and public agencies."
         : "";
@@ -767,6 +791,16 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
     const earlyTractionContext =
       containsAny(/\b(early|pilot|loi|pipeline|run\s*-?\s*rate|pre\s*-?\s*sales|partnership)\b/i);
 
+    // Medical-device context guard: suppresses the generic consumer-distribution
+    // signal heuristics for deals where the corpus contains strong medical / clinical
+    // language.  DIO may mis-classify a medical-device company (e.g. Allurion) as
+    // "Omnichannel (DTC + Wholesale/Retail)" — that label puts "retail" + "wholesale"
+    // into baseSignalsCorpus and fires consumerDistributionContext, appending an
+    // irrelevant consumer-brand risk signal.  When "patients", "medical device",
+    // "health care provider", or "balloon" appear in the corpus, the deal is not a
+    // consumer-distribution business and the signal must be suppressed.
+    const isMedicalDeviceContext = /\b(?:medical\s+device|patients?|health\s+care\s+provider|procedureless|clinical\s+(?:trial|study|evidence)|balloon)\b/i.test(baseSignalsCorpus);
+
     const investorSignals: string[] = [];
     const baselineSignalText =
       (hasSubstantiveInvestmentEvidence ? investmentSignalsFromEvidence : "") ||
@@ -781,14 +815,14 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
       );
     }
 
-    if (consumerDistributionContext && earlyTractionContext) {
+    if (consumerDistributionContext && earlyTractionContext && !isMedicalDeviceContext) {
       appendSignal(
         investorSignals,
         "This appears early-stage with initial traction but limited realized revenue scale, so repeat-demand and channel execution risk remain central.",
       );
     }
 
-    if (consumerDistributionContext) {
+    if (consumerDistributionContext && !isMedicalDeviceContext) {
       appendSignal(
         investorSignals,
         "Success depends heavily on distribution execution and brand strength; unit economics, gross margins, and path to profitability should be validated before underwriting growth assumptions.",
@@ -832,8 +866,12 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         dpuNarrativeFinancialsText,
 
       business_model:
-        dpuProductText ||
+        dpuProductTextForBizModel ||
         longFormBizModelOverride ||
+        // For weak-DPU deals where longFormBizModelOverride found no platform/accelerator
+        // label in the narrative, prefer second-pass business_model narrative content
+        // (e.g. "Our B2B2C Business Model…") over the generic DIO archetype label.
+        (isWeakDpuCoverage ? dpuNarrativeJoin("business_model") : "") ||
         firstKnown(
           archetypeV1?.value,
           cleanReportBizModel,
@@ -845,7 +883,14 @@ export async function registerUnderstandingRoutes(app: FastifyInstance, poolOver
         dpuNarrativeJoin("distribution"),
 
       revenue_model:
-        dpuProductText ||
+        dpuProductTextForBizModel ||
+        // For medical-device deals with weak DPU coverage, the DIO classifier may
+        // assign a mis-matched business model label (e.g. "Omnichannel (DTC + Wholesale/Retail)"
+        // for a clinic-distribution medical device).  Prefer the second-pass business_model
+        // narrative (e.g. "Our B2B2C Business Model…") over that label when both conditions hold.
+        // The isMedicalDeviceContext gate prevents this from firing for consumer/CPG deals
+        // that legitimately have an archetype or DIO label.
+        (isMedicalDeviceContext && isWeakDpuCoverage ? dpuNarrativeJoin("business_model") : "") ||
         firstKnown(
           cleanDIOBizModel,
           archetypeV1?.value,

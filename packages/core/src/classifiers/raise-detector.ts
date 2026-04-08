@@ -82,6 +82,17 @@ function hasAnchorToken(tokens: Token[]): number[] {
 					continue;
 				}
 			}
+			// Guard: "convertible" in a SPAC pro-forma adjustment footnote context is not a
+			// raise ask. "Allurion Convertible Notes raised as of June 30, 2023 ... issued
+			// prior to the Closings" describes notes that were extinguished at merger close,
+			// not an instrument being offered in the current round.
+			if (t === "convertible") {
+				const near = tokens.slice(Math.max(0, i - 10), Math.min(tokens.length, i + 16));
+				const nearStr = near.join(" ");
+				if (/\braised\s+as\s+of\b|\bissued\s+prior\b|\bprior\s+to\b|\bclosings?\b|\bextinguish\w*\b|\brepayment\b/.test(nearStr)) {
+					continue;
+				}
+			}
 			anchorIdx.push(i);
 			continue;
 		}

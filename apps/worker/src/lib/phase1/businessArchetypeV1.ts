@@ -5,6 +5,7 @@ export type BusinessArchetypeValueV1 =
 	| 'services'
 	| 'fund_spv'
 	| 'real_estate'
+	| 'de_spac'
 	| 'other'
 	| 'unknown';
 
@@ -105,6 +106,24 @@ type ArchetypeSpec = {
 };
 
 const ARCHETYPES: ArchetypeSpec[] = [
+	{
+		// de-SPAC / post-merger-public: company has completed a merger with a blank-check SPAC
+		// and is now publicly listed. Must be prioritized above consumer_product / saas to
+		// prevent SPAC financial docs from driving a startup archetype classification.
+		value: 'de_spac',
+		threshold: 40,
+		rules: [
+			{ id: 'spac:trust_account', re: /\btrust\s+account\b/i, weight: 40 },
+			{ id: 'spac:blank_check', re: /\bblank\s+check\s+company\b/i, weight: 40 },
+			{ id: 'spac:business_combination', re: /\bbusiness\s+combination\b/i, weight: 32 },
+			{ id: 'spac:public_shares', re: /\bpublic\s+(?:shares?|stockholders?)\b/i, weight: 28 },
+			{ id: 'spac:minimum_cash', re: /\bminimum\s+cash\s+condition\b/i, weight: 26 },
+			{ id: 'spac:spac', re: /\bspac\b/i, weight: 22 },
+			{ id: 'spac:nasdaq_nyse', re: /\b(?:nyse|nasdaq)\s*(?:listed|:)?\s*\w{1,6}\b/i, weight: 22 },
+			{ id: 'spac:pipe', re: /\bpipe\s+(?:investors?|subscription|investment|financing)\b/i, weight: 20 },
+			{ id: 'spac:merger_consummated', re: /\b(?:merger|combination)\s+(?:was\s+)?consummated\b/i, weight: 18 },
+		],
+	},
 	{
 		value: 'fund_spv',
 		threshold: 30,

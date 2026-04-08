@@ -186,6 +186,15 @@ function containsFundAumLanguage(text: string): boolean {
 	return /\b(?:alternatives?\s+fund|alternative\s+investment|aum|assets?\s+under\s+management|fund\s+size|investment\s+vehicle|limited\s+partners?(?:hip)?|\blp\b|general\s+partners?(?:hip)?|\bgp\b|fund\s+of\s+funds?|carried\s+interest|management\s+fee|endowment\s+fund|hedge\s+fund|private\s+equity\s+fund|venture\s+capital\s+fund|family\s+office|feeder\s+fund|co[\s-]invest)\b/i.test(text);
 }
 
+/**
+ * Returns true when the text contains SPAC / de-SPAC / post-merger-public financial
+ * boilerplate that should never contribute to startup raise or business model scoring.
+ * e.g. EX-99.5 pro-forma balance sheets, Form S-4 merger proxy footnotes.
+ */
+function containsSpacFinancialLanguage(text: string): boolean {
+	return /\b(?:public\s+shares?|public\s+stockholders?|business\s+combination\s+(?:agreement|transaction)|trust\s+account|blank\s+check\s+company|minimum\s+cash\s+condition|gross\s+cash\s+proceeds|pro\s+forma\s+enterprise\s+value|sponsor\s+(?:shares?|warrants?)|founder\s+(?:shares?|warrants?))\b/i.test(text);
+}
+
 function parseRaiseTermsFromText(text: string): { value_json: Record<string, any>; confidence: number } | null {
 	const t = normalizeText(text);
 	if (!t) return null;
@@ -193,6 +202,10 @@ function parseRaiseTermsFromText(text: string): { value_json: Record<string, any
 	const lower = t.toLowerCase();
 	const isRaiseSlide = /(raise|raising|funding|investment|round|seed|series\s*[abc]|pre[- ]?seed|the ask|seeking)/.test(lower);
 	if (!isRaiseSlide) return null;
+
+	// Defense-in-depth: "raised as of [date]" / "prior to the Closings" / "issued prior to"
+	// describe SPAC pro-forma footnote context — notes already extinguished at merger close.
+	if (/\braised\s+as\s+of\b|\bprior\s+to\s+the\s+closings?\b|\bissued\s+prior\s+to\b/i.test(lower)) return null;
 
 	const picked = pickRaiseAmount(t);
 	const amount = picked.money;
@@ -323,7 +336,7 @@ type BusinessModelSlideInput = {
 
 type BusinessModelSlideScore = {
 	input: BusinessModelSlideInput;
-	scores: { dtc: number; wholesale: number; saas: number; licensing: number; licensing_raw: number; title_boost: number };
+	scores: { dtc: number; wholesale: number; saas: number; licensing: number; licensing_raw: number; title_boost: number; hcp: number };
 	signals: {
 		has_media_signals: boolean;
 		has_ecom_mechanics: boolean;
@@ -356,6 +369,11 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 	const lower = t.toLowerCase();
 	const title = (input.slide_title ?? '').toLowerCase().trim();
 	const segmentKey = (input.segment_key ?? '').toLowerCase().trim();
+
+	// Block: SPAC financial filings (EX-99.5, Form S-4) must never contribute to
+	// business model classification. Their balance sheets and footnotes contain generic
+	// business language that is noise in the context of a startup analysis.
+	if (containsSpacFinancialLanguage(t)) return null;
 
 	// Media / sponsorship language is often present in sports/content decks and can
 	// superficially look "online" without being ecommerce.
@@ -402,8 +420,8 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 
 	const dtcPatterns: Array<{ rx: RegExp; w: number; kind: string }> = [
 		{ rx: /\b(dt c|dtc|d2c|direct[- ]to[- ]consumer|direct to consumer|ecommerce|e-?commerce|shopify|online\s+store)\b/i, w: 3, kind: 'dtc_keyword' },
-		// Keep ecommerce-mechanics tokens; avoid broad "online"/"website" which causes media false positives.
-		{ rx: /\b(checkout|cart|orders?|skus?|storefront|online\s+store|add\s+to\s+cart)\b/i, w: 2, kind: 'ecom_mechanics' },
+		// Use plural "orders" only — singular "order" in "in order to" is a false positive.
+		{ rx: /\b(checkout|cart|orders|skus?|storefront|online\s+store|add\s+to\s+cart)\b/i, w: 2, kind: 'ecom_mechanics' },
 		{ rx: /\b(email|sms)\b/i, w: 1, kind: 'email_sms' },
 		{ rx: /\bpaid\s+search\b/i, w: 1, kind: 'paid_search' },
 		{ rx: /most\s+of\s+our\s+business\s+is\s+direct\b[^\n]{0,80}\bwebsite\b/i, w: 6, kind: 'direct_via_website_phrase' },
@@ -430,6 +448,18 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 		{ rx: /\bmedia\s+rights?\b/i, w: 3, kind: 'media_rights' },
 		{ rx: /\b(primary|core|main)\b[^\n]{0,40}\blicens(?:e|ing|ed)\b/i, w: 5, kind: 'licensing_primary_claim' },
 		{ rx: /\brevenue\b[^\n]{0,40}\blicens(?:e|ing|ed)\b/i, w: 4, kind: 'licensing_revenue' },
+	];
+
+	// HCP / B2B2C / medtech patterns — healthcare-provider-mediated distribution where the
+	// company sells through clinical channels (hospitals, physicians, care pathways) rather
+	// than directly to consumers or traditional retail/wholesale accounts.
+	const hcpPatterns: Array<{ rx: RegExp; w: number; kind: string }> = [
+		{ rx: /\bb2b2c\b/i, w: 5, kind: 'b2b2c' },
+		{ rx: /\b(healthcare\s+provider|hcp|physician|clinician|medical\s+practitioner)\b/i, w: 4, kind: 'hcp' },
+		{ rx: /\b(hospital|clinic|medical\s+center|health\s+system)\b/i, w: 2, kind: 'healthcare_facility' },
+		{ rx: /\b(medical\s+device|medtech|health\s+tech)\b/i, w: 3, kind: 'medtech' },
+		{ rx: /\b(remote\s+patient\s+monitoring|virtual\s+care\s+suite|telehealth|digital\s+health)\b/i, w: 3, kind: 'digital_health' },
+		{ rx: /\b(prescribed|prescribing|prescription|clinical\s+(?:protocol|pathway)|care\s+pathway)\b/i, w: 3, kind: 'clinical_pathway' },
 	];
 
 	const collectKinds = (patterns: Array<{ rx: RegExp; kind: string; neg?: RegExp }>): string[] => {
@@ -460,6 +490,7 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 	const saas = scoreFrom(saasPatterns);
 	const licensingRaw = scoreFrom(licensingPatterns);
 	let licensing = licensingRaw;
+	const hcp = scoreFrom(hcpPatterns);
 
 	// Hard exclusion: if media/sponsorship signals are present AND ecommerce mechanics are not,
 	// DTC cannot be selected (even if generic "ecommerce" appears).
@@ -478,7 +509,8 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 		wholesale > 0 ||
 		saas > 0 ||
 		licensing > 0 ||
-		licensingRaw > 0;
+		licensingRaw > 0 ||
+		hcp > 0;
 	if (!isCandidate) return null;
 
 	const snippet =
@@ -488,12 +520,12 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 		extractSnippet(t, /\blicens(?:e|ing|ed)\b/i) ||
 		(t.length > 140 ? `${t.slice(0, 139).trim()}…` : t);
 
-	const total = dtc + wholesale + saas + licensing + Math.max(0, titleBoost);
+	const total = dtc + wholesale + saas + licensing + hcp + Math.max(0, titleBoost);
 	const quality: 'high' | 'med' | 'low' = total >= 9 ? 'high' : total >= 5 ? 'med' : 'low';
 
 	return {
 		input: { ...input, text: t },
-		scores: { dtc, wholesale, saas, licensing, licensing_raw: licensingRaw, title_boost: titleBoost },
+		scores: { dtc, wholesale, saas, licensing, licensing_raw: licensingRaw, title_boost: titleBoost, hcp },
 		signals: {
 			has_media_signals,
 			has_ecom_mechanics,
@@ -541,6 +573,7 @@ function resolveBusinessModelFromSlides(
 		row.scores.wholesale +
 		row.scores.saas +
 		row.scores.licensing +
+		(row.scores.hcp ?? 0) +
 		Math.max(0, row.scores.title_boost)
 	);
 
@@ -551,7 +584,7 @@ function resolveBusinessModelFromSlides(
 		return seg ? 1 : 0;
 	};
 
-	const weightedTotals = { dtc: 0, wholesale: 0, saas: 0, licensing: 0 };
+	const weightedTotals = { dtc: 0, wholesale: 0, saas: 0, licensing: 0, hcp: 0 };
 	let bestOverall: BusinessModelSlideScore | null = null;
 	let maxExtractedAt = scored[0]?.input.extracted_at ?? new Date().toISOString();
 	let licensingPrimaryHits = 0;
@@ -568,6 +601,7 @@ function resolveBusinessModelFromSlides(
 		weightedTotals.wholesale += row.scores.wholesale * mult;
 		weightedTotals.saas += row.scores.saas * mult;
 		weightedTotals.licensing += row.scores.licensing * mult;
+		weightedTotals.hcp += (row.scores.hcp ?? 0) * mult;
 
 		if (row.scores.licensing_raw > 0) licensingMentions += 1;
 		if (row.scores.dtc > 0) dtcMentions += 1;
@@ -590,6 +624,7 @@ function resolveBusinessModelFromSlides(
 	const wholesale = weightedTotals.wholesale;
 	const saas = weightedTotals.saas;
 	const licensing = weightedTotals.licensing;
+	const hcp = weightedTotals.hcp;
 
 	if (has_media_signals && !has_ecom_mechanics) {
 		applied_guards.push('media_blocks_dtc_without_ecom_mechanics');
@@ -609,6 +644,10 @@ function resolveBusinessModelFromSlides(
 		primaryLabel = 'Licensing';
 	} else if (saas >= dtc && saas >= wholesale && saas >= 6) {
 		primaryLabel = 'Subscription/SaaS';
+	} else if (hcp >= 6 && hcp >= wholesale * 0.5 && dtc < 3) {
+		// HCP / B2B2C channels: clinical distribution through healthcare providers dominates
+		// over general wholesale signals when DTC interest is low.
+		primaryLabel = 'B2B2C / HCP-Mediated';
 	} else {
 		// DTC often appears as a single explicit phrase (“DTC ecommerce”).
 		// Use a lower threshold than wholesale, which tends to have more redundant signals.
@@ -643,6 +682,7 @@ function resolveBusinessModelFromSlides(
 		if (primaryLabel === 'DTC Ecommerce') return row.scores.dtc > 0;
 		if (primaryLabel === 'Wholesale/Retail') return row.scores.wholesale > 0;
 		if (primaryLabel === 'Omnichannel (DTC + Wholesale/Retail)') return row.scores.dtc > 0 || row.scores.wholesale > 0;
+		if (primaryLabel === 'B2B2C / HCP-Mediated') return (row.scores.hcp ?? 0) > 0;
 		return false;
 	};
 
@@ -652,6 +692,7 @@ function resolveBusinessModelFromSlides(
 		if (primaryLabel === 'DTC Ecommerce') return row.scores.dtc;
 		if (primaryLabel === 'Wholesale/Retail') return row.scores.wholesale;
 		if (primaryLabel === 'Omnichannel (DTC + Wholesale/Retail)') return row.scores.dtc + row.scores.wholesale;
+		if (primaryLabel === 'B2B2C / HCP-Mediated') return row.scores.hcp ?? 0;
 		return rowTotalScore(row);
 	};
 
@@ -690,7 +731,7 @@ function resolveBusinessModelFromSlides(
 
 	// Confidence based on multi-slide corroboration and signal strength.
 	let confidence = 0.55;
-	const totalSignals = dtc + wholesale + saas + licensing;
+	const totalSignals = dtc + wholesale + saas + licensing + hcp;
 	if (totalSignals >= 10) confidence += 0.18;
 	else if (totalSignals >= 6) confidence += 0.12;
 	else if (totalSignals >= 3) confidence += 0.06;
@@ -722,6 +763,7 @@ function resolveBusinessModelFromSlides(
 			wholesale: Math.round(wholesale * 100) / 100,
 			saas: Math.round(saas * 100) / 100,
 			licensing: Math.round(licensing * 100) / 100,
+			hcp: Math.round(hcp * 100) / 100,
 		},
 		sources: topSources,
 		display: displayLabel,
@@ -737,7 +779,7 @@ function resolveBusinessModelFromSlides(
 			dtc_hits,
 			media_hits,
 			applied_guards,
-			decision_reason: `totals(dtc=${Math.round(dtc * 100) / 100}, wholesale=${Math.round(wholesale * 100) / 100}, saas=${Math.round(saas * 100) / 100}, licensing=${Math.round(licensing * 100) / 100}) raw_label=${primaryLabel} display=${displayLabel}`,
+			decision_reason: `totals(dtc=${Math.round(dtc * 100) / 100}, wholesale=${Math.round(wholesale * 100) / 100}, saas=${Math.round(saas * 100) / 100}, licensing=${Math.round(licensing * 100) / 100}, hcp=${Math.round(hcp * 100) / 100}) raw_label=${primaryLabel} display=${displayLabel}`,
 		},
 	};
 
@@ -1004,10 +1046,13 @@ export async function promoteSlideFactsFromDocumentPageUnderstanding(pool: Pool,
 		const raise = (() => {
 			// Guardrail: only promote raise_terms_v1 when the slide is truly an explicit "ask"
 			// and never when the slide looks like market sizing (TAM/SAM/SOM / market is $X)
-			// or when the slide describes a fund vehicle (AUM, LP, alternatives fund, etc.).
+			// or when the slide describes a fund vehicle (AUM, LP, alternatives fund, etc.)
+			// or when the slide is SPAC / de-SPAC financial boilerplate (pro-forma footnotes,
+			// EX-99.5 balance sheets, Form S-4 merger proxy disclosures).
 			if (containsMarketSizingLanguage(slideText)) return null;
 			if (!inferIsRaiseAskSlide(slideText)) return null;
 			if (containsFundAumLanguage(slideText)) return null;
+			if (containsSpacFinancialLanguage(slideText)) return null;
 			return parseRaiseTermsFromText(slideText);
 		})();
 		if (raise) {

@@ -331,6 +331,7 @@ function classifyDealType(input: Required<DIOContextBuilderInput>, primaryDocTyp
     services: 0,
     consumer_product: 0,
     crypto_mining: 0,
+    de_spac: 0,
     other: 0,
   };
 
@@ -371,6 +372,7 @@ function classifyDealType(input: Required<DIOContextBuilderInput>, primaryDocTyp
       services: servicesSignalsBody,
       consumer_product: consumerSignalsBody,
       crypto_mining: cryptoMiningSignalsBody,
+      de_spac: 0,
     };
     const bodySupport = bodySupportByType[best.label as Exclude<DealType, "startup_raise" | "other">] ?? 0;
     if (bodySupport <= 0 && best.score <= 2) {
@@ -521,7 +523,7 @@ async function maybeEnhanceWithGPT52(args: {
       headings,
       allowed: {
         primary_doc_type: ["pitch_deck", "exec_summary", "one_pager", "business_plan_im", "financials", "other"],
-        deal_type: ["startup_raise", "fund_spv", "holdco_platform", "services", "consumer_product", "crypto_mining", "other"],
+        deal_type: ["startup_raise", "fund_spv", "holdco_platform", "services", "consumer_product", "crypto_mining", "de_spac", "other"],
         vertical: ["saas", "fintech", "healthcare", "consumer", "energy", "services", "crypto", "other"],
         stage: ["idea", "pre_seed", "seed", "growth", "mature", "fund_ops", "unknown"],
       },
@@ -609,6 +611,7 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
     support: {
       fund_spv: boolean;
       startup_raise: boolean;
+      de_spac: boolean;
     };
   };
 
@@ -767,6 +770,30 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
     );
   }
 
+  function spacDespacSignals(doc: any): boolean {
+    const title = normalizeText(getDocTitle(doc));
+    const filename = normalizeText(getDocFilename(doc));
+    const headingsText = normalizeText(getDocHeadings(doc).join(" \n "));
+    const fullText = normalizeText(getDocFullText(doc));
+    const combined = `${title}\n${filename}\n${headingsText}\n${fullText}`;
+    return (
+      keywordScore(combined, [
+        "business combination",
+        "trust account",
+        "public shares",
+        "public stockholders",
+        "non-redemption",
+        "blank check company",
+        "spac",
+        "de-spac",
+        "deSPAC",
+        "pipe investment",
+        "minimum cash condition",
+        "merger consummated",
+      ]) >= 2
+    );
+  }
+
   function startupRaiseSignals(doc: any): boolean {
     const title = normalizeText(getDocTitle(doc));
     const filename = normalizeText(getDocFilename(doc));
@@ -812,6 +839,7 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
       support: {
         fund_spv: fundSpvSignals(doc),
         startup_raise: startupRaiseSignals(doc),
+        de_spac: spacDespacSignals(doc),
       },
     };
   });
@@ -941,14 +969,19 @@ export async function buildDIOContextFromInputData(input_data: Record<string, un
   const hasPitchDeck = docsByType.pitch_deck > 0;
   const anyFundSpv = perDoc.some((d) => d.support.fund_spv);
   const anyStartupRaise = perDoc.some((d) => d.support.startup_raise);
+  const anyDeSpac = perDoc.some((d) => d.support.de_spac);
 
   // Deal-level deal_type using all docs.
+  // Rule 0: If SPAC/de-SPAC language found in any doc => de_spac (highest priority)
   // Rule 1: If fund/LP/SPV language exists and NO pitch deck exists => fund_spv
   // Rule 2: If pitch deck exists and language indicates a company raise => startup_raise
   let deal_type: DealType;
   let dealTypeConfidenceFromRules: number | null = null;
 
-  if (anyFundSpv && !hasPitchDeck) {
+  if (anyDeSpac) {
+    deal_type = "de_spac";
+    dealTypeConfidenceFromRules = totalDocs > 0 ? perDoc.filter((d) => d.support.de_spac).length / totalDocs : 0;
+  } else if (anyFundSpv && !hasPitchDeck) {
     deal_type = "fund_spv";
     dealTypeConfidenceFromRules = totalDocs > 0 ? perDoc.filter((d) => d.support.fund_spv).length / totalDocs : 0;
   } else if (hasPitchDeck && anyStartupRaise) {

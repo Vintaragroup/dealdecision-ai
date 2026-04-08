@@ -1465,9 +1465,14 @@ function detectRaiseFromText(text: string): string | null {
 	// Strip historical/portfolio raise achievements before detection:
 	// e.g. "helped companies raise $2B" or "raised $2B in value" are
 	// advisor track records, not the company's own fundraising ask.
+	// Also strip SPAC pro-forma footnote context: "raised as of [date]" describes
+	// notes that were already extinguished at merger close, not an active ask.
 	const cleaned = text
 		.replace(/\bhelped?\b[^\n.\r]{0,80}\b(?:raise|raised)\b[^\n.\r]{0,80}/gi, '')
-		.replace(/\b(?:raise|raised)\b[^\n.\r]{0,80}\bin\s+(?:enterprise\s+)?value\b/gi, '');
+		.replace(/\b(?:raise|raised)\b[^\n.\r]{0,80}\bin\s+(?:enterprise\s+)?value\b/gi, '')
+		.replace(/\braised\s+as\s+of\b[^\n.]{0,220}/gi, '')
+		.replace(/\bissued\s+prior\s+to\s+the\s+closings?\b[^\n.]{0,220}/gi, '')
+		.replace(/\bprior\s+to\s+the\s+closings?\b[^\n.]{0,220}/gi, '');
 	const re = /\b(?:raising|raise|seeking|the\s+ask|funding)\b[^\n\r]{0,100}(\$\s?\d[\d,]*(?:\.\d+)?\s*(?:k|m|b|mm|bn|million|billion)?)|\$\s?\d[\d,]*(?:\.\d+)?\s*(?:k|m|b|mm|bn|million|billion)?\s*(?:seed|series\s+[a-d]|pre-?seed|round)\b/i;
 	const m = cleaned.match(re);
 	if (!m) return null;
@@ -1588,6 +1593,26 @@ function inferConservativeDealTypeFromText(text: string, raise?: string): string
 		/\brunway\b/i,
 		/\bburn\b/i,
 	]);
+
+	// SPAC / de-SPAC / post-merger-public signals — checked BEFORE startup_raise fallback
+	// to prevent SPAC deal documents from being misclassified as startup fundraising.
+	const spacSignals = countKeywordHits(t, [
+		/\bbusiness\s+combination\b/i,
+		/\btrust\s+account\b/i,
+		/\bpublic\s+shares?\b/i,
+		/\bpublic\s+stockholders?\b/i,
+		/\bnon[- ]?redemption\b/i,
+		/\bform\s+s[- ]?4\b/i,
+		/\bde[- ]?spac\b/i,
+		/\b(?:nyse|nasdaq|amex)\b/i,
+		/\bconsummated\b/i,
+		/\bpublicly\s+(?:listed|traded)\b/i,
+		/\bspac\b/i,
+		/\bpipe\s+(?:investors?|subscription|investment)\b/i,
+		/\bblank\s+check\s+company\b/i,
+		/\bminimum\s+cash\s+condition\b/i,
+	]);
+	if (spacSignals >= 2) return 'de_spac';
 
 	const hasRaise = typeof raise === 'string' && raise.trim().length > 0;
 	if ((startupSignals >= 3 && (roundSignals >= 1 || hasRaise)) || (roundSignals >= 2 && hasRaise)) {

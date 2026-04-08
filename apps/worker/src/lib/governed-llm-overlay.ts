@@ -1439,13 +1439,20 @@ function classifySnippetSignals(snippetHead: string): {
   isBusinessModel: boolean;
 } {
   const t = snippetHead.toLowerCase();
+
+  // SPAC financial documents (EX-99.5, Form S-4 merger proxy) contain financial terms that
+  // superficially match qualitative field patterns; exclude all qualitative signals for them.
+  if (/\b(business\s+combination|trust\s+account|public\s+shares?|public\s+stockholders?|blank\s+check\s+company|minimum\s+cash\s+condition)\b/i.test(t)) {
+    return { isRaiseTerms: false, isProduct: false, isMarketIcp: false, isBusinessModel: false };
+  }
+
   const isRaiseTerms =
     /(\braising\b|\braise\b|\bfunding\b|\bterms\b|\bvaluation\b|\bmultiple\b|\bask\b|\$\s*\d|\bpre[-\s]?money\b|\bpost[-\s]?money\b|\bseed\b|\bseries\s*[a-d]\b)/i.test(
       t
     );
   const isMarketIcp = /(\bcustomer\b|\bcustomers\b|\btarget\b|\baudience\b|\bmarket\b|\bicp\b|\bwho\s+we\s+serve\b)/i.test(t);
   const isBusinessModel =
-    /(\brevenue\b|\bbusiness\s*model\b|\bsubscription\b|\bmarketplace\b|\blicens\w*\b|\bpricing\b|\bhow\s+we\s+make\s+money\b)/i.test(t);
+    /(\bbusiness\s*model\b|\bsubscription\b|\bmarketplace\b|\blicens\w*\b|\bpricing\b|\bhow\s+we\s+make\s+money\b)/i.test(t);
   const isProduct =
     /(\bproduct\b|\bplatform\b|\bsolution\b|\bwhat\s+we\s+do\b|\bdescription\b|\boverview\b|\bdefinition\b|\btagline\b)/i.test(t) &&
     !isRaiseTerms;

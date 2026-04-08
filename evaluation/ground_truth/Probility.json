@@ -1,0 +1,171 @@
+{
+  "_schema": "ground_truth_v1",
+  "_status": "LIVE — pipeline run 06a5f42e, 2026-04-06",
+  "_coverage_rationale": "REF-DEAL-HLTH-1: Healthcare/medtech AI startup — sports performance prediction platform targeting professional sports organizations and sportsbooks. 3 documents: pitch deck (PDF, 13pp), pitch deck image (PNG), investor-focused Q&A assessment (DOCX, 21pp). No XLSX. Tests startup_raise classification, pre_seed stage detection, $1M ARR revenue extraction, and guards against projection-as-current-revenue noise.",
+  "_failure_modes_targeted": [
+    "BUG-PROB-1: business_archetype_v1.value = 'consumer_product' (confidence: 0.48) — fires via cpg:retail_wholesale, cpg:brand, cpg:cpg_sku patterns triggered by sports betting/fantasy retail language. Probility is a B2B data/SaaS platform, not a CPG brand.",
+    "BUG-PROB-2: business_model = 'Wholesale/Retail' in structured_summary — completely wrong for a B2B AI data licensing platform. The correct model is B2B SaaS / data licensing to sportsbooks, sports orgs, and fantasy platforms.",
+    "BUG-PROB-3: Revenue candidate $12.6M (page 11) selected as top candidate at score 12.66 — this is 'Revenue after 12 months: $12.6M' from a product roadmap slide, a forward-looking projection, NOT current revenue. Current revenue is $1M ARR (deck, low confidence).",
+    "BUG-PROB-4: deal_overview_v2.raise_terms is garbled text — includes Q&A response prose ('funding will be required before hitting profitability. Probility Response: Sustainable Growth The $4 m') instead of a clean '$4M' raise signal. The $4M raise is present but not cleanly surfaced.",
+    "BUG-PROB-5: context.vertical = 'other' and context.stage = 'unknown' — sports analytics AI startup should resolve to a meaningful vertical (sports/media or health/wellness) and stage (pre_seed). Low confidence (0.30) reflects this ambiguity."
+  ],
+  "_pipeline_run_date": "2026-04-06",
+  "deal_name": "Probility",
+  "deal_id": "42be8b30-2b7d-45e0-ade0-99427a505c59",
+  "slots": {
+    "company_description": "Probility is an AI-powered sports analytics platform that uses machine learning to generate predictive models for NFL, NHL, MLB, and NBA player performance. The platform automates data ingestion, generates injury and performance predictions, and distributes analytics to sportsbooks, sports organizations, media companies, and fantasy sports operators.",
+    "solution_summary": "Multimodal AI / foundation model-based prediction engine for sports performance and injury risk. Target use cases: sportsbook accuracy improvement, professional team acquisition analytics, fantasy sports platforms, sports media enrichment.",
+    "target_customer": "B2B: professional sports teams, sportsbooks, fantasy sports operators, sports media. B2C: ~81M sports betting and fantasy users (~$139M ARR projected).",
+    "product_type": "AI/ML SaaS platform — sports analytics, performance prediction, injury modeling",
+    "delivery_model": "B2B data licensing / SaaS (NOT Wholesale/Retail — see BUG-PROB-2)",
+    "deal_type": "startup_raise",
+    "stage": "pre_seed",
+    "raise_amount": 4000000,
+    "raise_note": "Raise_terms field in DIO is garbled (BUG-PROB-4). Raise amount $4M inferred from context — 'The $4 m' appears in a run-on QA response string. The capital_logic_v1.raise.amount = $4,000,000 is the reliable source.",
+    "vertical_domain": "Sports analytics / AI — vertical classifier returns 'other' (BUG-PROB-5)",
+    "ai_claims_present": true,
+    "ai_note": "Multimodal AI, foundation models, structured data modeling, automated prediction pipelines — AI is central to the product (not marketing overlay)"
+  },
+  "financials": {
+    "_note": "No XLSX. Three documents: pitch deck, pitch deck image, and a 21-page investor Q&A responses doc (DOCX). financial_breakdown_v1.current_state.data_quality = 'partial'. Revenue figures present but deck-only and low confidence. Pitch deck claims $1MM ARR (current) and 'Revenue after 12 months: $12.6M' (forward projection from roadmap). The $12.6M figure is a projection from the product build timeline slide — NOT current state.",
+    "_currency_note": "All monetary values in USD.",
+    "current_state": {
+      "arr": {
+        "value": 1000000,
+        "source_kind": "deck",
+        "evidence": "Pitch deck page 6: '$1MM' ARR / Revenue figure (deck, low confidence). Stored in financial_facts_v1 as both 'arr' and 'revenue' at $1M.",
+        "confidence": "low",
+        "is_provisional": true
+      },
+      "raise": {
+        "value": 4000000,
+        "evidence": "capital_logic_v1.raise.amount = $4,000,000. Raise signal from QA doc referencing 'The $4 m[illion]' in a profitability context. Round label: 'Growth'."
+      }
+    },
+    "projections": {
+      "revenue_12m_projected": {
+        "value": 12600000,
+        "evidence": "Pitch deck page 11: '$4M produces automated B2C MVPs for NFL, NHL, MLB, and NBA in 5 months — Revenue after 12 months: $12.6M'. This is a PROJECTED revenue figure from a product buildout roadmap slide, NOT current revenue. This figure must not be selected as current_state revenue."
+      },
+      "arr_139m_projected": {
+        "value": 139000000,
+        "evidence": "Investor Q&A doc: '~$139M ARR' projected from ~81M global sports betting/fantasy users. Long-range market projection — not near-term guidance."
+      }
+    },
+    "known_issues": {
+      "projection_as_current_revenue_BUG_PROB_3": {
+        "pipeline_selected_value": 12600000,
+        "correct_current_value": 1000000,
+        "evidence": "structured_summary.kpis.revenue.candidates[0].amount = $12,600,000 scored 12.66 (selected) vs $1,000,000 at score 0.45. The $12.6M figure comes from 'Revenue after 12 months' on a roadmap timeline slide (doc 586c116b:page:11, segment_key:market). This is a forward projection, not current ARR. The $1M ARR figure on page 6 is the correct current state signal.",
+        "severity": "high"
+      },
+      "archetype_cpg_misfiring_BUG_PROB_1": {
+        "pipeline_value": "consumer_product",
+        "pipeline_confidence": 0.484,
+        "correct_archetype": "saas_data_platform or b2b_saas",
+        "evidence": "cpg:retail_wholesale and cpg:brand rules fire on sports betting distribution language ('retail', 'wholesale', 'brand'). These CPG pattern matches are false positives on sports/media context. The real archetype is a B2B AI data platform.",
+        "severity": "medium"
+      },
+      "business_model_wrong_BUG_PROB_2": {
+        "pipeline_value": "Wholesale/Retail",
+        "correct_value": "B2B SaaS / Data Licensing",
+        "evidence": "business_model = 'Wholesale/Retail' sourced from promoted_fact on doc d5f887e5:page:11 in segment_key 'distribution'. The distribution discussion is about distributing analytics to sportsbook/media partners — not retail product distribution. The worker DIO deal_overview_v2.business_model = 'Unknown', which is more honest but also incorrect.",
+        "severity": "medium"
+      },
+      "raise_terms_garbled_BUG_PROB_4": {
+        "pipeline_value": "funding will be required before hitting profitability. Probility Response: Sustainable Growth The $4 m",
+        "correct_value_inferred": "$4M",
+        "evidence": "deal_overview_v2.raise_terms contains a prose excerpt from the investor Q&A doc (DOCX) — the regex or NLP extraction captured surrounding text. The $4M amount is correctly captured in capital_logic_v1.raise.amount.",
+        "severity": "low"
+      }
+    },
+    "validation": {
+      "extraction_checks": [
+        {
+          "metric_key": "arr",
+          "expected_value": 1000000,
+          "tolerance_pct": 20,
+          "allowed_source_kinds": ["deck"],
+          "note": "Current ARR = $1M from pitch deck page 6. The financial_facts_v1 table correctly stores both 'arr' and 'revenue' at $1M from the deck (low confidence). This tests that the deck-layer extraction captures the right current figure."
+        },
+        {
+          "metric_key": "raise_amount",
+          "expected_value": 4000000,
+          "tolerance_pct": 10,
+          "note": "capital_logic_v1.raise.amount = $4,000,000 (page 4 of pitch deck / Q&A doc context). The $4M raise is the only coherent raise signal. Round label = 'Growth'."
+        }
+      ],
+      "noise_checks": [
+        {
+          "label": "Revenue projection must not be selected as current revenue",
+          "report_path": ["structured_summary", "kpis", "revenue", "value", "amount"],
+          "expected_max": 2000000,
+          "failure_layer": "compiler",
+          "note": "BUG-PROB-3 guard: '$12.6M revenue after 12 months' from roadmap slide must not be selected as current revenue. If structured_summary.kpis.revenue.value.amount > $2M, the pipeline picked the projection instead of the $1M ARR."
+        },
+        {
+          "label": "No revenue fact >= $50M from this deal",
+          "sql_filter": "metric_key IN ('revenue', 'arr') AND value >= 50000000",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "note": "Guards against the $139M ARR market projection being stored as a revenue fact. No current-state revenue signal should exceed $13M; anything >= $50M is noise from market sizing or long-range projections."
+        }
+      ],
+      "report_checks": [
+        {
+          "label": "deal_type must be startup_raise",
+          "report_path": ["metadata", "score_explanation", "context", "deal_type"],
+          "expected_string": "startup_raise",
+          "failure_layer": "compiler",
+          "note": "Correct current classification. Probility is a startup raising equity. Must not regress to fund_spv or other types."
+        },
+        {
+          "label": "funding_stage_v1 must be pre_seed",
+          "report_path": ["funding_stage_v1", "funding_stage"],
+          "expected_string": "pre_seed",
+          "failure_layer": "compiler",
+          "note": "funding_stage_v1 correctly resolves to pre_seed (signal: company_phase_label:pre_seed, weight 0.6). $1M ARR + $4M raise fits pre_seed profile."
+        },
+        {
+          "label": "financial_breakdown has_xlsx must be false",
+          "report_path": ["financial_breakdown_v1", "has_xlsx"],
+          "expected_value": false,
+          "failure_layer": "compiler",
+          "note": "No XLSX present. If has_xlsx flips to true, a document was misclassified as a financial model."
+        }
+      ],
+      "dio_checks": [
+        {
+          "label": "deal_overview_v2 deal_type must be startup_raise",
+          "dio_path": ["phase1", "deal_overview_v2", "deal_type"],
+          "expected_string": "startup_raise",
+          "failure_layer": "worker",
+          "note": "Worker-layer correctly identifies startup_raise. Core layer also correctly propagates this."
+        },
+        {
+          "label": "business_archetype_v1 value fires as consumer_product (known bug BUG-PROB-1)",
+          "dio_path": ["phase1", "business_archetype_v1", "value"],
+          "expected_string": "consumer_product",
+          "failure_layer": "worker",
+          "note": "EXPECTED CURRENT BEHAVIOR (BUG-PROB-1). Archetype misidentifies as 'consumer_product' due to CPG pattern matches on sports betting/retail language. Correct archetype should be b2b_saas or SaaS data platform. If this changes, verify whether the new value is more accurate before updating the GT."
+        },
+        {
+          "label": "business_archetype_v1 confidence must be <= 0.55 (weak signal)",
+          "dio_path": ["phase1", "business_archetype_v1", "confidence"],
+          "expected_max": 0.55,
+          "failure_layer": "worker",
+          "note": "Confidence was 0.484 — the consumer_product archetype fired weakly. If confidence jumps above 0.55, the CPG pattern match is becoming stronger (regression risk)."
+        }
+      ],
+      "evidence_checks": [
+        {
+          "label": "capital_logic raise must be present",
+          "report_path": ["capital_logic_v1", "raise", "present"],
+          "expected_value": true,
+          "failure_layer": "compiler",
+          "note": "Even though raise_terms is garbled, capital_logic_v1.raise.present = true and amount = $4M. This is the reliable source for the raise amount."
+        }
+      ]
+    }
+  }
+}

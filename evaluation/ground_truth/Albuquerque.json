@@ -1,0 +1,187 @@
+{
+  "_schema": "ground_truth_v1",
+  "_status": "LIVE — classification verified, known bugs documented, pipeline run 2026-03-31",
+  "_coverage_rationale": "REF-DEAL-RE-1: Real estate preferred equity / CRE construction offering memorandum. Cross Development + Nobis Rehabilitation Partners building a 48-bed Inpatient Rehabilitation Facility in Albuquerque, NM. Tests that the system correctly identifies the real estate archetype at the worker layer, documents the known limitation that 'real_estate' is not an expressible deal_type in the core context enum, and guards against revenue noise from construction budget line items.",
+  "_failure_modes_targeted": [
+    "BUG-RE-1: 'real_estate' is not in DIOContext.deal_type enum — real estate deals collapse to fund_spv via deterministic realAsset override in packages/core/src/orchestration/dio-context.ts lines ~1036-1069",
+    "BUG-RE-2: structured_summary.kpis.raise = $35.6M (construction loan) instead of $11.9M (equity raise) — the first large dollar figure in the exec summary context is the construction loan, not the equity offering",
+    "Revenue noise BUG-RE-3: 'Gross Receipt Sales Tax $2,352,769' on construction budget page extracted as Revenue $2,352,769B — scale corruption causing a cents amount to read as $2.35 quadrillion",
+    "Business model noise BUG-RE-4: deal_summary_v1.one_liner = 'Omnichannel (DTC + Wholesale/Retail)' — completely inapplicable to a CRE construction preferred equity deal"
+  ],
+  "_known_limitation": "BUG-RE-1 is a SYSTEMIC LIMITATION. The DIOContext deal_type enum does not include 'real_estate' or 'real_estate_preferred_equity'. The deterministic realAsset override intentionally routes all CRE deals to deal_type=fund_spv as the nearest approximation. The fix requires extending the enum and adding a real_estate routing path. Until fixed, report_checks assert fund_spv as EXPECTED CURRENT BEHAVIOR — not correctness.",
+  "_pipeline_run_date": "2026-03-31",
+  "deal_name": "Albuquerque (Nobis IRF Preferred Equity)",
+  "deal_id": "267c4979-5779-4a43-8920-a92034732edc",
+  "slots": {
+    "company_description": "Cross Development and Kennor Holdings ('Cross' or 'Sponsor') are seeking preferred equity investors for the development of a 48-bed, 52,381 sq. ft. Inpatient Rehabilitation Facility (IRF) in Albuquerque, NM. The property is 100% leased to Albuquerque Rehabilitation Hospital LLC, an entity owned by Nobis Rehabilitation Partners, which operates 16 IRF hospitals nationwide. This is the 9th development in the Cross + Nobis build-to-suit partnership.",
+    "deal_structure": "Preferred equity construction opportunity. Capital stack: $35.6M construction loan (75% LTC) + $11.9M equity ($8.9M preferred equity + $2.97M sponsor). Total project cost $47.5M. Preferred equity returns 15% IRR guaranteed. Exit cap rate 7.0% vs build-to cap rate 10.0%.",
+    "product_type": "Real estate — CRE construction / build-to-suit single-tenant healthcare facility",
+    "asset_class": "Commercial real estate — Inpatient Rehabilitation Facility (IRF), healthcare net lease",
+    "lease_structure": "20-year NNN (Absolute Triple-Net), 1.5% annual escalations, two 5-year renewal options. No landlord obligations.",
+    "deal_type": "real_estate_preferred_equity",
+    "deal_type_context_current": "fund_spv",
+    "deal_type_context_note": "BUG-RE-1: context.deal_type = fund_spv is the CURRENT SYSTEM OUTPUT, not the correct classification. Worker-layer correctly identifies as real_estate / real_estate_preferred_equity. Fix requires adding real_estate to DIOContext enum.",
+    "developer": "Cross Development and Kennor Holdings",
+    "operator": "Nobis Rehabilitation Partners, LLC",
+    "address": "1100 Woodward Place NE, Albuquerque, NM 87102",
+    "doc_count": 1,
+    "document_title": "Albuquerque, NM - Nobis Pref. Equity Opportunity.pdf"
+  },
+  "financials": {
+    "_note": "This is a CRE construction offering memorandum — not a startup financial package. The document contains a project budget, DSCR projections, and NOI analysis — NOT operating company P&L. financial_breakdown_v1 erroneously models this as a startup-style financial package. Core financial data points are the construction capital stack and projected NOI, not revenue/burn/cash.",
+    "_currency_note": "All monetary values in USD.",
+    "current_state": {
+      "_note": "No operating company financials. financial_breakdown_v1.current_state.data_quality = 'partial' (noise-driven — $2.35 quadrillion revenue from BUG-RE-3). True current-state operating data does not apply here; only the construction capital stack matters.",
+      "construction_loan": {
+        "value": 35605000,
+        "source_kind": "pdf_kpi_line",
+        "evidence": "Executive summary: 'Cross is seeking a 75% LTC construction loan in the amount of $35,605,000'",
+        "confidence": "high"
+      },
+      "equity_raise": {
+        "value": 11868000,
+        "breakdown": {
+          "preferred_equity": 8901000,
+          "sponsor_equity": 2967000
+        },
+        "source_kind": "pdf_kpi_line",
+        "evidence": "Executive summary: 'Cross will raise an additional $11,868,000 as equity to complete the capital stack'",
+        "confidence": "high"
+      },
+      "total_project_cost": {
+        "value": 47473000,
+        "evidence": "Executive summary: 'Total Project Cost $47.5M' / budget page total uses = $47,473,000"
+      },
+      "noi_year1": {
+        "value": 4747300,
+        "evidence": "Executive summary: 'The Year 1 net operating income of the asset will be $4,747,300'"
+      },
+      "dscr_year4": {
+        "value": 1.61,
+        "evidence": "Executive summary: 'Year 4 DSCR: 1.61'"
+      },
+      "preferred_equity_irr": {
+        "value_pct": 15,
+        "evidence": "Executive summary: 'The Preferred Equity will receive a guaranteed 15% IRR for their investment'"
+      }
+    },
+    "known_issues": {
+      "revenue_scale_corruption_BUG_RE_3": {
+        "db_value": 2352769000000000,
+        "display_value": "$2352769B",
+        "source": "doc f18aa49b:page:32",
+        "evidence": "The construction budget page (Sources & Uses) contains 'Gross Receipt Sales Tax $2,352,769'. The extraction reads '$2,352,769B' (where B comes from trailing 'Bank' OCR artifact or unit misparse), then stores $2,352,769 * 10^9. This is a tax line item in a construction budget, not operating revenue. True revenue for this deal is not meaningful — the 'revenue' is really NOI/lease income.",
+        "severity": "critical"
+      },
+      "raise_amount_wrong_BUG_RE_2": {
+        "system_value": 35605000,
+        "correct_value": 11868000,
+        "evidence": "structured_summary.kpis.raise = '$35.6M Equity' (amount: $35,605,000) — this is the CONSTRUCTION LOAN, not the equity offering. The executive summary mentions $35.6M first in 'construction loan ... $35,605,000' context. The actual equity raise being offered to investors is $11,868,000 ($8.9M preferred equity + $2.97M sponsor). The financial_facts_v1 table correctly stores $11,900,000 (raise_amount, high confidence, pdf_kpi_line).",
+        "severity": "high"
+      },
+      "business_model_misclassification_BUG_RE_4": {
+        "system_value": "Omnichannel (DTC + Wholesale/Retail)",
+        "correct_value": "Real estate structured investment (construction preferred equity)",
+        "evidence": "deal_summary_v1.one_liner = 'Omnichannel (DTC + Wholesale/Retail)' — completely inapplicable to a CRE deal. The business_model_signal_v1 pattern never ran a real-estate-aware path. deal_overview_v2.business_model correctly returns 'Real estate structured investment'.",
+        "severity": "medium"
+      }
+    },
+    "validation": {
+      "extraction_checks": [
+        {
+          "metric_key": "raise_amount",
+          "expected_value": 11868000,
+          "tolerance_pct": 5,
+          "allowed_source_kinds": ["pdf_kpi_line", "deck"],
+          "note": "The $11.9M equity raise is correctly stored in financial_facts_v1 (raise_amount, high confidence, Q1 2026). This tests that the fact storage layer captures the equity figure even though the structured_summary layer picks up the wrong (construction loan) figure."
+        }
+      ],
+      "noise_checks": [
+        {
+          "label": "Revenue must not be >= $1T (construction budget sales tax noise)",
+          "sql_filter": "metric_key = 'revenue' AND value >= 1000000000000",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "note": "BUG-RE-3 guard: 'Gross Receipt Sales Tax $2,352,769' extracted as $2,352,769B ($2.35 quadrillion). Any revenue fact >= $1T for this deal is noise. Revenue in this context is NOI ($4.7M), not a billion-scale figure."
+        },
+        {
+          "label": "financial_breakdown revenue must not be >= $1B",
+          "report_path": ["financial_breakdown_v1", "current_state", "revenue", "value"],
+          "expected_max": 999999999,
+          "failure_layer": "compiler",
+          "note": "BUG-RE-3: financial_breakdown_v1.current_state.revenue.value = 2352769000000000 is a known regression. Any value >= $1B for this deal's revenue is noise."
+        }
+      ],
+      "report_checks": [
+        {
+          "label": "deal_type context must be fund_spv (known limitation BUG-RE-1)",
+          "report_path": ["metadata", "score_explanation", "context", "deal_type"],
+          "expected_string": "fund_spv",
+          "failure_layer": "compiler",
+          "note": "EXPECTED CURRENT BEHAVIOR (BUG-RE-1). The correct value should be 'real_estate_preferred_equity' but is not expressible in the current enum. If this check FAILS, it means someone changed the real-asset routing — verify whether the new behavior is better or a regression."
+        },
+        {
+          "label": "primary_doc_type must be business_plan_im (real-asset routing applied)",
+          "report_path": ["metadata", "score_explanation", "context", "primary_doc_type"],
+          "expected_string": "business_plan_im",
+          "failure_layer": "compiler",
+          "note": "Deterministic real-asset routing in dio-context.ts sets primary_doc_type = 'business_plan_im' for real estate preferred equity deals. This confirms the routing fired."
+        },
+        {
+          "label": "stage must be fund_ops (real-asset routing applied)",
+          "report_path": ["metadata", "score_explanation", "context", "stage"],
+          "expected_string": "fund_ops",
+          "failure_layer": "compiler",
+          "note": "Real-asset routing sets stage = 'fund_ops'. If this regresses to 'seed' or 'series_a', the deterministic override stopped firing."
+        }
+      ],
+      "dio_checks": [
+        {
+          "label": "business_archetype_v1 must be real_estate",
+          "dio_path": ["phase1", "business_archetype_v1", "value"],
+          "expected_string": "real_estate",
+          "failure_layer": "worker",
+          "note": "CORRECT CLASSIFICATION at the worker layer. The archetype classifier correctly identifies real_estate via re:real_estate (cap rate, preferred equity) and re:noicap (cap rate language) rules. If this regresses to 'unknown', the real_estate archetype rules need to be re-added."
+        },
+        {
+          "label": "business_archetype_v1 confidence must be >= 0.5",
+          "dio_path": ["phase1", "business_archetype_v1", "confidence"],
+          "expected_min": 0.5,
+          "failure_layer": "worker",
+          "note": "Confidence was 0.60 at time of GT creation."
+        },
+        {
+          "label": "deal_overview_v2 deal_type must be real_estate_preferred_equity",
+          "dio_path": ["phase1", "deal_overview_v2", "deal_type"],
+          "expected_string": "real_estate_preferred_equity",
+          "failure_layer": "worker",
+          "note": "CORRECT CLASSIFICATION at the worker layer. deal_overview_v2 uses the worker's own classifier which correctly identifies CRE preferred equity deals. This is the truth signal that should eventually be promoted to context.deal_type."
+        },
+        {
+          "label": "deal_overview_v2 business_model must be Real estate structured investment",
+          "dio_path": ["phase1", "deal_overview_v2", "business_model"],
+          "expected_string_contains": "real estate",
+          "expected_string_case_insensitive": true,
+          "failure_layer": "worker",
+          "note": "Worker correctly returns 'Real estate structured investment'. Guards against regression to startup-style business model labels."
+        }
+      ],
+      "evidence_checks": [
+        {
+          "label": "real_estate archetype evidence must include re:real_estate rule",
+          "dio_path": ["phase1", "business_archetype_v1", "evidence"],
+          "expected_rule_present": "re:real_estate",
+          "failure_layer": "worker",
+          "note": "re:real_estate rule (preferred equity, cap rate signals) is the primary trigger for the real_estate archetype."
+        },
+        {
+          "label": "real_estate archetype evidence must include re:noicap rule",
+          "dio_path": ["phase1", "business_archetype_v1", "evidence"],
+          "expected_rule_present": "re:noicap",
+          "failure_layer": "worker",
+          "note": "re:noicap rule fires on cap rate / NOI language in the document."
+        }
+      ]
+    }
+  }
+}

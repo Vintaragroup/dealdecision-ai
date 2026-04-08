@@ -1,0 +1,140 @@
+{
+  "_schema": "ground_truth_v1",
+  "_status": "LIVE — classification verified post-fix, financial checks based on actual pipeline output 2026-04-08",
+  "_coverage_rationale": "REF-DEAL-8: de-SPAC / public company transaction. Allurion Technologies went public via SPAC merger (Compute Health Acquisition Corp) in August 2023. The deal package contains 8-K filing, SPAC proxy statement (EX-99.1–5), and the investor pitch deck. Primary regression test for de_spac deal_type classification and SPAC proxy document noise suppression. This is the deal that required the Allurion pipeline fix sprint (see artifacts/allurion_pipeline_fix_report_20260408.md).",
+  "_failure_modes_targeted": [
+    "SPAC proxy document promoting raise amount from pro-forma cash table (was: $19.5M from 6e251dba; fixed: zero facts promoted)",
+    "deal_type classified as startup_raise instead of de_spac (worker + core layers both required fixes)",
+    "business_archetype_v1 returning unknown instead of de_spac (fixed via new ARCHETYPES entry)",
+    "business_model returning Omnichannel DTC+Wholesale due to orders? matching in_order_to (fixed: orders plural-only)",
+    "governed-llm-overlay qualifying SPAC income statement text as business model evidence (fixed: SPAC guard + revenue pattern removed)",
+    "Residual: raise false positive $1 from per-share price in financial statements (doc 0eaf0fe6:page:28) — lower severity, not yet fixed"
+  ],
+  "_fix_report": "artifacts/allurion_pipeline_fix_report_20260408.md",
+  "_pipeline_run": "3b7f349f-187f-42ac-b2a5-387ff7b1386a",
+  "_pipeline_run_date": "2026-04-08",
+  "deal_name": "Allurion",
+  "deal_id": "a85b0ac0-19a1-4992-9a21-2d47484b0f8f",
+  "slots": {
+    "company_description": "Allurion Technologies is a medical device and digital health company focused on weight loss treatment. The Allurion Program combines a procedureless intragastric balloon (swallowable capsule), digital therapeutic platform, and behavior change program.",
+    "solution_summary": "A swallowable intragastric balloon administered without surgery, endoscopy, or anesthesia, paired with a digital care platform and HCP support program for weight loss.",
+    "target_customer": "Healthcare providers (HCPs) and patients seeking non-surgical weight loss — B2B2C distribution model via healthcare practitioners",
+    "product_type": "Medical device + digital health platform",
+    "delivery_model": "B2B2C / HCP-Mediated (Wholesale/Retail distribution through providers)",
+    "deal_type": "de_spac",
+    "transaction_structure": "SPAC merger — Allurion merged with Compute Health Acquisition Corp (CPUH) and went public on NYSE in August 2023. Net SPAC cash proceeds: $98.8M.",
+    "is_public_company": true,
+    "exchange": "NYSE",
+    "spac_acquirer": "Compute Health Acquisition Corp (CPUH)"
+  },
+  "financials": {
+    "_note": "Allurion is a public company post-de-SPAC. The document package (8-K, proxy, deck) does not include a clean current-period financial model; financial_breakdown_v1 returns data_quality=missing. Revenue signal comes from a promoted_fact from the SPAC proxy document and is NOT reliable — the proxy contains pro-forma/transaction-adjusted financials, not operating KPIs. The revenue figure $1.5M is treated as known_noise for this deal. Customer count (13,000) from the pitch deck KPI tile is the only reliable operating KPI.",
+    "_currency_note": "All monetary values in USD.",
+    "current_state": {
+      "_note": "No clean current-period revenue/burn/cash from the document package. financial_breakdown_v1.current_state.data_quality = 'missing'. Do not assert revenue for this deal.",
+      "customer_count": {
+        "value": 13000,
+        "source_kind": "kpi_tile",
+        "evidence": "Pitch deck KPI tile — '13,000+ patients' (doc 0eaf0fe6:page:current)",
+        "confidence": "low"
+      }
+    },
+    "known_noise": {
+      "revenue_1_5m_spac_proxy": {
+        "evidence": "Revenue figure $1.5M promoted from SPAC proxy document (6e251dba:page:24). Context is a transaction-adjustment footnote in pro-forma financials, not operating revenue. This document should yield zero promoted facts via SPAC guard."
+      },
+      "raise_1_dollar": {
+        "evidence": "Raise false positive '$1 Series A Convertible Note' (amount: $1.092) from financial statements doc (0eaf0fe6:page:28). Source is 'Original Issue Price of the Series A Preferred Stock ($1.092)' — a per-share price, not a raise amount. The convertible anchor token fires because 'Convertible notes' appears nearby. Residual issue post-fix; minimum raise threshold fix recommended."
+      }
+    },
+    "validation": {
+      "extraction_checks": [
+        {
+          "metric_key": "customer_count",
+          "expected_value": 13000,
+          "tolerance_pct": 20,
+          "allowed_source_kinds": ["kpi_tile"],
+          "note": "13,000+ patients KPI from pitch deck — only reliable operating KPI in the package"
+        }
+      ],
+      "noise_checks": [
+        {
+          "label": "SPAC proxy must yield zero revenue facts",
+          "sql_filter": "document_id = '6e251dba-b3a3-4341-b875-fa15d4555704' AND metric_key = 'revenue'",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "note": "SPAC proxy document (6e251dba) must not promote any revenue facts after SPAC guard fix. PROMOTE_SLIDE_FACTS_ZERO_FACTS must be logged for this document."
+        },
+        {
+          "label": "SPAC proxy must yield zero raise_terms facts",
+          "sql_filter": "document_id = '6e251dba-b3a3-4341-b875-fa15d4555704' AND metric_key = 'raise_amount'",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "note": "The $19.5M SPAC pro-forma cash table must not produce a raise_terms fact from the SPAC proxy document."
+        },
+        {
+          "label": "No raise amount >= 10M from any document",
+          "sql_filter": "metric_key IN ('raise_amount','raise') AND value >= 10000000",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "note": "Guards against regression to pre-fix behavior where $19.5M SPAC pro-forma was stored as raise. Allurion has no known raise; the $98.8M net SPAC proceeds are a transaction event, not a fundraise."
+        }
+      ],
+      "report_checks": [
+        {
+          "label": "deal_type must be de_spac",
+          "report_path": ["metadata", "score_explanation", "context", "deal_type"],
+          "expected_string": "de_spac",
+          "failure_layer": "compiler",
+          "note": "Core regression check — must not regress to startup_raise. Requires both worker-layer and core-layer SPAC rules to fire."
+        },
+        {
+          "label": "financial_breakdown_v1 current_state data quality should be missing",
+          "report_path": ["financial_breakdown_v1", "current_state", "data_quality"],
+          "expected_string": "missing",
+          "failure_layer": "compiler",
+          "note": "Allurion has no clean operating financials in the document package. This should remain missing, not be backfilled with SPAC pro-forma numbers."
+        },
+        {
+          "label": "business_model must be Wholesale/Retail or B2B2C",
+          "report_path": ["deal_summary_v1", "tiers", "deep"],
+          "expected_string_contains": "Wholesale",
+          "failure_layer": "compiler",
+          "note": "Business model should be Wholesale/Retail after the orders?/orders fix. Must not regress to Omnichannel DTC+Wholesale."
+        }
+      ],
+      "dio_checks": [
+        {
+          "label": "business_archetype_v1 must be de_spac",
+          "dio_path": ["phase1", "business_archetype_v1", "value"],
+          "expected_string": "de_spac",
+          "failure_layer": "worker",
+          "note": "de_spac archetype must fire via ARCHETYPES array at threshold 40. Evidence rules: trust_account, business_combination, public_shares must be present."
+        },
+        {
+          "label": "business_archetype_v1 confidence must be >= 0.5",
+          "dio_path": ["phase1", "business_archetype_v1", "confidence"],
+          "expected_min": 0.5,
+          "failure_layer": "worker",
+          "note": "Confidence was 0.76 at time of fix verification."
+        }
+      ],
+      "evidence_checks": [
+        {
+          "label": "SPAC archetype evidence must include trust_account rule",
+          "dio_path": ["phase1", "business_archetype_v1", "evidence"],
+          "expected_rule_present": "spac:trust_account",
+          "failure_layer": "worker",
+          "note": "The trust_account rule (weight 40) is the primary trigger. Must be present in evidence array."
+        },
+        {
+          "label": "SPAC archetype evidence must include business_combination rule",
+          "dio_path": ["phase1", "business_archetype_v1", "evidence"],
+          "expected_rule_present": "spac:business_combination",
+          "failure_layer": "worker",
+          "note": "Required to confirm the SPAC merger context."
+        }
+      ]
+    }
+  }
+}

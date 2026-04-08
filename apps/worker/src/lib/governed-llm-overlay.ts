@@ -3021,6 +3021,32 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
       inserted = persisted.inserted;
       validation_failed = !schemaValidated.ok;
 
+      // Detect degraded / no-op overlay: 0 claims with a failed upstream generation step.
+      // Surfaces the root cause (e.g. missing policy prompt artifacts) in a single log line
+      // so it is visible in all environments — not just dev.
+      const overlayClaims = Array.isArray(toPersist.claims) ? toPersist.claims : [];
+      let evidencePacketDegraded = false;
+      let evidencePacketDegradedReason: string | null = null;
+      if (overlayClaims.length === 0) {
+        const dfQuality = display_facts_v1_quality as any;
+        if (dfQuality && !dfQuality.ok) {
+          const dfErrors: string[] = Array.isArray(dfQuality.errors) ? dfQuality.errors : [];
+          const artifactMissingErr = dfErrors.find(
+            (e) => typeof e === "string" && e.startsWith("policy_prompt_artifact_missing")
+          );
+          if (artifactMissingErr) {
+            evidencePacketDegraded = true;
+            evidencePacketDegradedReason = "policy_prompt_artifact_missing";
+          } else if (dfQuality.skipped_reason) {
+            evidencePacketDegraded = true;
+            evidencePacketDegradedReason = `display_facts_skipped:${dfQuality.skipped_reason}`;
+          } else if (dfErrors.length > 0) {
+            evidencePacketDegraded = true;
+            evidencePacketDegradedReason = `display_facts_error:${String(dfErrors[0]).slice(0, 80)}`;
+          }
+        }
+      }
+
       console.log(
         JSON.stringify({
           event: "GOVERNED_LLM_OVERLAY_V1",
@@ -3030,8 +3056,10 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
           selected_policy_id: selectedPolicyId,
           input_hash,
           inserted: persisted.inserted,
-          claims_count: Array.isArray(toPersist.claims) ? toPersist.claims.length : 0,
+          claims_count: overlayClaims.length,
           validation_failed: !schemaValidated.ok,
+          evidence_packet_degraded: evidencePacketDegraded,
+          evidence_packet_degraded_reason: evidencePacketDegradedReason,
           run_id: args.runId ?? null,
           step_run_id: args.stepRunId ?? null,
           duration_ms: Date.now() - startedAt,

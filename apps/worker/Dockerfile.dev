@@ -30,6 +30,8 @@ COPY apps/worker/package.json apps/worker/package.json
 COPY packages/contracts/ packages/contracts/
 COPY packages/core/ packages/core/
 RUN mkdir -p /app/artifacts /app/apps/worker/artifacts
+# Policy prompt artifacts required by GovernLLM at runtime.
+COPY artifacts/DealDecision-*.md /app/artifacts/
 RUN pnpm install --frozen-lockfile=false
 
 # Sanity check: BullMQ must be available at worker runtime.

@@ -307,6 +307,15 @@ function inferProductCategoryAndFormFactor(text: string): { category: string | n
   const marketplace = containsAny(t, ['marketplace']);
   const service = containsAny(t, ['service', 'services', 'consulting', 'managed']);
 
+  // Medical device / therapeutic detection.
+  // Checked before the generic 'software' / 'platform' path so that medical device platforms
+  // (which often mention "platform" in their descriptions) are not misclassified as
+  // "Software platform".
+  const medicalDevice = containsAny(t, ['medical device', 'medical devices']);
+  const digitalTherapeutic = containsAny(t, ['digital therapeutic', 'digital therapeutics', 'therapeutic platform', 'digital health platform']);
+  const clinicalObesity = containsAny(t, ['clinical obesity', 'obesity treatment', 'obesity platform', 'weight loss platform', 'bariatric obesity']);
+  const deviceImplant = containsAny(t, ['gastric balloon', 'swallowed capsule', 'procedureless', 'intragastric balloon']);
+
   if (hasGolf) tags.push('golf');
   if (apparel) tags.push('apparel');
   if (gloves) tags.push('gloves');
@@ -315,8 +324,16 @@ function inferProductCategoryAndFormFactor(text: string): { category: string | n
   if (software) tags.push('software');
   if (marketplace) tags.push('marketplace');
   if (service) tags.push('service');
+  if (medicalDevice) tags.push('medical_device');
+  if (digitalTherapeutic) tags.push('digital_therapeutic');
 
-  const form = software || marketplace ? 'digital' : service ? 'service' : apparel || gloves || accessories || footwear ? 'physical' : null;
+  const form = software || marketplace ? 'digital' : service ? 'service' : apparel || gloves || accessories || footwear || medicalDevice || deviceImplant || clinicalObesity ? 'physical' : digitalTherapeutic ? 'digital' : null;
+
+  // Medical device / therapeutic categories — resolved before generic software/platform checks.
+  if (medicalDevice && (digitalTherapeutic || clinicalObesity || deviceImplant)) return { category: 'Medical device and digital support platform', form: 'physical', tags };
+  if (medicalDevice) return { category: 'Medical device', form: 'physical', tags };
+  if (digitalTherapeutic) return { category: 'Digital therapeutic platform', form: 'digital', tags };
+  if (clinicalObesity || deviceImplant) return { category: 'Medical device platform', form: 'physical', tags };
 
   if (software && marketplace) return { category: 'Marketplace platform', form, tags };
   if (software) return { category: 'Software platform', form, tags };

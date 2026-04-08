@@ -456,9 +456,13 @@ const REJECT_BLOCK_RE: RegExp[] = [
 	// Advisor employer bio language — "The firm partners with clients..." describes an advisor's
 	// employer (e.g. BCG), not the deal company's own product or service.
 	/\bthe\s+firm\s+(partners?|works?|helps?|delivers?|serves?|supports?|advises?)\b/i,
+	// SPAC / merger / corporate transaction language — describes a securities transaction,
+	// not the company's product or market. "provide[s]" in SPAC offer language would otherwise
+	// match TAGLINE_VERB_RE and contaminate product_solution / market_icp candidates.
+	/\b(?:public\s+shares?|public\s+stockholders?|business\s+combination|trust\s+account|blank\s+check\s+company|merger\s+consideration)\b/i,
 ];
 
-const LEGAL_DISCLAIMER_BLOCK_RE = /\b(for\s+informational\s+purposes\s+only|not\s+(?:an\s+offer|a\s+solicitation)|does\s+not\s+constitute\s+an\s+offer|offer\s+to\s+sell|private\s+placement\s+memorandum|forward[-\s]*looking\s+statements?|accredited\s+investors?|securities\s+act|investment\s+advice|past\s+performance|risk\s+factors?)\b/i;
+const LEGAL_DISCLAIMER_BLOCK_RE = /\b(for\s+informational\s+purposes\s+only|not\s+(?:an\s+offer|a\s+solicitation)|does\s+not\s+constitute\s+an\s+offer|offer\s+to\s+sell|private\s+placement\s+memorandum|forward[-\s]*looking\s+statements?|accredited\s+investors?|securities\s+act|investment\s+advice|past\s+performance|risk\s+factors?|proxy\s+statement|form\s+s.?4)\b/i;
 
 function normalizeLegalDisclaimerText(value: string): string {
 	return sanitizeInlineText(value)
@@ -490,6 +494,16 @@ function isLegalDisclaimerBoilerplate(value: string): boolean {
 	return LEGAL_DISCLAIMER_BLOCK_RE.test(s) || containsAlbuquerqueDisclaimerFamily(s);
 }
 
+// SPAC / merger text guard — separate from legal disclaimer boilerplate so the rejection
+// reason is distinct and attributable in logs. Used in both isBlockedCandidate (candidate
+// selection) and evaluateFallbackCandidate (publish gate).
+const SPAC_MERGER_RE = /\b(?:public\s+shares?|public\s+stockholders?|business\s+combination|trust\s+account|blank\s+check\s+company|merger\s+consideration)\b/i;
+
+function isSpacMergerText(value: string): boolean {
+	const s = sanitizeInlineText(value);
+	return !!s && SPAC_MERGER_RE.test(s);
+}
+
 type CandidateSourceType = 'anchored' | 'tagline' | 'definition';
 type OverviewCandidate = {
 	page: number;
@@ -511,6 +525,7 @@ function isBlockedCandidate(value: string): { blocked: boolean; reasons: string[
 
 	if (hasAny(METAPHOR_PHRASES, s)) reasons.push('metaphor');
 	if (isLegalDisclaimerBoilerplate(s)) reasons.push('legal_disclaimer_boilerplate');
+	if (isSpacMergerText(s)) reasons.push('spac_merger_text');
 	for (const re of REJECT_BLOCK_RE) {
 		if (re.test(s)) {
 			reasons.push('blocked_keyword');
@@ -1628,6 +1643,7 @@ function evaluateFallbackCandidate(raw: string): { ok: boolean; score: number; r
 	let score = 0;
 	if (!s) return { ok: false, score, rejected_reason: 'empty' };
 	if (isLegalDisclaimerBoilerplate(s)) return { ok: false, score, rejected_reason: 'legal_disclaimer_boilerplate' };
+	if (isSpacMergerText(s)) return { ok: false, score, rejected_reason: 'spac_merger_text' };
 	if (looksLikeMalformedNarrativeFragment(s)) return { ok: false, score, rejected_reason: 'malformed_fragment' };
 
 	// Reject OCR logo artifacts and short cover taglines (common on title slides).

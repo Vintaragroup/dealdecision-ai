@@ -1761,6 +1761,27 @@ async function generateDisplayFactsV1BestEffort(args: {
   );
   const extendedPool = [...narrowSources, ...globalFiltered];
 
+  // Fail fast: load policy prompt artifacts before any expensive DB calls.
+  // If artifacts are missing, this throws immediately so we don't waste
+  // DB roundtrips before hitting the same failure later in the function.
+  const promptRuntime = composePolicyAwareSystemPrompt({
+    kind: "display_facts_v1",
+    selectedPolicyId: args.selected_policy_id,
+    additionalInstructions: [
+      "Convert noisy deterministic OCR snippets into clean, investor-readable short statements.",
+      "Use ONLY the provided snippets. Do not invent facts or numbers.",
+      "IMPORTANT: evidence_ids MUST be chosen ONLY from the allowed IDs for that field.",
+      "Allowed IDs for each field are provided as allowed_evidence_ids.<field> and also appear as fields.<field>[].evidence_id.",
+      "Never output evidence_ids that are not in the allowed list for that field.",
+      "If snippets are insufficient for a field, set text=null, evidence_ids=[], evidence_basis=\"no_evidence\".",
+      "Output MUST be valid JSON only (no markdown).",
+      "Return JSON with EXACT keys: product_solution, market_icp, business_model, raise_terms.",
+      "Each value MUST be an object {text: string|null, evidence_ids: string[], evidence_basis: \"direct_snippet\"|\"no_evidence\"}.",
+      "If evidence_ids is non-empty, evidence_basis MUST be \"direct_snippet\" and text MUST be non-empty.",
+      "Keep each text under 220 characters. Remove OCR artifacts.",
+    ],
+  });
+
   // Use the module-level DisplayFactEv type.
   type Ev = DisplayFactEv;
 
@@ -1857,24 +1878,6 @@ async function generateDisplayFactsV1BestEffort(args: {
     if (modelEvidence.length === 0)
       modelEvidence.push(...phasebItems.business_model.map(phasebItemToDisplayFactEv));
   }
-
-  const promptRuntime = composePolicyAwareSystemPrompt({
-    kind: "display_facts_v1",
-    selectedPolicyId: args.selected_policy_id,
-    additionalInstructions: [
-      "Convert noisy deterministic OCR snippets into clean, investor-readable short statements.",
-      "Use ONLY the provided snippets. Do not invent facts or numbers.",
-      "IMPORTANT: evidence_ids MUST be chosen ONLY from the allowed IDs for that field.",
-      "Allowed IDs for each field are provided as allowed_evidence_ids.<field> and also appear as fields.<field>[].evidence_id.",
-      "Never output evidence_ids that are not in the allowed list for that field.",
-      "If snippets are insufficient for a field, set text=null, evidence_ids=[], evidence_basis=\"no_evidence\".",
-      "Output MUST be valid JSON only (no markdown).",
-      "Return JSON with EXACT keys: product_solution, market_icp, business_model, raise_terms.",
-      "Each value MUST be an object {text: string|null, evidence_ids: string[], evidence_basis: \"direct_snippet\"|\"no_evidence\"}.",
-      "If evidence_ids is non-empty, evidence_basis MUST be \"direct_snippet\" and text MUST be non-empty.",
-      "Keep each text under 220 characters. Remove OCR artifacts.",
-    ],
-  });
 
   const deterministic_input = {
     schema_version: "display_facts_v1_input_v1",

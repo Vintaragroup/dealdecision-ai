@@ -142,6 +142,8 @@ services:
       - ./tsconfig.base.json:/app/tsconfig.base.json
       - ./pnpm-lock.yaml:/app/pnpm-lock.yaml
       - dealdecision_uploads:/app/uploads
+      # Policy prompt artifacts for GovernLLM — avoids image rebuild when files change.
+      - ./artifacts:/app/apps/worker/artifacts:ro
     depends_on:
       postgres:
         condition: service_healthy

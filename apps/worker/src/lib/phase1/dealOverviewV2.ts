@@ -459,7 +459,7 @@ const REJECT_BLOCK_RE: RegExp[] = [
 	// SPAC / merger / corporate transaction language — describes a securities transaction,
 	// not the company's product or market. "provide[s]" in SPAC offer language would otherwise
 	// match TAGLINE_VERB_RE and contaminate product_solution / market_icp candidates.
-	/\b(?:public\s+shares?|public\s+stockholders?|business\s+combination|trust\s+account|blank\s+check\s+company|merger\s+consideration)\b/i,
+	/\b(?:public\s+shares?|public\s+stockholders?|business\s+combination|trust\s+account|blank\s+check\s+company|merger\s+consideration|equityholders?|minimum\s+cash\s+condition|gross\s+cash\s+proceeds|combined\s+new\s+company|pro\s+forma\s+enterprise\s+value)\b/i,
 ];
 
 const LEGAL_DISCLAIMER_BLOCK_RE = /\b(for\s+informational\s+purposes\s+only|not\s+(?:an\s+offer|a\s+solicitation)|does\s+not\s+constitute\s+an\s+offer|offer\s+to\s+sell|private\s+placement\s+memorandum|forward[-\s]*looking\s+statements?|accredited\s+investors?|securities\s+act|investment\s+advice|past\s+performance|risk\s+factors?|proxy\s+statement|form\s+s.?4)\b/i;
@@ -497,7 +497,10 @@ function isLegalDisclaimerBoilerplate(value: string): boolean {
 // SPAC / merger text guard — separate from legal disclaimer boilerplate so the rejection
 // reason is distinct and attributable in logs. Used in both isBlockedCandidate (candidate
 // selection) and evaluateFallbackCandidate (publish gate).
-const SPAC_MERGER_RE = /\b(?:public\s+shares?|public\s+stockholders?|business\s+combination|trust\s+account|blank\s+check\s+company|merger\s+consideration)\b/i;
+// Extended with merger mechanics terms (equityholders, minimum cash condition, gross cash
+// proceeds, combined new company, pro forma enterprise value) to block S-4 / pro-forma
+// financial text that slips past the original SPAC offer language guard.
+const SPAC_MERGER_RE = /\b(?:public\s+shares?|public\s+stockholders?|business\s+combination|trust\s+account|blank\s+check\s+company|merger\s+consideration|equityholders?|minimum\s+cash\s+condition|gross\s+cash\s+proceeds|combined\s+new\s+company|pro\s+forma\s+enterprise\s+value)\b/i;
 
 function isSpacMergerText(value: string): boolean {
 	const s = sanitizeInlineText(value);

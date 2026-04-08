@@ -103,6 +103,12 @@ function normSeg(s: unknown): string {
   if (!t) return '';
   if (t === 'gtm') return 'go_to_market';
   if (t === 'market_size') return 'market';
+  // Alias: visual-classifier variants that some decks produce.
+  // normalizeAnalystSegment() strips these to null today, but callers may pass
+  // raw segment strings from other sources (e.g. dashboard inspector, future
+  // extraction pipelines), so alias them defensively here.
+  if (t === 'product_solution') return 'product';
+  if (t === 'market_icp') return 'market';
   return t;
 }
 

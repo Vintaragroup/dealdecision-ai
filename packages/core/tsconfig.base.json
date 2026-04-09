@@ -10,8 +10,6 @@
     "skipLibCheck": true,
     "strict": true,
     "types": ["node"],
-    "outDir": "dist",
-    "downlevelIteration": true,
-    "ignoreDeprecations": "5.0"
+    "outDir": "dist"
   }
 }

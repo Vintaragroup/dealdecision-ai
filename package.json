@@ -74,6 +74,11 @@
     "proof:dpu-stale": "node scripts/proof_dpu_stale_recovery.mjs",
     "deal-understanding-regression": "tsx scripts/deal-understanding-regression.ts",
 
+    "eval:regression": "python3 evaluation/pipeline_regression/run.py",
+    "eval:regression:case": "python3 evaluation/pipeline_regression/run.py --case",
+    "eval:regression:no-fail": "python3 evaluation/pipeline_regression/run.py --no-fail",
+    "eval:regression:ci": "python3 evaluation/pipeline_regression/run.py --json-only",
+
     "playwright:install": "playwright install chromium",
     "test:ui": "playwright test",
     "test:ui:debug": "playwright test tests/ui/debug.spec.ts",

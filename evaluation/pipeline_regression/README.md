@@ -147,6 +147,56 @@ Each run writes to `artifacts/`:
 
 ---
 
+## CI / GitHub Actions
+
+### Workflow
+
+The suite runs via `.github/workflows/pipeline-regression.yml`.
+
+**Triggers:**
+- `pull_request` — on PRs that touch `apps/api/`, `apps/worker/`, `packages/core/`, `evaluation/pipeline_regression/`, or `evaluation/ground_truth/`
+- `workflow_dispatch` — manual run at any time
+
+**Required repo secrets** (Settings → Secrets → Actions):
+
+| Secret | Description |
+|--------|-------------|
+| `PIPELINE_REGRESSION_API_URL` | Base URL of the staging/prod API (e.g. `https://api.staging.dealdecision.ai`) |
+| `PIPELINE_REGRESSION_DB_URL` | Postgres DSN for the same environment |
+
+If either secret is absent, the preflight job emits a warning and the suite is **skipped** (not failed). Configure both secrets to activate the gate.
+
+**Pass/fail semantics:**
+- Exit 0 if all checks are `PASS`, `KNOWN_ISSUE`, or `SKIP`.
+- Exit 1 (workflow fails) if **any** check is `FAIL`.
+- `KNOWN_ISSUE` does **not** block the gate. It documents a tracked regression.
+
+**Artifacts:**
+
+Each run uploads `regression-reports-<sha>` (retained 30 days) containing:
+- `artifacts/regression_suite_report_ci-<sha>.md` — full suite report
+- `artifacts/regression_suite_report_ci-<sha>.json` — machine-readable
+- `artifacts/regression_suite_latest.md` / `.json` — stable latest copies
+
+### Environment variables
+
+The runner respects these environment variables in lieu of CLI flags:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `PIPELINE_REGRESSION_API_URL` | `http://localhost:9001` | API base URL used for `/report`, DIO, and financial-facts fetches |
+| `PIPELINE_REGRESSION_DB_URL` | `postgresql://postgres:postgres@localhost:55433/dealdecision` | Can also be passed via `--db-url` |
+
+### Staged promotion plan
+
+| Phase | Gate type | Status |
+|-------|-----------|--------|
+| Phase 1 (current) | PR visibility — appears as a **check** on every qualifying PR | Active |
+| Phase 2 | Required check — PRs to `main`/`develop` cannot merge with a `FAIL` | When suite is stable for 2+ weeks |
+| Phase 3 | Deployment gate — blocks staging promotion on regression | After Phase 2 is proven |
+
+---
+
 ## CLI reference
 
 ```

@@ -23,6 +23,7 @@ Deal mapping priority
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -40,7 +41,7 @@ GT_DIR        = _EVAL_ROOT / "ground_truth"
 REF_DEALS_DIR = _REPO_ROOT / "docs" / "reference-deal-docs"
 
 # ── API settings ─────────────────────────────────────────────────────────────
-API_BASE    = "http://localhost:9001"
+API_BASE    = os.getenv("PIPELINE_REGRESSION_API_URL", "http://localhost:9001")
 API_TIMEOUT = 30   # seconds per request
 
 # ── DB settings ──────────────────────────────────────────────────────────────

@@ -77,7 +77,7 @@
     "eval:regression": "python3 evaluation/pipeline_regression/run.py",
     "eval:regression:case": "python3 evaluation/pipeline_regression/run.py --case",
     "eval:regression:no-fail": "python3 evaluation/pipeline_regression/run.py --no-fail",
-    "eval:regression:ci": "python3 evaluation/pipeline_regression/run.py --json-only",
+"eval:regression:ci": "python3 evaluation/pipeline_regression/run.py",
 
     "playwright:install": "playwright install chromium",
     "test:ui": "playwright test",

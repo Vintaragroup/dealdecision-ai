@@ -159,6 +159,17 @@ export * from "./services/purge-deal-cascade";
 
 // Reports
 export { compileDIOToReport, compileDIOToReportWithPromotedFacts } from "./reports/compiler-simple";
+export {
+  applyFieldAuthorityGuards,
+  applyStructuredSummaryFillIns,
+} from "./reports/field-authority-guard";
+export type {
+  FieldAuthorityGuardContext,
+  FieldAuthorityGuardResult,
+  GuardDecision,
+  GuardRejectionReason,
+  GuardAuthorityTier,
+} from "./reports/field-authority-guard";
 export { buildConvictionV1 } from "./reports/conviction-v1";
 export { detectFinancialSnapshotStaleness } from "./reports/financial-snapshot-staleness";
 export type { FinancialSnapshotStalenessResult } from "./reports/financial-snapshot-staleness";

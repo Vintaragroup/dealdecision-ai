@@ -36,6 +36,13 @@ import type { ConvictionV1 } from '../models/conviction-v1.js';
 import type { FinancialIntegrityV1 } from '../types/financial-integrity-v1.js';
 import { computeFinancialIntegrityV1 } from '../analyzers/financial-integrity-analyzer-v1.js';
 import { buildConvictionV1 } from './conviction-v1.js';
+import {
+  applyFieldAuthorityGuards,
+  applyStructuredSummaryFillIns,
+  type FieldAuthorityGuardContext,
+} from './field-authority-guard.js';
+import { selectBestCandidatesPerField } from './field-candidate-selector.js';
+import { applyFinalPublishGuard } from './final-publish-guard.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -1922,7 +1929,53 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 }): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
-  const structuredSummary = buildStructuredSummary(dio, scoreExplanation, opts?.promotedFacts ?? undefined);
+
+  // ── Field Authority Guard ────────────────────────────────────────────────
+  // Filter promoted facts before compilation to block false positives that would
+  // otherwise pollute raise, revenue, and business_model fields.
+  const guardContext: FieldAuthorityGuardContext = {
+    deal_type: (dio as any)?.dio?.phase1?.business_archetype_v1?.value
+      ?? (dio as any)?.dio?.phase1?.deal_overview_v2?.deal_type
+      ?? null,
+    documents: (() => {
+      if (Array.isArray(opts?.documents)) return opts!.documents;
+      const dioDocList = (dio as any)?.inputs?.documents;
+      return Array.isArray(dioDocList) ? dioDocList : null;
+    })(),
+    dio,
+  };
+  const guardResult = applyFieldAuthorityGuards(opts?.promotedFacts ?? [], guardContext);
+  const guardedFacts: PromotedFactInput[] = guardResult.acceptedFacts as PromotedFactInput[];
+
+  // ── Field Candidate Selector ─────────────────────────────────────────────
+  // Rank accepted facts by document authority + positive content signals.
+  // Winner per field type is placed first; weaker same-type candidates dropped.
+  const selectorResult = selectBestCandidatesPerField(guardedFacts, {
+    deal_type: guardContext.deal_type,
+    documents: guardContext.documents as any[] | null,
+  });
+  const selectedFacts: PromotedFactInput[] = selectorResult.orderedFacts as PromotedFactInput[];
+  // ────────────────────────────────────────────────────────────────────────
+
+  const structuredSummary = buildStructuredSummary(
+    dio,
+    scoreExplanation,
+    selectedFacts.length > 0 || (opts?.promotedFacts ?? []).length > 0 ? selectedFacts : opts?.promotedFacts ?? undefined,
+  );
+
+  // ── Fill null product/market summary from governed_ui_copy_v1 / overview ─
+  applyStructuredSummaryFillIns(structuredSummary as Record<string, any>, guardResult.structuredSummaryFillIns);
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── Final Publish Guard ──────────────────────────────────────────────────
+  // Null bad output values that leaked through DIO phase1 fallback paths
+  // (deal_overview_v2.raise, business_model_arbitration_v1).
+  const publishGuardResult = applyFinalPublishGuard(
+    structuredSummary as Record<string, any>,
+    { deal_type: guardContext.deal_type, dio },
+    guardContext.documents as any[] | null,
+  );
+  // ────────────────────────────────────────────────────────────────────────
 
   // Inject canonical revenue fact (all source kinds) before revenue display string is computed.
   if (opts?.financialFacts && opts.financialFacts.length > 0) {
@@ -2181,6 +2234,18 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 			...(base as any).metadata,
 			score_explanation: scoreExplanationAugmented,
       revenue_convergence: revenueConvergenceDiagnostic,
+      field_authority_guard: guardResult.guardLog.length > 0 ? {
+        rejected_count: guardResult.rejectedFacts.length,
+        accepted_count: guardResult.acceptedFacts.length,
+        log: guardResult.guardLog,
+        fill_ins_applied: Object.keys(guardResult.structuredSummaryFillIns),
+      } : undefined,
+      field_candidate_selector: selectorResult.selectionLog.length > 0 ? selectorResult.selectionLog : undefined,
+      final_publish_guard: publishGuardResult.log.some((e) => e.action !== 'kept') ? {
+        fields_nulled: publishGuardResult.fields_nulled,
+        fields_replaced: publishGuardResult.fields_replaced,
+        log: publishGuardResult.log.filter((e) => e.action !== 'kept'),
+      } : undefined,
 		},
 	};
 }

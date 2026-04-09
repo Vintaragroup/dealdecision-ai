@@ -85,22 +85,7 @@
       }
     },
     "validation": {
-      "extraction_checks": [
-        {
-          "metric_key": "financial_breakdown_data_quality",
-          "report_path": ["financial_breakdown_v1", "current_state", "data_quality"],
-          "expected_string": "missing",
-          "failure_layer": "compiler",
-          "note": "No XLSX, no structured financial model exists for this fund. data_quality = 'missing' is the correct expected state. If this changes to 'partial' or 'full', a document was incorrectly classified as a financial model."
-        },
-        {
-          "metric_key": "financial_coverage_has_xlsx",
-          "report_path": ["financial_breakdown_v1", "has_xlsx"],
-          "expected_value": false,
-          "failure_layer": "compiler",
-          "note": "No XLSX present. Both docs are PDFs (fund presentation + performance summary). has_xlsx = false must be stable."
-        }
-      ],
+      "extraction_checks": [],
       "noise_checks": [
         {
           "label": "AUM must not appear as raise_amount",
@@ -166,6 +151,20 @@
           "expected_min": 0.70,
           "failure_layer": "compiler",
           "note": "Current confidence is 0.7125. The fund_spv classification has moderate confidence — if this drops below 0.70, the fund signals are weakening and the classification may be at risk of misclassifying into another archetype."
+        },
+        {
+          "label": "financial_breakdown data_quality must be missing",
+          "report_path": ["financial_breakdown_v1", "current_state", "data_quality"],
+          "expected_string": "missing",
+          "failure_layer": "compiler",
+          "note": "No XLSX, no structured financial model exists for this fund. data_quality = 'missing' is the correct expected state. If this changes to 'partial' or 'full', a document was incorrectly classified as a financial model."
+        },
+        {
+          "label": "financial_breakdown has_xlsx must be false",
+          "report_path": ["financial_breakdown_v1", "has_xlsx"],
+          "expected_value": false,
+          "failure_layer": "compiler",
+          "note": "No XLSX present. Both docs are PDFs (fund presentation + performance summary). has_xlsx = false must be stable."
         }
       ],
       "dio_checks": [
@@ -191,11 +190,11 @@
           "note": "investment_analysis_overview_v2.archetype.value = 'fund_spv' (confidence 0.57). This is the only archetype signal visible at the report layer (business_archetype_v1 is null at the worker layer per BUG-MFUND-3). Must remain fund_spv."
         },
         {
-          "label": "business_archetype_v1 from DIO must be null (known behavior BUG-MFUND-3)",
+          "label": "business_archetype_v1 from DIO must be fund_spv",
           "dio_path": ["phase1", "business_archetype_v1", "value"],
-          "expected_value": null,
+          "expected_string": "fund_spv",
           "failure_layer": "worker",
-          "note": "EXPECTED CURRENT BEHAVIOR (BUG-MFUND-3). Worker does not emit business_archetype_v1 for fund deals — the archetype analyzer produces no output. If this changes to a non-null value, verify whether the new archetype value is correct (fund_spv or hedge_fund would be correct; consumer_product or de_spac would be regression)."
+          "note": "BUG-MFUND-3 RESOLVED. Worker now correctly emits business_archetype_v1 = 'fund_spv' for this LP fund deal (confidence 0.57, evidence rules fund:lp_gp and fund:carry_fees). If this regresses to null, the archetype analyzer has stopped producing output for fund deals. If it changes to consumer_product or de_spac, that is a classification regression."
         }
       ],
       "evidence_checks": [

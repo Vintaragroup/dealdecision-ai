@@ -87,12 +87,6 @@
           "tolerance_pct": 20,
           "allowed_source_kinds": ["deck"],
           "note": "Current ARR = $1M from pitch deck page 6. The financial_facts_v1 table correctly stores both 'arr' and 'revenue' at $1M from the deck (low confidence). This tests that the deck-layer extraction captures the right current figure."
-        },
-        {
-          "metric_key": "raise_amount",
-          "expected_value": 4000000,
-          "tolerance_pct": 10,
-          "note": "capital_logic_v1.raise.amount = $4,000,000 (page 4 of pitch deck / Q&A doc context). The $4M raise is the only coherent raise signal. Round label = 'Growth'."
         }
       ],
       "noise_checks": [
@@ -132,6 +126,21 @@
           "expected_value": false,
           "failure_layer": "compiler",
           "note": "No XLSX present. If has_xlsx flips to true, a document was misclassified as a financial model."
+        },
+        {
+          "label": "capital_logic_v1 raise amount must be $4M",
+          "report_path": ["capital_logic_v1", "raise", "amount"],
+          "expected_value": 4000000,
+          "tolerance_pct": 10,
+          "failure_layer": "compiler",
+          "note": "capital_logic_v1.raise.amount = $4,000,000. The financial_facts_v1 table does not store raise_amount for this deal — capital_logic_v1 is the reliable source. Round label = 'Growth'."
+        },
+        {
+          "label": "capital_logic_v1 raise present must be true",
+          "report_path": ["capital_logic_v1", "raise", "present"],
+          "expected_value": true,
+          "failure_layer": "compiler",
+          "note": "capital_logic_v1.raise.present = true confirms the pipeline detected the $4M raise."
         }
       ],
       "dio_checks": [
@@ -157,15 +166,7 @@
           "note": "Confidence was 0.484 — the consumer_product archetype fired weakly. If confidence jumps above 0.55, the CPG pattern match is becoming stronger (regression risk)."
         }
       ],
-      "evidence_checks": [
-        {
-          "label": "capital_logic raise must be present",
-          "report_path": ["capital_logic_v1", "raise", "present"],
-          "expected_value": true,
-          "failure_layer": "compiler",
-          "note": "Even though raise_terms is garbled, capital_logic_v1.raise.present = true and amount = $4M. This is the reliable source for the raise amount."
-        }
-      ]
+      "evidence_checks": []
     }
   }
 }

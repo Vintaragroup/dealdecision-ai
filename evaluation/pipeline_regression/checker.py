@@ -280,17 +280,77 @@ def _eval_extraction_check(
             note=note,
         )
 
-    # Best row: prefer highest numeric confidence, then first
+    # ── Guard 1: year-value corruption filter (mirrors isCorruptedFact in TS) ──
+    # Removes XLSX column-header scrape artefacts where the stored value equals
+    # a calendar year integer that also appears in the period_label.
+    # E.g. value=2028, period_label="2028", unit="currency" → artefact of
+    # the XLSX parser reading a column header cell as a data value.
+    def _is_year_value_corruption(f: dict) -> bool:
+        v = f.get("value")
+        # psycopg2 returns numeric columns as Decimal — normalize to float
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return False
+        if fv != int(fv):
+            return False
+        iv = int(fv)
+        if not (1990 <= iv <= 2100):
+            return False
+        pl = str(f.get("period_label") or "")
+        yr_match = re.search(r'(?<!\d)((?:19|20)\d{2})(?!\d)', pl)
+        if yr_match:
+            if int(yr_match.group(1)) == iv:
+                return True  # year_equals_value
+            if f.get("unit") == "currency":
+                return True  # year_integer_as_currency
+        return False
+
+    # ── Guard 2: Year-N projected XLSX filter (mirrors isProjectedFact in TS) ─
+    # Removes XLSX facts for ordinal "Year N" period labels (forward projections
+    # in financial models, e.g. "Year 11", "Year 12"). These are never
+    # current-state actuals and must not shadow real KPI data.
+    def _is_xlsx_year_projection(f: dict) -> bool:
+        return (
+            f.get("source_kind") == "xlsx"
+            and bool(re.match(r'^Year\s+\d+$', str(f.get("period_label") or ""), re.IGNORECASE))
+        )
+
+    # Apply guards to narrow matching facts before confidence sort.
+    # Mirrors the corruption + projection filtering in select-authoritative-fact.ts.
+    # Fallback: if guards remove all facts, use unfiltered set (avoids false SKIPs).
+    usable = [
+        f for f in matching
+        if not _is_year_value_corruption(f) and not _is_xlsx_year_projection(f)
+    ]
+    if usable:
+        matching = usable
+
+    # Best row: prefer highest numeric confidence; among ties prefer the earliest
+    # calendar year in period_label (mirrors selectCanonicalRevenueFact Tier D —
+    # "most conservative, closest-to-current" proforma selection).
+    def _get_period_year(f: dict) -> int:
+        m = re.search(r'(?<!\d)(20\d{2})(?!\d)', str(f.get("period_label") or ""))
+        return int(m.group(1)) if m else 9999
+
     def _conf_sort(f: dict) -> float:
         c = f.get("confidence")
         try:
-            return float(c)
-        except Exception:
+            return float(c)  # handles Decimal and numeric confidence values
+        except (TypeError, ValueError):
             # string confidence levels
             return {"high": 0.9, "medium": 0.7, "low": 0.4}.get(str(c).lower(), 0.5)
 
-    best = sorted(matching, key=_conf_sort, reverse=True)[0]
-    actual_val = best.get("value")
+    def _fact_value_float(f: dict):
+        """Return the fact value as float, handling Decimal from psycopg2."""
+        try:
+            return float(f.get("value"))
+        except (TypeError, ValueError):
+            return None
+
+    # Sort: primary = confidence descending, secondary = period year ascending
+    best = sorted(matching, key=lambda f: (-_conf_sort(f), _get_period_year(f)))[0]
+    actual_val = _fact_value_float(best)
 
     # Source kind check
     if allowed:
@@ -426,7 +486,15 @@ def _eval_noise_check(
         # expected_max — numeric ceiling
         if "expected_max" in check:
             expected_max = check["expected_max"]
-            actual_val   = None if _is_null_or_missing(value) else _extract_numeric(value)
+            if _is_null_or_missing(value):
+                # Absent/null value vacuously satisfies the noise upper-bound guard.
+                # (null = no value present = not a corrupt billion-scale figure).
+                return CheckResult(
+                    category="noise", label=label, outcome=PASS, actual=None,
+                    expected_desc=f"{'.'.join(path)} <= {expected_max} (absent — satisfies guard)",
+                    note=note,
+                )
+            actual_val = _extract_numeric(value)
             if actual_val is None:
                 return CheckResult(
                     category="noise", label=label, outcome=SKIP, actual=value,
@@ -638,6 +706,29 @@ def _eval_dio_check(check: dict, dio_data: Optional[dict], gt: dict) -> CheckRes
     if "expected_string" in check:
         return _check_string(value, check["expected_string"], label, "dio", path, note, gt)
 
+    if "expected_string_contains" in check:
+        substr = check["expected_string_contains"]
+        if _is_null_or_missing(value):
+            outcome = FAIL
+            ki = _match_known_issue(label, gt, note)
+            if ki: outcome = KNOWN_ISSUE
+            return CheckResult(
+                category="dio", label=label, outcome=outcome, actual=None,
+                expected_desc=f"{path_str} contains '{substr}'",
+                note=note, diff_snippet="path missing / null",
+                known_issue_ref=ki or "",
+            )
+        outcome = PASS if _string_contains(value, substr) else FAIL
+        ki = _match_known_issue(label, gt, note) if outcome == FAIL else None
+        if ki: outcome = KNOWN_ISSUE
+        return CheckResult(
+            category="dio", label=label, outcome=outcome, actual=value,
+            expected_desc=f"{path_str} contains '{substr}'",
+            note=note,
+            diff_snippet="" if outcome == PASS else f"actual='{value}' does not contain '{substr}'",
+            known_issue_ref=ki or "",
+        )
+
     if "expected_value" in check:
         return _check_exact(value, check["expected_value"], label, "dio", path, note, gt)
 
@@ -711,7 +802,7 @@ def _eval_evidence_check(
     if "report_path" in check and report is not None:
         source_obj = report
     elif "dio_path" in check and dio_data is not None:
-        source_obj = _nav_dio(dio_data, [])  # just use dio_data root
+        source_obj = dio_data  # use dio_data root directly
         path = check["dio_path"]
 
     if source_obj is None:
@@ -723,6 +814,29 @@ def _eval_evidence_check(
     if not fact_type:
         # Plain path-based evidence check (no promoted_facts filtering)
         value = _nav(source_obj, path) if "report_path" in check else _nav_dio(source_obj, path)
+
+        # expected_rule_present — evidence array is a list of dicts with a "rule" key
+        if "expected_rule_present" in check:
+            rule_name = check["expected_rule_present"]
+            rule_names: list = []
+            if isinstance(value, list):
+                rule_names = [
+                    item.get("rule", item) if isinstance(item, dict) else str(item)
+                    for item in value
+                ]
+            ok = rule_name in rule_names
+            outcome = PASS if ok else FAIL
+            ki = _match_known_issue(label, gt, note) if outcome == FAIL else None
+            if ki: outcome = KNOWN_ISSUE
+            return CheckResult(
+                category="evidence", label=label, outcome=outcome,
+                actual=rule_names if rule_names else value,
+                expected_desc=f"evidence contains rule '{rule_name}'",
+                note=note,
+                diff_snippet="" if outcome == PASS else f"rules={rule_names}, expected to contain '{rule_name}'",
+                known_issue_ref=ki or "",
+            )
+
         if diag:
             return _eval_diagnostic(value, diag, label, note, gt)
         # Fall through to SKIP — missing assertion

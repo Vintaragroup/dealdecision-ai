@@ -736,7 +736,12 @@ function parseLooseCurrency(s: string): number | null {
  * Returns null if no recognizable amount found.
  */
 function parseDeckAmount(text: string): number | null {
-  const m = text.match(/\$\s*([\d,]+(?:\.\d+)?)\s*([KkMmBbTt]?)/);
+  // The negative lookahead (?!\w) after the multiplier group prevents capturing
+  // the leading letter of adjacent words as a scale suffix.
+  // e.g. "$2,352,769 Bank" → B from "Bank" is NOT captured as billion multiplier.
+  // Standalone suffixes ("$2.5B", "$2.5 B", "$2.5 billion") still work correctly:
+  // the engine backtracks to match empty suffix when the letter is word-continued.
+  const m = text.match(/\$\s*([\d,]+(?:\.\d+)?)\s*([KkMmBbTt]?)(?!\w)/);
   if (!m) return null;
   const base = parseFloat(m[1].replace(/,/g, ""));
   const mult = m[2]?.toUpperCase();

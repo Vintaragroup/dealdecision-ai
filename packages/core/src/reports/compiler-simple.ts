@@ -577,7 +577,7 @@ function buildStructuredSummary(
 
   const arbitrationV1 = phase1?.business_model_arbitration_v1;
   const arbitratedModel = asNonEmptyString(arbitrationV1?.business_model);
-  if (arbitratedModel) {
+  if (arbitratedModel && !structured.business_model.value) {
     const evidence = Array.isArray(arbitrationV1?.evidence) ? arbitrationV1.evidence : [];
     const sources = evidence.map((e: any) => ({
       kind: 'phase1.business_model_arbitration_v1',

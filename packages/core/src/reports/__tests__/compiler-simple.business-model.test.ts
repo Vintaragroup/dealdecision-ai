@@ -100,7 +100,7 @@ describe("compileDIOToReportWithPromotedFacts business model", () => {
 		expect(report.structured_summary?.business_model?.sources ?? []).toHaveLength(0);
 	});
 
-	it("prefers Phase 1 business model arbitration over promoted facts", () => {
+	it("promoted fact wins over Phase 1 business model arbitration (arbitration is a fallback only)", () => {
 		const now = new Date().toISOString();
 		const dio: any = {
 			schema_version: "1.0.0",
@@ -141,7 +141,38 @@ describe("compileDIOToReportWithPromotedFacts business model", () => {
 			},
 		];
 
+		// The selected promoted fact takes precedence over DIO arbitration.
+		// Arbitration is a fallback only — it should not overwrite a valid selector winner.
 		const report = compileDIOToReportWithPromotedFacts(dio, { promotedFacts });
+		expect(report.structured_summary?.business_model?.value).toBe("Omnichannel (DTC + Wholesale/Retail)");
+	});
+
+	it("falls back to Phase 1 business model arbitration when no promoted facts are present", () => {
+		const now = new Date().toISOString();
+		const dio: any = {
+			schema_version: "1.0.0",
+			dio_id: "00000000-0000-4000-8000-000000000701",
+			deal_id: "00000000-0000-4000-8000-000000000702",
+			created_at: now,
+			updated_at: now,
+			analysis_version: 1,
+			dio_context: { primary_doc_type: "pitch_deck" },
+			inputs: { documents: [], evidence: [], config: { analyzer_versions: {}, features: {}, parameters: {} } },
+			analyzer_results: {},
+			dio: {
+				phase1: {
+					business_model_arbitration_v1: {
+						business_model: "saas",
+						confidence: 0.81,
+						evidence: [
+							{ model: "saas", kind: "subscription_signals", weight: 0.9, detail: "MRR/ARR mentioned", source: "phase1" },
+						],
+					},
+				},
+			},
+		};
+
+		const report = compileDIOToReportWithPromotedFacts(dio, { promotedFacts: [] });
 		expect(report.structured_summary?.business_model?.value).toBe("saas");
 		expect(report.structured_summary?.business_model?.label).toBe("Arbitrated");
 		expect(report.structured_summary?.business_model?.confidence).toBeCloseTo(0.81);

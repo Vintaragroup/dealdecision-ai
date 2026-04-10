@@ -104,7 +104,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 19; // bumped: apply numeric trust-gate suppression/fallback on cached report rebuild
+const REPORT_COMPILER_VERSION = 20; // bumped: field-authority-guard + field-candidate-selector + final-publish-guard integrated
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -2663,7 +2663,14 @@ export async function registerReportRoutes(
       // promoted-like facts directly from document_page_understanding payloads.
       // This keeps /report structured_summary accurate with page-level citations.
       const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
-      const hasRaise = promotedFacts.some((r: any) => factTypeOf(r) === 'raise_terms_v1');
+      const hasRaise = promotedFacts.some((r: any) => {
+        if (factTypeOf(r) !== 'raise_terms_v1') return false;
+        // Per-share prices (e.g. $1.092) are stored as raise_terms_v1 by some extractors but are
+        // NOT valid capital raise amounts. Only count raise facts with amount ≥ $1,000 so that
+        // a sub-dollar per-share artifact does not block the DPU fallback from finding the actual raise.
+        const amount = r?.content_json?.value_json?.amount?.amount ?? null;
+        return amount == null || (typeof amount === 'number' && amount >= 1000);
+      });
       const hasModel = promotedFacts.some((r: any) => factTypeOf(r) === 'business_model_v1');
       const hasKpi = promotedFacts.some((r: any) => {
         const ft = factTypeOf(r);
@@ -2698,7 +2705,6 @@ export async function registerReportRoutes(
 
             const ft = factTypeOf(r);
             if (ft === 'raise_terms_v1' && hasRaise) continue;
-            if (ft === 'business_model_v1' && hasModel) continue;
             promotedFacts.push(r as any);
             if (evidenceId) existingEvidenceIds.add(evidenceId);
           }
@@ -2797,9 +2803,19 @@ export async function registerReportRoutes(
           // - Prefer promoted fact display strings for raise + business_model (when present)
           // - Fall back to Phase1 executive_summary strings when promoted facts are missing
           // - IMPORTANT: do NOT override valuation-structured raises (they are intentionally normalized to amount-only)
+          // - IMPORTANT: do NOT override facts that were rejected by field_authority_guard — the
+          //   guard's decision takes precedence over the raw promoted-fact display string.
           try {
             if (report && typeof report === 'object' && (report as any).structured_summary && typeof (report as any).structured_summary === 'object') {
               const structured = (report as any).structured_summary as any;
+
+              // Build set of fact_types that were explicitly rejected by the field_authority_guard.
+              // Rejected facts must NOT be used to override the compiler's guarded output.
+              const _guardLog = Array.isArray((report as any)?.metadata?.field_authority_guard?.log)
+                ? (report as any).metadata.field_authority_guard.log : [];
+              const _guardRejectedTypes = new Set<string>(
+                _guardLog.filter((e: any) => e?.action === 'reject').map((e: any) => String(e?.fact_type ?? ''))
+              );
 
               const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
               const pickBestFact = (factType: string): any | null => {
@@ -2831,9 +2847,9 @@ export async function registerReportRoutes(
               const raiseHasStructuredValuation = Boolean(raiseValueJson && typeof raiseValueJson === 'object' && (raiseValueJson as any).valuation && typeof (raiseValueJson as any).valuation === 'object');
 
               let nextRaiseValue: string | null = null;
-              if (raiseFact) {
+              if (raiseFact && !_guardRejectedTypes.has('raise_terms_v1')) {
                 if (!raiseHasStructuredValuation && raiseDisplay) nextRaiseValue = raiseDisplay;
-              } else if (execRaise) {
+              } else if (!raiseFact && execRaise) {
                 nextRaiseValue = execRaise;
               }
 
@@ -2846,8 +2862,12 @@ export async function registerReportRoutes(
               const modelValueJson = modelFact?.content_json?.value_json ?? modelFact?.content_json?.valueJson ?? null;
               const modelDisplay = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
 
-              const nextBusinessModelValue = modelFact ? modelDisplay : execModel;
-              if (nextBusinessModelValue) {
+              const nextBusinessModelValue = (modelFact && !_guardRejectedTypes.has('business_model_v1'))
+                ? modelDisplay
+                : (!modelFact ? execModel : null);
+              // Only apply back-compat override when the compiler (guard+selector pipeline) did not
+              // already set a BM value. If the selector picked a winner, trust it.
+              if (nextBusinessModelValue && !structured.business_model?.value) {
                 if (!structured.business_model || typeof structured.business_model !== 'object') structured.business_model = {};
                 structured.business_model.value = nextBusinessModelValue;
               }
@@ -3517,8 +3537,17 @@ export async function registerReportRoutes(
             // - Prefer promoted fact display strings for raise + business_model (when present)
             // - Fall back to Phase1 executive_summary strings when promoted facts are missing
             // - IMPORTANT: do NOT override valuation-structured raises (they are intentionally normalized to amount-only)
+            // - IMPORTANT: do NOT override facts that were rejected by field_authority_guard.
             try {
               const structured = (report as any).structured_summary as any;
+
+              // Respect field_authority_guard decisions — rejected fact types must not re-enter via override.
+              const _guardLog2 = Array.isArray((report as any)?.metadata?.field_authority_guard?.log)
+                ? (report as any).metadata.field_authority_guard.log : [];
+              const _guardRejectedTypes2 = new Set<string>(
+                _guardLog2.filter((e: any) => e?.action === 'reject').map((e: any) => String(e?.fact_type ?? ''))
+              );
+
               const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
               const pickBestFact = (factType: string): any | null => {
                 const rows = Array.isArray(promotedFacts) ? promotedFacts : [];
@@ -3549,9 +3578,9 @@ export async function registerReportRoutes(
               const raiseHasStructuredValuation = Boolean(raiseValueJson && typeof raiseValueJson === 'object' && (raiseValueJson as any).valuation && typeof (raiseValueJson as any).valuation === 'object');
 
               let nextRaiseValue: string | null = null;
-              if (raiseFact) {
+              if (raiseFact && !_guardRejectedTypes2.has('raise_terms_v1')) {
                 if (!raiseHasStructuredValuation && raiseDisplay) nextRaiseValue = raiseDisplay;
-              } else if (execRaise) {
+              } else if (!raiseFact && execRaise) {
                 nextRaiseValue = execRaise;
               }
 
@@ -3564,8 +3593,12 @@ export async function registerReportRoutes(
               const modelValueJson = modelFact?.content_json?.value_json ?? modelFact?.content_json?.valueJson ?? null;
               const modelDisplay = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
 
-              const nextBusinessModelValue = modelFact ? modelDisplay : execModel;
-              if (nextBusinessModelValue) {
+              const nextBusinessModelValue = (modelFact && !_guardRejectedTypes2.has('business_model_v1'))
+                ? modelDisplay
+                : (!modelFact ? execModel : null);
+              // Only apply back-compat override when the compiler (guard+selector pipeline) did not
+              // already set a BM value. If the selector picked a winner, trust it.
+              if (nextBusinessModelValue && !structured.business_model?.value) {
                 if (!structured.business_model || typeof structured.business_model !== 'object') structured.business_model = {};
                 structured.business_model.value = nextBusinessModelValue;
               }

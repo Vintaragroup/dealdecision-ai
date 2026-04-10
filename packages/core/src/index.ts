@@ -170,6 +170,8 @@ export type {
   GuardRejectionReason,
   GuardAuthorityTier,
 } from "./reports/field-authority-guard";
+export { classifyDocumentFamily, isForbiddenFamily } from "./reports/document-authority-tiers";
+export type { DocumentFamily, DocumentMeta } from "./reports/document-authority-tiers";
 export { buildConvictionV1 } from "./reports/conviction-v1";
 export { detectFinancialSnapshotStaleness } from "./reports/financial-snapshot-staleness";
 export type { FinancialSnapshotStalenessResult } from "./reports/financial-snapshot-staleness";

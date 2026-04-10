@@ -200,6 +200,19 @@ function applyRaiseGuard(
     reason = `Raise value "${value}" matches $1 series/preferred/convertible placeholder pattern`;
   } else if (
     isDeSpac &&
+    /^\$1B$/i.test(value) &&
+    amount === 1_000_000_000 &&
+    isPhase1Only
+  ) {
+    // "$1B" in a de-SPAC context from phase1-only sources is a well-known parseScaledNumber
+    // artifact: the DIO contains "$1 Series A Convertible Note" which gets strip-parsed as
+    // "$1B" because the 'b' in "Convertible" is treated as a billion suffix.
+    // Since de-SPAC deals that genuinely raised $1B would have promoted facts with doc citations,
+    // a phase1-only "$1B" is safe to null.
+    triggerRule = 'raise.dollar1b_despac_artifact';
+    reason = `de-SPAC raise "$1B" from phase1-only source — likely a parser artifact from "$1 ...Convertible..." text, not a genuine $1B transaction`;
+  } else if (
+    isDeSpac &&
     amount !== null &&
     amount < 100_000 &&
     isPhase1Only

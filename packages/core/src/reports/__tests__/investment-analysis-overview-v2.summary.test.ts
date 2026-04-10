@@ -188,3 +188,154 @@ describe('buildInvestmentAnalysisOverviewV2 — summary wiring', () => {
 		expect(result.summary_long).toBeNull();
 	});
 });
+
+// ─── P3: IAO summary text sanitization ───────────────────────────────────────
+
+describe('buildInvestmentAnalysisOverviewV2 — summary sanitization (P3)', () => {
+	const emptyReport = {};
+
+	function makeDioWithSummary(oneLiner: string, medium?: string, long?: string) {
+		const paragraphs: string[] = [];
+		if (medium) paragraphs.push(medium);
+		if (long) paragraphs.push(long);
+		return {
+			dio: {
+				phase1: {
+					deal_summary_v2: {
+						summary: { one_liner: oneLiner, paragraphs },
+					},
+				},
+			},
+			analyzer_results: {},
+		} as any;
+	}
+
+	function makeStructuredSummary(opts: {
+		raiseValue?: string | null;
+		bmValue?: string | null;
+		bmNulledBy?: string;
+	}) {
+		return {
+			raise: opts.raiseValue !== undefined
+				? { value: opts.raiseValue }
+				: null,
+			business_model: opts.bmValue !== undefined || opts.bmNulledBy
+				? {
+					value: opts.bmValue ?? null,
+					nulled_by: opts.bmNulledBy ?? null,
+					null_rule: opts.bmNulledBy ? 'business_model.generic_wholesale_tech_mismatch' : null,
+				}
+				: null,
+		};
+	}
+
+	// ── $1 de-SPAC artifact replacement ───────────────────────────────────
+
+	it('replaces "$1 Series A Convertible Note" with guarded raise value', () => {
+		const dio = makeDioWithSummary(
+			'The deal involves a $1 Series A Convertible Note in a de-SPAC transaction.',
+		);
+		const ss = makeStructuredSummary({ raiseValue: '$15MM' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).not.toContain('$1 Series A');
+		expect(result.summary).toContain('$15MM');
+	});
+
+	it('replaces "$1 Preferred Note" with guarded raise value', () => {
+		const dio = makeDioWithSummary('Company raising a $1 Preferred Note at $50M valuation.');
+		const ss = makeStructuredSummary({ raiseValue: '$10M' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).not.toContain('$1 Preferred');
+		expect(result.summary).toContain('$10M');
+	});
+
+	it('replaces "$1 Convertible" with guarded raise value', () => {
+		const dio = makeDioWithSummary('Round structured as $1 Convertible preferred share.');
+		const ss = makeStructuredSummary({ raiseValue: '$5M' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).not.toContain('$1 Convertible');
+		expect(result.summary).toContain('$5M');
+	});
+
+	it('does NOT replace $1 if no guarded raise value', () => {
+		const dio = makeDioWithSummary('$1 Convertible Note round.');
+		const ss = makeStructuredSummary({ raiseValue: null });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		// No replacement when guarded raise is null — leave as-is
+		expect(result.summary).toContain('$1 Convertible');
+	});
+
+	it('does NOT modify summary with no structured_summary passed', () => {
+		const dio = makeDioWithSummary(
+			'The deal involves a $1 Series A Convertible Note.',
+		);
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport });
+		expect(result.summary).toContain('$1 Series A');
+	});
+
+	// ── Wholesale/Retail replacement ──────────────────────────────────────
+
+	it('replaces "Wholesale/Retail" with guarded BM value when BM is non-null', () => {
+		const dio = makeDioWithSummary(
+			'The deal involves a de-SPAC transaction focused on the Wholesale/Retail business model.',
+		);
+		const ss = makeStructuredSummary({ bmValue: 'B2B2C' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).not.toMatch(/wholesale.*retail/i);
+		expect(result.summary).toContain('B2B2C');
+	});
+
+	it('replaces "wholesale and retail" (prose form) with guarded BM', () => {
+		const dio = makeDioWithSummary(
+			'A consumer e-commerce brand operating within the wholesale and retail sector.',
+		);
+		const ss = makeStructuredSummary({ bmValue: 'DTC Ecommerce' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).not.toMatch(/wholesale and retail/i);
+		expect(result.summary).toContain('DTC Ecommerce');
+	});
+
+	it('removes "Wholesale/Retail" when BM was nulled by FPG', () => {
+		const dio = makeDioWithSummary(
+			'A startup focused on wholesale/retail with significant traction signals.',
+		);
+		const ss = makeStructuredSummary({ bmValue: null, bmNulledBy: 'final_publish_guard' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).not.toMatch(/wholesale.*retail/i);
+	});
+
+	it('applies both $1 and BM substitutions in the same summary (Allurion case)', () => {
+		const dio = makeDioWithSummary(
+			'The deal involves a $1 Series A Convertible Note in a de-SPAC transaction focused on the Wholesale/Retail business model.',
+		);
+		const ss = makeStructuredSummary({ raiseValue: '$15MM', bmValue: 'B2B2C' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).not.toContain('$1 Series A');
+		expect(result.summary).toContain('$15MM');
+		expect(result.summary).not.toMatch(/wholesale.*retail/i);
+		expect(result.summary).toContain('B2B2C');
+	});
+
+	it('sanitizes summary_medium and summary_long as well', () => {
+		const dio = makeDioWithSummary(
+			'One liner with $1 Series A Convertible.',
+			'Medium: operating within the wholesale and retail sector.',
+			'Long: $1 Convertible Note details here.',
+		);
+		const ss = makeStructuredSummary({ raiseValue: '$8M', bmValue: 'SaaS' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).toContain('$8M');
+		expect(result.summary_medium).not.toMatch(/wholesale and retail/i);
+		expect(result.summary_medium).toContain('SaaS');
+		expect(result.summary_long).not.toContain('$1 Convertible');
+		expect(result.summary_long).toContain('$8M');
+	});
+
+	it('leaves clean summary text unmodified', () => {
+		const cleanSummary = 'AI-powered compliance platform raising $5M Seed round targeting supply chain.';
+		const dio = makeDioWithSummary(cleanSummary);
+		const ss = makeStructuredSummary({ raiseValue: '$5M', bmValue: 'SaaS' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).toBe(cleanSummary);
+	});
+});

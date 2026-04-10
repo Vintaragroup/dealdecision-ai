@@ -104,7 +104,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 20; // bumped: field-authority-guard + field-candidate-selector + final-publish-guard integrated
+const REPORT_COMPILER_VERSION = 26; // bumped: P3 IAO summary text sanitization — remove/replace guard-invalidated raise and BM values
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -2493,6 +2493,7 @@ export async function registerReportRoutes(
               const freshIaoV2 = buildInvestmentAnalysisOverviewV2({
                 dio: row.dio_data as any,
                 report: cacheHitReport,
+                structured_summary: (cacheHitReport as any)?.structured_summary ?? null,
               });
               cacheHitReport.investment_analysis_overview_v2 = freshIaoV2;
               const meta = { ...((cacheHitReport.metadata && typeof cacheHitReport.metadata === 'object' ? cacheHitReport.metadata : {})) };
@@ -2843,7 +2844,9 @@ export async function registerReportRoutes(
 
               const raiseFact = pickBestFact('raise_terms_v1');
               const raiseValueJson = raiseFact?.content_json?.value_json ?? raiseFact?.content_json?.valueJson ?? null;
-              const raiseDisplay = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              const _raiseDisplayRaw = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              // Filter sentinel "Unknown" — same rule as FPG raise.unknown_sentinel
+              const raiseDisplay = _raiseDisplayRaw && _raiseDisplayRaw.trim().toLowerCase() !== 'unknown' ? _raiseDisplayRaw : null;
               const raiseHasStructuredValuation = Boolean(raiseValueJson && typeof raiseValueJson === 'object' && (raiseValueJson as any).valuation && typeof (raiseValueJson as any).valuation === 'object');
 
               let nextRaiseValue: string | null = null;
@@ -2853,7 +2856,25 @@ export async function registerReportRoutes(
                 nextRaiseValue = execRaise;
               }
 
-              if (nextRaiseValue) {
+              // Sanitize prose-contaminated raise display: if the fact display is a narrative sentence
+              // and a clean structured amount is available, format it instead (mirrors FPG prose_contaminated rule).
+              if (nextRaiseValue && nextRaiseValue.length > 70 && (/[.!?,]/.test(nextRaiseValue) || nextRaiseValue.split(' ').length > 6)) {
+                const _ssAmt = structured.raise?.value_json?.amount?.amount ?? structured.raise?.value_json?.amount ?? null;
+                const _raiseAmt = typeof _ssAmt === 'number' && Number.isFinite(_ssAmt) && _ssAmt >= 100_000 ? _ssAmt : null;
+                if (_raiseAmt !== null) {
+                  const _x = _raiseAmt >= 1e9 ? `$${Number.isInteger(_raiseAmt/1e9) ? (_raiseAmt/1e9).toFixed(0) : (_raiseAmt/1e9 >= 10 ? (_raiseAmt/1e9).toFixed(0) : (_raiseAmt/1e9).toFixed(1))}B`
+                    : _raiseAmt >= 1e6 ? `$${Number.isInteger(_raiseAmt/1e6) ? (_raiseAmt/1e6).toFixed(0) : (_raiseAmt/1e6 >= 10 ? (_raiseAmt/1e6).toFixed(0) : (_raiseAmt/1e6).toFixed(1))}M`
+                    : `$${Math.round(_raiseAmt / 1000)}K`;
+                  const _rl = typeof structured.raise?.round_label === 'string' && structured.raise.round_label.trim() ? structured.raise.round_label.trim() : null;
+                  nextRaiseValue = _rl ? `${_x} (${_rl})` : _x;
+                }
+              }
+
+              // Do NOT override raise that was nulled or replaced by applyFinalPublishGuard.
+              // Same pattern as the business_model guard below.
+              const _fpgNulledRaise = structured.raise?.nulled_by === 'final_publish_guard';
+              const _fpgReplacedRaise = structured.raise?.replaced_by === 'final_publish_guard';
+              if (nextRaiseValue && !_fpgNulledRaise && !_fpgReplacedRaise) {
                 if (!structured.raise || typeof structured.raise !== 'object') structured.raise = {};
                 structured.raise.value = nextRaiseValue;
               }
@@ -2867,7 +2888,12 @@ export async function registerReportRoutes(
                 : (!modelFact ? execModel : null);
               // Only apply back-compat override when the compiler (guard+selector pipeline) did not
               // already set a BM value. If the selector picked a winner, trust it.
-              if (nextBusinessModelValue && !structured.business_model?.value) {
+              // CRITICAL: do NOT override a field intentionally nulled by applyFinalPublishGuard.
+              // When FPG nulls business_model (sets value=null + nulled_by='final_publish_guard'),
+              // the back-compat check `!structured.business_model?.value` would be true (null is falsy),
+              // causing the rejected value to be reinstated. The null_rule check prevents this.
+              const _fpgNulledBm = structured.business_model?.nulled_by === 'final_publish_guard';
+              if (nextBusinessModelValue && !structured.business_model?.value && !_fpgNulledBm) {
                 if (!structured.business_model || typeof structured.business_model !== 'object') structured.business_model = {};
                 structured.business_model.value = nextBusinessModelValue;
               }
@@ -3155,6 +3181,7 @@ export async function registerReportRoutes(
             const iaoV2 = buildInvestmentAnalysisOverviewV2({
               dio: row.dio_data as any,
               report,
+              structured_summary: (report as any)?.structured_summary ?? null,
             });
             (nextMetadata as any).investment_analysis_overview_v2 = iaoV2;
             // Also hoist to top-level on report so the canonical DataFlow path
@@ -3388,6 +3415,7 @@ export async function registerReportRoutes(
               const freshIaoV2 = buildInvestmentAnalysisOverviewV2({
                 dio: row.dio_data as any,
                 report: cached,
+                structured_summary: (cached as any)?.structured_summary ?? null,
               });
               (cached as any).investment_analysis_overview_v2 = freshIaoV2;
               const meta = { ...((cached as any).metadata && typeof (cached as any).metadata === 'object' ? (cached as any).metadata : {}) };
@@ -3574,7 +3602,9 @@ export async function registerReportRoutes(
 
               const raiseFact = pickBestFact('raise_terms_v1');
               const raiseValueJson = raiseFact?.content_json?.value_json ?? raiseFact?.content_json?.valueJson ?? null;
-              const raiseDisplay = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              const _raiseDisplayRaw2 = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              // Filter sentinel "Unknown" — same rule as FPG raise.unknown_sentinel
+              const raiseDisplay = _raiseDisplayRaw2 && _raiseDisplayRaw2.trim().toLowerCase() !== 'unknown' ? _raiseDisplayRaw2 : null;
               const raiseHasStructuredValuation = Boolean(raiseValueJson && typeof raiseValueJson === 'object' && (raiseValueJson as any).valuation && typeof (raiseValueJson as any).valuation === 'object');
 
               let nextRaiseValue: string | null = null;
@@ -3584,7 +3614,23 @@ export async function registerReportRoutes(
                 nextRaiseValue = execRaise;
               }
 
-              if (nextRaiseValue) {
+              // Sanitize prose-contaminated raise display string (mirrors FPG prose_contaminated rule).
+              if (nextRaiseValue && nextRaiseValue.length > 70 && (/[.!?,]/.test(nextRaiseValue) || nextRaiseValue.split(' ').length > 6)) {
+                const _ssAmt2 = structured.raise?.value_json?.amount?.amount ?? structured.raise?.value_json?.amount ?? null;
+                const _raiseAmt2 = typeof _ssAmt2 === 'number' && Number.isFinite(_ssAmt2) && _ssAmt2 >= 100_000 ? _ssAmt2 : null;
+                if (_raiseAmt2 !== null) {
+                  const _x2 = _raiseAmt2 >= 1e9 ? `$${Number.isInteger(_raiseAmt2/1e9) ? (_raiseAmt2/1e9).toFixed(0) : (_raiseAmt2/1e9 >= 10 ? (_raiseAmt2/1e9).toFixed(0) : (_raiseAmt2/1e9).toFixed(1))}B`
+                    : _raiseAmt2 >= 1e6 ? `$${Number.isInteger(_raiseAmt2/1e6) ? (_raiseAmt2/1e6).toFixed(0) : (_raiseAmt2/1e6 >= 10 ? (_raiseAmt2/1e6).toFixed(0) : (_raiseAmt2/1e6).toFixed(1))}M`
+                    : `$${Math.round(_raiseAmt2 / 1000)}K`;
+                  const _rl2 = typeof structured.raise?.round_label === 'string' && structured.raise.round_label.trim() ? structured.raise.round_label.trim() : null;
+                  nextRaiseValue = _rl2 ? `${_x2} (${_rl2})` : _x2;
+                }
+              }
+
+              // Do NOT override raise that was nulled or replaced by applyFinalPublishGuard.
+              const _fpgNulledRaise2 = structured.raise?.nulled_by === 'final_publish_guard';
+              const _fpgReplacedRaise2 = structured.raise?.replaced_by === 'final_publish_guard';
+              if (nextRaiseValue && !_fpgNulledRaise2 && !_fpgReplacedRaise2) {
                 if (!structured.raise || typeof structured.raise !== 'object') structured.raise = {};
                 structured.raise.value = nextRaiseValue;
               }
@@ -3680,6 +3726,7 @@ export async function registerReportRoutes(
           const iaoV2 = buildInvestmentAnalysisOverviewV2({
             dio: row.dio_data as any,
             report,
+            structured_summary: (report as any)?.structured_summary ?? null,
           });
           (nextMetadata as any).investment_analysis_overview_v2 = iaoV2;
           // Also hoist to top-level on report so the canonical DataFlow path

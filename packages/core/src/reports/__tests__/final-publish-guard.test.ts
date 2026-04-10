@@ -216,7 +216,7 @@ describe('applyFinalPublishGuard — business_model: wholesale/medtech mismatch'
     expect(result.fields_nulled).toContain('business_model');
   });
 
-  it('keeps "Wholesale/Retail" when no medtech product signals present', () => {
+  it('keeps "Wholesale/Retail" when no medtech and no tech product signals present', () => {
     const summary = {
       business_model: makeBusinessModelSummary('Wholesale/Retail', {
         sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
@@ -224,7 +224,7 @@ describe('applyFinalPublishGuard — business_model: wholesale/medtech mismatch'
     };
     const context = makeDeSpacContext({
       governed_ui_copy_v1: {
-        product_solution: 'Software analytics platform for enterprise data teams',
+        product_solution: 'Physical goods distribution for consumer apparel through brick-and-mortar retail stores',
       },
     });
 
@@ -346,5 +346,236 @@ describe('applyFinalPublishGuard — log completeness', () => {
     expect(() =>
       applyFinalPublishGuard(summary, { deal_type: 'de_spac', dio: null }),
     ).not.toThrow();
+  });
+});
+
+// ─── P1: Business model guard: wholesale/tech-platform mismatch ───────────────
+
+describe('applyFinalPublishGuard — business_model: wholesale/tech-platform mismatch (P1)', () => {
+  function makeTechContext(productSolution: string, govBM?: string): FinalPublishGuardContext {
+    return makeDeSpacContext({
+      governed_ui_copy_v1: {
+        product_solution: productSolution,
+        ...(govBM ? { business_model: govBM } : {}),
+      },
+    });
+  }
+
+  it('nulls "Wholesale/Retail" when SaaS platform signals present and no governed_ui_copy', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    const context = makeTechContext('SaaS compliance platform for financial services firms');
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('nulled');
+    expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
+    expect(summary.business_model.value).toBeNull();
+    expect(result.fields_nulled).toContain('business_model');
+  });
+
+  it('replaces "Wholesale/Retail" with governed_ui_copy when software/AI signals present', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    const context = makeTechContext(
+      'AI-powered workflow automation platform for enterprise teams',
+      'B2B SaaS subscription model licensing to mid-market and enterprise customers',
+    );
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('replaced');
+    expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
+    expect(summary.business_model.value).toContain('SaaS subscription');
+    expect(result.fields_replaced).toContain('business_model');
+  });
+
+  it('keeps "Wholesale/Retail" for truly physical goods distribution (no tech/medtech)', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    const context = makeTechContext('Consumer packaged goods distributed via traditional grocery and beverage retail');
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('kept');
+    expect(summary.business_model.value).toBe('Wholesale/Retail');
+  });
+
+  it('uses tech mismatch rule for API/marketplace context', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    const context = makeTechContext('API marketplace connecting data providers with analytics buyers');
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
+  });
+});
+
+// ─── P2: Raise guard: prose contamination ────────────────────────────────────
+
+describe('applyFinalPublishGuard — raise: prose contamination (P2)', () => {
+  it('replaces long narrative raise value with formatted amount when value_json.amount available', () => {
+    const longProse =
+      'Probility is seeking $4M in a Growth round to expand the platform into new markets and hire additional staff';
+    const summary = {
+      raise: {
+        value: longProse,
+        value_json: { amount: { amount: 4_000_000, currency: 'USD' } },
+        round_label: 'Growth',
+        confidence: 0.7,
+        sources: [],
+      },
+    };
+
+    const result = applyFinalPublishGuard(summary, makeDeSpacContext());
+
+    const log = result.log.find((e) => e.field === 'raise');
+    expect(log?.action).toBe('replaced');
+    expect(log?.rule).toBe('raise.prose_contaminated');
+    expect(log?.original_value).toBe(longProse);
+    expect(summary.raise.value).toBe('$4M (Growth)');
+    expect(result.fields_replaced).toContain('raise');
+  });
+
+  it('formats without round label when round_label is absent', () => {
+    const longProse =
+      'The company is raising up to seven million dollars to fund product development and expand its go-to-market efforts';
+    const summary = {
+      raise: {
+        value: longProse,
+        value_json: { amount: { amount: 7_000_000, currency: 'USD' } },
+        round_label: null,
+        confidence: 0.6,
+        sources: [],
+      },
+    };
+
+    applyFinalPublishGuard(summary, makeDeSpacContext());
+
+    expect(summary.raise.value).toBe('$7M');
+  });
+
+  it('does NOT replace short formatted raise value like "$4M Growth"', () => {
+    const summary = {
+      raise: makeRaiseSummary('$4M Growth', { amount: 4_000_000 }),
+    };
+
+    applyFinalPublishGuard(summary, makeDeSpacContext());
+
+    expect(summary.raise.value).toBe('$4M Growth');
+  });
+
+  it('does NOT replace when value_json.amount is below $100K', () => {
+    const longProse = 'This company is seeking a small bridge round to cover operating expenses for the next quarter';
+    const summary = {
+      raise: {
+        value: longProse,
+        value_json: { amount: { amount: 50_000, currency: 'USD' } },
+        round_label: null,
+        confidence: 0.5,
+        // Give a real doc source so de-SPAC tiny-amount rule does not also fire
+        sources: [{ kind: 'promoted_fact', document_id: 'doc-financials' }],
+      },
+    };
+
+    applyFinalPublishGuard(summary, makeDeSpacContext());
+
+    // Below $100K threshold — prose contamination rule should not replace
+    expect(summary.raise.value).toBe(longProse);
+  });
+
+  it('does NOT replace when no value_json.amount is present', () => {
+    const longProse =
+      'Seeking investment to expand the business into new geographic markets over the next two years';
+    const summary = {
+      raise: {
+        value: longProse,
+        value_json: null,
+        round_label: null,
+        confidence: 0.5,
+        sources: [],
+      },
+    };
+
+    applyFinalPublishGuard(summary, makeDeSpacContext());
+
+    // No structured amount → cannot replace, keep original
+    expect(summary.raise.value).toBe(longProse);
+  });
+
+  it('replaced raise preserves replaced_by and replace_rule provenance', () => {
+    const longProse =
+      'The startup is raising a $2.5M pre-seed round to build out its core infrastructure and expand to three new cities';
+    const summary = {
+      raise: {
+        value: longProse,
+        value_json: { amount: { amount: 2_500_000, currency: 'USD' } },
+        round_label: 'Pre-Seed',
+        confidence: 0.65,
+        sources: [],
+      },
+    };
+
+    applyFinalPublishGuard(summary, makeDeSpacContext());
+
+    expect(summary.raise.replaced_by).toBe('final_publish_guard');
+    expect(summary.raise.replace_rule).toBe('raise.prose_contaminated');
+    expect(summary.raise.value).toBe('$2.5M (Pre-Seed)');
+  });
+});
+
+// ─── P4: Raise guard: unknown sentinel ───────────────────────────────────────
+
+describe('applyFinalPublishGuard — raise: unknown sentinel (P4)', () => {
+  it('nulls "Unknown" sentinel raise value', () => {
+    const summary = { raise: makeRaiseSummary('Unknown') };
+    const result = applyFinalPublishGuard(summary, makeDeSpacContext());
+    expect(summary.raise.value).toBeNull();
+    const log = result.log.find((e: any) => e.field === 'raise');
+    expect(log?.rule).toBe('raise.unknown_sentinel');
+    expect(result.fields_nulled).toContain('raise');
+  });
+
+  it('nulls "UNKNOWN" (case-insensitive)', () => {
+    const summary = { raise: makeRaiseSummary('UNKNOWN') };
+    applyFinalPublishGuard(summary, makeDeSpacContext());
+    expect(summary.raise.value).toBeNull();
+  });
+
+  it('nulls "unknown" (lowercase)', () => {
+    const summary = { raise: makeRaiseSummary('unknown') };
+    applyFinalPublishGuard(summary, makeDeSpacContext());
+    expect(summary.raise.value).toBeNull();
+  });
+
+  it('does NOT null a real raise value that contains the word unknown', () => {
+    // Edge case — value starts with a dollar sign, not just the bare word
+    const summary = { raise: makeRaiseSummary('$5M (Pre-Seed)') };
+    applyFinalPublishGuard(summary, makeDeSpacContext());
+    expect(summary.raise.value).toBe('$5M (Pre-Seed)');
+  });
+
+  it('nulled raise sets nulled_by to final_publish_guard', () => {
+    const summary = { raise: makeRaiseSummary('Unknown') };
+    applyFinalPublishGuard(summary, makeDeSpacContext());
+    expect(summary.raise.nulled_by).toBe('final_publish_guard');
+    expect(summary.raise.null_rule).toBe('raise.unknown_sentinel');
   });
 });

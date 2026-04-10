@@ -131,7 +131,14 @@ export function buildDeterministicDealSummaryV1FromStructuredSummary(input: {
   const raiseAmountRaw = structured?.raise?.value_json?.amount?.amount;
   const raiseAmount = typeof raiseAmountRaw === 'number' && Number.isFinite(raiseAmountRaw) ? raiseAmountRaw : null;
   const raiseRound = asNonEmptyString(structured?.raise?.round_label) ?? null;
-  const raiseDisplay = raiseAmount != null ? formatMoneyUsdShort(raiseAmount) : (asNonEmptyString(structured?.raise?.value) ?? null);
+  const raiseDisplay = (() => {
+    if (raiseAmount != null) return formatMoneyUsdShort(raiseAmount);
+    const raw = asNonEmptyString(structured?.raise?.value);
+    if (!raw) return null;
+    // Treat sentinel "Unknown" as no-data — do not emit "Raise: Unknown." in summary tiers
+    if (raw.toLowerCase() === 'unknown') return null;
+    return raw;
+  })();
   const raiseSources = normalizeCitations(structured?.raise?.sources);
 
   const productText = asNonEmptyString(structured?.product_summary_v1?.value) ?? asNonEmptyString(structured?.product_summary?.value) ?? null;

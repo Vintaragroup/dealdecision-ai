@@ -98,6 +98,35 @@ function hasMedtechProductSignals(text: string | null): boolean {
   );
 }
 
+/**
+ * Check if a text contains software / technology platform signals.
+ *
+ * Applies alongside `hasMedtechProductSignals` so that the wholesale/retail BM guard
+ * also fires for SaaS, AI, analytics, and compliance platform deals — not only medtech.
+ */
+function hasTechPlatformContext(text: string | null): boolean {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  return (
+    /\bplatform\b/.test(t) ||
+    /\bsoftware\b/.test(t) ||
+    /\bsaas\b/.test(t) ||
+    /\bsubscription\b/.test(t) ||
+    /\b(ai|ml|machine\s+learning)\b/.test(t) ||
+    /\banalytics\b/.test(t) ||
+    /\bapi\b/.test(t) ||
+    /\bmarketplace\b/.test(t) ||
+    /\bcompliance\b/.test(t) ||
+    /\bautomation\b/.test(t) ||
+    /\bworkflow\b/.test(t) ||
+    /\bmonitoring\b/.test(t) ||
+    /\bdata\s+(platform|intelligence|science|management)\b/.test(t) ||
+    /\bcloud\b/.test(t) ||
+    /\bapp\b/.test(t) ||
+    /\bdigital\b/.test(t)
+  );
+}
+
 /** Return true if raise value looks like a per-share / liquidation-preference reference. */
 function isPerShareOrLiquidationRaise(value: string): boolean {
   const v = value.toLowerCase();
@@ -131,6 +160,37 @@ function getRaiseAmount(structuredRaise: any): number | null {
     structuredRaise?.value_json?.amount;
   if (typeof a === 'number' && Number.isFinite(a)) return a;
   return null;
+}
+
+/** Format a USD dollar amount in abbreviated form (same logic as deal-summary-v1-deterministic). */
+function formatMoneyUsdShort(amount: number): string {
+  const v = Number.isFinite(amount) ? amount : NaN;
+  if (!Number.isFinite(v)) return '—';
+  if (v >= 1e9) {
+    const x = v / 1e9;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}B`;
+  }
+  if (v >= 1e6) {
+    const x = v / 1e6;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}M`;
+  }
+  if (v >= 1e3) {
+    const x = v / 1e3;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}K`;
+  }
+  return `$${Math.round(v).toLocaleString()}`;
+}
+
+/** True if value looks like a prose sentence rather than a formatted raise display string. */
+function isProseContaminatedRaise(value: string): boolean {
+  // A clean raise string is short (e.g. "$4M Growth Round", "$4,000,000", "$4M (Growth)")
+  // A prose-contaminated string is long (whole sentence) and contains punctuation typical of prose.
+  if (value.length <= 70) return false;
+  // Must look like a sentence: multiple spaces (words) or sentence-ending punctuation
+  return /[.!?,]/.test(value) || (value.split(' ').length > 6);
 }
 
 /** True if value.sources all point to phase1 LLM paths (no promoted-fact doc citation). */
@@ -195,6 +255,10 @@ function applyRaiseGuard(
   if (isPerShareOrLiquidationRaise(value)) {
     triggerRule = 'raise.per_share_or_liquidation';
     reason = `Raise value "${value}" matches per-share / liquidation-preference pattern — not a transaction amount`;
+  } else if (/^unknown$/i.test(value.trim())) {
+    // "Unknown" is a DIO sentinel meaning no data was found — should never surface as a display string
+    triggerRule = 'raise.unknown_sentinel';
+    reason = `Raise value is the sentinel string "Unknown" — no actual raise data available; nulling to avoid "Raise: Unknown." in summary tiers`;
   } else if (isDollar1Placeholder(value)) {
     triggerRule = 'raise.dollar1_placeholder';
     reason = `Raise value "${value}" matches $1 series/preferred/convertible placeholder pattern`;
@@ -222,7 +286,39 @@ function applyRaiseGuard(
     reason = `de-SPAC raise amount ${amount} < $100K sourced from phase1-only (no doc citation) — likely per-share pricing, not transaction amount`;
   }
 
-  if (triggerRule) {
+  // Detect prose-contaminated raise value: long narrative string when a clean numeric amount is available.
+  // Applies broadly (not de-SPAC-only) — e.g. "Probility is seeking $4M to expand the platform..."  → "$4M (Growth)"
+  if (!triggerRule && isProseContaminatedRaise(value)) {
+    const proseAmount = getRaiseAmount(raise);
+    if (proseAmount !== null && proseAmount >= 100_000) {
+      triggerRule = 'raise.prose_contaminated';
+      reason = `Raise value is a prose narrative (length=${value.length}) but a clean numeric amount (${proseAmount}) is available from value_json — replacing with formatted display string`;
+    }
+  }
+
+  if (triggerRule === 'raise.prose_contaminated') {
+    const proseAmount = getRaiseAmount(raise)!;
+    const roundLabel = typeof raise?.round_label === 'string' && raise.round_label.trim()
+      ? raise.round_label.trim() : null;
+    const formatted = formatMoneyUsdShort(proseAmount);
+    const replacement = roundLabel ? `${formatted} (${roundLabel})` : formatted;
+    log.push({
+      field: 'raise',
+      action: 'replaced',
+      rule: triggerRule,
+      original_value: value,
+      replacement_value: replacement,
+      reason: reason ?? triggerRule,
+    });
+    structuredSummary.raise = {
+      ...raise,
+      value: replacement,
+      replaced_by: 'final_publish_guard',
+      replace_rule: triggerRule,
+      replace_reason: reason,
+    };
+    // prose contamination → replace path (not null), no further action
+  } else if (triggerRule) {
     log.push({
       field: 'raise',
       action: 'nulled',
@@ -316,25 +412,28 @@ function applyBusinessModelGuard(
     getNestedStr(getDioPhase1(context.dio), 'executive_summary_v1', 'product_description');
 
   const hasMedtech = hasMedtechProductSignals(productSolution);
+  const hasTech = hasTechPlatformContext(productSolution);
 
-  if (!hasMedtech) {
+  if (!hasMedtech && !hasTech) {
     log.push({
       field: 'business_model',
       action: 'kept',
-      rule: 'business_model.no_medtech_context',
+      rule: 'business_model.no_product_context',
       original_value: value,
       replacement_value: null,
-      reason: 'Generic wholesale term found but no medtech product signals detected — preserving value',
+      reason: 'Generic wholesale term found but no medtech or tech platform product signals detected — preserving value',
     });
     return;
   }
 
-  // Both conditions met: generic wholesale term + medtech context + no pitch deck source
+  // Both conditions met: generic wholesale term + medtech or tech platform context + no pitch deck source
   // → attempt to replace from governed_ui_copy_v1.business_model
   const govBM = asStr(guidedCopy?.business_model);
   const hasGoodReplacement = govBM !== null && govBM.length >= 20;
 
-  const triggerRule = 'business_model.generic_wholesale_medtech_mismatch';
+  const triggerRule = hasMedtech
+    ? 'business_model.generic_wholesale_medtech_mismatch'
+    : 'business_model.generic_wholesale_tech_mismatch';
 
   if (hasGoodReplacement) {
     log.push({

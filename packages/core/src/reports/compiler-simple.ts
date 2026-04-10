@@ -43,6 +43,7 @@ import {
 } from './field-authority-guard.js';
 import { selectBestCandidatesPerField } from './field-candidate-selector.js';
 import { applyFinalPublishGuard } from './final-publish-guard.js';
+import { logGuardrailBlock } from './kpi-guard.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -1174,15 +1175,10 @@ function buildStructuredSummary(
     }
   }
 
-  // Deterministic summary derived from the structured KPIs.
-  // Always present for persistence; may be refined by API-side node summaries.
-  try {
-    (structured as any).deal_summary_v1 = buildDeterministicDealSummaryV1FromStructuredSummary({
-      structured_summary: structured,
-    });
-  } catch {
-    // Best-effort: never fail report compilation.
-  }
+  // NOTE: deal_summary_v1 is intentionally NOT built here.
+  // It is rebuilt post-guard (after applyFinalPublishGuard + injectCanonicalRevenueIntoStructuredSummary)
+  // inside compileDIOToReportWithPromotedFacts so that hero/overview/deep tiers always
+  // reflect the fully guarded KPI values — never stale pre-guard values.
 
   // TopSection V1: score-driver summary (why is the score X?).
   // Separation contract: this is NEVER a company description.
@@ -1955,12 +1951,30 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     documents: guardContext.documents as any[] | null,
   });
   const selectedFacts: PromotedFactInput[] = selectorResult.orderedFacts as PromotedFactInput[];
-  // ────────────────────────────────────────────────────────────────────────
+
+  // ── Confidence-zero guardrail ──────────────────────────────────────────────
+  // Promoted facts with confidence === 0 represent explicitly invalid extractions.
+  // Block them before they can populate raise, revenue, or business_model.
+  // IMPORTANT: confidence=0 means UNKNOWN — treat as missing, not as a negative signal.
+  const preGuardedFacts = selectedFacts.filter((f) => {
+    const conf = typeof f.confidence === 'number' ? f.confidence : null;
+    if (conf === 0) {
+      logGuardrailBlock({
+        field: promotedFactTypeOf(f) || f.fact_type || 'unknown',
+        reason: 'CONFIDENCE_ZERO',
+        confidence: 0,
+        source: f.source_path ?? null,
+      });
+      return false;
+    }
+    return true;
+  });
+  // ────────────────────────────────────────────────────────────────────────────
 
   const structuredSummary = buildStructuredSummary(
     dio,
     scoreExplanation,
-    selectedFacts.length > 0 || (opts?.promotedFacts ?? []).length > 0 ? selectedFacts : opts?.promotedFacts ?? undefined,
+    preGuardedFacts.length > 0 || (opts?.promotedFacts ?? []).length > 0 ? preGuardedFacts : opts?.promotedFacts ?? undefined,
   );
 
   // ── Fill null product/market summary from governed_ui_copy_v1 / overview ─
@@ -2192,6 +2206,23 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     financial_breakdown_amount: bdRevenueAmount,
     backfill_applied: !revenuePathsConverged && bdRevenueAmount != null,
   };
+
+  // ── Rebuild deal_summary_v1 POST all guards ───────────────────────────────
+  // Must run AFTER:
+  //   1. applyFinalPublishGuard      (nulls invalid raise / business_model / revenue)
+  //   2. injectCanonicalRevenueIntoStructuredSummary (XLSX/PDF facts override)
+  //   3. revenue convergence guard   (back-fills from financial_breakdown)
+  //
+  // This guarantees hero/overview/deep tiers reflect guarded values only.
+  // Any field nulled by a guard will be absent from the tiers — never stale.
+  try {
+    (structuredSummary as any).deal_summary_v1 = buildDeterministicDealSummaryV1FromStructuredSummary({
+      structured_summary: structuredSummary,
+    });
+  } catch {
+    // Best-effort: never fail report compilation.
+  }
+  // ────────────────────────────────────────────────────────────────────────────
 
 	// ── Financial data quality score blend (Fix 15) ────────────────────────────
   // Blend the base overallScore (persisted DIO value) with a financial data quality

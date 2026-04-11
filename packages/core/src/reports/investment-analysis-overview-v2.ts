@@ -43,6 +43,8 @@ export type InvestmentAnalysisOverviewV2 = {
 	raise: { value: string | null; guarded: boolean } | null;
 	/** Business model sourced from guarded structured_summary (null when blocked by final_publish_guard). */
 	business_model: { value: string | null; guarded: boolean } | null;
+	/** Revenue sourced from guarded structured_summary (null when blocked by guard or "Unknown" sentinel). */
+	revenue: { value: string | null; guarded: boolean; is_projected: boolean } | null;
 };
 
 const uniqSorted = (arr: string[]): string[] => {
@@ -161,6 +163,17 @@ function sanitizeIaoText(text: string | null, structuredSummary: any): string | 
 			result = result.replace(/\bthe wholesale\s*(?:\/\s*retail|and retail|\s+retail)(?: (?:business model|sector|segment))?\b/gi, 'an undisclosed business model');
 			result = result.replace(wholesalePattern, '');
 		}
+	}
+
+	// 3. "Unknown" sentinel values — DIO phase1 summaries may contain bare "Unknown" as a
+	//    value placeholder if the extraction found no data and the guard cleared the field
+	//    before the summary was written. Target only sentinel-like uses (after colon, "of
+	//    Unknown", "raising Unknown") — leave natural-language "unknown" untouched.
+	if (/\bunknown\b/i.test(result)) {
+		result = result.replace(/\b(?:raise|revenue|amount|funding)\s*:\s*unknown\b/gi, '');
+		result = result.replace(/\braising\s+(?:an?\s+)?unknown\b(?:\s+(?:amount|round))?\b/gi, 'raising an undisclosed amount');
+		result = result.replace(/\b(?:an?\s+)?unknown\s+(?:raise|amount|funding|investment)\b/gi, 'an undisclosed amount');
+		result = result.replace(/\bof\s+unknown\b/gi, '');
 	}
 
 	// Clean up residual artefacts from text removal: multiple spaces and orphaned punctuation
@@ -301,6 +314,22 @@ export function buildInvestmentAnalysisOverviewV2(args: {
 			const guarded = !!(b.nulled_by === 'final_publish_guard' || b.null_rule);
 			const v = typeof b.value === 'string' && b.value.trim() ? b.value.trim() : null;
 			return { value: v, guarded };
+		})(),
+		revenue: (() => {
+			const ss = args.structured_summary;
+			if (!ss || typeof ss !== 'object') return null;
+			const r = (ss as any).revenue;
+			if (!r || typeof r !== 'object') return null;
+			const guarded = !!(r.nulled_by === 'final_publish_guard' || r.null_rule);
+			// Read value.raw (primary) → value_raw → value string
+			const rawStr =
+				(typeof r.value?.raw === 'string' && r.value.raw.trim() ? r.value.raw.trim() : null) ??
+				(typeof r.value_raw === 'string' && r.value_raw.trim() ? r.value_raw.trim() : null) ??
+				(typeof r.value === 'string' && r.value.trim() ? r.value.trim() : null);
+			// Suppress "Unknown" sentinel
+			const v = rawStr && rawStr.toLowerCase() !== 'unknown' ? rawStr : null;
+			const is_projected = !!(r.is_projected || r.is_provisional);
+			return { value: v, guarded, is_projected };
 		})(),
 	};
 }

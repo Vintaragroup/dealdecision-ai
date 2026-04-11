@@ -78,6 +78,36 @@ function getGovernedUiCopyV1(dio: any): any {
   return getDioPhase1(dio)?.governed_ui_copy_v1 ?? null;
 }
 
+/**
+ * Extract the deal_classification_v1 selected entry from the DIO.
+ * The `selected` object is the winning policy entry from the classification step.
+ */
+function getDealClassification(dio: any): any {
+  return (dio as any)?.dio?.deal_classification_v1?.selected ?? null;
+}
+
+/**
+ * Returns true when deal_classification_v1 explicitly categorises this deal as
+ * a real-estate asset class or a real-estate underwriting policy.
+ *
+ * This is the PRIMARY (non-text-based) signal for the CRE guard — it fires even
+ * when the DIO text fields contain vague investment/sponsor language that does not
+ * trigger the text-based `hasRealEstateContext` patterns (e.g. Albuquerque pattern:
+ * product_solution = "whether to provide to Cross Development (the Sponsor) all or
+ * a portion of an investment…").
+ */
+function isDealClassifiedAsRealEstate(dio: any): boolean {
+  const cls = getDealClassification(dio);
+  if (!cls) return false;
+  const assetClass = String(cls.asset_class ?? '').toLowerCase();
+  const policyId = String(cls.policy_id ?? '').toLowerCase();
+  return (
+    assetClass === 'real_estate' ||
+    policyId === 'real_estate_underwriting' ||
+    policyId.startsWith('real_estate')
+  );
+}
+
 /** Check if a text contains medtech / healthcare product signals. */
 function hasMedtechProductSignals(text: string | null): boolean {
   if (!text) return false;
@@ -124,6 +154,49 @@ function hasTechPlatformContext(text: string | null): boolean {
     /\bcloud\b/.test(t) ||
     /\bapp\b/.test(t) ||
     /\bdigital\b/.test(t)
+  );
+}
+
+/**
+ * Check if a text contains commercial real estate signals.
+ *
+ * Fires the CRE business-model guard for deals where the BM extraction
+ * produces a generic wholesale/retail or omnichannel term but the deal is
+ * actually a CRE investment vehicle (build-to-suit, net-lease, REIT, etc.).
+ *
+ * Conservative: each rule targets unambiguous CRE / facility / project-finance
+ * language. Generic finance terms (ltv, dscr, preferred equity) are intentionally
+ * excluded — they appear in non-CRE deals.
+ */
+function hasRealEstateContext(text: string | null): boolean {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  return (
+    /\breal\s+estate\b/.test(t) ||
+    /\bbuild.to.suit\b/.test(t) ||
+    /\bcommercial\s+(property|real|development)\b/.test(t) ||
+    /\bnet\s+lease\b/.test(t) ||
+    /\bnnn\s+lease\b/.test(t) ||
+    /\bcap\s+rate\b/.test(t) ||
+    /\btenants?\b/.test(t) ||
+    /\bzoning\b/.test(t) ||
+    /\breit\b/.test(t) ||
+    /\bground\s+lease\b/.test(t) ||
+    /\bproperty\s+(investment|development|acquisition)\b/.test(t) ||
+    /\bcommercial\s+real\b/.test(t) ||
+    // Project-finance / facility signals (unambiguous in CRE/infrastructure context):
+    /\bstabilized\s+(yield|noi|value|occupancy)\b/.test(t) ||
+    /\boccupancy\s+rate\b/.test(t) ||
+    /\bproject\s+(costs?|budget|yield)\b/.test(t) ||
+    /\bsources\s+and\s+uses\b/.test(t) ||
+    /\bconstruction\s+(loan|budget|costs?|schedule)\b/.test(t) ||
+    /\b(land\s+)?parcel\b/.test(t) ||
+    /\bsite\s+(plan|acquisition|work)\b/.test(t) ||
+    /\boffering\s+memorandum\b/.test(t) ||
+    /\binvestment\s+memorandum\b/.test(t) ||
+    /\bintrastate\s+(offering|sale)\b/.test(t) ||
+    /\bdevelopment\s+(sponsor|costs?|project)\b/.test(t) ||
+    /\brehabilitation\s+facilit\b/.test(t)
   );
 }
 
@@ -213,6 +286,12 @@ function businessModelSourcesNoPitchDeck(structuredBM: any, documents: any[] | n
   for (const s of sources) {
     const docId = asStr(s?.document_id ?? s?.source_document_id);
     if (docId) {
+      // Distribution-segment sources are proxy / inferred BM labels (e.g. extracted from
+      // "Use of Funds" slides).  They are NOT explicit pitch-deck BM statements and should
+      // not block the guard even when the source document is an investor deck.
+      const segmentKey = String(s?.segment_key ?? s?.segment ?? '').toLowerCase();
+      if (segmentKey === 'distribution') continue;
+
       // Has a real document ID — check if it's a pitch deck
       const doc = documents?.find((d: any) => d.document_id === docId);
       const kind = String(doc?.kind ?? '').toLowerCase();
@@ -227,7 +306,7 @@ function businessModelSourcesNoPitchDeck(structuredBM: any, documents: any[] | n
     }
   }
 
-  // All sources are either phase1-only or non-pitch-deck
+  // All sources are either phase1-only, distribution-proxy, or non-pitch-deck
   return true;
 }
 
@@ -406,13 +485,82 @@ function applyBusinessModelGuard(
 
   // Check for medtech / healthcare product signals in DIO context
   const guidedCopy = getGovernedUiCopyV1(context.dio);
-  const productSolution =
-    getNestedStr(guidedCopy, 'product_solution') ??
-    getNestedStr(getDioPhase1(context.dio), 'deal_overview_v2', 'product_solution') ??
-    getNestedStr(getDioPhase1(context.dio), 'executive_summary_v1', 'product_description');
+
+  // Collect BM source slide titles / notes as a fallback text corpus
+  const bmSourceSlideText = (() => {
+    const sources: any[] = Array.isArray(bm?.sources) ? bm.sources : [];
+    const texts = sources.map((s: any) => [s?.slide_title, s?.note].filter(Boolean).join(' ')).filter(Boolean);
+    return texts.length > 0 ? texts.join(' ') : null;
+  })();
+
+  // Build a combined signal corpus from all available text sources.
+  // Using a corpus (union of all non-null sources) rather than a ??-chain ensures that
+  // a garbage OCR artifact in one field (e.g. market_icp) does not shadow reliable signal
+  // in a later field (e.g. bmSourceSlideText).
+  const productSignalSources = [
+    getNestedStr(guidedCopy, 'product_solution'),
+    getNestedStr(getDioPhase1(context.dio), 'deal_overview_v2', 'product_solution'),
+    getNestedStr(getDioPhase1(context.dio), 'deal_overview_v2', 'problem_context'),
+    getNestedStr(getDioPhase1(context.dio), 'deal_overview_v2', 'market_icp'),
+    getNestedStr(getDioPhase1(context.dio), 'executive_summary_v1', 'product_description'),
+    bmSourceSlideText,
+  ].filter(Boolean);
+  const productSolution = productSignalSources.length > 0 ? productSignalSources.join(' ') : null;
+
+  // ── CRE guard: null the BM if the deal is a real-estate asset / facility / investment vehicle
+  //    and the extracted BM is a generic wholesale/retail/omnichannel consumer-brand term.
+  //
+  //    Two detection paths — either is sufficient:
+  //    (a) Text-based: hasRealEstateContext() on DIO product/summary/guided-copy text
+  //    (b) Classification-based: deal_classification_v1.selected.asset_class === 'real_estate'
+  //        This path catches deals where DIO text fields contain vague investment/sponsor
+  //        language that does not trigger the text patterns (e.g. Albuquerque pattern).
+  const overviewSummary = getNestedStr(getDioPhase1(context.dio), 'deal_overview_v2', 'summary');
+  const creByText =
+    hasRealEstateContext(productSolution) ||
+    hasRealEstateContext(overviewSummary) ||
+    hasRealEstateContext(getNestedStr(guidedCopy, 'company_overview'));
+  const creByClassification = isDealClassifiedAsRealEstate(context.dio);
+  const hasCRE = creByText || creByClassification;
+  const creRule = creByClassification && !creByText
+    ? 'business_model.real_estate_classification_mismatch'
+    : 'business_model.real_estate_context_mismatch';
+  const creReason = creByClassification && !creByText
+    ? 'Deal classified as real_estate asset class by deal_classification_v1 — generic wholesale/retail term is a BM mismatch for a real-estate investment vehicle, nulling'
+    : 'Generic wholesale/retail term with commercial real estate deal context — value is a mismatch, nulling';
+  if (hasCRE) {
+    log.push({
+      field: 'business_model',
+      action: 'nulled',
+      rule: creRule,
+      original_value: value,
+      replacement_value: null,
+      reason: creReason,
+    });
+    structuredSummary.business_model = {
+      value: null,
+      confidence: 0,
+      sources: [
+        {
+          kind: 'final_publish_guard.nulled',
+          replaced_from: value,
+          null_rule: creRule,
+        },
+      ],
+      label: 'GuardNulled',
+      nulled_by: 'final_publish_guard',
+    };
+    return;
+  }
 
   const hasMedtech = hasMedtechProductSignals(productSolution);
   const hasTech = hasTechPlatformContext(productSolution);
+
+  // Qualified multi-channel labels ("Omnichannel (DTC + Wholesale/Retail)", "DTC + Wholesale")
+  // are legitimate specific BM descriptors for consumer/fintech brands, not the bare
+  // "Wholesale/Retail" distribution-channel leak this guard targets. Preserve them unless
+  // the CRE guard already fired above.
+  const isQualifiedMultiChannelLabel = /\b(omnichannel|dtc|direct[\s-]to[\s-]consumer)\b/i.test(value);
 
   if (!hasMedtech && !hasTech) {
     log.push({
@@ -422,6 +570,21 @@ function applyBusinessModelGuard(
       original_value: value,
       replacement_value: null,
       reason: 'Generic wholesale term found but no medtech or tech platform product signals detected — preserving value',
+    });
+    return;
+  }
+
+  // Qualified multi-channel labels ("Omnichannel (DTC + Wholesale/Retail)") must not be
+  // silently replaced or nulled by this guard — they are legitimate BM descriptors for
+  // consumer/fintech brands. Only the CRE guard (above) may null them.
+  if (isQualifiedMultiChannelLabel) {
+    log.push({
+      field: 'business_model',
+      action: 'kept',
+      rule: 'business_model.qualified_multichannel_label',
+      original_value: value,
+      replacement_value: null,
+      reason: 'Omnichannel or DTC-qualified label — not treated as generic wholesale/retail',
     });
     return;
   }

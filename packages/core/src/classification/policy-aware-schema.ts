@@ -76,7 +76,14 @@ export function toPolicyAwareBusinessModelDisplay(input: {
   const label = typeof input.rawLabel === "string" ? input.rawLabel.trim() : "";
   const suppressedReasons: string[] = [];
 
-  if (family === "real_estate" || input.hasRealEstateSignals) {
+  // Signal-based overrides (hasRealEstateSignals, hasFundSignals) must not override an
+  // explicitly-assigned startup policy. If the deal already carries a known startup policy
+  // family (e.g. consumer_ecommerce_brand_v1), content-level property/finance signals are
+  // false positives — LTV, DSCR, preferred-equity language appears in fintech/lending decks
+  // and must not reclassify a car-finance or consumer-fintech company as real estate.
+  const signalsApplicable = family !== "startup";
+
+  if (family === "real_estate" || (signalsApplicable && input.hasRealEstateSignals)) {
     if (label && /omnichannel|dtc|wholesale|retail|consumer/i.test(label)) {
       suppressedReasons.push("startup_channel_label_suppressed_for_real_estate");
     }
@@ -84,7 +91,7 @@ export function toPolicyAwareBusinessModelDisplay(input: {
     return { display: "Real estate structured investment", suppressedReasons };
   }
 
-  if (family === "fund" || input.hasFundSignals) {
+  if (family === "fund" || (signalsApplicable && input.hasFundSignals)) {
     if (label && /omnichannel|dtc|wholesale|retail|consumer|saas/i.test(label)) {
       suppressedReasons.push("startup_operating_label_suppressed_for_fund");
     }

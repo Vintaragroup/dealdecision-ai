@@ -15,12 +15,14 @@ import {
   filterCorruptedFacts,
   isCorruptedFact,
   isProjectedFact,
+  detectProformaModelFactIds,
   selectCanonicalRevenueFact,
   CANONICAL_REVENUE_KEYS,
 } from '../financial-facts/select-authoritative-fact.js';
 import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
 import { inferStageExpectationsProfileV1, type StageExpectationsProfileV1 } from '../models/stage-expectations-profile.js';
 import { inferBusinessModelSignalProfileV1, type BusinessModelSignalProfileV1 } from '../models/business-model-signal-profile.js';
+import { toPolicyAwareBusinessModelDisplay } from '../classification/policy-aware-schema.js';
 import { inferMarketAccessibilitySignalProfileV1, type MarketAccessibilitySignalProfileV1 } from '../models/market-accessibility-signal-profile.js';
 import { inferTractionSignalProfileV1, type TractionSignalProfileV1 } from '../models/traction-signal-profile.js';
 import { inferTeamSignalProfileV1, type TeamSignalProfileV1 } from '../models/team-signal-profile.js';
@@ -111,12 +113,14 @@ type ReportDTO = {
       confidence: number;
       sources: Array<Record<string, any>>;
       label?: string | null;
+      source_support_level?: 'weak' | 'moderate' | 'strong' | null;
     };
     growth: {
       value: { percent: number | null; year: number | null; raw: string | null } | null;
       confidence: number;
       sources: Array<Record<string, any>>;
       label?: string | null;
+      source_support_level?: 'weak' | 'moderate' | 'strong' | null;
     };
     issues: string[];
     strengths: string[];
@@ -488,7 +492,26 @@ function buildStructuredSummary(
   })();
   if (promotedModel) {
     const vj = getPromotedValueJson(promotedModel) ?? {};
-    const display = asNonEmptyString(vj?.display) ?? asNonEmptyString(vj?.model);
+    const _rawDisplay = asNonEmptyString(vj?.display) ?? asNonEmptyString(vj?.model);
+    // Display-time policy-aware guard: re-apply toPolicyAwareBusinessModelDisplay using
+    // stored diagnostics so that false-positive real-estate / fund overrides are corrected
+    // even for deals analysed before Fix 1/2 shipped (e.g. Carmoola).
+    const display = (() => {
+      if (!_rawDisplay) return _rawDisplay;
+      const _diagPolicyId: string | null = (vj as any)?.diagnostics?.policy_id ?? null;
+      const _diagRawLabel: string | null = (vj as any)?.display_label_raw ?? (vj as any)?.primary_label ?? null;
+      if (!_diagRawLabel) return _rawDisplay;
+      try {
+        const _pa = toPolicyAwareBusinessModelDisplay({
+          policyId: _diagPolicyId,
+          rawLabel: _diagRawLabel,
+          hasRealEstateSignals: Boolean((vj as any)?.diagnostics?.has_real_estate_signals),
+          hasFundSignals: Boolean((vj as any)?.diagnostics?.has_fund_signals),
+          isPreferredEquity: Boolean((vj as any)?.diagnostics?.is_preferred_equity),
+        });
+        return _pa.display ?? _rawDisplay;
+      } catch { return _rawDisplay; }
+    })();
     const sourcesAll = promotedSourcesFor(promotedModel);
     const primaries = sourcesAll.filter((s) => (s as any)?.evidence_role === 'primary' && (s as any)?.source_document_id && (s as any)?.page_index != null);
     const supportings = sourcesAll.filter((s) => (s as any)?.evidence_role === 'supporting' && (s as any)?.source_document_id && (s as any)?.page_index != null);
@@ -544,11 +567,14 @@ function buildStructuredSummary(
     const percent = typeof pctRaw === 'number' && Number.isFinite(pctRaw) ? pctRaw : null;
     if (raw || percent != null) {
       const sources = attachNoteSnippet(promotedSourcesFor(promotedGrowthPercent), (vj as any)?.note_snippet);
+      const noteText = String((vj as any)?.note_snippet ?? '').toLowerCase();
+      const hasComparisonBasis = /\byoy\b|y\/y|year\s+over\s+year|\bvs\.?\b|\bversus\b|\bcompared\b/.test(noteText);
       structured.growth = {
         value: { percent, year: null, raw: raw ?? null },
         confidence: clamp01(typeof promotedGrowthPercent.confidence === 'number' ? promotedGrowthPercent.confidence : 0.6),
         sources,
         label: null,
+        source_support_level: hasComparisonBasis ? 'moderate' : 'weak',
       };
     }
   }
@@ -576,9 +602,17 @@ function buildStructuredSummary(
   const overview = phase1?.deal_overview_v2;
   const exec = phase1?.executive_summary_v1;
 
+  // Part 4 / stale-identity containment: DIO phase1 BM fallbacks (arbitration, overview, exec)
+  // must not fire for real-estate-classified deals — those BMs are investment structure labels,
+  // not company business models. The FPG CRE guard provides a second safety net but this
+  // prevents leakage into areas that bypass the FPG (IAO, archetype summaries, deep tiers).
+  const dioAssetClass = String((dio as any)?.dio?.deal_classification_v1?.selected?.asset_class ?? '').toLowerCase();
+  const dioPolicyId = String((dio as any)?.dio?.deal_classification_v1?.selected?.policy_id ?? '').toLowerCase();
+  const isDioRealEstate = dioAssetClass === 'real_estate' || dioPolicyId === 'real_estate_underwriting' || dioPolicyId.startsWith('real_estate');
+
   const arbitrationV1 = phase1?.business_model_arbitration_v1;
   const arbitratedModel = asNonEmptyString(arbitrationV1?.business_model);
-  if (arbitratedModel && !structured.business_model.value) {
+  if (arbitratedModel && !structured.business_model.value && !isDioRealEstate) {
     const evidence = Array.isArray(arbitrationV1?.evidence) ? arbitrationV1.evidence : [];
     const sources = evidence.map((e: any) => ({
       kind: 'phase1.business_model_arbitration_v1',
@@ -639,7 +673,7 @@ function buildStructuredSummary(
     };
   }
   const overviewModel = asNonEmptyString(overview?.business_model);
-  if (overviewModel && !structured.business_model.value && hasPrimaryCitation(overviewSources)) {
+  if (overviewModel && !structured.business_model.value && hasPrimaryCitation(overviewSources) && !isDioRealEstate) {
     structured.business_model = { value: overviewModel, confidence: 0.9, sources: overviewSources };
   }
 
@@ -659,7 +693,7 @@ function buildStructuredSummary(
   }
   if (!structured.business_model.value) {
     const execModel = asNonEmptyString(exec?.business_model);
-    if (execModel && hasPrimaryCitation(execEvidence)) {
+    if (execModel && hasPrimaryCitation(execEvidence) && !isDioRealEstate) {
       const band = (exec as any)?.confidence?.sections?.business_model ?? (exec as any)?.confidence?.overall;
       structured.business_model = { value: execModel, confidence: confidenceBandToNumber(band), sources: execEvidence };
     }
@@ -1140,11 +1174,17 @@ function buildStructuredSummary(
       const countRaw = (vj as any)?.count;
       const count = typeof countRaw === 'number' && Number.isFinite(countRaw) ? countRaw : null;
       const sources = attachNoteSnippet(promotedSourcesFor(promotedCustomers), (vj as any)?.note_snippet);
+      // Downgrade confidence when no primary document citation exists — count without
+      // a verifiable page reference (document_id + page) cannot be confirmed.
+      const hasPageCitation = hasPrimaryCitation(sources);
+      const baseConf = typeof promotedCustomers.confidence === 'number' ? promotedCustomers.confidence : 0.62;
+      const effectiveConf = hasPageCitation ? baseConf : Math.min(baseConf, 0.45);
       structured.customers = {
         value: { count, kind: 'customers', raw: display },
-        confidence: clamp01(typeof promotedCustomers.confidence === 'number' ? promotedCustomers.confidence : 0.62),
+        confidence: clamp01(effectiveConf),
         sources,
         label: subtype && subtype !== 'active' ? (subtype === 'wholesale_accounts' ? 'Wholesale' : null) : null,
+        source_support_level: hasPageCitation ? 'moderate' : 'weak',
       };
     }
   }
@@ -1790,6 +1830,34 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
  * PDF-extracted FinancialFactV1 records (source_kind='pdf_table') were visible in financial_breakdown
  * but not in structured_summary, causing scoring to miss confirmed revenue data.
  */
+/**
+ * Derive an explicit revenue fact type label for display and UI trust-gating.
+ *
+ * Priority order:
+ *   1. temporal_scope='projected' (or is_projected set by caller) → 'projected'
+ *   2. Part of a proforma model set (detected by detectProformaModelFactIds) → 'projected'
+ *   3. period_type='monthly' → 'run_rate' (annualised monthly)
+ *   4. source_kind='xlsx' with historical year → 'actual'
+ *   5. source_kind='pdf_table' or 'pdf_text' → 'actual' (moderate trust)
+ *   6. Fallback → 'unclassified'
+ *
+ * Note: 'case_study' is intentionally not derived here — case-study metrics
+ * should be rejected upstream by the field-authority-guard (non-company scope).
+ * If they leak through, they appear as 'unclassified' which the UI can flag.
+ */
+function classifyRevenueFactType(
+  fact: FinancialFactV1,
+  proformaIds: Set<string>,
+): 'actual' | 'projected' | 'interim' | 'run_rate' | 'unclassified' {
+  if (isProjectedFact(fact) || proformaIds.has(fact.fact_id)) return 'projected';
+  if (fact.period_type === 'monthly') return 'run_rate';
+  // Detect interim periods: 'H1 2024', 'Q1 2024', 'six months ended', '9 months'
+  const pl = (fact.period_label ?? '').toLowerCase();
+  if (/\bh[12]\b|\bq[1-4]\b|six\s+months?|nine\s+months?|three\s+months?|\binterim\b/.test(pl)) return 'interim';
+  if (fact.source_kind === 'xlsx' || fact.source_kind === 'pdf_table' || fact.source_kind === 'pdf_kpi_line') return 'actual';
+  return 'unclassified';
+}
+
 function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, financialFacts: FinancialFactV1[]): void {
   // Use the canonical selector — all source kinds, monthly guard included.
   const best = selectCanonicalRevenueFact(financialFacts);
@@ -1818,23 +1886,6 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
 
   const bestConf = confidenceNum(best.confidence);
 
-  // Build a candidate record for any non-corrupted, positive-value revenue fact.
-  const buildFactCandidate = (f: FinancialFactV1, selected: boolean) => {
-    const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
-    return {
-      selected,
-      score: confidenceNum(f.confidence),
-      scope: f.source_kind === 'xlsx' ? 'company_financials_table' : 'company_financials',
-      subtype: isProjectedFact(f) ? 'forecast' : 'annual',
-      year: yearMatch ? Number(yearMatch[1]) : null,
-      value_raw: formatUsdShort(f.value),
-      amount: f.value,
-      currency: f.currency ?? 'USD',
-      confidence: confidenceNum(f.confidence),
-      sources: [{ kind: f.source_kind, document_id: f.document_id, metric_key: f.metric_key, period_label: f.period_label }],
-    };
-  };
-
   // Collect all non-corrupted, non-monthly revenue facts for the candidate list.
   const cleanFacts = filterCorruptedFacts(financialFacts);
   const allRevenueFacts = cleanFacts.filter(
@@ -1844,6 +1895,31 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
       f.value > 0 &&
       f.period_type !== 'monthly',
   );
+
+  // Detect proforma-model facts so we can propagate is_projected when `best` was
+  // returned from Tier D of selectCanonicalRevenueFact (caller contract: treat as projected).
+  const proformaIds = detectProformaModelFactIds(allRevenueFacts);
+  const bestIsProjected = isProjectedFact(best) || proformaIds.has(best.fact_id);
+
+  // Build a candidate record for any non-corrupted, positive-value revenue fact.
+  const buildFactCandidate = (f: FinancialFactV1, selected: boolean) => {
+    const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
+    const ftLabel = classifyRevenueFactType(f, proformaIds);
+    return {
+      selected,
+      score: confidenceNum(f.confidence),
+      scope: f.source_kind === 'xlsx' ? 'company_financials_table' : 'company_financials',
+      subtype: isProjectedFact(f) ? 'forecast' : 'annual',
+      fact_type_label: ftLabel,
+      year: yearMatch ? Number(yearMatch[1]) : null,
+      value_raw: formatUsdShort(f.value),
+      amount: f.value,
+      currency: f.currency ?? 'USD',
+      confidence: confidenceNum(f.confidence),
+      sources: [{ kind: f.source_kind, document_id: f.document_id, metric_key: f.metric_key, period_label: f.period_label }],
+    };
+  };
+
   const factCandidates = allRevenueFacts.map((f) => buildFactCandidate(f, f === best));
 
   const currentRevenue = structuredSummary?.revenue;
@@ -1857,6 +1933,7 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
 
   if (financialFactWins) {
     // Financial fact wins (or no deck value present): set as primary selection.
+    const bestFactTypeLabel = classifyRevenueFactType(best, proformaIds);
     structuredSummary.revenue = {
       value: {
         amount: best.value,
@@ -1865,9 +1942,11 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
         raw: formatUsdShort(best.value),
       },
       confidence: bestConf,
+      fact_type_label: bestFactTypeLabel,
       sources: [{ kind: best.source_kind, document_id: best.document_id, metric_key: best.metric_key, period_label: best.period_label }],
       label: best.period_label ?? null,
       selection_reason: best.source_kind === 'xlsx' ? 'xlsx_financial_fact' : 'financial_fact',
+      ...(bestIsProjected ? { is_projected: true, is_provisional: true } : {}),
       candidates: [
         ...factCandidates,
         ...(Array.isArray(currentRevenue?.candidates) ? currentRevenue.candidates.map((c: any) => ({ ...c, selected: false })) : []),

@@ -561,7 +561,10 @@ function resolveBusinessModelFromSlides(
 
 	const has_media_signals = scored.some((r) => r.signals.has_media_signals);
 	const has_ecom_mechanics = scored.some((r) => r.signals.has_ecom_mechanics);
-	const has_real_estate_signals = scored.some((r) => /\b(real\s+estate|preferred\s+equity|multifamily|noi|cap\s*rate|dscr|ltv|offering\s+memorandum)\b/i.test(r.input.text));
+	// Require unambiguous real-estate terms only. Generic lending/finance terms (ltv, dscr,
+	// preferred equity) appear in fintech, car-finance, and SBA-lending decks and must NOT
+	// fire this flag — those deals have explicit startup policy IDs that take precedence.
+	const has_real_estate_signals = scored.some((r) => /\b(real\s+estate|multifamily|noi|cap\s*rate|offering\s+memorandum)\b/i.test(r.input.text));
 	const has_fund_signals = scored.some((r) => /\b(aum|assets\s+under\s+management|limited\s+partner|\blp\b|\bgp\b|fund\s+vehicle|fund\s+size|spv)\b/i.test(r.input.text));
 	const is_preferred_equity = scored.some((r) => /\bpreferred\s+equity\b/i.test(r.input.text));
 	const dtc_hits = Array.from(new Set(scored.flatMap((r) => r.signals.dtc_hits))).slice().sort().slice(0, 24);

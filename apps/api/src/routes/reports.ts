@@ -12,7 +12,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { buildDeterministicDealSummaryV1FromStructuredSummary, compileDIOToReport, compileDIOToReportWithPromotedFacts } from '@dealdecision/core';
+import { buildDeterministicDealSummaryV1FromStructuredSummary, compileDIOToReport, compileDIOToReportWithPromotedFacts, toPolicyAwareBusinessModelDisplay } from '@dealdecision/core';
 import { buildDeterministicScoreInputsV1 } from '@dealdecision/core';
 import { computeDecisionV1, computeHardPassGuardrailV2, getScoreBandV2 } from '@dealdecision/core';
 import { LlmNarrationV1Schema, degradeNarrationV1, validateNoNewFacts } from '@dealdecision/core';
@@ -2881,7 +2881,27 @@ export async function registerReportRoutes(
 
               const modelFact = pickBestFact('business_model_v1');
               const modelValueJson = modelFact?.content_json?.value_json ?? modelFact?.content_json?.valueJson ?? null;
-              const modelDisplay = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+              const _modelDisplayStored = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+              // Display-time policy-aware guard: re-apply toPolicyAwareBusinessModelDisplay using stored
+              // policy_id and raw label from diagnostics. Corrects false-positive real-estate overrides
+              // for startup-policy deals (e.g. Carmoola) without requiring a re-analysis run.
+              let modelDisplay = _modelDisplayStored;
+              if (_modelDisplayStored && modelValueJson?.diagnostics) {
+                const _diagPolicyId: string | null = modelValueJson.diagnostics?.policy_id ?? null;
+                const _diagRawLabel: string | null = modelValueJson.display_label_raw ?? modelValueJson.primary_label ?? null;
+                if (_diagRawLabel) {
+                  try {
+                    const _bmPolicyAware = toPolicyAwareBusinessModelDisplay({
+                      policyId: _diagPolicyId,
+                      rawLabel: _diagRawLabel,
+                      hasRealEstateSignals: Boolean(modelValueJson.diagnostics?.has_real_estate_signals),
+                      hasFundSignals: Boolean(modelValueJson.diagnostics?.has_fund_signals),
+                      isPreferredEquity: Boolean(modelValueJson.diagnostics?.is_preferred_equity),
+                    });
+                    if (_bmPolicyAware.display) modelDisplay = _bmPolicyAware.display;
+                  } catch { /* fail-open */ }
+                }
+              }
 
               const nextBusinessModelValue = (modelFact && !_guardRejectedTypes.has('business_model_v1'))
                 ? modelDisplay
@@ -3295,6 +3315,10 @@ export async function registerReportRoutes(
           logStage('db.ingestion_reports.upsert', up.ms, true, { cache: 'miss', ok: Boolean(up.value) });
         }
 
+        // Stamp compiler version on the live response (the upsert stamps it in DB; this ensures
+        // fresh-compile responses also carry __compiler_version like cache-hit responses do).
+        (payload as any).__compiler_version = REPORT_COMPILER_VERSION;
+
         return reply.status(200).send(payload);
         
       } catch (error) {
@@ -3637,10 +3661,28 @@ export async function registerReportRoutes(
 
               const modelFact = pickBestFact('business_model_v1');
               const modelValueJson = modelFact?.content_json?.value_json ?? modelFact?.content_json?.valueJson ?? null;
-              const modelDisplay = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+              const _modelDisplayStored2 = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+              // Display-time policy-aware guard (same as versioned route).
+              let modelDisplay2 = _modelDisplayStored2;
+              if (_modelDisplayStored2 && modelValueJson?.diagnostics) {
+                const _diagPolicyId2: string | null = modelValueJson.diagnostics?.policy_id ?? null;
+                const _diagRawLabel2: string | null = modelValueJson.display_label_raw ?? modelValueJson.primary_label ?? null;
+                if (_diagRawLabel2) {
+                  try {
+                    const _bmPolicyAware2 = toPolicyAwareBusinessModelDisplay({
+                      policyId: _diagPolicyId2,
+                      rawLabel: _diagRawLabel2,
+                      hasRealEstateSignals: Boolean(modelValueJson.diagnostics?.has_real_estate_signals),
+                      hasFundSignals: Boolean(modelValueJson.diagnostics?.has_fund_signals),
+                      isPreferredEquity: Boolean(modelValueJson.diagnostics?.is_preferred_equity),
+                    });
+                    if (_bmPolicyAware2.display) modelDisplay2 = _bmPolicyAware2.display;
+                  } catch { /* fail-open */ }
+                }
+              }
 
               const nextBusinessModelValue = (modelFact && !_guardRejectedTypes2.has('business_model_v1'))
-                ? modelDisplay
+                ? modelDisplay2
                 : (!modelFact ? execModel : null);
               // Only apply back-compat override when the compiler (guard+selector pipeline) did not
               // already set a BM value. If the selector picked a winner, trust it.
@@ -3781,6 +3823,10 @@ export async function registerReportRoutes(
         // Best-effort: inject live staleness flag AFTER upsert (so ingestion_reports row exists).
         // Fresh compiles load current facts → expected false; detects edge cases where facts arrived mid-compile.
         try { payload.financial_snapshot_stale = (await computeReportFinancialSnapshotStale(pool, deal_id, versionNum, { dioUpdatedAt: row.updated_at })).stale; } catch { payload.financial_snapshot_stale = false; }
+
+        // Stamp compiler version on the live response (the upsert stamps it in DB; this ensures
+        // fresh-compile responses also carry __compiler_version like cache-hit responses do).
+        (payload as any).__compiler_version = REPORT_COMPILER_VERSION;
 
         return reply.status(200).send(payload);
         

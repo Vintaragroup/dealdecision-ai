@@ -25,6 +25,8 @@ export type DocumentFamily =
   | 'legal_exhibit'           // Merger agreement, legal exhibits
   | 'proxy_prospectus'        // Proxy statement, S-4 prospectus
   | 'registration_statement'  // S-1, S-4 registration statements
+  | 'offering_memorandum'     // CRE / private-placement offering memorandum — investment vehicle docs
+  | 'investment_memo'         // Internal investment committee memo — narrative, not structured data
   | 'unknown';                // Unclassified / insufficient metadata
 
 // ─── Default (field-agnostic) authority rank ──────────────────────────────────
@@ -45,7 +47,9 @@ export const DOCUMENT_AUTHORITY_RANK: Record<DocumentFamily, number> = {
   registration_statement: 55,   // S-1/S-4 — useful but often boilerplate
   proxy_prospectus: 50,         // Proxy — useful for deal mechanics
   legal_exhibit: 45,            // legal text — limited for financial facts
+  investment_memo: 42,          // Narrative memo — contextual, not structured data
   unknown: 40,                  // Unknown source — use with caution
+  offering_memorandum: 30,      // CRE/private-placement OM — investment vehicle, not company ops
   financial_pro_forma: 20,      // Pro forma — merger mechanics only, NOT operating data
   spac_financials: 5,           // SPAC entity only — NOT operating company data
   spac_mda: 5,                  // SPAC entity only — NOT operating company data
@@ -68,7 +72,9 @@ export const RAISE_AUTHORITY_RANK: Record<DocumentFamily, number> = {
   registration_statement: 55,
   proxy_prospectus: 50,
   legal_exhibit: 35,
+  investment_memo: 35,          // Memo may state investment size but not reliable for transaction terms
   unknown: 30,
+  offering_memorandum: 25,      // OM investment targets are not closed-deal raise amounts
   financial_pro_forma: 5,
   spac_financials: 5,
   spac_mda: 5,
@@ -89,7 +95,9 @@ export const REVENUE_AUTHORITY_RANK: Record<DocumentFamily, number> = {
   proxy_prospectus: 55,
   pitch_deck: 50,               // Deck revenue is often projected / marketing
   legal_exhibit: 30,
+  investment_memo: 30,          // Narrative revenue mentions in memos — low reliability
   unknown: 35,
+  offering_memorandum: 20,      // OM projected NOI/revenue = proforma asset projection, not ops
   financial_pro_forma: 5,       // Pro forma revenue = merger adjustments, NOT operating
   spac_financials: 5,
   spac_mda: 5,
@@ -109,8 +117,10 @@ export const BUSINESS_MODEL_AUTHORITY_RANK: Record<DocumentFamily, number> = {
   registration_statement: 55,
   proxy_prospectus: 50,
   legal_exhibit: 30,
+  investment_memo: 25,          // Investment memos describe deal structure, not company BM
   operating_financials: 25,     // Financial statements describe accounting, not business model
   unknown: 35,
+  offering_memorandum: 10,      // OMs describe investment vehicle terms, never company BM
   financial_pro_forma: 5,
   spac_financials: 5,
   spac_mda: 5,
@@ -134,6 +144,10 @@ export const KIND_TO_FAMILY: Record<string, DocumentFamily> = {
   prospectus: 'proxy_prospectus',
   registration_statement: 'registration_statement',
   legal_exhibit: 'legal_exhibit',
+  offering_memorandum: 'offering_memorandum',
+  offering_memo: 'offering_memorandum',
+  investment_memo: 'investment_memo',
+  investment_committee_memo: 'investment_memo',
 };
 
 /** Filename patterns → DocumentFamily, in priority order. */
@@ -146,6 +160,9 @@ export const FILENAME_TO_FAMILY_PATTERNS: Array<[RegExp, DocumentFamily]> = [
   [/ex[\s_-]99[\s_-]?\.?4\b|ex994/i, 'spac_mda'],
   [/ex[\s_-]99[\s_-]?\.?5\b|ex995/i, 'financial_pro_forma'],
   [/pro[\s_-]?forma/i, 'financial_pro_forma'],
+  [/offering[\s_-]memo(?:randum)?/i, 'offering_memorandum'],
+  [/investment[\s_-]memo(?:randum)?/i, 'investment_memo'],
+  [/ic[\s_-]?memo|deal[\s_-]memo/i, 'investment_memo'],
   [/s[\s_-]?[14]\b/i, 'registration_statement'],
   [/proxy|prospectus/i, 'proxy_prospectus'],
   [/merger\s+agreement|exhibit[\s_-]?[ab]/i, 'legal_exhibit'],

@@ -428,6 +428,192 @@ describe('applyFinalPublishGuard — business_model: wholesale/tech-platform mis
   });
 });
 
+// ─── P5: BM guard: slide-title fallback (StackFactor pattern) ────────────────
+
+describe('applyFinalPublishGuard — business_model: BM source slide-title fallback (P5)', () => {
+  it('fires tech mismatch when productSolution is null but BM source slide_title contains platform context', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [
+          {
+            kind: 'promoted_fact',
+            segment: 'distribution',
+            slide_title: 'THE ASK $2.5M Pre-Seed Round — USE OF FUNDS 50% Engineering MVP development, core platform, and Al capabilities',
+          },
+        ],
+      }),
+    };
+    // No product_solution in DIO — forces slide_title fallback
+    const context = makeDeSpacContext({ governed_ui_copy_v1: null, deal_overview_v2: null });
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('nulled');
+    expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
+    expect(summary.business_model.value).toBeNull();
+    expect(result.fields_nulled).toContain('business_model');
+  });
+
+  it('does not preserve BM when only source is distribution-segment (even if source doc filename contains "deck")', () => {
+    // This covers the StackFactor pattern: source_document_id points to "Investor-Deck.pdf"
+    // but the extraction came from a distribution/use-of-funds slide — not an explicit BM statement.
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [
+          {
+            kind: 'promoted_fact',
+            segment_key: 'distribution',
+            source_document_id: 'doc-abc-123',
+          },
+        ],
+      }),
+    };
+    const context = makeDeSpacContext({
+      governed_ui_copy_v1: null,
+      deal_overview_v2: {
+        problem_context: 'SaaS compliance platform for enterprise DevSecOps and GRC workflows',
+      },
+    });
+    // Provide documents with a "deck" filename — guard should NOT be blocked
+    const documents = [{ document_id: 'doc-abc-123', kind: 'other', filename: 'Investor-Deck-Q1.pdf' }];
+
+    const result = applyFinalPublishGuard(summary, context, documents as any);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('nulled');
+    expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
+    expect(summary.business_model.value).toBeNull();
+  });
+
+  it('fires tech mismatch when deal_overview_v2.problem_context has SaaS signals', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    const context = makeDeSpacContext({
+      governed_ui_copy_v1: null,
+      deal_overview_v2: {
+        product_solution: null,
+        problem_context: 'DevSecOps teams lack automated compliance monitoring software for GRC workflows',
+      },
+    });
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('nulled');
+    expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
+    expect(summary.business_model.value).toBeNull();
+  });
+
+  it('fires tech mismatch when deal_overview_v2.market_icp has digital platform signals', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    const context = makeDeSpacContext({
+      governed_ui_copy_v1: null,
+      deal_overview_v2: {
+        product_solution: null,
+        market_icp: 'Mid-market SaaS companies and cloud-native enterprises',
+      },
+    });
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('nulled');
+    expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
+  });
+});
+
+// ─── P5: BM guard: CRE context mismatch (Albuquerque pattern) ────────────────
+
+describe('applyFinalPublishGuard — business_model: CRE context mismatch (P5)', () => {
+  it('nulls wholesale term when deal_overview_v2.summary has real estate context', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Omnichannel (DTC + Wholesale/Retail)', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    const context = makeDeSpacContext({
+      governed_ui_copy_v1: null,
+      deal_overview_v2: {
+        product_solution: null,
+        summary: 'Build-to-suit single-tenant healthcare facility. 20-year net lease with investment-grade tenant.',
+      },
+    });
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('nulled');
+    expect(log?.rule).toBe('business_model.real_estate_context_mismatch');
+    expect(summary.business_model.value).toBeNull();
+    expect(result.fields_nulled).toContain('business_model');
+  });
+
+  it('nulls wholesale term when governed_ui_copy.company_overview references real estate', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    const context = makeDeSpacContext({
+      governed_ui_copy_v1: {
+        company_overview: 'Albuquerque CRE Partners — commercial real estate investment vehicle targeting NNN leases.',
+      },
+    });
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('nulled');
+    expect(log?.rule).toBe('business_model.real_estate_context_mismatch');
+    expect(summary.business_model.value).toBeNull();
+  });
+
+  it('keeps wholesale term when no real estate context present', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    // No CRE signals anywhere
+    const context = makeDeSpacContext({
+      governed_ui_copy_v1: { product_solution: 'Consumer packaged goods sold via grocery retailers' },
+    });
+
+    const result = applyFinalPublishGuard(summary, context);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('kept');
+    expect(log?.rule).toBe('business_model.no_product_context');
+    expect(summary.business_model.value).toBe('Wholesale/Retail');
+  });
+
+  it('nulled CRE BM sets nulled_by to final_publish_guard', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
+      }),
+    };
+    const context = makeDeSpacContext({
+      deal_overview_v2: {
+        summary: 'Commercial real estate cap rate investment targeting institutional tenants',
+      },
+    });
+
+    applyFinalPublishGuard(summary, context);
+
+    expect(summary.business_model.nulled_by).toBe('final_publish_guard');
+    expect(summary.business_model.value).toBeNull();
+  });
+});
+
 // ─── P2: Raise guard: prose contamination ────────────────────────────────────
 
 describe('applyFinalPublishGuard — raise: prose contamination (P2)', () => {

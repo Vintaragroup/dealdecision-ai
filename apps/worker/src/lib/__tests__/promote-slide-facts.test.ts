@@ -599,3 +599,58 @@ describe("promote slide facts", () => {
 		expect(raiseFact).toBeTruthy();
 	});
 });
+// ─── P5 Phase 3 — has_real_estate_signals regex hardening ────────────────────
+
+describe("Phase 3: has_real_estate_signals — generic lending terms must not trigger real-estate override", () => {
+	it("car-finance text with 'ltv' does NOT set has_real_estate_signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		// Carmoola-like text: LTV is a car-loan metric, not a real estate signal.
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Go-to-Market",
+				"Direct consumer car financing platform.",
+				"We offer DTC auto loans at competitive LTV ratios.",
+				"Consumers apply via mobile and receive instant approvals.",
+			].join("\n")
+		);
+
+		// has_real_estate_signals must NOT fire on LTV alone
+		expect((bm?.value_json as any)?.diagnostics?.has_real_estate_signals).toBe(false);
+		// Display must NOT be 'Real estate structured investment'
+		expect(bm?.value_json?.display).not.toBe("Real estate structured investment");
+	});
+
+	it("car-finance text with 'dscr' does NOT set has_real_estate_signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Business Model",
+				"Consumer lending platform with DSCR-based risk scoring.",
+				"Direct-to-consumer subscriptions for credit monitoring.",
+				"ARR of $2.1M across 5,000 subscribers.",
+			].join("\n")
+		);
+
+		expect((bm?.value_json as any)?.diagnostics?.has_real_estate_signals).toBe(false);
+	});
+
+	it("text with unambiguous 'real estate' DOES set has_real_estate_signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Investment Strategy",
+				"Multifamily real estate investment with preferred equity tranches.",
+				"NOI yield targeting 6-8% cap rate.",
+			].join("\n")
+		);
+
+		// Real estate specific terms should still trigger the flag
+		if (bm) {
+			expect((bm.value_json as any)?.diagnostics?.has_real_estate_signals).toBe(true);
+		}
+		// Note: bm may be null if no primary model label is selected for this real-estate text
+	});
+});

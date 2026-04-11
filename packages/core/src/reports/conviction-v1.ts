@@ -244,8 +244,9 @@ export function buildConvictionV1(args: {
     ?? null;
 
   const stageRaw = asString(args.funding_stage_v1?.funding_stage);
-  const stage: "pre_seed" | "seed" | "series_a" | "growth" | "unknown" =
+  const stage: "pre_seed" | "seed" | "series_a" | "growth" | "ipo" | "public_company" | "unknown" =
     stageRaw === "pre_seed" || stageRaw === "seed" || stageRaw === "series_a" || stageRaw === "growth"
+    || stageRaw === "ipo" || stageRaw === "public_company"
       ? stageRaw
       : "unknown";
 
@@ -867,7 +868,7 @@ const statusFromScore = (score: number, contradictionHint = false): ConvictionIn
   return "unknown";
 };
 
-const buildPolicyFamilyWeights = (policyId: string | null, stage: "pre_seed" | "seed" | "series_a" | "growth" | "unknown"): Record<ConvictionInputFamilyKeyV1, number> => {
+const buildPolicyFamilyWeights = (policyId: string | null, stage: "pre_seed" | "seed" | "series_a" | "growth" | "ipo" | "public_company" | "unknown"): Record<ConvictionInputFamilyKeyV1, number> => {
   const base: Record<ConvictionInputFamilyKeyV1, number> = {
     financial_truth: 0.16,
     capital_structure: 0.10,

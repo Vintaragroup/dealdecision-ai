@@ -1641,7 +1641,29 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       });
     }
   }
-  
+
+  // RC-002b: Detect going concern language in DIO claim texts — promote to high-severity red flag.
+  {
+    const _gcClaims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
+    const _gcParts: string[] = [];
+    for (const claim of _gcClaims) {
+      if (typeof claim?.text === 'string') _gcParts.push(claim.text);
+      for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
+        if (typeof ev?.snippet === 'string') _gcParts.push(ev.snippet);
+      }
+    }
+    if (
+      /substantial\s+doubt.*(?:going\s+concern|ability\s+to\s+continue)|going\s+concern.*substantial\s+doubt|ability\s+to\s+continue\s+as\s+a\s+going\s+concern/i.test(_gcParts.join('\n'))
+      && !redFlags.some((f) => f.message.toLowerCase().includes('going concern'))
+    ) {
+      redFlags.push({
+        severity: 'high',
+        message: 'Going concern doubt noted in filings',
+        action: 'Verify current cash position and any management remediation plan before proceeding',
+      });
+    }
+  }
+
   // Identify green flags (strengths)
   const greenFlags: string[] = [];
   if (results.visual_design?.strengths) {
@@ -1853,6 +1875,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
           filename: d?.filename,
         }))
       : null,
+    doc_type_hints: _docTypeHintsForFunding.length > 0 ? _docTypeHintsForFunding : null,
   });
 
   const capitalLogic = inferCapitalLogicProfileV1({
@@ -2227,9 +2250,30 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   /** Enriched document metadata from DB. When provided, takes precedence over DIO inputs.documents
    *  so that filenames and MIME types are available for cap-table and XLSX detection. */
   documents?: Array<{ document_id: string; kind?: string | null; mime_type?: string | null; filename?: string | null }> | null;
+  /** RC-002b: Raw page text snippets from document_page_understanding. Used to detect going concern
+   *  language that does not surface in DIO phase1.claims (e.g. full 10-K document text). */
+  pageTexts?: string[] | null;
 }): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
+
+  // RC-002b: Extend going concern scan to cover raw page text (document_page_understanding).
+  // compileDIOToReport only checks phase1.claims — this covers full document text from DPU rows.
+  const _promotedRedFlags: Array<{ severity: 'high' | 'medium' | 'low'; message: string; action: string }> = [];
+  {
+    const _pageTexts: string[] = Array.isArray(opts?.pageTexts) ? opts!.pageTexts.filter((t) => typeof t === 'string') : [];
+    if (
+      _pageTexts.length > 0
+      && /substantial\s+doubt.*(?:going\s+concern|ability\s+to\s+continue)|going\s+concern.*substantial\s+doubt|ability\s+to\s+continue\s+as\s+a\s+going\s+concern/i.test(_pageTexts.join('\n'))
+      && !((base as any).redFlags ?? []).some((f: any) => typeof f?.message === 'string' && f.message.toLowerCase().includes('going concern'))
+    ) {
+      _promotedRedFlags.push({
+        severity: 'high',
+        message: 'Going concern doubt noted in filings',
+        action: 'Verify current cash position and any management remediation plan before proceeding',
+      });
+    }
+  }
 
   // ── Field Authority Guard ────────────────────────────────────────────────
   // Filter promoted facts before compilation to block false positives that would
@@ -2335,6 +2379,26 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     ? base.sections.map((s) => (s.id === 'metric-benchmark' ? { ...s, content: applyRevenueOverrideToMetricBenchmarkContent(s.content, revenueDisplay) } : s))
     : base.sections;
 
+  // RC-001ft / RC-004: Extract doc type hints from DIO claim text once so they can be
+  // shared by both inferFundingStageModelV1 and inferFinancialCoverageProfileV1.
+  // Pattern: DIO data lives in dio.dio.phase1.claims[*].{text, evidence[*].snippet}.
+  const _docTypeHints: string[] = (() => {
+    const claims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
+    const parts: string[] = [];
+    for (const claim of claims) {
+      if (typeof claim?.text === 'string') parts.push(claim.text);
+      for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
+        if (typeof ev?.snippet === 'string') parts.push(ev.snippet);
+      }
+    }
+    const allText = parts.join('\n');
+    const hints: string[] = [];
+    if (/\bform\s+s-?1\b|\bregistration\s+statement\b/i.test(allText)) hints.push('sec_filing_s1');
+    if (/\bform\s+10-?k\b|\bannual\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10k');
+    if (/\bform\s+10-?q\b|\bquarterly\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10q');
+    return hints;
+  })();
+
   const fundingStage = inferFundingStageModelV1({
     funding_round_label: null,
     company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
@@ -2347,24 +2411,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
           source_path: s?.source_path ?? undefined,
         }))
       : null,
-    doc_type_hints: (() => {
-      // RC-004: extract doc type hints from DIO claim text so SEC filings override funding stage.
-      // The DIO data lives in dio.dio.phase1.claims[*].{text, evidence[*].snippet}.
-      const claims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
-      const parts: string[] = [];
-      for (const claim of claims) {
-        if (typeof claim?.text === 'string') parts.push(claim.text);
-        for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
-          if (typeof ev?.snippet === 'string') parts.push(ev.snippet);
-        }
-      }
-      const allText = parts.join('\n');
-      const hints: string[] = [];
-      if (/\bform\s+s-?1\b|\bregistration\s+statement\b/i.test(allText)) hints.push('sec_filing_s1');
-      if (/\bform\s+10-?k\b|\bannual\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10k');
-      if (/\bform\s+10-?q\b|\bquarterly\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10q');
-      return hints.length > 0 ? hints : null;
-    })(),
+    doc_type_hints: _docTypeHints.length > 0 ? _docTypeHints : null,
   });
 
   const financialCoverage = inferFinancialCoverageProfileV1({
@@ -2390,6 +2437,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
           }))
         : null;
     })(),
+    doc_type_hints: _docTypeHints.length > 0 ? _docTypeHints : null,
   });
 
   const financialBreakdown = buildFinancialBreakdownV1({
@@ -2598,6 +2646,10 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 		...base,
     overallScore: _adjustedOverallScore,
     grade: scoreToGrade(_adjustedOverallScore),
+    // RC-002b: Merge promoted red flags (e.g. going concern from DPU page texts) with base red flags.
+    redFlags: _promotedRedFlags.length > 0
+      ? [...((base as any).redFlags ?? []), ..._promotedRedFlags]
+      : (base as any).redFlags,
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
     financial_breakdown_v1: financialBreakdown,

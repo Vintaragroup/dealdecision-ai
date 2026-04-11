@@ -117,6 +117,8 @@ export function inferFinancialCoverageProfileV1(input: {
   promoted_facts?: any[] | null;    // if available in compiler context
   financial_facts?: FinancialFactV1[] | null;  // typed spreadsheet facts from financial_facts_v1
   documents?: Array<{ document_id: string; kind?: string; mime_type?: string; filename?: string }> | null;
+  /** RC-001ft: SEC filing hint codes extracted from DIO claim text (e.g. 'sec_filing_s1'). */
+  doc_type_hints?: string[] | null;
 }): FinancialCoverageProfileV1 {
   const out: FinancialCoverageProfileV1 = {
     confidence: 'low',
@@ -349,6 +351,18 @@ export function inferFinancialCoverageProfileV1(input: {
     }
   }
 
+  // RC-001ft: If SEC filing hints are present and no XLSX was detected, credit the filing
+  // as an authoritative source. SEC filings contain audited financial statements — never
+  // penalize them for the absence of a startup-style spreadsheet model.
+  const secHints = Array.isArray(input.doc_type_hints) ? input.doc_type_hints : [];
+  const secFilingPresent = secHints.some((h) => h === 'sec_filing_s1' || h === 'sec_filing_10k' || h === 'sec_filing_10q');
+  if (secFilingPresent && out.sources.every((s) => s.kind !== 'xlsx')) {
+    // Replace deck placeholder with authoritative filing source.
+    const deckIdx = out.sources.findIndex((s) => s.kind === 'deck');
+    if (deckIdx !== -1) out.sources.splice(deckIdx, 1);
+    out.sources.push({ kind: 'other', notes: 'sec_filing_authoritative' });
+  }
+
   // Confidence heuristic
   const coverageKeys = Object.keys(out.coverage) as Array<keyof FinancialCoverageProfileV1['coverage']>;
   const trueCount = coverageKeys.reduce((sum, k) => sum + (out.coverage[k] ? 1 : 0), 0);
@@ -356,6 +370,8 @@ export function inferFinancialCoverageProfileV1(input: {
   if (out.coverage.income_statement_present || (trueCount >= 5 && hasXlsx)) out.confidence = 'high';
   else if (trueCount >= 2 && trueCount <= 4) out.confidence = 'medium';
   else out.confidence = 'low';
+  // RC-001ft: SEC filings contain audited financials — never score lower than medium.
+  if (secFilingPresent && out.confidence === 'low') out.confidence = 'medium';
 
   // Notes: track whether any evidence explicitly points at XLSX paths or typed facts.
   const usedXlsxPath = (() => {
@@ -370,6 +386,7 @@ export function inferFinancialCoverageProfileV1(input: {
   const notes: string[] = [];
   if (hasXlsx) notes.push('xlsx_present');
   if (usedXlsxPath || usedXlsxFacts) notes.push('xlsx_evidence_used');
+  if (secFilingPresent) notes.push('sec_filing_present');
   if (notes.length > 0) out.notes = notes;
 
   // Compute normalized coverage quality score 0–100 (Fix 15)

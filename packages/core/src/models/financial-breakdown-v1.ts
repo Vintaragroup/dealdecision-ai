@@ -189,6 +189,7 @@ export type UnderwritingReadinessGap =
   | 'no_runway'
   | 'no_cap_table'
   | 'deck_only'
+  | 'sec_filing_no_xlsx'
   | 'conflicting_revenue'
   | 'no_income_statement';
 
@@ -900,10 +901,15 @@ function _buildReadiness(input: {
   const missing: string[] = [];
   const gaps: UnderwritingReadinessGap[] = [];
 
-  // +20 pts: XLSX financial model present
+  // +20 pts: XLSX financial model present OR audited SEC filing present (RC-001ft)
+  const hasSecFiling = Array.isArray(cov.notes) && cov.notes.includes('sec_filing_present');
   if (bd.has_xlsx) {
     score += 20;
     reasons.push('A spreadsheet financial model is present.');
+  } else if (hasSecFiling) {
+    score += 20;
+    reasons.push('Audited financial statements are present in a SEC filing (satisfies structured-financials requirement).');
+    gaps.push('sec_filing_no_xlsx');
   } else {
     gaps.push('deck_only');
     missing.push('Spreadsheet financial model (XLSX)');

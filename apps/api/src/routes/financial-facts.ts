@@ -195,6 +195,32 @@ export async function getFinancialFactsForReport(
  * documents belonging to a deal. Used by the report compiler to enrich cap-table
  * and XLSX detection when the DIO's inputs.documents lacks filenames.
  */
+/**
+ * RC-002b: Returns page_text strings from document_page_understanding rows that contain
+ * going concern language. Used to detect going concern flags not surfaced in DIO phase1.claims.
+ * Never crashes /report — returns [] on error.
+ */
+export async function getGoingConcernPageTexts(
+  pool: PoolLike,
+  dealId: string
+): Promise<string[]> {
+  try {
+    const r = await pool.query<{ page_text: string }>(
+      `SELECT dpu.payload->>'page_text' AS page_text
+         FROM document_page_understanding dpu
+         JOIN documents d ON d.id = dpu.document_id
+        WHERE d.deal_id = $1
+          AND d.deleted_at IS NULL
+          AND dpu.payload->>'page_text' ~* 'ability[[:space:]]+to[[:space:]]+continue[[:space:]]+as[[:space:]]+a[[:space:]]+going[[:space:]]+concern|substantial[[:space:]]+doubt.*going[[:space:]]+concern|going[[:space:]]+concern.*substantial[[:space:]]+doubt'`,
+      [dealId],
+    );
+    return (r.rows ?? []).map((row) => row.page_text).filter((t) => typeof t === 'string' && t.length > 0);
+  } catch {
+    // Never crash /report if page understanding is unavailable.
+    return [];
+  }
+}
+
 export async function getDocumentsForReport(
   pool: PoolLike,
   dealId: string

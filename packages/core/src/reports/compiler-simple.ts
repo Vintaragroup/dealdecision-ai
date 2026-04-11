@@ -924,10 +924,22 @@ function buildStructuredSummary(
         const sources = attachNoteSnippet(promotedSourcesFor(f), (vj as any)?.note_snippet);
         const conf = clamp01(typeof f?.confidence === 'number' ? f.confidence : 0.62);
         const prov = f?.content_json?.provenance;
-        const entityScope = detectEntityScope(
-          asNonEmptyString((vj as any)?.note_snippet),
-          asNonEmptyString(prov?.slide_title),
-        );
+        // Use pre-computed entity_scope from value_json when available (set by promoted-facts-from-dpu.ts).
+        const precomputedScope = asNonEmptyString((vj as any)?.entity_scope);
+        const validScopes = ['company', 'customer', 'case_study', 'illustrative', 'unknown'];
+        const entityScope = (precomputedScope && validScopes.includes(precomputedScope))
+          ? precomputedScope
+          : detectEntityScope(
+              asNonEmptyString((vj as any)?.note_snippet),
+              asNonEmptyString(prov?.slide_title),
+            );
+        // Authority metadata for promoted/DPU candidates.
+        const sourceType = asNonEmptyString((f as any)?.source_type) ?? 'dpu_derived_fact';
+        const authorityRank: 1 | 2 | 3 | 4 | 5 = sourceType === 'promoted_slide_fact' ? 3 : 3;
+        const sourceSupportLevel = sourceType === 'dpu_derived_fact' ? 'dpu_text' : 'promoted_slide_fact';
+        const documentFamily = 'pitch_deck';
+        const hasPrimaryCitation = !!(prov?.page_index != null && prov?.source_document_id);
+        const selectionExplainer = `${sourceType} page=${prov?.page_index ?? 'na'} conf=${conf.toFixed(2)}`;
         return {
           selected,
           score: scoreValue,
@@ -940,6 +952,11 @@ function buildStructuredSummary(
           confidence: conf,
           sources,
           entity_scope: entityScope,
+          authority_rank: authorityRank,
+          source_support_level: sourceSupportLevel,
+          document_family: documentFamily,
+          has_primary_citation: hasPrimaryCitation,
+          selection_explainer: selectionExplainer,
         };
       };
 
@@ -963,10 +980,15 @@ function buildStructuredSummary(
         if (seg && disallowedSeg.has(seg) && !titleIsFinancialOrPerformance) return -500;
 
         // Case-study / per-customer metrics are not company-level revenue.
-        const entityScope = detectEntityScope(
-          asNonEmptyString((vj as any)?.note_snippet),
-          asNonEmptyString(prov?.slide_title),
-        );
+        // Prefer pre-computed entity_scope from value_json (set upstream in promoted-facts-from-dpu.ts).
+        const precomputedScopeInScore = asNonEmptyString((vj as any)?.entity_scope);
+        const validEntityScopes = ['company', 'customer', 'case_study', 'illustrative', 'unknown'];
+        const entityScope = (precomputedScopeInScore && validEntityScopes.includes(precomputedScopeInScore))
+          ? precomputedScopeInScore
+          : detectEntityScope(
+              asNonEmptyString((vj as any)?.note_snippet),
+              asNonEmptyString(prov?.slide_title),
+            );
         if (entityScope === 'case_study') return -800;
         if (entityScope === 'illustrative') return -600;
 
@@ -1994,6 +2016,32 @@ function classifyRevenueFactType(
   return 'unclassified';
 }
 
+/** Authority rank: 5=xlsx structured, 4=pdf structured, 3=promoted/dpu, 2=deck medium+, 1=deck low */
+function getAuthorityRank(sourceKind: string, confidence: string): 1 | 2 | 3 | 4 | 5 {
+  if (sourceKind === 'xlsx') return 5;
+  if (sourceKind === 'pdf_table' || sourceKind === 'pdf_kpi_line') return 4;
+  if (sourceKind === 'kpi_tile') return 3;
+  if (sourceKind === 'deck' && confidence !== 'low') return 2;
+  if (sourceKind === 'deck') return 1;
+  return 3; // dpu_derived, promoted_slide_fact
+}
+
+/** Source support level label for candidates. */
+function getSourceSupportLevel(sourceKind: string, crossSourceStatus?: string | null): string {
+  if (sourceKind === 'xlsx') return 'xlsx_structured';
+  if (sourceKind === 'pdf_table' || sourceKind === 'pdf_kpi_line') return 'pdf_structured';
+  if (crossSourceStatus === 'confirmed') return 'cross_validated';
+  if (sourceKind === 'deck') return 'deck_only';
+  return 'dpu_text';
+}
+
+/** Document family label for candidates. */
+function buildDocumentFamily(sourceKind: string): string {
+  if (sourceKind === 'xlsx') return 'financial_model';
+  if (sourceKind === 'deck') return 'pitch_deck';
+  return 'financial_statements';
+}
+
 function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, financialFacts: FinancialFactV1[]): void {
   // Use the canonical selector — all source kinds, monthly guard included.
   const best = selectCanonicalRevenueFact(financialFacts);
@@ -2041,6 +2089,16 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
   const buildFactCandidate = (f: FinancialFactV1, selected: boolean) => {
     const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
     const ftLabel = classifyRevenueFactType(f, proformaIds);
+    const crossSourceStatus = (f as any)?.provenance_metadata?.cross_source_status ?? null;
+    const authorityRank = getAuthorityRank(f.source_kind, f.confidence);
+    const sourceSupportLevel = getSourceSupportLevel(f.source_kind, crossSourceStatus);
+    const documentFamily = buildDocumentFamily(f.source_kind);
+    const hasPrimaryCitation = !!(f.document_id && f.page_number != null);
+    const entityScopeForFact = detectEntityScope(
+      asNonEmptyString(f.excerpt) ?? null,
+      asNonEmptyString(f.slide_title) ?? null,
+    );
+    const selectionExplainer = `${f.source_kind}/${f.metric_key} ${f.period_label} conf=${f.confidence}`;
     return {
       selected,
       score: confidenceNum(f.confidence),
@@ -2053,6 +2111,12 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
       currency: f.currency ?? 'USD',
       confidence: confidenceNum(f.confidence),
       sources: [{ kind: f.source_kind, document_id: f.document_id, metric_key: f.metric_key, period_label: f.period_label }],
+      entity_scope: entityScopeForFact,
+      authority_rank: authorityRank,
+      source_support_level: sourceSupportLevel,
+      document_family: documentFamily,
+      has_primary_citation: hasPrimaryCitation,
+      selection_explainer: selectionExplainer,
     };
   };
 

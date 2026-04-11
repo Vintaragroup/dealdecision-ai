@@ -66,6 +66,37 @@ const asNonEmptyString = (v: unknown): string | null =>
 
 const normalizeText = (raw: string): string => raw.replace(/\s+/g, " ").trim();
 
+/**
+ * Upstream entity-scope classifier for DPU-derived revenue candidates.
+ * Runs at parse time so case-study / illustrative slides are excluded
+ * before they reach the compiler score() gate.
+ *
+ * Inputs: pre-lowercased slide context (page_text + title + bullets) built
+ * by parseRevenueFromSlides.
+ */
+type UpstreamEntityScope = 'company' | 'customer' | 'case_study' | 'illustrative' | 'unknown';
+
+function detectEntityScopeFromSlideContext(slideContextLower: string): UpstreamEntityScope {
+  if (!slideContextLower) return 'unknown';
+  // Case-study / client-example slides.
+  if (
+    /use\s+case\s+(?:solution|study)|case\s+stud[yi]|case\s+solution|client\s+hq|retail\s+locations?\s+mrr|reseller.*?mrr/.test(
+      slideContextLower
+    )
+  ) {
+    return 'case_study';
+  }
+  // Illustrative / hypothetical slides.
+  if (/\b(?:illustrative|hypothetical|sample\s+deployment|per\s+location)\b/.test(slideContextLower)) {
+    return 'illustrative';
+  }
+  // Per-customer metrics.
+  if (/\b(?:pilot\s+client|per\s+customer|per\s+merchant|per\s+user)\b/.test(slideContextLower)) {
+    return 'customer';
+  }
+  return 'unknown';
+}
+
 function extractSlideNumberFromPayload(payload: any): number | null {
 	const structured = payload?.structured ?? null;
 	const source = payload?.source ?? null;
@@ -428,6 +459,7 @@ function parseRevenueFromSlides(rows: SlideRow[], docMetas?: DocumentMeta[]): Ar
 	channel?: 'email_sms' | null;
 	typing_reason?: string | null;
 	note_snippet: string | null;
+	entity_scope: UpstreamEntityScope;
 	primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null };
 }> {
 	const currentYear = new Date().getFullYear();
@@ -516,6 +548,7 @@ function parseRevenueFromSlides(rows: SlideRow[], docMetas?: DocumentMeta[]): Ar
 		channel?: 'email_sms' | null;
 		typing_reason?: string | null;
 		note_snippet: string | null;
+		entity_scope: UpstreamEntityScope;
 		slideTitle: string | null;
 		slideText: string;
 		primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null };
@@ -538,6 +571,12 @@ function parseRevenueFromSlides(rows: SlideRow[], docMetas?: DocumentMeta[]): Ar
 			.filter((v) => v.length > 0)
 			.join(' ')
 			.toLowerCase();
+
+		// Slide-level entity scope gate: skip slides whose full context identifies them as
+		// case-study / illustrative examples rather than company-level revenue.
+		const slideEntityScope = detectEntityScopeFromSlideContext(slideContextLower);
+		if (slideEntityScope === 'case_study' || slideEntityScope === 'illustrative') continue;
+
 		for (const bulletRaw of bullets) {
 			const bullet = String(bulletRaw ?? '').trim();
 			if (!bullet || !bullet.includes('$')) continue;
@@ -605,6 +644,7 @@ function parseRevenueFromSlides(rows: SlideRow[], docMetas?: DocumentMeta[]): Ar
 					amount,
 					year: subtype === 'forecast' ? year : null,
 					note_snippet,
+					entity_scope: slideEntityScope,
 					slideTitle: r.slideTitle,
 					slideText: bullet,
 					primary: {
@@ -649,6 +689,7 @@ function parseRevenueFromSlides(rows: SlideRow[], docMetas?: DocumentMeta[]): Ar
 			amount: c!.amount,
 			year: c!.year,
 			note_snippet: c!.note_snippet,
+			entity_scope: c!.entity_scope,
 			primary: c!.primary,
 		}));
 }
@@ -664,6 +705,7 @@ function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: num
 	year: number;
 	scope: RevenueScope;
 	note_snippet: string | null;
+	entity_scope: UpstreamEntityScope;
 	primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null; slide_number: number | null };
 }> {
 	// Heuristic parser for slides that contain a revenue row with year columns.
@@ -702,6 +744,7 @@ function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: num
 		year: number;
 		scope: RevenueScope;
 		note_snippet: string | null;
+		entity_scope: UpstreamEntityScope;
 		primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null; slide_number: number | null };
 	}> = [];
 
@@ -712,6 +755,11 @@ function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: num
 		const seg = normalizeSegmentKey(r.segment_key);
 		const maybeFinancial = titleLower.includes('financial') || titleLower.includes('income statement') || titleLower.includes('p&l') || seg === 'financials';
 		if (!maybeFinancial) continue;
+
+		// Entity-scope gate: skip case-study / illustrative slides.
+		const tableSlideContextLower = [r.slideTitle, r.slideText].map((v) => String(v ?? '').trim()).join(' ').toLowerCase();
+		const tableSlideEntityScope = detectEntityScopeFromSlideContext(tableSlideContextLower);
+		if (tableSlideEntityScope === 'case_study' || tableSlideEntityScope === 'illustrative') continue;
 
 		const candidatesText = Array.isArray(r.bullets) && r.bullets.length > 0 ? r.bullets : [r.slideText];
 		for (const lineRaw of candidatesText) {
@@ -775,6 +823,7 @@ function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: num
 					year: label.year,
 					scope: 'company_financials_table',
 					note_snippet: asNonEmptyString(line.slice(0, 240)),
+					entity_scope: tableSlideEntityScope,
 					primary: {
 						document_id: r.row.document_id,
 						page_index: r.row.page_index,
@@ -1522,6 +1571,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 					row_name: rev.row_name,
 					value_raw: rev.value_raw,
 					note_snippet: rev.note_snippet,
+					entity_scope: rev.entity_scope,
 					amount: { amount: rev.amount, currency: 'USD' },
 				},
 				provenance: {
@@ -1583,6 +1633,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 					...(channel ? { channel } : {}),
 					...(typing_reason ? { typing_reason } : {}),
 					note_snippet: rev.note_snippet,
+					entity_scope: rev.entity_scope,
 					amount: { amount: rev.amount, currency: "USD" },
 				},
 				provenance: {

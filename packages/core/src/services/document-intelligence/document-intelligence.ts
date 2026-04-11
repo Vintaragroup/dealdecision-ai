@@ -338,6 +338,13 @@ function detectDocTypeHints(args: { docTitle: string | null; docType: string | n
 	addIf("model", /\bfinancial model\b|\bassumptions\b|\bmodel\b/i, 0.7, "keyword");
 	addIf("contract", /\bagreement\b|\bcontract\b|\bterms and conditions\b/i, 0.7, "keyword");
 
+	// RC-001: SEC regulatory filing classifiers — high confidence, doc-family signals.
+	// Detected in title or body text; title match is definitive.
+	addIf("sec_filing_s1", /\bform\s+s-?1\b|\bregistration\s+statement\b/i, 0.95, "sec_keyword");
+	addIf("sec_filing_10k", /\bform\s+10-?k\b|\bannual\s+report\s+pursuant\s+to\s+section\s+13\b/i, 0.95, "sec_keyword");
+	addIf("sec_filing_10q", /\bform\s+10-?q\b|\bquarterly\s+report\s+pursuant\s+to\s+section\s+13\b/i, 0.95, "sec_keyword");
+	addIf("regulatory_filing", /\bsecurities\s+and\s+exchange\s+commission\b|\bsec\.gov\b/i, 0.85, "sec_keyword");
+
 	// Deterministic ordering + de-dupe
 	hints.sort((a, b) => b.confidence - a.confidence || a.hint.localeCompare(b.hint) || a.reason.localeCompare(b.reason));
 	const out: Array<{ hint: string; confidence: number; reason: string }> = [];
@@ -511,6 +518,30 @@ function buildEvidenceItemsForBlocks(args: {
 				signal_category: "doc_type_hint",
 			},
 			content_sig: { text: h.hint },
+		});
+	}
+
+	// RC-002: Going concern detection — emit dedicated evidence item when auditor language is found.
+	// Phrase is specific enough to avoid false positives; used in 10-K/10-Q and some financials.
+	const GOING_CONCERN_RE =
+		/substantial\s+doubt.*(?:going\s+concern|ability\s+to\s+continue)|going\s+concern.*substantial\s+doubt|ability\s+to\s+continue\s+as\s+a\s+going\s+concern/i;
+	if (GOING_CONCERN_RE.test(allText)) {
+		inc(bySignal, "going_concern_signal");
+		add({
+			deal_id: args.deal_id,
+			source_type: "document_intelligence_signal",
+			source_path: `doc:${args.document_id}:signal:going_concern`,
+			source_document_id: args.document_id,
+			tags: ["signal:going_concern", "risk:going_concern"],
+			confidence: 0.95,
+			extracted_at: args.extracted_at,
+			content_text: "going_concern",
+			content_json: { signal: "going_concern", detected: true },
+			meta: {
+				extractor: { name: EXTRACTOR_NAME, version: EXTRACTOR_VERSION },
+				signal_category: "going_concern",
+			},
+			content_sig: { text: "going_concern" },
 		});
 	}
 

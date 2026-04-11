@@ -160,12 +160,14 @@ const EXAMPLE_CONTEXT_RE =
   /\b(?:use[\s-]case|use_case|scenario|hypothetical|illustrative|case\s+study|sample\s+(?:merchant|customer|client|scenario|economics)|merchant\s+example|customer\s+example|fi\s+example|institution\s+example|example\s+(?:economics|customer|merchant|client|institution))\b/i;
 
 /**
- * Matches market-size projection phrases: "Per SAM ARR", "% of SOM", "SAM ARR".
+ * Matches market-size projection phrases: "Per SAM ARR", "% of SOM", "SAM ARR",
+ * and standalone market-size labels: "addressable market", "market opportunity",
+ * "market size", "TAM:", "SAM:", "SOM:".
  * Applied only to revenue/ARR/MRR/GTV/GMV — these are market-capture projections,
  * not current company traction metrics.
  */
 const MARKET_PROJECTION_RE =
-  /\bper\s+(?:sam|som|tam)\b|%\s*of\s+(?:tam|sam|som)\b|\bsam\s+arr\b|\bsom\s+arr\b|\bsam\s+mrr\b|\bsom\s+mrr\b/i;
+  /\bper\s+(?:sam|som|tam)\b|%\s*of\s+(?:tam|sam|som)\b|\bsam\s+arr\b|\bsom\s+arr\b|\bsam\s+mrr\b|\bsom\s+mrr\b|\b(?:total\s+)?addressable\s+market\b|\bmarket\s+(?:size|opportunity)\b|\b(?:tam|sam|som)\s*[:\-]\s*\$|\brev(?:enue)?\s+opportunity\b/i;
 
 /** Revenue/ARR/MRR/GTV/GMV — suppressed when MARKET_PROJECTION_RE matches the segment. */
 const MARKET_PROJECTION_SENSITIVE_KEYS = new Set(["arr", "mrr", "revenue", "gtv", "gmv"]);

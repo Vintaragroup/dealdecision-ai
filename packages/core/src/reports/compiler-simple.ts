@@ -1660,6 +1660,25 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
   const structuredSummary = buildStructuredSummary(dio, scoreExplanation, undefined);
   const canonicalRevenueDisplay = revenueDisplayFromStructuredSummary(structuredSummary);
 
+  // RC-004: extract doc type hints from DIO claim text so SEC filings can override funding stage.
+  // The DIO data lives in dio.dio.phase1.claims[*].{text, evidence[*].snippet} — not in dio.inputs.evidence.
+  const _docTypeHintsForFunding = (() => {
+    const claims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
+    const parts: string[] = [];
+    for (const claim of claims) {
+      if (typeof claim?.text === 'string') parts.push(claim.text);
+      for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
+        if (typeof ev?.snippet === 'string') parts.push(ev.snippet);
+      }
+    }
+    const allText = parts.join('\n');
+    const hints: string[] = [];
+    if (/\bform\s+s-?1\b|\bregistration\s+statement\b/i.test(allText)) hints.push('sec_filing_s1');
+    if (/\bform\s+10-?k\b|\bannual\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10k');
+    if (/\bform\s+10-?q\b|\bquarterly\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10q');
+    return hints;
+  })();
+
   const fundingStage = inferFundingStageModelV1({
     funding_round_label: null,
     company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
@@ -1672,6 +1691,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
           source_path: s?.source_path ?? undefined,
         }))
       : null,
+    doc_type_hints: _docTypeHintsForFunding.length > 0 ? _docTypeHintsForFunding : null,
   });
   
   // Executive Summary
@@ -2327,6 +2347,24 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
           source_path: s?.source_path ?? undefined,
         }))
       : null,
+    doc_type_hints: (() => {
+      // RC-004: extract doc type hints from DIO claim text so SEC filings override funding stage.
+      // The DIO data lives in dio.dio.phase1.claims[*].{text, evidence[*].snippet}.
+      const claims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
+      const parts: string[] = [];
+      for (const claim of claims) {
+        if (typeof claim?.text === 'string') parts.push(claim.text);
+        for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
+          if (typeof ev?.snippet === 'string') parts.push(ev.snippet);
+        }
+      }
+      const allText = parts.join('\n');
+      const hints: string[] = [];
+      if (/\bform\s+s-?1\b|\bregistration\s+statement\b/i.test(allText)) hints.push('sec_filing_s1');
+      if (/\bform\s+10-?k\b|\bannual\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10k');
+      if (/\bform\s+10-?q\b|\bquarterly\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10q');
+      return hints.length > 0 ? hints : null;
+    })(),
   });
 
   const financialCoverage = inferFinancialCoverageProfileV1({

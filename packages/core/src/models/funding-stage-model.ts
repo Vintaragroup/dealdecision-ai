@@ -49,6 +49,13 @@ export function inferFundingStageModelV1(input: {
       signals: [{ label: hints.includes('sec_filing_10k') ? 'sec_filing_10k_detected' : 'sec_filing_10q_detected', weight: 1.0 }],
     };
   }
+  if (hints.some((h) => h === 'sec_filing_8k')) {
+    return {
+      funding_stage: 'public_company',
+      confidence: 0.85,
+      signals: [{ label: 'sec_filing_8k_detected', weight: 0.95 }],
+    };
+  }
   if (hints.some((h) => h === 'sec_filing_s1')) {
     return {
       funding_stage: 'ipo',

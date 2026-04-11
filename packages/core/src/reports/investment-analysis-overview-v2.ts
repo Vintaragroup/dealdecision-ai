@@ -165,6 +165,15 @@ function sanitizeIaoText(text: string | null, structuredSummary: any): string | 
 		}
 	}
 
+	// 2b. Replace stale generic ecommerce archetype phrases with the guarded BM label.
+	// This avoids investor-facing contradictions where the LLM one-liner says
+	// "consumer e-commerce brand" while structured_summary.business_model was guarded
+	// to a different canonical value (e.g. Marketplace / platform).
+	if (guardedBmValue) {
+		result = result.replace(/\bconsumer\s+e-?commerce\s+brand\b/gi, guardedBmValue);
+		result = result.replace(/\bdtc\s+ecommerce(?:\s+business)?\b/gi, guardedBmValue);
+	}
+
 	// 3. "Unknown" sentinel values — DIO phase1 summaries may contain bare "Unknown" as a
 	//    value placeholder if the extraction found no data and the guard cleared the field
 	//    before the summary was written. Target only sentinel-like uses (after colon, "of

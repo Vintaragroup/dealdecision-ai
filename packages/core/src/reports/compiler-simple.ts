@@ -283,6 +283,36 @@ const revenueDisplayFromPromotedFacts = (promotedFacts?: PromotedFactInput[]): s
   return null;
 };
 
+const revenueAmountFromPromotedFacts = (promotedFacts?: PromotedFactInput[]): number | null => {
+  const facts = Array.isArray(promotedFacts) ? promotedFacts : [];
+  const candidates = facts
+    .filter((f) => promotedFactTypeOf(f) === 'revenue_v1')
+    .filter((f) => {
+      const vj = promotedFactValueJson(f) ?? {};
+      const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+      const scope = String((vj as any)?.scope ?? (f as any)?.content_json?.provenance?.scope ?? '').toLowerCase();
+      if (subtype === 'attributed') return false;
+      if (scope === 'channel_attributed') return false;
+      if (subtype === 'forecast' || subtype === 'projected' || subtype === 'proforma') return false;
+      return true;
+    })
+    .sort((a, b) => (Number(b.confidence ?? 0) - Number(a.confidence ?? 0)));
+
+  for (const f of candidates) {
+    const vj = promotedFactValueJson(f) ?? {};
+    const amountRaw = (vj as any)?.amount?.amount;
+    if (typeof amountRaw === 'number' && Number.isFinite(amountRaw)) {
+      return amountRaw;
+    }
+    const raw = asNonEmptyString((vj as any)?.raw ?? (vj as any)?.display);
+    const parsed = parseMoneyLike(raw ?? null).amount;
+    if (typeof parsed === 'number' && Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+};
+
 const applyRevenueOverrideToMetricBenchmarkContent = (content: string, revenueDisplay: string | null): string => {
   if (!revenueDisplay) return content;
 
@@ -2395,13 +2425,42 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     ? base.sections.map((s) => (s.id === 'metric-benchmark' ? { ...s, content: applyRevenueOverrideToMetricBenchmarkContent(s.content, revenueDisplay) } : s))
     : base.sections;
   const ctoVacancyMessage = 'Key technical role unfilled - CTO position vacant';
-  const _sanitizedSections = !_hasCtoVacancyEvidence
+  const _structuredRevenueAmount: number | null = (() => {
+    const rev = (structuredSummary as any)?.revenue;
+    const amountDirect = typeof rev?.value?.amount === 'number' && Number.isFinite(rev.value.amount)
+      ? rev.value.amount
+      : null;
+    if (amountDirect != null) return amountDirect;
+    const raw = typeof rev?.value?.raw === 'string'
+      ? rev.value.raw
+      : (typeof rev?.value === 'string' ? rev.value : null);
+    const parsed = parseMoneyLike(raw ?? null).amount;
+    if (typeof parsed === 'number' && Number.isFinite(parsed)) return parsed;
+
+    const promotedAmount = revenueAmountFromPromotedFacts(opts?.promotedFacts);
+    if (typeof promotedAmount === 'number' && Number.isFinite(promotedAmount)) return promotedAmount;
+
+    const displayParsed = parseMoneyLike(revenueDisplay ?? null).amount;
+    return typeof displayParsed === 'number' && Number.isFinite(displayParsed) ? displayParsed : null;
+  })();
+  const _hasStrongRevenueEvidence = _structuredRevenueAmount != null && _structuredRevenueAmount >= 1_000_000;
+  const _preRevenueMessage = 'Pre-revenue stage - monetization unproven';
+  const _preRevenuePattern = /pre[-‑–\s]*revenue[^\n\\n]*monetization\s+unproven/i;
+
+  const _sanitizedSections = (!_hasCtoVacancyEvidence || _hasStrongRevenueEvidence)
     ? sections.map((s) => {
       if (typeof (s as any)?.content !== 'string') return s;
-      const content = String((s as any).content)
-        .replace(new RegExp(`(^|\\n)\\s*[•-]?\\s*(\\[high\\]\\s*)?${ctoVacancyMessage.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}`, 'gi'), '$1')
+      let content = String((s as any).content)
+        .replace(new RegExp(`(^|\\n|\\\\n)\\s*[•-]?\\s*(\\[high\\]\\s*)?${ctoVacancyMessage.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}`, 'gi'), '$1')
         .replace(/\n{3,}/g, '\n\n')
-        .trim();
+        .replace(/(?:\\n){3,}/g, '\\n\\n');
+      if (_hasStrongRevenueEvidence) {
+        content = content
+          .replace(/(^|\n|\\n)\s*[•-]?\s*(\[(critical|high|medium|low)\]\s*)?[^\n\\n]*pre[-‑–\s]*revenue[^\n\\n]*monetization\s+unproven[^\n\\n]*/gi, '$1')
+          .replace(/\n{3,}/g, '\n\n')
+          .replace(/(?:\\n){3,}/g, '\\n\\n');
+      }
+      content = content.trim();
       return { ...s, content };
     })
     : sections;
@@ -2418,12 +2477,33 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
         if (typeof ev?.snippet === 'string') parts.push(ev.snippet);
       }
     }
+    if (Array.isArray(_reportSignalPageTexts)) {
+      for (const t of _reportSignalPageTexts) {
+        if (typeof t === 'string') parts.push(t);
+      }
+    }
+    const docs = Array.isArray(opts?.documents) ? opts!.documents : [];
+    const hints = new Set<string>();
+    for (const d of docs) {
+      const kind = String((d as any)?.kind ?? '').toLowerCase().trim();
+      const file = String((d as any)?.filename ?? '').toLowerCase().trim();
+      if (kind.includes('10k') || kind.includes('10-k')) hints.add('sec_filing_10k');
+      if (kind.includes('10q') || kind.includes('10-q')) hints.add('sec_filing_10q');
+      if (kind.includes('8k') || kind.includes('8-k')) hints.add('sec_filing_8k');
+      if (kind.includes('s1') || kind.includes('s-1')) hints.add('sec_filing_s1');
+
+      if (/\b10-?k\b|annual[_\s-]?report/.test(file)) hints.add('sec_filing_10k');
+      if (/\b10-?q\b|quarterly[_\s-]?report/.test(file)) hints.add('sec_filing_10q');
+      if (/\b8-?k\b|current[_\s-]?report/.test(file)) hints.add('sec_filing_8k');
+      if (/\bs-?1\b|registration[_\s-]?statement/.test(file)) hints.add('sec_filing_s1');
+    }
+
     const allText = parts.join('\n');
-    const hints: string[] = [];
-    if (/\bform\s+s-?1\b|\bregistration\s+statement\b/i.test(allText)) hints.push('sec_filing_s1');
-    if (/\bform\s+10-?k\b|\bannual\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10k');
-    if (/\bform\s+10-?q\b|\bquarterly\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10q');
-    return hints;
+    if (/\bform\s+s-?1\b|\bregistration\s+statement\b/i.test(allText)) hints.add('sec_filing_s1');
+    if (/\bform\s+10-?k\b|\bannual\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.add('sec_filing_10k');
+    if (/\bform\s+10-?q\b|\bquarterly\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.add('sec_filing_10q');
+    if (/\bform\s+8-?k\b|\bcurrent\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.add('sec_filing_8k');
+    return Array.from(hints);
   })();
 
   const fundingStage = inferFundingStageModelV1({
@@ -2680,13 +2760,19 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
       return msg.toLowerCase() !== ctoVacancyMessage.toLowerCase();
     })
     : _mergedRedFlags;
+  const _effectiveRedFlags2 = _hasStrongRevenueEvidence
+    ? _effectiveRedFlags.filter((f: any) => {
+      const msg = typeof f?.message === 'string' ? f.message : '';
+      return !_preRevenuePattern.test(msg);
+    })
+    : _effectiveRedFlags;
 
 	return {
 		...base,
     overallScore: _adjustedOverallScore,
     grade: scoreToGrade(_adjustedOverallScore),
     // RC-002b: Merge promoted red flags (e.g. going concern from DPU page texts) with base red flags.
-    redFlags: _effectiveRedFlags,
+    redFlags: _effectiveRedFlags2,
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
     financial_breakdown_v1: financialBreakdown,

@@ -295,6 +295,17 @@ describe('buildInvestmentAnalysisOverviewV2 — summary sanitization (P3)', () =
 		expect(result.summary).toContain('DTC Ecommerce');
 	});
 
+	it('replaces stale "consumer e-commerce brand" phrase with guarded BM value', () => {
+		const dio = makeDioWithSummary(
+			'The deal presents a consumer e-commerce brand focused on wholesale/retail with traction signals.',
+		);
+		const ss = makeStructuredSummary({ bmValue: 'Marketplace / platform' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+
+		expect(result.summary).not.toMatch(/consumer\s+e-?commerce\s+brand/i);
+		expect(result.summary).toContain('Marketplace / platform');
+	});
+
 	it('removes "Wholesale/Retail" when BM was nulled by FPG', () => {
 		const dio = makeDioWithSummary(
 			'A startup focused on wholesale/retail with significant traction signals.',

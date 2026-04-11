@@ -136,6 +136,20 @@ describe("FundingStageModel v1", () => {
     expect(out.signals.some((s) => s.label === "sec_filing_10q_detected")).toBe(true);
   });
 
+  it("RC-004: sec_filing_8k hint -> public_company", () => {
+    const out = inferFundingStageModelV1({
+      funding_round_label: null,
+      company_phase_label: null,
+      raise_amount: null,
+      raise_sources: null,
+      doc_type_hints: ["sec_filing_8k"],
+    });
+
+    expect(out.funding_stage).toBe("public_company");
+    expect(out.confidence).toBeCloseTo(0.85);
+    expect(out.signals.some((s) => s.label === "sec_filing_8k_detected")).toBe(true);
+  });
+
   it("RC-004: SEC hint overrides label signals (S-1 beats 'pre-seed' label)", () => {
     const out = inferFundingStageModelV1({
       funding_round_label: "seed",

@@ -79,13 +79,19 @@ type ReportDTO = {
         amount?: { amount: number | null; currency?: string | null };
       };
     };
-    business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
+    business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null; recovered?: boolean; recovery_rule?: string | null };
     revenue: {
       value: { amount: number | null; currency: string | null; period: string | null; raw: string | null } | null;
       confidence: number;
       sources: Array<Record<string, any>>;
       label?: string | null;
       selection_reason?: string | null;
+      fact_type_label?: 'actual' | 'projected' | 'interim' | 'run_rate' | 'unclassified' | null;
+      display_type_label?: string | null;
+      revenue_authority_explainer?: string | null;
+      entity_scope?: 'company' | 'customer' | 'case_study' | 'illustrative' | 'unknown' | null;
+      is_projected?: boolean;
+      is_provisional?: boolean;
       candidates?: Array<{
         selected?: boolean;
         score?: number;
@@ -97,6 +103,8 @@ type ReportDTO = {
         currency?: string | null;
         confidence?: number | null;
         sources?: Array<Record<string, any>>;
+        fact_type_label?: string | null;
+        entity_scope?: string | null;
       }>;
     };
 
@@ -295,6 +303,44 @@ const shouldCollapseRaiseDisplay = (display: string): boolean => {
   if (s.includes('valuation') || s.includes('@') || s.includes('post-money') || s.includes('pre-money') || /\braise\b/.test(s)) return true;
   return false;
 };
+
+type EntityScope = 'company' | 'customer' | 'case_study' | 'illustrative' | 'unknown';
+
+/**
+ * Detect whether a revenue/metric note/slide represents a company-level metric
+ * or a case-study / per-customer / illustrative metric.
+ *
+ * Returns 'case_study' when the note/title contains per-customer or use-case signals.
+ * Returns 'company' when clean financial presentation language is detected.
+ * Returns 'unknown' when there is insufficient signal.
+ */
+function detectEntityScope(noteSnippet: string | null, slideTitle: string | null): EntityScope {
+  const note = String(noteSnippet ?? '').toLowerCase();
+  const title = String(slideTitle ?? '').toLowerCase();
+  const combined = `${note} ${title}`;
+
+  // Strong case-study signals
+  if (/case\s+stud(y|ies)|case\s+solution|use\s+case|client\s+example|customer\s+example|merchant\s+example/.test(combined)) {
+    return 'case_study';
+  }
+  // Per-entity breakdowns — individual client metrics mixed with totals on a use-case slide
+  if (/\bclient\s+hq\b|\bretail\s+location[s]?\s+mrr\b|\breseller.*mrr\b/.test(combined)) {
+    return 'case_study';
+  }
+  // Illustrative / hypothetical
+  if (/\billustrative\b|\bhypothetical\b|\bsample\s+deployment\b|\bper[- ]location\b|\bper[- ]partner\b/.test(combined)) {
+    return 'illustrative';
+  }
+  // Per-customer / pilot signals (but may still be meaningful company metrics)
+  if (/\bpilot\s+client\b|\bper\s+customer\b|\bper\s+merchant\b/.test(combined)) {
+    return 'customer';
+  }
+  // Positive company-level signals
+  if (/\bfinancial\s+(performance|results|statements?|summary)\b|\bsales\s+performance\b|\bannual\s+revenue\b|\btotal\s+(revenue|arr|mrr)\b/.test(combined)) {
+    return 'company';
+  }
+  return 'unknown';
+}
 
 function buildStructuredSummary(
   dio: DIO,
@@ -877,6 +923,11 @@ function buildStructuredSummary(
         const subtype = asNonEmptyString((vj as any)?.subtype);
         const sources = attachNoteSnippet(promotedSourcesFor(f), (vj as any)?.note_snippet);
         const conf = clamp01(typeof f?.confidence === 'number' ? f.confidence : 0.62);
+        const prov = f?.content_json?.provenance;
+        const entityScope = detectEntityScope(
+          asNonEmptyString((vj as any)?.note_snippet),
+          asNonEmptyString(prov?.slide_title),
+        );
         return {
           selected,
           score: scoreValue,
@@ -888,6 +939,7 @@ function buildStructuredSummary(
           currency: 'USD',
           confidence: conf,
           sources,
+          entity_scope: entityScope,
         };
       };
 
@@ -910,7 +962,16 @@ function buildStructuredSummary(
         // Exclude irrelevant segments unless explicitly financial/performance.
         if (seg && disallowedSeg.has(seg) && !titleIsFinancialOrPerformance) return -500;
 
+        // Case-study / per-customer metrics are not company-level revenue.
+        const entityScope = detectEntityScope(
+          asNonEmptyString((vj as any)?.note_snippet),
+          asNonEmptyString(prov?.slide_title),
+        );
+        if (entityScope === 'case_study') return -800;
+        if (entityScope === 'illustrative') return -600;
+
         let s = 0;
+        if (entityScope === 'customer') s -= 30;
         if (scope === 'company_financials_table') s += 50;
         if (scope === 'company_total') s += 10;
         if (scope === 'channel_attributed') s -= 10;
@@ -1024,6 +1085,11 @@ function buildStructuredSummary(
       const amountRaw = (vj as any)?.amount?.amount;
       const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
       const sources = attachNoteSnippet(promotedSourcesFor(promotedRevenue), (vj as any)?.note_snippet);
+      const revProv = (promotedRevenue as any)?.content_json?.provenance;
+      const revEntityScope = detectEntityScope(
+        asNonEmptyString((vj as any)?.note_snippet),
+        asNonEmptyString(revProv?.slide_title),
+      );
 
       const label = (() => {
         const scopeNorm = String(scope ?? '').trim().toLowerCase();
@@ -1032,11 +1098,22 @@ function buildStructuredSummary(
         return null;
       })();
 
+      // Map promoted-fact subtype to display_type_label.
+      const promotedDisplayTypeLabel = (() => {
+        const st = String(subtype ?? '').toLowerCase();
+        if (st === 'forecast' || st === 'projected') return 'Revenue (projected)';
+        if (st === 'interim') return 'Revenue (interim)';
+        if (st === 'run_rate') return 'Revenue (run-rate)';
+        return 'Revenue';
+      })();
+
       structured.revenue = {
         value: { amount, currency: 'USD', period: null, raw: display },
         confidence: clamp01(typeof promotedRevenue.confidence === 'number' ? promotedRevenue.confidence : 0.62),
         sources,
         label,
+        display_type_label: promotedDisplayTypeLabel,
+        entity_scope: revEntityScope !== 'unknown' ? revEntityScope : undefined,
         selection_reason: promotedRevenueTrace.selection_reason,
         candidates: Array.isArray(promotedRevenueTrace.candidates) ? promotedRevenueTrace.candidates : [],
       };
@@ -1212,6 +1289,37 @@ function buildStructuredSummary(
         confidence: 0.55,
         sources: [{ kind: 'score_explanation.context', field: 'business_model' }],
       };
+    }
+  }
+
+  // Recovery tier: deal_classification_v1 policy_id → canonical BM label.
+  // Fires only when BM is still null after all other paths, and the deal has a
+  // well-typed non-generic policy classification with sufficient confidence.
+  // Never fires for real-estate-classified deals (guarded by isDioRealEstate above).
+  if (!structured.business_model.value && !isDioRealEstate) {
+    const clf = (dio as any)?.dio?.deal_classification_v1;
+    const selectedPolicyId = asNonEmptyString(String(clf?.selected?.policy_id ?? ''));
+    const clfConfidence: number =
+      typeof clf?.selected?.confidence === 'number' && Number.isFinite(clf.selected.confidence)
+        ? clf.selected.confidence
+        : 0;
+    if (selectedPolicyId && clfConfidence >= 0.7) {
+      const recoveredBM = POLICY_TO_CANONICAL_BM[selectedPolicyId] ?? null;
+      if (recoveredBM) {
+        (structured.business_model as any) = {
+          value: recoveredBM,
+          confidence: 0.4,
+          sources: [
+            {
+              kind: 'deal_classification_v1.policy_inferred',
+              policy_id: selectedPolicyId,
+              classification_confidence: clfConfidence,
+            },
+          ],
+          recovered: true,
+          recovery_rule: 'policy_inferred_label',
+        };
+      }
     }
   }
 
@@ -1809,16 +1917,44 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
   };
 }
 
-/**
- * Inject XLSX-derived revenue facts into structured_summary.revenue.
- *
- * Uses selectAuthoritativeFact to choose the single best fact, ensuring
- * year-header corruption and projected overrides are rejected before
- * the value is written into the structured summary.
- *
- * All other xlsx revenue candidates are preserved in the candidates list for
- * audit trails. Deck-derived candidates keep their existing selected=false state.
- */
+/** Maps deal_classification_v1 policy_id values to canonical BM label strings. */
+const POLICY_TO_CANONICAL_BM: Record<string, string> = {
+  enterprise_saas_b2b_v1: 'Subscription/SaaS (B2B)',
+  consumer_saas_b2c_v1: 'Subscription/SaaS (B2C)',
+  marketplace_platform_v1: 'Marketplace / Platform',
+  consumer_fintech_platform_v1: 'B2C Fintech Platform',
+};
+
+const REVENUE_DISPLAY_TYPE_LABEL: Record<string, string> = {
+  actual: 'Revenue',
+  interim: 'Revenue (interim)',
+  projected: 'Revenue (projected)',
+  run_rate: 'Revenue (run-rate)',
+  unclassified: 'Revenue',
+};
+
+function buildRevenueAuthorityExplainer(
+  best: FinancialFactV1,
+  bestIsProjected: boolean,
+  ftLabel: string,
+): string {
+  const sourceLabel = best.source_kind === 'xlsx'
+    ? 'XLSX financial model'
+    : best.source_kind === 'pdf_table'
+    ? 'PDF financial table'
+    : best.source_kind === 'pdf_kpi_line'
+    ? 'PDF KPI line'
+    : 'structured extraction';
+  const typeLabel = bestIsProjected || ftLabel === 'projected'
+    ? 'projected'
+    : ftLabel === 'interim'
+    ? 'interim-period'
+    : ftLabel === 'run_rate'
+    ? 'run-rate'
+    : 'actual';
+  return `${typeLabel} revenue from ${sourceLabel} (${best.period_label ?? 'unspecified period'})`;
+}
+
 /**
  * Injects the canonical revenue FinancialFactV1 (any source kind) into structured_summary.revenue.
  *
@@ -1934,6 +2070,9 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
   if (financialFactWins) {
     // Financial fact wins (or no deck value present): set as primary selection.
     const bestFactTypeLabel = classifyRevenueFactType(best, proformaIds);
+    const display_type_label = REVENUE_DISPLAY_TYPE_LABEL[bestFactTypeLabel] ?? 'Revenue';
+    const revenue_authority_explainer = buildRevenueAuthorityExplainer(best, bestIsProjected, bestFactTypeLabel);
+    // Structured extraction facts (XLSX/PDF) are always company-level metrics.
     structuredSummary.revenue = {
       value: {
         amount: best.value,
@@ -1943,6 +2082,9 @@ function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, fin
       },
       confidence: bestConf,
       fact_type_label: bestFactTypeLabel,
+      display_type_label,
+      revenue_authority_explainer,
+      entity_scope: 'company',
       sources: [{ kind: best.source_kind, document_id: best.document_id, metric_key: best.metric_key, period_label: best.period_label }],
       label: best.period_label ?? null,
       selection_reason: best.source_kind === 'xlsx' ? 'xlsx_financial_fact' : 'financial_fact',
@@ -2068,6 +2210,35 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     { deal_type: guardContext.deal_type, dio },
     guardContext.documents as any[] | null,
   );
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── Post-guard BM policy recovery ────────────────────────────────────────
+  // The FinalPublishGuard may null a generic/low-quality promoted-fact BM
+  // (e.g., "generic_wholesale_tech_mismatch"). If BM is still null after the
+  // guard, attempt recovery via deal_classification_v1 policy_id.
+  {
+    const postGuardBM = (structuredSummary as any).business_model;
+    const isRealEstatePostGuard = guardContext.deal_type === 'cre';
+    if (!postGuardBM?.value && !isRealEstatePostGuard) {
+      const clf = (dio as any)?.dio?.deal_classification_v1;
+      const selectedPolicyId = asNonEmptyString(String(clf?.selected?.policy_id ?? ''));
+      const rawConf = clf?.selected?.confidence;
+      const clfConfidence = typeof rawConf === 'number' ? rawConf : typeof rawConf === 'string' ? parseFloat(rawConf) : 0;
+      if (selectedPolicyId && clfConfidence >= 0.7) {
+        const recoveredBM = POLICY_TO_CANONICAL_BM[selectedPolicyId] ?? null;
+        if (recoveredBM) {
+          (structuredSummary as any).business_model = {
+            value: recoveredBM,
+            confidence: 0.4,
+            sources: [{ kind: 'deal_classification_v1.policy_inferred', policy_id: selectedPolicyId, classification_confidence: clfConfidence }],
+            label: 'PolicyRecovered',
+            recovered: true,
+            recovery_rule: 'policy_inferred_label',
+          };
+        }
+      }
+    }
+  }
   // ────────────────────────────────────────────────────────────────────────
 
   // Inject canonical revenue fact (all source kinds) before revenue display string is computed.

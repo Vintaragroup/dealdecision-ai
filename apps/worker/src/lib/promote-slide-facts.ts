@@ -634,6 +634,14 @@ function resolveBusinessModelFromSlides(
 		dtc = 0;
 	}
 
+	// RC-007: Detect marketplace / fintech / platform / lending signals across all slides.
+	// When these signals dominate and no explicit "wholesale" keyword is present,
+	// the wholesale scoring is most likely triggered by "channel", "distribution partner"
+	// or "accounts" language that does not indicate an actual wholesale business.
+	const allSlideText = scored.map((r) => r.input.text).join(' ');
+	const hasMarketplacePlatformSignals = /\b(marketplace|two[\s-]?sided|platform\s+fees?|take[\s-]rate|commission\s+model|fintech|lending\s+platform|neobank|credit\s+(platform|marketplace)|personal\s+finance\s+platform|financial\s+services\s+platform|insurance\s+marketplace|loan\s+(marketplace|platform)|payments?\s+platform|consumer\s+lending)\b/i.test(allSlideText);
+	const hasExplicitWholesaleKeyword = /\bwholesale\b/i.test(allSlideText);
+
 	const otherMax = Math.max(dtc, wholesale, saas);
 	const licensingIsPrimary = (
 		licensingPrimaryHits >= 2 &&
@@ -664,6 +672,20 @@ function resolveBusinessModelFromSlides(
 		} else {
 			primaryLabel = null;
 		}
+	}
+
+	// RC-007: Suppress standalone "Wholesale/Retail" when marketplace / fintech / platform
+	// signals are present and the actual word "wholesale" does not appear in the deck.
+	// These companies use "channels", "distribution partners", "accounts" in their decks
+	// which triggers wholesale patterns falsely. Without an explicit "wholesale" keyword
+	// it is not a wholesale business — fall through to no label rather than mislabel.
+	if (
+		(primaryLabel === 'Wholesale/Retail') &&
+		hasMarketplacePlatformSignals &&
+		!hasExplicitWholesaleKeyword
+	) {
+		applied_guards.push('marketplace_platform_blocks_wholesale_without_keyword');
+		primaryLabel = null;
 	}
 
 	if (!primaryLabel) return null;

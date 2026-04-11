@@ -57,6 +57,23 @@ describe("promote slide facts", () => {
 		}
 	});
 
+	it("suppresses standalone Wholesale/Retail label for marketplace/fintech channel language", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Go to Market",
+				"Distribution channels include affiliate and partner channels",
+				"Two-sided marketplace with platform fees and commission model",
+				"Consumer lending platform for personal finance users",
+			].join("\n")
+		);
+
+		// RC-007: this corpus has marketplace/fintech context but no explicit "wholesale" token.
+		// It previously leaked into a standalone Wholesale/Retail label from generic channel terms.
+		expect(bm).toBeNull();
+	});
+
 	it("real_estate_underwriting maps channel language to preferred-equity real-estate model", async () => {
 		const { promoteSlideFactsFromDocumentPageUnderstanding } = await import("../promote-slide-facts.js");
 

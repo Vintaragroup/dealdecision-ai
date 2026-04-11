@@ -469,19 +469,11 @@ function applyBusinessModelGuard(
     return;
   }
 
-  // Check whether the BM sources include any pitch deck — if so, do not overrule
+  // Check whether the BM sources include any pitch deck.
+  // We generally preserve pitch-deck wording, except for a governed mismatch case:
+  // standalone "Wholesale/Retail" with strong tech/platform context and no explicit
+  // wholesale keyword in context (common false positive from channel language).
   const hasPitchDeckSource = !businessModelSourcesNoPitchDeck(bm, documents);
-  if (hasPitchDeckSource) {
-    log.push({
-      field: 'business_model',
-      action: 'kept',
-      rule: 'business_model.pitch_deck_source_present',
-      original_value: value,
-      replacement_value: null,
-      reason: 'Generic term found but sourced from pitch deck — preserving deck language (may be correct distributor channel)',
-    });
-    return;
-  }
 
   // Check for medtech / healthcare product signals in DIO context
   const guidedCopy = getGovernedUiCopyV1(context.dio);
@@ -553,8 +545,36 @@ function applyBusinessModelGuard(
     return;
   }
 
-  const hasMedtech = hasMedtechProductSignals(productSolution);
-  const hasTech = hasTechPlatformContext(productSolution);
+  const phase1Claims = Array.isArray((getDioPhase1(context.dio) as any)?.claims)
+    ? ((getDioPhase1(context.dio) as any).claims as any[])
+    : [];
+  const claimSignalText = phase1Claims
+    .flatMap((claim: any) => {
+      const out: string[] = [];
+      if (typeof claim?.text === 'string') out.push(claim.text);
+      const evidence = Array.isArray(claim?.evidence) ? claim.evidence : [];
+      for (const ev of evidence) {
+        if (typeof ev?.snippet === 'string') out.push(ev.snippet);
+      }
+      return out;
+    })
+    .join(' ');
+
+  const hasMedtech = hasMedtechProductSignals(productSolution) || hasMedtechProductSignals(claimSignalText);
+  const hasTech = hasTechPlatformContext(productSolution) || hasTechPlatformContext(claimSignalText);
+  const hasExplicitWholesaleInContext = /\bwholesale\b/i.test(`${String(productSolution ?? '')} ${claimSignalText}`);
+
+  if (hasPitchDeckSource && !(hasTech && !hasExplicitWholesaleInContext)) {
+    log.push({
+      field: 'business_model',
+      action: 'kept',
+      rule: 'business_model.pitch_deck_source_present',
+      original_value: value,
+      replacement_value: null,
+      reason: 'Generic term found in pitch-deck source and no governed mismatch signal detected',
+    });
+    return;
+  }
 
   // Qualified multi-channel labels ("Omnichannel (DTC + Wholesale/Retail)", "DTC + Wholesale")
   // are legitimate specific BM descriptors for consumer/fintech brands, not the bare
@@ -589,31 +609,36 @@ function applyBusinessModelGuard(
     return;
   }
 
-  // Both conditions met: generic wholesale term + medtech or tech platform context + no pitch deck source
-  // → attempt to replace from governed_ui_copy_v1.business_model
+  // Both conditions met: generic wholesale term + medtech or tech platform context
+  // + no protected pitch-deck preservation
+  // -> attempt to replace from governed_ui_copy_v1.business_model
   const govBM = asStr(guidedCopy?.business_model);
   const hasGoodReplacement = govBM !== null && govBM.length >= 20;
+  const fallbackTechReplacement = hasTech ? 'Marketplace / platform' : null;
 
   const triggerRule = hasMedtech
     ? 'business_model.generic_wholesale_medtech_mismatch'
     : 'business_model.generic_wholesale_tech_mismatch';
 
-  if (hasGoodReplacement) {
+  if (hasGoodReplacement || fallbackTechReplacement) {
+    const replacement = hasGoodReplacement ? govBM : fallbackTechReplacement;
     log.push({
       field: 'business_model',
       action: 'replaced',
       rule: triggerRule,
       original_value: value,
-      replacement_value: govBM,
-      reason: `Generic wholesale/retail term with medtech product context — replaced from governed_ui_copy_v1.business_model`,
+      replacement_value: replacement,
+      reason: hasGoodReplacement
+        ? 'Generic wholesale/retail term with governed mismatch context - replaced from governed_ui_copy_v1.business_model'
+        : 'Generic wholesale/retail term with tech/platform mismatch context - replaced with marketplace/platform fallback label',
     });
 
     structuredSummary.business_model = {
-      value: govBM,
+      value: replacement,
       confidence: 0.6, // Lower than deck-sourced; governed_ui_copy is LLM synthesis
       sources: [
         {
-          kind: 'final_publish_guard.governed_ui_copy_v1',
+          kind: hasGoodReplacement ? 'final_publish_guard.governed_ui_copy_v1' : 'final_publish_guard.tech_platform_fallback',
           replaced_from: value,
           null_rule: triggerRule,
         },

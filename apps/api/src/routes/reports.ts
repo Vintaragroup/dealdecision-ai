@@ -104,7 +104,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 28; // bumped: RC-002b going-concern from document_page_understanding pageTexts (DPU path fix)
+const REPORT_COMPILER_VERSION = 33; // bumped: force-refresh after business-model guard claim-context refinement
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {

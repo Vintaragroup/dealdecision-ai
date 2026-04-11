@@ -2256,12 +2256,28 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 }): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
+  const _reportSignalPageTexts: string[] = Array.isArray(opts?.pageTexts)
+    ? opts!.pageTexts.filter((t) => typeof t === 'string')
+    : [];
+  const _phase1ClaimTexts: string[] = (() => {
+    const claims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
+    const out: string[] = [];
+    for (const claim of claims) {
+      if (typeof claim?.text === 'string') out.push(claim.text);
+      for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
+        if (typeof ev?.snippet === 'string') out.push(ev.snippet);
+      }
+    }
+    return out;
+  })();
+  const _ctoVacancyEvidenceRe = /(looking\s+for|seeking|hiring)\s+(a\s+|the\s+|our\s+)?(cto|chief\s+technology\s+officer)\b|\bcto\s+(position|role|seat)\s+(is\s+)?(open|vacant|unfilled|needed|available)\b/i;
+  const _hasCtoVacancyEvidence = _ctoVacancyEvidenceRe.test([..._phase1ClaimTexts, ..._reportSignalPageTexts].join('\n'));
 
   // RC-002b: Extend going concern scan to cover raw page text (document_page_understanding).
   // compileDIOToReport only checks phase1.claims — this covers full document text from DPU rows.
   const _promotedRedFlags: Array<{ severity: 'high' | 'medium' | 'low'; message: string; action: string }> = [];
   {
-    const _pageTexts: string[] = Array.isArray(opts?.pageTexts) ? opts!.pageTexts.filter((t) => typeof t === 'string') : [];
+    const _pageTexts: string[] = _reportSignalPageTexts;
     if (
       _pageTexts.length > 0
       && /substantial\s+doubt.*(?:going\s+concern|ability\s+to\s+continue)|going\s+concern.*substantial\s+doubt|ability\s+to\s+continue\s+as\s+a\s+going\s+concern/i.test(_pageTexts.join('\n'))
@@ -2378,6 +2394,17 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   const sections = revenueDisplay
     ? base.sections.map((s) => (s.id === 'metric-benchmark' ? { ...s, content: applyRevenueOverrideToMetricBenchmarkContent(s.content, revenueDisplay) } : s))
     : base.sections;
+  const ctoVacancyMessage = 'Key technical role unfilled - CTO position vacant';
+  const _sanitizedSections = !_hasCtoVacancyEvidence
+    ? sections.map((s) => {
+      if (typeof (s as any)?.content !== 'string') return s;
+      const content = String((s as any).content)
+        .replace(new RegExp(`(^|\\n)\\s*[•-]?\\s*(\\[high\\]\\s*)?${ctoVacancyMessage.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}`, 'gi'), '$1')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+      return { ...s, content };
+    })
+    : sections;
 
   // RC-001ft / RC-004: Extract doc type hints from DIO claim text once so they can be
   // shared by both inferFundingStageModelV1 and inferFinancialCoverageProfileV1.
@@ -2500,6 +2527,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   const capitalLogic = inferCapitalLogicProfileV1({
     structured_summary: structuredSummary,
     promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+    page_texts: Array.isArray(opts?.pageTexts) ? opts!.pageTexts : null,
   });
 
   const businessModelSignal = inferBusinessModelSignalProfileV1({
@@ -2642,14 +2670,23 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     _adjustedOverallScore = Math.round(0.70 * _baseOverall + 0.30 * _qualityScore);
   }
 
+  const _baseRedFlags = Array.isArray((base as any).redFlags) ? (base as any).redFlags : [];
+  const _mergedRedFlags = _promotedRedFlags.length > 0
+    ? [..._baseRedFlags, ..._promotedRedFlags]
+    : _baseRedFlags;
+  const _effectiveRedFlags = !_hasCtoVacancyEvidence
+    ? _mergedRedFlags.filter((f: any) => {
+      const msg = typeof f?.message === 'string' ? f.message : '';
+      return msg.toLowerCase() !== ctoVacancyMessage.toLowerCase();
+    })
+    : _mergedRedFlags;
+
 	return {
 		...base,
     overallScore: _adjustedOverallScore,
     grade: scoreToGrade(_adjustedOverallScore),
     // RC-002b: Merge promoted red flags (e.g. going concern from DPU page texts) with base red flags.
-    redFlags: _promotedRedFlags.length > 0
-      ? [...((base as any).redFlags ?? []), ..._promotedRedFlags]
-      : (base as any).redFlags,
+    redFlags: _effectiveRedFlags,
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
     financial_breakdown_v1: financialBreakdown,
@@ -2662,7 +2699,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     team_signal_v1: teamSignal,
     conviction_v1: convictionV1,
     structured_summary: structuredSummary,
-    sections,
+    sections: _sanitizedSections,
     financial_integrity_v1: financialIntegrityV1,
 
 		metadata: {

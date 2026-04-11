@@ -480,7 +480,15 @@ export class RiskAssessmentEngine extends BaseAnalyzer<RiskAssessmentInput, Risk
       });
     }
 
-    if (text_lower.includes("looking for") && text_lower.includes("cto")) {
+    // RC-008: require "looking for" / "seeking" / "hiring" to appear immediately adjacent to
+    // "cto" / "chief technology officer" in a contextual phrase, not just anywhere in the text.
+    // The previous two-includes check produced false positives for established companies whose
+    // documents contain "CTO" as a leadership title AND "looking for" in unrelated context
+    // (e.g. "looking for investors", "looking for growth opportunities").
+    if (
+      /(looking\s+for|seeking|hiring)\s+(a\s+|the\s+|our\s+)?(cto|chief\s+technology\s+officer)\b/i.test(text_lower) ||
+      /\bcto\s+(position|role|seat)\s+(is\s+)?(open|vacant|unfilled|needed|available)\b/i.test(text_lower)
+    ) {
       risks.push({
         risk_id: this.generateRiskId(),
         category: "team",

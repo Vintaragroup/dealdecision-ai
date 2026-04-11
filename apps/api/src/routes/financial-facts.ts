@@ -196,8 +196,11 @@ export async function getFinancialFactsForReport(
  * and XLSX detection when the DIO's inputs.documents lacks filenames.
  */
 /**
- * RC-002b: Returns page_text strings from document_page_understanding rows that contain
- * going concern language. Used to detect going concern flags not surfaced in DIO phase1.claims.
+ * Returns page_text strings from document_page_understanding rows that contain
+ * high-signal report keywords used by compiler guards and capital-logic inference:
+ * - going concern language (RC-002b)
+ * - use-of-funds / use-of-proceeds / allocation language (RC-006)
+ * - prior-funding historical raise language (RC-005)
  * Never crashes /report — returns [] on error.
  */
 export async function getGoingConcernPageTexts(
@@ -211,7 +214,7 @@ export async function getGoingConcernPageTexts(
          JOIN documents d ON d.id = dpu.document_id
         WHERE d.deal_id = $1
           AND d.deleted_at IS NULL
-          AND dpu.payload->>'page_text' ~* 'ability[[:space:]]+to[[:space:]]+continue[[:space:]]+as[[:space:]]+a[[:space:]]+going[[:space:]]+concern|substantial[[:space:]]+doubt.*going[[:space:]]+concern|going[[:space:]]+concern.*substantial[[:space:]]+doubt'`,
+          AND dpu.payload->>'page_text' ~* 'ability[[:space:]]+to[[:space:]]+continue[[:space:]]+as[[:space:]]+a[[:space:]]+going[[:space:]]+concern|substantial[[:space:]]+doubt.*going[[:space:]]+concern|going[[:space:]]+concern.*substantial[[:space:]]+doubt|use[[:space:]]+of[[:space:]]+(funds|proceeds)|allocation[[:space:]]+of[[:space:]]+funds|capital[[:space:]]+allocation|spending[[:space:]]+plan|funds?[[:space:]]+will[[:space:]]+be[[:space:]]+used|funds?[[:space:]]+will[[:space:]]+primarily[[:space:]]+go[[:space:]]+towards|initial[[:space:]]+funds?[[:space:]]+.*go[[:space:]]+towards|proceeds?[[:space:]]+.*used[[:space:]]+for|previously[[:space:]]+(raised|funded|secured|closed)|prior[[:space:]]+(raised|funded|secured|closed)|already[[:space:]]+(raised|funded|secured|closed)|to[[:space:]]+date[[:space:]]+(raised|funded|secured|closed)|looking[[:space:]]+for[[:space:]]+(a[[:space:]]+|the[[:space:]]+|our[[:space:]]+)?(cto|chief[[:space:]]+technology[[:space:]]+officer)|seeking[[:space:]]+(a[[:space:]]+|the[[:space:]]+|our[[:space:]]+)?(cto|chief[[:space:]]+technology[[:space:]]+officer)|hiring[[:space:]]+(a[[:space:]]+|the[[:space:]]+|our[[:space:]]+)?(cto|chief[[:space:]]+technology[[:space:]]+officer)|cto[[:space:]]+(position|role|seat)[[:space:]]+(is[[:space:]]+)?(open|vacant|unfilled|needed|available)'`,
       [dealId],
     );
     return (r.rows ?? []).map((row) => row.page_text).filter((t) => typeof t === 'string' && t.length > 0);

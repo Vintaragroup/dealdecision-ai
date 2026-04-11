@@ -48,6 +48,7 @@ function makeDeSpacContext(
   overrides: {
     governed_ui_copy_v1?: any;
     deal_overview_v2?: any;
+    claims?: any[];
   } = {},
 ): FinalPublishGuardContext {
   return {
@@ -58,6 +59,7 @@ function makeDeSpacContext(
           business_archetype_v1: { value: 'de_spac' },
           governed_ui_copy_v1: overrides.governed_ui_copy_v1 ?? null,
           deal_overview_v2: overrides.deal_overview_v2 ?? null,
+          claims: overrides.claims ?? [],
         },
       },
     },
@@ -255,6 +257,31 @@ describe('applyFinalPublishGuard — business_model: wholesale/medtech mismatch'
     expect(summary.business_model.value).toBe('Wholesale distribution channel');
   });
 
+  it('replaces pitch-deck Wholesale/Retail under tech/platform mismatch without explicit wholesale context', () => {
+    const documents = [{ document_id: 'doc-deck', kind: 'pitch_deck' }];
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'promoted_fact', document_id: 'doc-deck' }],
+      }),
+    };
+    const context = makeDeSpacContext({
+      governed_ui_copy_v1: {
+        business_model: null,
+        product_solution: 'Consumer fintech platform marketplace with platform fees and automated underwriting',
+      },
+      deal_overview_v2: {
+        product_solution: 'Two-sided financial services platform for consumers and lenders',
+      },
+    });
+
+    const result = applyFinalPublishGuard(summary, context, documents);
+
+    const log = result.log.find((e) => e.field === 'business_model');
+    expect(log?.action).toBe('replaced');
+    expect(summary.business_model.value).toBe('Marketplace / platform');
+    expect(result.fields_replaced).toContain('business_model');
+  });
+
   it('does not modify strong B2B2C value', () => {
     const summary = {
       business_model: makeBusinessModelSummary('B2B2C — sold through HCP channel to patients', {
@@ -361,7 +388,7 @@ describe('applyFinalPublishGuard — business_model: wholesale/tech-platform mis
     });
   }
 
-  it('nulls "Wholesale/Retail" when SaaS platform signals present and no governed_ui_copy', () => {
+  it('replaces "Wholesale/Retail" with marketplace/platform fallback when SaaS signals present and no governed_ui_copy', () => {
     const summary = {
       business_model: makeBusinessModelSummary('Wholesale/Retail', {
         sources: [{ kind: 'phase1.business_model_arbitration_v1' }],
@@ -372,10 +399,10 @@ describe('applyFinalPublishGuard — business_model: wholesale/tech-platform mis
     const result = applyFinalPublishGuard(summary, context);
 
     const log = result.log.find((e) => e.field === 'business_model');
-    expect(log?.action).toBe('nulled');
+    expect(log?.action).toBe('replaced');
     expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
-    expect(summary.business_model.value).toBeNull();
-    expect(result.fields_nulled).toContain('business_model');
+    expect(summary.business_model.value).toBe('Marketplace / platform');
+    expect(result.fields_replaced).toContain('business_model');
   });
 
   it('replaces "Wholesale/Retail" with governed_ui_copy when software/AI signals present', () => {
@@ -449,10 +476,10 @@ describe('applyFinalPublishGuard — business_model: BM source slide-title fallb
     const result = applyFinalPublishGuard(summary, context);
 
     const log = result.log.find((e) => e.field === 'business_model');
-    expect(log?.action).toBe('nulled');
+    expect(log?.action).toBe('replaced');
     expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
-    expect(summary.business_model.value).toBeNull();
-    expect(result.fields_nulled).toContain('business_model');
+    expect(summary.business_model.value).toBe('Marketplace / platform');
+    expect(result.fields_replaced).toContain('business_model');
   });
 
   it('does not preserve BM when only source is distribution-segment (even if source doc filename contains "deck")', () => {
@@ -481,9 +508,9 @@ describe('applyFinalPublishGuard — business_model: BM source slide-title fallb
     const result = applyFinalPublishGuard(summary, context, documents as any);
 
     const log = result.log.find((e) => e.field === 'business_model');
-    expect(log?.action).toBe('nulled');
+    expect(log?.action).toBe('replaced');
     expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
-    expect(summary.business_model.value).toBeNull();
+    expect(summary.business_model.value).toBe('Marketplace / platform');
   });
 
   it('fires tech mismatch when deal_overview_v2.problem_context has SaaS signals', () => {
@@ -503,9 +530,9 @@ describe('applyFinalPublishGuard — business_model: BM source slide-title fallb
     const result = applyFinalPublishGuard(summary, context);
 
     const log = result.log.find((e) => e.field === 'business_model');
-    expect(log?.action).toBe('nulled');
+    expect(log?.action).toBe('replaced');
     expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
-    expect(summary.business_model.value).toBeNull();
+    expect(summary.business_model.value).toBe('Marketplace / platform');
   });
 
   it('fires tech mismatch when deal_overview_v2.market_icp has digital platform signals', () => {
@@ -525,8 +552,39 @@ describe('applyFinalPublishGuard — business_model: BM source slide-title fallb
     const result = applyFinalPublishGuard(summary, context);
 
     const log = result.log.find((e) => e.field === 'business_model');
-    expect(log?.action).toBe('nulled');
+    expect(log?.action).toBe('replaced');
     expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
+    expect(summary.business_model.value).toBe('Marketplace / platform');
+  });
+
+  it('fires tech mismatch from phase1 claim text even when product_solution is missing', () => {
+    const summary = {
+      business_model: makeBusinessModelSummary('Wholesale/Retail', {
+        sources: [{ kind: 'promoted_fact', document_id: 'doc-deck' }],
+      }),
+    };
+    const documents = [{ document_id: 'doc-deck', kind: 'pitch_deck' }];
+    const context = makeDeSpacContext({
+      governed_ui_copy_v1: { business_model: null, product_solution: null },
+      deal_overview_v2: null,
+      claims: [
+        {
+          text: 'Dropables developed a unique platform for artists and labels with secondary marketplace royalties.',
+          evidence: [
+            {
+              snippet: 'NFT platform allows artists and labels to monetize through each transaction on the marketplace.',
+            },
+          ],
+        },
+      ],
+    });
+
+    const result = applyFinalPublishGuard(summary, context, documents as any);
+    const log = result.log.find((e) => e.field === 'business_model');
+
+    expect(log?.action).toBe('replaced');
+    expect(log?.rule).toBe('business_model.generic_wholesale_tech_mismatch');
+    expect(summary.business_model.value).toBe('Marketplace / platform');
   });
 });
 

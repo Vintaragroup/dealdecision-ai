@@ -120,4 +120,57 @@ describe('inferCapitalLogicProfileV1', () => {
 
 		expect(res.prior_funding.present).toBe(false);
 	});
+
+	test('RC-S6-005: prior_funding detected presence-only from "Raised Pre-seed Round" without dollar amount', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 3_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			page_texts: ['Raised Pre-seed Round TODAY Key Achievements-To-Date'],
+		});
+
+		expect(res.prior_funding.present).toBe(true);
+		expect(res.prior_funding.presence_only).toBe(true);
+		expect(res.prior_funding.amount).toBeUndefined();
+		expect(res.prior_funding.sources?.[0]?.source_path).toContain('presence_signal');
+	});
+
+	test('RC-S6-005: prior_funding detected presence-only from "Past: Pre-Seed Round" label pattern', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 5_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			document_full_texts: ['Past: Pre-Seed Round (SAFEs) provides the company 18 months of runway'],
+		});
+
+		expect(res.prior_funding.present).toBe(true);
+		expect(res.prior_funding.presence_only).toBe(true);
+	});
+
+	test('RC-S6-006: use_of_funds detected from Climatic "Close Debt Deals" fund deployment language', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 25_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			document_full_texts: ['Close Debt Deals $375M+ board-approved and ready Team & Pipeline Legal & Custody SPV Creation'],
+		});
+
+		expect(res.use_of_funds.present).toBe(true);
+		expect(res.use_of_funds.sources?.[0]?.source_path).toContain('uof_signal');
+	});
+
+	test('RC-S6-006: use_of_funds detected from "The Raise" heading in document full_text', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 10_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			document_full_texts: ['THE RAISE Seeking $25M Base Capital Legal & Custody Entity and custody structure setup'],
+		});
+
+		expect(res.use_of_funds.present).toBe(true);
+	});
 });

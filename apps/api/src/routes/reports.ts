@@ -22,7 +22,7 @@ import { buildOverviewPrompt, degradeOverviewV1 } from '@dealdecision/core';
 import { buildInvestmentAnalysisOverviewPrompt, LlmOverviewV1CitationSchema, LlmOverviewV1Schema } from '@dealdecision/core';
 import { loadPromotedFactsForDeal } from '../lib/promoted-facts';
 import { derivePromotedFactsFromDpuForDeal } from '../lib/promoted-facts-from-dpu';
-import { getFinancialFactsForReport, getFinancialFactsMaxTimestamp, getDocumentsForReport, getGoingConcernPageTexts } from './financial-facts';
+import { getFinancialFactsForReport, getFinancialFactsMaxTimestamp, getDocumentsForReport, getGoingConcernPageTexts, getDocumentFullTextForDeal, getCompanyNameFromDocuments } from './financial-facts';
 import { detectFinancialSnapshotStaleness } from '@dealdecision/core';
 import { compileDealSummaryV1 } from '../lib/deal-summary-v1';
 import { getSegmentedNodesForDeal } from '../lib/segmented-nodes-for-deal';
@@ -104,7 +104,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 35; // bumped: force-refresh after additional stage/risk + summary sanitization compiler updates
+const REPORT_COMPILER_VERSION = 37; // bumped: RC-S6 second pass — company_name, prior funding presence-only, UOF + team + fund deployment signals from document full_text
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -2715,8 +2715,12 @@ export async function registerReportRoutes(
             const compiled = await timer.stage('compile.report', async () => {
               const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
               const documents = await getDocumentsForReport(pool as any, deal_id);
-              const pageTexts = await getGoingConcernPageTexts(pool as any, deal_id);
-              return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts });
+              const [pageTexts, documentFullTexts, companyName] = await Promise.all([
+                getGoingConcernPageTexts(pool as any, deal_id),
+                getDocumentFullTextForDeal(pool as any, deal_id),
+                getCompanyNameFromDocuments(pool as any, deal_id),
+              ]);
+              return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName });
             });
             logStage('compile.report', compiled.ms, true);
             report = compiled.value;
@@ -3559,8 +3563,12 @@ export async function registerReportRoutes(
           }
           const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
           const documents = await getDocumentsForReport(pool as any, deal_id);
-          const pageTexts = await getGoingConcernPageTexts(pool as any, deal_id);
-          report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts });
+          const [pageTexts, documentFullTexts, companyName] = await Promise.all([
+            getGoingConcernPageTexts(pool as any, deal_id),
+            getDocumentFullTextForDeal(pool as any, deal_id),
+            getCompanyNameFromDocuments(pool as any, deal_id),
+          ]);
+          report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName });
         }
 
         // Backward compatibility: normalize structured KPI shape (order matters).

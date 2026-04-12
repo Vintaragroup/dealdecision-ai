@@ -185,6 +185,21 @@ function sanitizeIaoText(text: string | null, structuredSummary: any): string | 
 		result = result.replace(/\bof\s+unknown\b/gi, '');
 	}
 
+	// 4. SPV / special-purpose-vehicle context bleed — remove SPV language from summaries
+	//    when the current deal is not a fund or SPV vehicle. SPV is a fund-archetype concept
+	//    that can bleed from an adjacent deal (e.g. Climatic → Weavstra) during batch LLM
+	//    generation. If structured_summary confirms no fund model, SPV references are invalid.
+	const bmValueForSpv = structuredSummary?.business_model?.value;
+	const isFundOrSpvModel = typeof bmValueForSpv === 'string' && /\b(fund|spvs?|special\s+purpose)\b/i.test(bmValueForSpv);
+	if (!isFundOrSpvModel && /\bspvs?\b|\bspecial\s+purpose\s+vehicles?\b/i.test(result)) {
+		// Remove the most common bleed phrases first, then any residual bare SPV tokens.
+		result = result.replace(/\bleveraging\s+(?:multiple\s+)?spvs?\s+(?:for|to)\b[^.]{0,120}(?=[,.]|$)/gi, '');
+		result = result.replace(/\busing\s+(?:multiple\s+)?spvs?\s+(?:for|to)\s+[^.]{0,80}(?=[,.]|$)/gi, '');
+		result = result.replace(/\b(?:via|through|with)\s+(?:multiple\s+)?spvs?\b[^,.]{0,80}/gi, '');
+		result = result.replace(/\bspecial\s+purpose\s+vehicles?\b[^.]{0,60}(?=[,.]|$)/gi, '');
+		result = result.replace(/\bspvs?\b/gi, '');
+	}
+
 	// Clean up residual artefacts from text removal: multiple spaces and orphaned punctuation
 	result = result.replace(/[ \t]{2,}/g, ' ');
 	result = result.replace(/[ \t]+([,;])/g, '$1');

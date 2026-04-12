@@ -186,4 +186,84 @@ describe("FundingStageModel v1", () => {
 
     expect(out.funding_stage).toBe("seed");
   });
+
+  // ── RC-S6-004/013: IDEA phase fallback ────────────────────────────────────────
+
+  it("RC-S6-013: IDEA company_phase alone returns pre_seed with degraded confidence 0.35", () => {
+    const out = inferFundingStageModelV1({
+      funding_round_label: null,
+      company_phase_label: "IDEA",
+      raise_amount: null,
+      raise_sources: null,
+    });
+
+    // Stage still resolves to pre_seed (IDEA maps to pre_seed) but confidence is
+    // materially lower than the 0.6 floor returned for explicit pre-seed signals.
+    expect(out.funding_stage).toBe("pre_seed");
+    expect(out.confidence).toBeLessThan(0.5);
+    expect(out.confidence).toBeGreaterThan(0);
+  });
+
+  it("RC-S6-004: IDEA phase + large raise ($90M) returns unknown (fund/IaaS conflict)", () => {
+    // Weavstra pattern: company_phase=IDEA, raise=$90M → growth band (>$20M) conflicts
+    // with pre_seed IDEA fallback → stage should be unknown.
+    const out = inferFundingStageModelV1({
+      funding_round_label: null,
+      company_phase_label: "IDEA",
+      raise_amount: 90_000_000,
+      raise_sources: null,
+    });
+
+    expect(out.funding_stage).toBe("unknown");
+  });
+
+  it("RC-S6-004: IDEA phase + large raise ($200M) returns unknown (PAI-style non-standard)", () => {
+    const out = inferFundingStageModelV1({
+      funding_round_label: null,
+      company_phase_label: "IDEA",
+      raise_amount: 200_000_000,
+      raise_sources: null,
+    });
+
+    expect(out.funding_stage).toBe("unknown");
+  });
+
+  it("RC-S6-004: IDEA phase + large raise ($25M) returns unknown (Climatic fund pattern)", () => {
+    const out = inferFundingStageModelV1({
+      funding_round_label: null,
+      company_phase_label: "IDEA",
+      raise_amount: 25_000_000,
+      raise_sources: null,
+    });
+
+    expect(out.funding_stage).toBe("unknown");
+  });
+
+  it("RC-S6-004: IDEA + small raise ($500K) stays pre_seed with higher confidence (genuine early-stage)", () => {
+    // A genuinely early-stage deal with IDEA phase and small raise should still resolve
+    // to pre_seed — both the IDEA label and the raise band agree.
+    const out = inferFundingStageModelV1({
+      funding_round_label: null,
+      company_phase_label: "IDEA",
+      raise_amount: 500_000,
+      raise_sources: null,
+    });
+
+    // Both signals point to pre_seed — no conflict → pre_seed with higher confidence.
+    expect(out.funding_stage).toBe("pre_seed");
+    expect(out.confidence).toBeGreaterThan(0.5);
+  });
+
+  it("RC-S6-013: explicit pre-seed label still gets full 0.6 weight (not degraded)", () => {
+    // Explicit "pre-seed" round label should not be penalized like the IDEA fallback.
+    const out = inferFundingStageModelV1({
+      funding_round_label: "pre-seed",
+      company_phase_label: null,
+      raise_amount: null,
+      raise_sources: null,
+    });
+
+    expect(out.funding_stage).toBe("pre_seed");
+    expect(out.confidence).toBeCloseTo(0.6, 2);
+  });
 });

@@ -65,6 +65,12 @@ export function inferFundingStageModelV1(input: {
   }
   const signals: FundingStageModelV1["signals"] = [];
   let labelSignalCount = 0;
+  // RC-S6-004/013: Track when the stage label is derived from an IDEA-phase fallback.
+  // IDEA → pre_seed is a low-evidence mapping; use reduced weight (0.35) so:
+  //   (a) confidence is visibly lower (0.35 vs 0.6),
+  //   (b) a large raise amount triggers the conflict path → unknown stage (honest for
+  //       fund / IaaS / non-standard archetypes that happen to score IDEA phase).
+  let hasIdeaFallback = false;
 
   const stageScores: Record<Exclude<FundingStage, "unknown" | "ipo" | "public_company">, number> = {
     pre_seed: 0,
@@ -78,11 +84,16 @@ export function inferFundingStageModelV1(input: {
     if (!rawStr) return;
     const stage = inferStageFromAnyLabel(rawStr);
     if (!stage) return;
-    stageScores[stage] += 0.6;
+    // RC-S6-004/013: IDEA-derived labels get a reduced weight of 0.35.
+    // Explicit round labels ("pre-seed", "seed") keep the full 0.6 weight.
+    const isIdeaDerived = /^idea(?:tion|[-_ ]stage)?$/i.test(rawStr);
+    const weight = isIdeaDerived ? 0.35 : 0.6;
+    if (isIdeaDerived) hasIdeaFallback = true;
+    stageScores[stage] += weight;
     labelSignalCount += 1;
     signals.push({
       label: `${labelKind}:${stage}`,
-      weight: 0.6,
+      weight,
       value: rawStr,
     });
   };

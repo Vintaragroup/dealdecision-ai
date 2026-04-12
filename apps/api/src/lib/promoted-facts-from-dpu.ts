@@ -1034,6 +1034,11 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 } | null {
 	// DTC detection: allow broad channel language, but do NOT treat generic "ecommerce" as mechanics.
 	const dtcRe = /\b(direct\s*to\s*consumer|\bdtc\b|d2c|e-?commerce|shopify|online\s+store|direct\s+via\s+website|website\s+sales)\b/i;
+	const dtcKeywordRe = /\b(direct\s*to\s*consumer|\bdtc\b|d2c|direct\s+via\s+website|website\s+sales)\b/i;
+	// RaaS detection: Robot-as-a-Service and hardware leasing models
+	const raasRe = /\b(robot\s+as\s+a\s+service|raas\b|hardware\s+as\s+a\s+service|haas\b|customers?\s+lease\s+(?:robots?|hardware|assets?)|lease\s+(?:humanoid\s+)?robots?|own\s+and\s+manage\s+the\s+asset|per-?robot\s+fee|per-?unit\s+fee|equipment\s+leasing|equipment\s+rental)\b/i;
+	// Enterprise tech guard: suppress DTC when enterprise signals dominate with only OCR noise
+	const enterpriseTechRe = /\b(enterprise\s+ai|sovereign\s+ai|quantum\s+(?:computing|technology)?|government\s+tech|deep[-\s]?tech|b2b\s+enterprise|data\s+center\s+ai)\b/i;
 	const ecomMechanicsSignals: Array<{ rx: RegExp; neg: RegExp; kind: string }> = [
 		{ rx: /\bcheckout\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?checkout\b/i, kind: 'checkout' },
 		{ rx: /\bcart\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?cart\b/i, kind: 'cart' },
@@ -1091,10 +1096,13 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 		const mechanics_hits = collectEcomMechanicsHits(t);
 		return {
 			dtc: dtcRe.test(t),
+			dtc_keyword: dtcKeywordRe.test(t),
 			ecom_mechanics: mechanics_hits.length > 0,
 			mechanics_hits,
 			wholesale: wholesaleRe.test(t),
 			licensing: licensingRe.test(t),
+			raas: raasRe.test(t) || raasRe.test(String(r.slideTitle ?? '')),
+			fund_or_spv: /\b(spvs?|special\s+purpose\s+vehicle|fund\s+vehicle|co-?investment|non-?dilutive|carried\s+interest|general\s+partner|limited\s+partner)\b/i.test(t),
 			b2b2c: b2b2cRe.test(t) || b2b2cRe.test(String(r.slideTitle ?? '')),
 			media_like: mediaLikeRe.test(t) || mediaLikeRe.test(String(r.slideTitle ?? '')),
 			media_hits: Array.from(new Set([...collectMediaHits(t), ...collectMediaHits(String(r.slideTitle ?? ''))])),
@@ -1107,8 +1115,11 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 	const excludedHits = assessed.filter((h) => h.assessment.role === "excluded");
 
 	const hasDtc = hits.some((h) => h.dtc);
+	const hasDtcKeyword = hits.some((h) => h.dtc_keyword);
 	const hasWholesale = hits.some((h) => h.wholesale);
 	const hasLicensing = hits.some((h) => h.licensing);
+	const hasRaas = hits.some((h) => h.raas) || assessed.some((h) => h.raas);
+	const hasFundOrSpvSignals = hits.some((h) => h.fund_or_spv) || assessed.some((h) => h.fund_or_spv);
 	const hasB2B2C = hits.some((h) => h.b2b2c) || assessed.some((h) => h.b2b2c);
 	const hasMediaLike = hits.some((h) => h.media_like) || assessed.some((h) => h.media_like);
 	const hasEcomMechanics = hits.some((h) => h.ecom_mechanics) || assessed.some((h) => h.ecom_mechanics);
@@ -1117,24 +1128,33 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 	const dtc_hits = Array.from(new Set(assessed.flatMap((h) => (h.dtc ? ['dtc_channel_language'] : [])))).slice().sort();
 	const applied_guards: string[] = [];
 
-	if (!hasDtc && !hasWholesale && !hasLicensing && !hasB2B2C) return null;
+	if (!hasDtc && !hasWholesale && !hasLicensing && !hasB2B2C && !hasRaas) return null;
 
 	// Hard exclusion: media/sponsorship + no ecommerce mechanics => never infer DTC.
 	const dtcAllowed = !(hasMediaLike && !hasEcomMechanics);
 	if (!dtcAllowed) applied_guards.push('media_blocks_dtc_without_ecom_mechanics');
 
 	// If the only signal was DTC channel language and it's blocked by the media guard, return null.
-	if (!dtcAllowed && hasDtc && !hasWholesale && !hasLicensing && !hasB2B2C) return null;
+	if (!dtcAllowed && hasDtc && !hasWholesale && !hasLicensing && !hasB2B2C && !hasRaas) return null;
 
-	const label = hasB2B2C
-		? "B2B2C"  // B2B2C = explicit pitch-deck self-identification; takes priority
-		: (dtcAllowed && hasDtc) && hasWholesale
-			? "Omnichannel (DTC + Wholesale/Retail)"
-			: hasWholesale
-				? "Wholesale/Retail"
-				: (dtcAllowed && hasDtc)
-					? "DTC Ecommerce"
-					: "Licensing";
+	// SPV/fund guard: if slides are dominated by fund/SPV language and no explicit DTC keyword is present,
+	// suppress DTC inference (Weavstra: slides describe fund vehicles, not consumer commerce).
+	const dtcAllowedForFund = !(hasFundOrSpvSignals && !hasDtcKeyword);
+	if (!dtcAllowedForFund) applied_guards.push('fund_spv_blocks_dtc_without_explicit_dtc_keyword');
+
+	const label = hasRaas && !hasB2B2C
+		? "Robot-as-a-Service (RaaS)"  // hardware-leasing / RaaS takes priority over generic licensing
+		: hasB2B2C
+			? "B2B2C"  // B2B2C = explicit pitch-deck self-identification; takes priority
+			: (dtcAllowed && dtcAllowedForFund && hasDtc) && hasWholesale
+				? "Omnichannel (DTC + Wholesale/Retail)"
+				: hasWholesale
+					? "Wholesale/Retail"
+					: (dtcAllowed && dtcAllowedForFund && hasDtc)
+						? "DTC Ecommerce"
+						: hasLicensing
+							? "Licensing"
+							: "Licensing";
 
 	const secondary_tags: string[] = [];
 	if (hasLicensing && label !== "Licensing") secondary_tags.push("Licensing");

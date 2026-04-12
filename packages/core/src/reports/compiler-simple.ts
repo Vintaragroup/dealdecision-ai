@@ -134,6 +134,19 @@ type ReportDTO = {
     strengths: string[];
     recommendations: string[];
 
+    /** RC-S6-009: Company name extracted from document full_text */
+    company_name?: string | null;
+    /** RC-S6-010: Key team members parsed from document text */
+    team_highlights?: Array<{ name: string; role: string; credential?: string | null }> | null;
+    /** RC-S6-008: Fund deployment capital signals (e.g. debt-in-process, deployment pipeline, target IRR) */
+    fund_deployment_signals?: {
+      debt_in_process?: { amount: number; raw: string } | null;
+      deployment_pipeline?: { amount: number; raw: string } | null;
+      target_irr?: string | null;
+    } | null;
+    /** RC-S6-007: Parsed use-of-funds allocation items from document text */
+    use_of_funds_breakdown?: Array<{ category: string; amount_raw?: string; amount?: number }> | null;
+
     // Deterministic KPI-locked synthesis from structured_summary.
     // API may override/augment this with node-derived citations.
     deal_summary_v1?: DeterministicDealSummaryV1;
@@ -1731,10 +1744,18 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     return hints;
   })();
 
+  // RC-S6-004: Fall back to DIO overview/exec raise when structured_summary.raise.value is null.
+  const _ssRaiseAmountLegacy = parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null;
+  const _dioOverviewRaiseLegacy = asNonEmptyString((dio as any)?.dio?.phase1?.deal_overview_v2?.raise) ?? null;
+  const _dioExecRaiseLegacy = asNonEmptyString((dio as any)?.dio?.phase1?.executive_summary_v1?.raise) ?? null;
+  const _dioRaiseStrLegacy = _dioOverviewRaiseLegacy ?? _dioExecRaiseLegacy;
+  const _dioRaiseAmountLegacy = _dioRaiseStrLegacy ? (parseMoneyLike(_dioRaiseStrLegacy).amount ?? null) : null;
+  const _fundingStageRaiseAmountLegacy = _ssRaiseAmountLegacy ?? _dioRaiseAmountLegacy;
+
   const fundingStage = inferFundingStageModelV1({
     funding_round_label: null,
     company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
-    raise_amount: parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null,
+    raise_amount: _fundingStageRaiseAmountLegacy,
     raise_sources: Array.isArray(structuredSummary?.raise?.sources)
       ? structuredSummary.raise.sources.map((s: any) => ({
           document_id: s?.source_document_id ?? s?.document_id ?? undefined,
@@ -2283,6 +2304,11 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   /** RC-002b: Raw page text snippets from document_page_understanding. Used to detect going concern
    *  language that does not surface in DIO phase1.claims (e.g. full 10-K document text). */
   pageTexts?: string[] | null;
+  /** RC-S6-009/010/008: Raw document full_text strings. Used to extract company name, team highlights,
+   *  fund deployment signals, and UOF breakdown from raw document text. */
+  documentFullTexts?: string[] | null;
+  /** RC-S6-009: Pre-extracted company name from documents.full_text (API layer). */
+  companyName?: string | null;
 }): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
@@ -2506,10 +2532,21 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     return Array.from(hints);
   })();
 
+  // RC-S6-004: When structured_summary.raise.value is null (e.g. DIO overview sources lack
+  // page citations required for hasPrimaryCitation), fall back to the DIO overview raise and
+  // exec summary raise for the funding stage magnitude check. This ensures large-raise IDEA-stage
+  // deals surface the conflict and produce funding_stage='unknown' rather than 'pre_seed'.
+  const _ssRaiseAmount = parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null;
+  const _dioOverviewRaise = asNonEmptyString((dio as any)?.dio?.phase1?.deal_overview_v2?.raise) ?? null;
+  const _dioExecRaise = asNonEmptyString((dio as any)?.dio?.phase1?.executive_summary_v1?.raise) ?? null;
+  const _dioRaiseStr = _dioOverviewRaise ?? _dioExecRaise;
+  const _dioRaiseAmount = _dioRaiseStr ? (parseMoneyLike(_dioRaiseStr).amount ?? null) : null;
+  const _fundingStageRaiseAmount = _ssRaiseAmount ?? _dioRaiseAmount;
+
   const fundingStage = inferFundingStageModelV1({
     funding_round_label: null,
     company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
-    raise_amount: parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null,
+    raise_amount: _fundingStageRaiseAmount,
     raise_sources: Array.isArray(structuredSummary?.raise?.sources)
       ? structuredSummary.raise.sources.map((s: any) => ({
           document_id: s?.source_document_id ?? s?.document_id ?? undefined,
@@ -2608,6 +2645,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     structured_summary: structuredSummary,
     promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
     page_texts: Array.isArray(opts?.pageTexts) ? opts!.pageTexts : null,
+    document_full_texts: Array.isArray(opts?.documentFullTexts) ? opts!.documentFullTexts : null,
   });
 
   const businessModelSignal = inferBusinessModelSignalProfileV1({
@@ -2732,6 +2770,43 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   }
   // ────────────────────────────────────────────────────────────────────────────
 
+  // ── RC-S6 document full-text enrichment ───────────────────────────────────
+  // RC-S6-009: Company name, RC-S6-010: Team, RC-S6-008: Fund signals, RC-S6-007: UOF breakdown
+  try {
+    const _fullTexts = Array.isArray(opts?.documentFullTexts)
+      ? opts!.documentFullTexts.filter((t) => typeof t === 'string' && t.trim().length > 0)
+      : [];
+
+    // RC-S6-009: Company name from pre-extracted opt, then from full_text
+    if (!(structuredSummary as any).company_name) {
+      const cn = opts?.companyName ?? (_fullTexts.length > 0 ? _extractCompanyNameFromTexts(_fullTexts) : null);
+      if (cn) (structuredSummary as any).company_name = cn;
+    }
+
+    if (_fullTexts.length > 0) {
+      // RC-S6-010: Team highlights
+      if (!(structuredSummary as any).team_highlights) {
+        const th = _extractTeamHighlightsFromTexts(_fullTexts);
+        if (th && th.length > 0) (structuredSummary as any).team_highlights = th;
+      }
+
+      // RC-S6-008: Fund deployment signals (Climatic-style)
+      if (!(structuredSummary as any).fund_deployment_signals) {
+        const fds = _extractFundDeploymentSignals(_fullTexts);
+        if (fds) (structuredSummary as any).fund_deployment_signals = fds;
+      }
+
+      // RC-S6-007: Use-of-funds breakdown
+      if (!(structuredSummary as any).use_of_funds_breakdown) {
+        const uofb = _extractUseOfFundsBreakdown(_fullTexts);
+        if (uofb && uofb.length > 0) (structuredSummary as any).use_of_funds_breakdown = uofb;
+      }
+    }
+  } catch {
+    // Best-effort: never fail report compilation.
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
 	// ── Financial data quality score blend (Fix 15) ────────────────────────────
   // Blend the base overallScore (persisted DIO value) with a financial data quality
   // signal derived from financial_integrity_v1.completeness_score (verified fact
@@ -2811,6 +2886,180 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 /**
  * Helper functions
  */
+
+// ── RC-S6 document full-text extraction helpers ─────────────────────────────
+
+/** RC-S6-009: Extract a candidate company name from document full_text snippets. */
+function _extractCompanyNameFromTexts(texts: string[]): string | null {
+  for (const text of texts) {
+    const head = text.slice(0, 8000);
+
+    // Copyright/watermark: "©2026 Climatic Capital ·"
+    const copyright = head.match(/©\s*\d{4}\s+([A-Z][A-Za-z0-9&\s.'-]{2,50}?)(?:\s+(?:Global|·)\b|\s{2,})/);
+    if (copyright?.[1]) {
+      const candidate = copyright[1].trim();
+      if (candidate.length >= 3 && candidate.length <= 60 && !/\b(Confidential|Commercial|Proprietary)\b/i.test(candidate)) {
+        return candidate;
+      }
+    }
+
+    // Legal entity match (captures name before Inc/LLC/Holdings/etc.)
+    const legal = head.match(
+      /\b([A-Z][A-Za-z0-9&.'-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.'-]{1,40}){0,4})\s+(?:Inc\.?|LLC\.?|Ltd\.?|Corporation|Corp\.?|GmbH|Holdings|Capital\s+Management|Capital\s+Partners)\b/,
+    );
+    if (legal?.[1]) {
+      const candidate = legal[1].trim();
+      if (candidate.length >= 3 && candidate.length <= 60 && !/^(This|The|Our|For|Any|Such|Each|When)\b/i.test(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+/** RC-S6-010: Extract team highlights from document full_text. */
+function _extractTeamHighlightsFromTexts(texts: string[]): Array<{ name: string; role: string; credential?: string | null }> | null {
+  const seen = new Set<string>();
+  const output: Array<{ name: string; role: string; credential?: string | null }> = [];
+
+  for (const text of texts) {
+    // Locate team section
+    const teamMatch = text.match(/\bTEAM\b[:\s]*/i);
+    if (!teamMatch) continue;
+    const teamStart = (teamMatch.index ?? 0) + teamMatch[0].length;
+    const teamSection = text.slice(teamStart, teamStart + 3000);
+
+    // Pattern 1: ALL-CAPS NAME followed by ALLCAPS ROLE  e.g. "NICOLAUS RADFORD CEO • credential"
+    const allCapsRe = /\b([A-Z]{2,}(?:\s+[A-Z.]{2,})+)\s+(CEO|CTO|CFO|COO|FOUNDER|CO-?FOUNDER|PARTNER|PRESIDENT|CSO|CMO|CRO)\b([^.\n]{0,80})/g;
+    let m: RegExpExecArray | null;
+    while ((m = allCapsRe.exec(teamSection)) !== null) {
+      const rawName = m[1].trim().replace(/\s+/g, ' ');
+      const name = rawName.replace(/\b([A-Z])([A-Z]+)\b/g, (_, a, b) => a + b.toLowerCase());
+      const role = m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase();
+      const credRaw = (m[3] ?? '').replace(/^[•·\-\s]+/, '').slice(0, 120).trim();
+      const key = `${rawName}:${m[2]}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        output.push({ name, role, credential: credRaw || null });
+      }
+    }
+
+    // Pattern 2: Title Case Name (exactly first + last, 2 words) followed by known role
+    // Using strict 2-word name to avoid matching geographic region labels (e.g. "North America", "Australia Michael")
+    const titleCaseRe = /\b([A-Z][a-z]+\s+[A-Z][a-zé]+)\s+(CEO|CTO|CFO|COO|Founder|Co-Founder|Partner|President|Managing\s+Director|Managing\s+Partner|Global\s+Partner|Head\s+of\s+(?:Investor\s+Relations|Product|Engineering|Sales|Marketing|Operations|Public\s+Affairs|Global))\b([^.\n]{0,75})/g;
+    while ((m = titleCaseRe.exec(teamSection)) !== null) {
+      const name = m[1].trim();
+      const role = m[2].trim().replace(/\s+/g, ' ');
+      const credRaw = (m[3] ?? '').replace(/^[,•·\-\s]+/, '').slice(0, 120).trim();
+      const key = `${name}:${role}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        output.push({ name, role, credential: credRaw || null });
+      }
+    }
+
+    if (output.length > 0) break; // only process first team section
+  }
+
+  return output.length > 0 ? output.slice(0, 8) : null;
+}
+
+/** RC-S6-008: Extract fund deployment signals (Climatic IaaS/fund model capital signals). */
+function _extractFundDeploymentSignals(texts: string[]): {
+  debt_in_process?: { amount: number; raw: string } | null;
+  deployment_pipeline?: { amount: number; raw: string } | null;
+  target_irr?: string | null;
+} | null {
+  const DEBT_PROCESS_RE = /(\$[0-9]+(?:\.[0-9]+)?[MBKmb]+\+?)\s+DEBT\s+IN\s+PROCESS/i;
+  const PIPELINE_RE = /(\$[0-9]+(?:\.[0-9]+)?[MBKmb]+\+?)\s+(?:DEPLOYMENT\s+)?PIPELINE/i;
+  const TARGET_IRR_RE = /([0-9]+(?:\.[0-9]+)?%\+?)\s*(?:Target\s+IRR|IRR[:\s]+Target|IRR\b)/i;
+
+  let debtSignal: { amount: number; raw: string } | null = null;
+  let pipelineSignal: { amount: number; raw: string } | null = null;
+  let targetIrr: string | null = null;
+
+  for (const text of texts) {
+    if (!debtSignal) {
+      const m = text.match(DEBT_PROCESS_RE);
+      if (m) {
+        const raw = m[1];
+        const parsed = _parseMoneyAmountSimple(raw);
+        if (parsed) debtSignal = { amount: parsed, raw };
+      }
+    }
+    if (!pipelineSignal) {
+      const m = text.match(PIPELINE_RE);
+      if (m) {
+        const raw = m[1];
+        const parsed = _parseMoneyAmountSimple(raw);
+        if (parsed) pipelineSignal = { amount: parsed, raw };
+      }
+    }
+    if (!targetIrr) {
+      const m = text.match(TARGET_IRR_RE);
+      if (m) targetIrr = m[0].trim();
+    }
+  }
+
+  if (!debtSignal && !pipelineSignal && !targetIrr) return null;
+  return { debt_in_process: debtSignal, deployment_pipeline: pipelineSignal, target_irr: targetIrr };
+}
+
+/** RC-S6-007: Parse use-of-funds breakdown items from document text. */
+function _extractUseOfFundsBreakdown(texts: string[]): Array<{ category: string; amount_raw?: string; amount?: number }> | null {
+  const UOF_SECTION_RE = /(?:use\s+of\s+funds|use\s+of\s+proceeds|the\s+raise)\s*:?\s*([^\n]{0,200})/i;
+
+  for (const text of texts) {
+    const m = text.match(UOF_SECTION_RE);
+    if (!m) continue;
+    // Trim at sentence end or slide boundary
+    let sectionText = m[1].trim();
+    // Stop at obvious slide/section boundaries
+    const boundaryMatch = sectionText.match(/^(.*?)(?:\s{3,}|[A-Z]{4,}[^a-z]|\bINVESTMENT\b|\bINVESTOR\b|\bMARKET\b|\bSLIDE\b)/);
+    if (boundaryMatch?.[1] && boundaryMatch[1].length >= 10) sectionText = boundaryMatch[1].trim();
+    const items = sectionText
+      .split(/[,\/]/)
+      .map((item) => item.trim().replace(/\band\b\s*/i, '').trim())
+      .filter((item) => item.length >= 3 && item.length <= 60);
+    if (items.length < 2) continue;
+
+    return items.slice(0, 8).map((rawItem) => {
+      // "$60M AI and SW" pattern
+      const amtPrefix = rawItem.match(/^(\$[0-9]+(?:\.[0-9]+)?[MmKkBbGg]+\+?)\s+(.+)$/);
+      if (amtPrefix) {
+        return {
+          category: amtPrefix[2].trim(),
+          amount_raw: amtPrefix[1],
+          amount: _parseMoneyAmountSimple(amtPrefix[1]) ?? undefined,
+        };
+      }
+      // "Category = $amount" pattern
+      const amtSuffix = rawItem.match(/^(.+?)\s*[=:]\s*(\$[0-9]+(?:\.[0-9]+)?[MmKkBbGg]+\+?)$/);
+      if (amtSuffix) {
+        return {
+          category: amtSuffix[1].trim(),
+          amount_raw: amtSuffix[2],
+          amount: _parseMoneyAmountSimple(amtSuffix[2]) ?? undefined,
+        };
+      }
+      return { category: rawItem };
+    });
+  }
+  return null;
+}
+
+function _parseMoneyAmountSimple(raw: string): number | null {
+  if (!raw) return null;
+  const m = raw.match(/\$?\s*([0-9]+(?:\.[0-9]+)?)\s*([MmBbKkGg])\+?/);
+  if (!m) return null;
+  const base = parseFloat(m[1]);
+  const suffix = m[2].toUpperCase();
+  const mult = suffix === 'K' ? 1_000 : suffix === 'M' ? 1_000_000 : suffix === 'B' ? 1_000_000_000 : suffix === 'G' ? 1_000_000_000 : 1;
+  const result = base * mult;
+  return Number.isFinite(result) ? result : null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 function scoreToGrade(score: number): 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' {
   if (score >= 85) return 'Excellent';

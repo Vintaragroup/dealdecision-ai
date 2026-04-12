@@ -336,11 +336,12 @@ type BusinessModelSlideInput = {
 
 type BusinessModelSlideScore = {
 	input: BusinessModelSlideInput;
-	scores: { dtc: number; wholesale: number; saas: number; licensing: number; licensing_raw: number; title_boost: number; hcp: number };
+	scores: { dtc: number; wholesale: number; saas: number; licensing: number; licensing_raw: number; title_boost: number; hcp: number; raas: number };
 	signals: {
 		has_media_signals: boolean;
 		has_ecom_mechanics: boolean;
 		dtc_hits: string[];
+		dtc_has_keyword: boolean;
 		media_hits: string[];
 		ecom_mechanics_hits: string[];
 	};
@@ -450,6 +451,22 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 		{ rx: /\brevenue\b[^\n]{0,40}\blicens(?:e|ing|ed)\b/i, w: 4, kind: 'licensing_revenue' },
 	];
 
+	// RC-S6-003: RaaS / Hardware-as-a-Service patterns — physical asset leasing model where
+	// the company owns, manages, and leases robots or hardware units. Explicit "Robot as a
+	// Service" / "RaaS" language names the primary commercial model and takes priority over
+	// IP licensing signals ("licensed [patent]" describes technology INPUT, not revenue model).
+	const raasPatterns: Array<{ rx: RegExp; w: number; kind: string }> = [
+		{ rx: /\brobot\s+as\s+a\s+service\b/i, w: 7, kind: 'raas_phrase' },
+		{ rx: /\braas\b/i, w: 5, kind: 'raas_keyword' },
+		{ rx: /\bhardware\s+as\s+a\s+service\b/i, w: 5, kind: 'haas_phrase' },
+		{ rx: /\bhaas\b/i, w: 3, kind: 'haas_keyword' },
+		{ rx: /\bcustomers?\s+(?:lease|leases)\b[^\n]{0,30}\b(?:robot|hardware|unit|asset)\b/i, w: 5, kind: 'customer_lease_asset' },
+		{ rx: /\blease\s+(?:humanoid\s+)?robots?\b/i, w: 5, kind: 'lease_robot' },
+		{ rx: /\bown\s+and\s+(?:operate|manage)\s+the\s+(?:robot|asset|unit|hardware)\b/i, w: 4, kind: 'own_manage_asset' },
+		{ rx: /\b(?:per[- ]robot|per[- ]unit)\s+(?:fee|subscription|charge)\b/i, w: 4, kind: 'per_unit_fee' },
+		{ rx: /\bequipment\s+(?:leasing|rental)\b/i, w: 3, kind: 'equipment_lease' },
+	];
+
 	// HCP / B2B2C / medtech patterns — healthcare-provider-mediated distribution where the
 	// company sells through clinical channels (hospitals, physicians, care pathways) rather
 	// than directly to consumers or traditional retail/wholesale accounts.
@@ -491,6 +508,7 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 	const licensingRaw = scoreFrom(licensingPatterns);
 	let licensing = licensingRaw;
 	const hcp = scoreFrom(hcpPatterns);
+	const raas = scoreFrom(raasPatterns);
 
 	// Hard exclusion: if media/sponsorship signals are present AND ecommerce mechanics are not,
 	// DTC cannot be selected (even if generic "ecommerce" appears).
@@ -510,7 +528,8 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 		saas > 0 ||
 		licensing > 0 ||
 		licensingRaw > 0 ||
-		hcp > 0;
+		hcp > 0 ||
+		raas > 0;
 	if (!isCandidate) return null;
 
 	const snippet =
@@ -520,16 +539,17 @@ function scoreBusinessModelSlide(input: BusinessModelSlideInput): BusinessModelS
 		extractSnippet(t, /\blicens(?:e|ing|ed)\b/i) ||
 		(t.length > 140 ? `${t.slice(0, 139).trim()}…` : t);
 
-	const total = dtc + wholesale + saas + licensing + hcp + Math.max(0, titleBoost);
+	const total = dtc + wholesale + saas + licensing + hcp + raas + Math.max(0, titleBoost);
 	const quality: 'high' | 'med' | 'low' = total >= 9 ? 'high' : total >= 5 ? 'med' : 'low';
 
 	return {
 		input: { ...input, text: t },
-		scores: { dtc, wholesale, saas, licensing, licensing_raw: licensingRaw, title_boost: titleBoost, hcp },
+		scores: { dtc, wholesale, saas, licensing, licensing_raw: licensingRaw, title_boost: titleBoost, hcp, raas },
 		signals: {
 			has_media_signals,
 			has_ecom_mechanics,
 			dtc_hits,
+			dtc_has_keyword: dtc_hits.includes('dtc_keyword'),
 			media_hits,
 			ecom_mechanics_hits,
 		},
@@ -577,6 +597,7 @@ function resolveBusinessModelFromSlides(
 		row.scores.saas +
 		row.scores.licensing +
 		(row.scores.hcp ?? 0) +
+		(row.scores.raas ?? 0) +
 		Math.max(0, row.scores.title_boost)
 	);
 
@@ -587,7 +608,7 @@ function resolveBusinessModelFromSlides(
 		return seg ? 1 : 0;
 	};
 
-	const weightedTotals = { dtc: 0, wholesale: 0, saas: 0, licensing: 0, hcp: 0 };
+	const weightedTotals = { dtc: 0, wholesale: 0, saas: 0, licensing: 0, hcp: 0, raas: 0 };
 	let bestOverall: BusinessModelSlideScore | null = null;
 	let maxExtractedAt = scored[0]?.input.extracted_at ?? new Date().toISOString();
 	let licensingPrimaryHits = 0;
@@ -605,6 +626,7 @@ function resolveBusinessModelFromSlides(
 		weightedTotals.saas += row.scores.saas * mult;
 		weightedTotals.licensing += row.scores.licensing * mult;
 		weightedTotals.hcp += (row.scores.hcp ?? 0) * mult;
+		weightedTotals.raas += (row.scores.raas ?? 0) * mult;
 
 		if (row.scores.licensing_raw > 0) licensingMentions += 1;
 		if (row.scores.dtc > 0) dtcMentions += 1;
@@ -628,9 +650,25 @@ function resolveBusinessModelFromSlides(
 	const saas = weightedTotals.saas;
 	const licensing = weightedTotals.licensing;
 	const hcp = weightedTotals.hcp;
+	const raas = weightedTotals.raas;
 
 	if (has_media_signals && !has_ecom_mechanics) {
 		applied_guards.push('media_blocks_dtc_without_ecom_mechanics');
+		dtc = 0;
+	}
+
+	// Build combined slide text used by multiple guards below.
+	const allSlideText = scored.map((r) => r.input.text).join(' ');
+
+	// RC-S6-001: Enterprise tech / deep-tech guard — suppress DTC when it originates ONLY
+	// from generic ecommerce mechanics (no explicit DTC keyword like "DTC", "e-commerce",
+	// "Shopify", "online store", "direct-to-consumer") and the deck contains enterprise AI /
+	// sovereign / quantum / government-tech signals. Prevents OCR-noise misclassification
+	// where words like "orders", "checkout" appear in an unrelated context.
+	const dtc_keyword_hits_any = scored.some((r) => r.signals.dtc_has_keyword);
+	const has_enterprise_tech_signals = /\b(enterprise\s+(?:ai|software|platform|tech|solution|saas|middleware)|sovereign\s+ai|ai\s+(?:platform|infrastructure|middleware|engine)|quantum\s+(?:computing|tech|ai)|government\s+(?:contract|platform|tech)|deep[- ]tech|b2b\s+(?:enterprise|platform|software)|data\s+center\s+(?:ai|platform))\b/i.test(allSlideText);
+	if (has_enterprise_tech_signals && !dtc_keyword_hits_any) {
+		applied_guards.push('enterprise_tech_blocks_mechanics_only_dtc');
 		dtc = 0;
 	}
 
@@ -638,11 +676,10 @@ function resolveBusinessModelFromSlides(
 	// When these signals dominate and no explicit "wholesale" keyword is present,
 	// the wholesale scoring is most likely triggered by "channel", "distribution partner"
 	// or "accounts" language that does not indicate an actual wholesale business.
-	const allSlideText = scored.map((r) => r.input.text).join(' ');
 	const hasMarketplacePlatformSignals = /\b(marketplace|two[\s-]?sided|platform\s+fees?|take[\s-]rate|commission\s+model|fintech|lending\s+platform|neobank|credit\s+(platform|marketplace)|personal\s+finance\s+platform|financial\s+services\s+platform|insurance\s+marketplace|loan\s+(marketplace|platform)|payments?\s+platform|consumer\s+lending)\b/i.test(allSlideText);
 	const hasExplicitWholesaleKeyword = /\bwholesale\b/i.test(allSlideText);
 
-	const otherMax = Math.max(dtc, wholesale, saas);
+	const otherMax = Math.max(dtc, wholesale, saas, raas);
 	const licensingIsPrimary = (
 		licensingPrimaryHits >= 2 &&
 		licensingMentions >= 2 &&
@@ -651,7 +688,12 @@ function resolveBusinessModelFromSlides(
 	);
 
 	let primaryLabel: string | null = null;
-	if (licensingIsPrimary) {
+	// RC-S6-003: RaaS / Hardware-as-a-Service takes priority over IP licensing.
+	// "Robot as a Service" / "RaaS" explicitly names the commercial model; IP licensing
+	// language ("licensed [patent/portfolio]") describes the technology INPUT, not revenue.
+	if (raas >= 5) {
+		primaryLabel = 'Robot-as-a-Service (RaaS)';
+	} else if (licensingIsPrimary) {
 		primaryLabel = 'Licensing';
 	} else if (saas >= dtc && saas >= wholesale && saas >= 6) {
 		primaryLabel = 'Subscription/SaaS';
@@ -708,6 +750,7 @@ function resolveBusinessModelFromSlides(
 		if (primaryLabel === 'Wholesale/Retail') return row.scores.wholesale > 0;
 		if (primaryLabel === 'Omnichannel (DTC + Wholesale/Retail)') return row.scores.dtc > 0 || row.scores.wholesale > 0;
 		if (primaryLabel === 'B2B2C / HCP-Mediated') return (row.scores.hcp ?? 0) > 0;
+		if (primaryLabel === 'Robot-as-a-Service (RaaS)') return (row.scores.raas ?? 0) > 0;
 		return false;
 	};
 
@@ -718,6 +761,7 @@ function resolveBusinessModelFromSlides(
 		if (primaryLabel === 'Wholesale/Retail') return row.scores.wholesale;
 		if (primaryLabel === 'Omnichannel (DTC + Wholesale/Retail)') return row.scores.dtc + row.scores.wholesale;
 		if (primaryLabel === 'B2B2C / HCP-Mediated') return row.scores.hcp ?? 0;
+		if (primaryLabel === 'Robot-as-a-Service (RaaS)') return row.scores.raas ?? 0;
 		return rowTotalScore(row);
 	};
 
@@ -756,7 +800,7 @@ function resolveBusinessModelFromSlides(
 
 	// Confidence based on multi-slide corroboration and signal strength.
 	let confidence = 0.55;
-	const totalSignals = dtc + wholesale + saas + licensing + hcp;
+	const totalSignals = dtc + wholesale + saas + licensing + hcp + raas;
 	if (totalSignals >= 10) confidence += 0.18;
 	else if (totalSignals >= 6) confidence += 0.12;
 	else if (totalSignals >= 3) confidence += 0.06;
@@ -789,6 +833,7 @@ function resolveBusinessModelFromSlides(
 			saas: Math.round(saas * 100) / 100,
 			licensing: Math.round(licensing * 100) / 100,
 			hcp: Math.round(hcp * 100) / 100,
+			raas: Math.round(raas * 100) / 100,
 		},
 		sources: topSources,
 		display: displayLabel,
@@ -804,7 +849,9 @@ function resolveBusinessModelFromSlides(
 			dtc_hits,
 			media_hits,
 			applied_guards,
-			decision_reason: `totals(dtc=${Math.round(dtc * 100) / 100}, wholesale=${Math.round(wholesale * 100) / 100}, saas=${Math.round(saas * 100) / 100}, licensing=${Math.round(licensing * 100) / 100}, hcp=${Math.round(hcp * 100) / 100}) raw_label=${primaryLabel} display=${displayLabel}`,
+			dtc_keyword_hits_any,
+			has_enterprise_tech_signals,
+			decision_reason: `totals(dtc=${Math.round(dtc * 100) / 100}, wholesale=${Math.round(wholesale * 100) / 100}, saas=${Math.round(saas * 100) / 100}, licensing=${Math.round(licensing * 100) / 100}, hcp=${Math.round(hcp * 100) / 100}, raas=${Math.round(raas * 100) / 100}) raw_label=${primaryLabel} display=${displayLabel}`,
 		},
 	};
 

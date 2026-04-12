@@ -247,6 +247,114 @@ export async function getDocumentsForReport(
   }
 }
 
+// ─── RC-S6-009/010/008: Document full-text extraction helpers ─────────────────
+
+/**
+ * Extracts a candidate company name from a document's full_text.
+ * Tries copyright/watermark patterns first, then legal entity patterns, then early short lines.
+ * Returns null if no candidate found.
+ */
+function extractCompanyNameFromFullText(text: string): string | null {
+  if (!text || typeof text !== 'string') return null;
+  const head = text.slice(0, 8000);
+
+  // 1. Copyright/watermark: "©2026 Climatic Capital ·" pattern
+  const copyright = head.match(/©\s*\d{4}\s+([A-Z][A-Za-z0-9&\s.'-]{2,50}?)(?:\s+(?:Global|·)\b|\s{2,})/);
+  if (copyright?.[1]) {
+    const candidate = copyright[1].trim();
+    if (candidate.length >= 3 && candidate.length <= 60 && !/\b(Confidential|Commercial|Proprietary)\b/i.test(candidate)) {
+      return candidate;
+    }
+  }
+
+  // 2. Legal entity: "Company Name Inc/LLC/Ltd/Corp/Holdings/Capital Management"
+  const legal = head.match(
+    /\b([A-Z][A-Za-z0-9&.'-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.'-]{1,40}){0,4})\s+(?:Inc\.?|LLC\.?|Ltd\.?|Corporation|Corp\.?|GmbH|Holdings|Capital\s+Management|Capital\s+Partners)\b/,
+  );
+  if (legal?.[1]) {
+    const candidate = legal[1].trim();
+    if (candidate.length >= 3 && candidate.length <= 60 && !/^(This|The|Our|For|Any|Such|Each|When)\b/i.test(candidate)) {
+      return candidate;
+    }
+  }
+
+  // 3. Short early lines (title case or ALLCAPS, no colon, no generic headings)
+  const lines = head
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.length >= 3 && l.length <= 70 && !l.includes(':'));
+  for (const line of lines.slice(0, 15)) {
+    if (
+      /^[A-Z][A-Za-z0-9\s&.'-]{2,50}$/.test(line) &&
+      line.split(/\s+/).length <= 6 &&
+      !/^(?:Confidential|Proprietary|Disclaimer|Contents|Overview|Introduction|Executive\s+Summary|Pitch|Deck|Slide)/i.test(line)
+    ) {
+      return line;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Returns the full_text of documents for a deal (up to 50K chars each, max 3 docs).
+ * Used by the report compiler to extract team highlights, fund signals, and UOF breakdowns.
+ * Never crashes.
+ */
+export async function getDocumentFullTextForDeal(
+  pool: PoolLike,
+  dealId: string,
+): Promise<string[]> {
+  try {
+    const r = await pool.query<{ full_text: string }>(
+      `SELECT SUBSTR(full_text, 1, 50000) AS full_text
+         FROM documents
+        WHERE deal_id = $1
+          AND deleted_at IS NULL
+          AND full_text IS NOT NULL
+          AND CHAR_LENGTH(full_text) > 0
+        ORDER BY uploaded_at DESC
+        LIMIT 3`,
+      [dealId],
+    );
+    return (r.rows ?? []).map((row) => row.full_text).filter((t) => typeof t === 'string' && t.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Returns the best candidate company name extracted from document full_text for a deal.
+ * Used by the report compiler to populate structured_summary.company_name.
+ * Never crashes.
+ */
+export async function getCompanyNameFromDocuments(
+  pool: PoolLike,
+  dealId: string,
+): Promise<string | null> {
+  try {
+    const r = await pool.query<{ full_text: string }>(
+      `SELECT SUBSTR(full_text, 1, 8000) AS full_text
+         FROM documents
+        WHERE deal_id = $1
+          AND deleted_at IS NULL
+          AND full_text IS NOT NULL
+          AND CHAR_LENGTH(full_text) > 0
+        ORDER BY uploaded_at DESC
+        LIMIT 3`,
+      [dealId],
+    );
+    const texts = (r.rows ?? []).map((row) => row.full_text).filter((t) => typeof t === 'string' && t.length > 0);
+    for (const text of texts) {
+      const name = extractCompanyNameFromFullText(text);
+      if (name) return name;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Returns the max created_at timestamp across all financial_facts_v1 rows for a deal.
  * Returns null when no facts exist or the table is absent.

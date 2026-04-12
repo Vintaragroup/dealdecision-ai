@@ -7,6 +7,8 @@ export type CapitalLogicProfileV1 = {
   };
   prior_funding: {
     present: boolean;
+    /** true when prior funding is inferred from label/text signal without an explicit dollar amount (e.g. "Raised Pre-seed Round") */
+    presence_only?: boolean;
     amount?: number;
     sources?: Array<{ document_id?: string; page_index?: number; page?: number; source_path?: string }>;
   };
@@ -80,7 +82,7 @@ const isMilestonesFactType = (ft: string): boolean => {
   return false;
 };
 
-const USE_OF_FUNDS_TEXT_RE = /\b(use\s+of\s+(funds|proceeds)|allocation\s+of\s+funds|capital\s+allocation|spending\s+plan|funds?\s+will\s+be\s+used|funds?\s+will\s+primarily\s+go\s+towards|initial\s+funds?\s+will\s+.*go\s+towards|proceeds?\s+.*used\s+for)\b/i;
+const USE_OF_FUNDS_TEXT_RE = /\b(use\s+of\s+(funds|proceeds)|allocation\s+of\s+(funds|capital)|capital\s+allocation|spending\s+plan|funds?\s+will\s+be\s+used|funds?\s+will\s+primarily\s+go\s+towards|initial\s+funds?\s+will\s+.*go\s+towards|proceeds?\s+.*used\s+for|close\s+debt\s+deals?|deploy(?:ing)?\s+(?:the\s+)?capital|activate\s+.*pipeline|legal\s+[&+]\s+custody|\bthe\s+raise\b)\b/i;
 
 const parseMoneyAmount = (raw: string | null | undefined): number | undefined => {
   if (!raw) return undefined;
@@ -98,6 +100,33 @@ const parseMoneyAmount = (raw: string | null | undefined): number | undefined =>
         : 1;
   const amount = base * mult;
   return Number.isFinite(amount) ? amount : undefined;
+};
+
+/**
+ * Detects whether text contains a presence-only prior funding signal (no dollar amount required).
+ * Matches patterns like "Raised Pre-seed Round", "Past: Pre-Seed", "closed a SAFE round".
+ * Guarded against confusing the CURRENT raise with historical raises.
+ */
+const PRIOR_FUNDING_PRESENCE_PATTERNS = [
+  /\braised\s+(?:a\s+|our\s+)?(?:pre-?[\s-]?seed|seed|series\s*[a-c]|safe[s]?|bridge)\s*(?:round|funding|note[s]?)?\b/i,
+  /\bpast\s*:?\s*(?:pre-?[\s-]?seed|seed|series\s*[a-c]|safe|bridge)\b/i,
+  /\bcompleted\s+(?:a\s+|our\s+)?(?:pre-?[\s-]?seed|seed|series\s*[a-c])\s*(?:round|funding)\b/i,
+  /\bclosed\s+(?:a\s+|our\s+)?(?:pre-?[\s-]?seed|seed|series\s*[a-c]|safe)\s*(?:round|funding|note[s]?)?\b/i,
+] as const;
+
+const PRIOR_FUNDING_NEGATIVE_CONTEXT_RE = /currently\s+raising|we\s+are\s+(?:now\s+)?raising|seeking\s+\$|actively\s+raising\b/i;
+
+const detectPriorFundingPresenceOnly = (text: string): boolean => {
+  for (const pattern of PRIOR_FUNDING_PRESENCE_PATTERNS) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    const start = Math.max(0, (match.index ?? 0) - 120);
+    const end = Math.min(text.length, (match.index ?? 0) + match[0].length + 120);
+    const window = text.slice(start, end);
+    if (PRIOR_FUNDING_NEGATIVE_CONTEXT_RE.test(window)) continue;
+    return true;
+  }
+  return false;
 };
 
 const extractPriorFundingAmount = (text: string): number | undefined => {
@@ -123,10 +152,13 @@ export function inferCapitalLogicProfileV1(input: {
   structured_summary: any;
   promoted_facts?: any[] | null;
   page_texts?: string[] | null;
+  /** RC-S6-005/006: Raw document full_text strings for presence-only prior funding + UOF detection */
+  document_full_texts?: string[] | null;
 }): CapitalLogicProfileV1 {
   const structured = input.structured_summary ?? null;
   const promoted = Array.isArray(input.promoted_facts) ? input.promoted_facts : [];
   const pageTexts = Array.isArray(input.page_texts) ? input.page_texts.filter((t) => typeof t === 'string' && t.trim().length > 0) : [];
+  const documentFullTexts = Array.isArray(input.document_full_texts) ? input.document_full_texts.filter((t) => typeof t === 'string' && t.trim().length > 0) : [];
 
   // A) raise.present (strict)
   const raiseAmount = structured?.raise?.value_json?.amount?.amount;
@@ -134,7 +166,7 @@ export function inferCapitalLogicProfileV1(input: {
   const raiseSources = extractSourcesArray(structured?.raise?.sources);
   const raisePresent = raiseAmountNum != null;
 
-  // A.1) prior_funding (structured + page text contextual detection)
+  // A.1) prior_funding (structured + page text contextual detection + presence-only)
   const ssPriorFundingAmount = structured?.prior_funding?.value_json?.amount?.amount;
   const ssPriorFundingAmountNum = typeof ssPriorFundingAmount === 'number' && Number.isFinite(ssPriorFundingAmount)
     ? ssPriorFundingAmount
@@ -153,10 +185,15 @@ export function inferCapitalLogicProfileV1(input: {
   const pageTextPriorFunding = pageTextPriorFundingCandidates
     .slice()
     .sort((a, b) => b.amount - a.amount)[0] ?? null;
+  // RC-S6-005: Presence-only detection — no dollar amount required
+  const allTextsForPresenceCheck = [...pageTexts, ...documentFullTexts];
+  const priorFundingPresenceOnly = !ssPriorFundingAmountNum && !pageTextPriorFunding
+    && allTextsForPresenceCheck.some(detectPriorFundingPresenceOnly);
   const priorFundingAmount = ssPriorFundingAmountNum ?? pageTextPriorFunding?.amount;
-  const priorFundingPresent = priorFundingAmount != null;
+  const priorFundingPresent = priorFundingAmount != null || priorFundingPresenceOnly;
   const priorFundingSources = ssPriorFundingSources
-    ?? (pageTextPriorFunding ? [pageTextPriorFunding.source] : undefined);
+    ?? (pageTextPriorFunding ? [pageTextPriorFunding.source] : undefined)
+    ?? (priorFundingPresenceOnly ? [{ source_path: 'document:full_text:presence_signal' } as EvidenceRefLike] : undefined);
 
   // B) use_of_funds.present
   const ssUseOfFundsSources = extractSourcesArray(structured?.use_of_funds?.sources ?? structured?.useOfFunds?.sources);
@@ -165,10 +202,15 @@ export function inferCapitalLogicProfileV1(input: {
   const pageTextUseOfFundsHits = pageTexts
     .map((text, idx) => USE_OF_FUNDS_TEXT_RE.test(text) ? ({ page_index: idx, source_path: `dpu:page_text:${idx}` } as EvidenceRefLike) : null)
     .filter((v): v is EvidenceRefLike => !!v);
-  const useOfFundsPresent = ssUseOfFundsPresent || !!pfUseOfFunds || pageTextUseOfFundsHits.length > 0;
+  // RC-S6-006: Also check document full_text for UOF patterns (e.g. Climatic "Close Debt Deals")
+  const docTextUseOfFundsHit: EvidenceRefLike | null = documentFullTexts.some((t) => USE_OF_FUNDS_TEXT_RE.test(t))
+    ? { source_path: 'document:full_text:uof_signal' } as EvidenceRefLike
+    : null;
+  const useOfFundsPresent = ssUseOfFundsPresent || !!pfUseOfFunds || pageTextUseOfFundsHits.length > 0 || !!docTextUseOfFundsHit;
   const useOfFundsSources = ssUseOfFundsSources
     ?? (pfUseOfFunds ? evidenceFromPromotedFact(pfUseOfFunds) : undefined)
-    ?? (pageTextUseOfFundsHits.length > 0 ? [pageTextUseOfFundsHits[0]] : undefined);
+    ?? (pageTextUseOfFundsHits.length > 0 ? [pageTextUseOfFundsHits[0]] : undefined)
+    ?? (docTextUseOfFundsHit ? [docTextUseOfFundsHit] : undefined);
 
   // C) milestones.present
   const ssMilestoneSources = extractSourcesArray(structured?.milestones?.sources ?? structured?.milestone?.sources ?? structured?.unlock?.sources);
@@ -192,11 +234,18 @@ export function inferCapitalLogicProfileV1(input: {
 
   const notes: string[] = [];
   if (!raisePresent) notes.push('raise_amount_missing');
+  const priorFundingEntry: CapitalLogicProfileV1['prior_funding'] = {
+    present: priorFundingPresent,
+    amount: priorFundingAmount,
+    sources: priorFundingSources,
+    ...(priorFundingPresenceOnly ? { presence_only: true } : {}),
+  };
+
   if (notes.length === 0) {
     return {
       confidence,
       raise: { present: raisePresent, amount: raiseAmountNum, sources: raiseSources },
-      prior_funding: { present: priorFundingPresent, amount: priorFundingAmount, sources: priorFundingSources },
+      prior_funding: priorFundingEntry,
       use_of_funds: { present: useOfFundsPresent, sources: useOfFundsSources },
       milestones: { present: milestonesPresent, sources: milestonesSources },
       coherence: {
@@ -211,7 +260,7 @@ export function inferCapitalLogicProfileV1(input: {
   return {
     confidence,
     raise: { present: raisePresent, amount: raiseAmountNum, sources: raiseSources },
-    prior_funding: { present: priorFundingPresent, amount: priorFundingAmount, sources: priorFundingSources },
+    prior_funding: priorFundingEntry,
     use_of_funds: { present: useOfFundsPresent, sources: useOfFundsSources },
     milestones: { present: milestonesPresent, sources: milestonesSources },
     coherence: {

@@ -349,4 +349,41 @@ describe('buildInvestmentAnalysisOverviewV2 — summary sanitization (P3)', () =
 		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
 		expect(result.summary).toBe(cleanSummary);
 	});
+
+	// ── RC-S6-002: SPV bleed removal ──────────────────────────────────────
+
+	it('RC-S6-002: removes "leveraging SPVs" bleed from non-fund deal summary', () => {
+		const dio = makeDioWithSummary(
+			'Weavstra is a DTC Ecommerce startup leveraging SPVs for non-dilutive funding.',
+		);
+		const ss = makeStructuredSummary({ bmValue: 'Enterprise AI platform' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).not.toMatch(/\bspvs?\b/i);
+		expect(result.summary).not.toMatch(/special\s+purpose\s+vehicle/i);
+	});
+
+	it('RC-S6-002: removes "using SPVs to" bleed from non-fund deal summary', () => {
+		const dio = makeDioWithSummary(
+			'The company is raising capital using SPVs to aggregate investors.',
+		);
+		const ss = makeStructuredSummary({ bmValue: 'SaaS' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).not.toMatch(/\bspvs?\b/i);
+	});
+
+	it('RC-S6-002: preserves SPV language when BM is a fund/SPV model', () => {
+		const spvSummary =
+			'Climatic is raising via an SPV structure, leveraging SPVs for co-investment aggregation.';
+		const dio = makeDioWithSummary(spvSummary);
+		const ss = makeStructuredSummary({ bmValue: 'Fund / SPV investment vehicle' });
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: ss });
+		expect(result.summary).toMatch(/\bspvs?\b/i);
+	});
+
+	it('RC-S6-002: no crash when structured_summary is null', () => {
+		const dio = makeDioWithSummary('Startup leveraging SPVs for scale.');
+		const result = buildInvestmentAnalysisOverviewV2({ dio, report: emptyReport, structured_summary: null });
+		// Should not throw — SPV language is left untouched (no model context to guard against)
+		expect(result.summary).toBeDefined();
+	});
 });

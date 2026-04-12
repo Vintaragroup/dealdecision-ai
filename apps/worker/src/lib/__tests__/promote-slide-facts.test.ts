@@ -57,6 +57,80 @@ describe("promote slide facts", () => {
 		}
 	});
 
+	// ── RC-S6-003: RaaS over Licensing ────────────────────────────────────────────
+	it("RC-S6-003: resolves Robot-as-a-Service (RaaS) when deck has explicit RaaS language, NOT Licensing", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		// PAI-style deck: primary model is RaaS; licensing refers to IP input, not revenue model.
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Business Model",
+				"Robot as a Service (RaaS): customers lease humanoid robots at $75K–$100K+ per year.",
+				"We own and manage the asset. RaaS drives recurring revenue.",
+				"Technology: licensed NASA's Robonaut 2 Hand Patent Portfolio as technical foundation.",
+				"Licensing of IP is an input to our product, not our revenue model.",
+			].join("\n")
+		);
+		expect(bm).toBeTruthy();
+		expect(bm?.value_json?.display).toBe("Robot-as-a-Service (RaaS)");
+		expect(bm?.value_json?.display).not.toBe("Licensing");
+		expect((bm?.value_json?.scores?.raas ?? 0)).toBeGreaterThanOrEqual(5);
+	});
+
+	it("RC-S6-003: RaaS keyword alone is sufficient to override Licensing classification", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Revenue Model",
+				"RaaS subscription: per-robot fee billed monthly. Customers do not own hardware.",
+				"IP licensing from third-party patents enables product capabilities.",
+			].join("\n")
+		);
+		expect(bm).toBeTruthy();
+		expect(bm?.value_json?.display).toBe("Robot-as-a-Service (RaaS)");
+	});
+
+	// ── RC-S6-001: Enterprise tech OCR-noise guard ─────────────────────────────
+	it("RC-S6-001: does not classify as DTC Ecommerce when only ecom-mechanics noise present with enterprise signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		// Weavstra-style OCR noise: enterprise deck with spurious "orders" / "customers" from OCR.
+		// No explicit DTC keyword ("DTC", "e-commerce", "Shopify", "online store") present.
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Enterprise AI Platform",
+				"Sovereign AI infrastructure for government and enterprise customers.",
+				"Orders processed securely via our quantum-grade middleware layer.",
+				"Deep-tech data center AI platform with embedded compliance.",
+				"B2B enterprise software licensing and deployment pipeline.",
+			].join("\n")
+		);
+		// Must not resolve to DTC Ecommerce — "orders" and "customers" are noise in this context.
+		if (bm !== null) {
+			expect(bm.value_json?.display).not.toBe("DTC Ecommerce");
+			expect((bm.value_json?.diagnostics?.applied_guards ?? [])).toContain(
+				"enterprise_tech_blocks_mechanics_only_dtc"
+			);
+		}
+	});
+
+	it("RC-S6-001: DTC classification survives when explicit DTC keyword is present alongside enterprise signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		// Explicit "DTC e-commerce" keyword in deck — enterprise guard must NOT suppress this.
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Go to Market",
+				"DTC e-commerce storefront for enterprise buyers purchasing direct.",
+				"Enterprise software enabling the checkout flow.",
+			].join("\n")
+		);
+		// Has explicit DTC keyword — enterprise guard should not fire.
+		expect(bm).toBeTruthy();
+		expect(bm?.value_json?.display).toBe("DTC Ecommerce");
+	});
+
 	it("suppresses standalone Wholesale/Retail label for marketplace/fintech channel language", async () => {
 		const { __test__ } = await import("../promote-slide-facts.js");
 

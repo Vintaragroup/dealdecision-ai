@@ -222,6 +222,39 @@ export function resolvePromotedBusinessModelForPolicy(input: {
 	}
 
 	if (!isRealEstatePolicyId(input.selectedPolicyId)) {
+		// SPV/fund guard: if the stored promoted display is a consumer channel label but the raw
+		// slide text is dominated by fund/SPV language without an explicit DTC keyword, suppress.
+		const rawText = String(input.promotedRawText ?? "").toLowerCase();
+		const currentDisplay = String(input.currentDisplay ?? "").toLowerCase();
+		const isDtcLabel = /\b(dtc\s*ecommerce|direct[\s-]to[\s-]consumer|omnichannel)\b/i.test(promoted);
+		if (process.env.DDAI_DEBUG_POLICY_GUARD === "1" || process.env.DEBUG_PHASE1_OVERVIEW_V2 === "1") {
+			console.log(JSON.stringify({ event: "DEBUG_POLICY_GUARD", isDtcLabel, rawText_len: rawText.length, currentDisplay_head: currentDisplay.slice(0, 80) }));
+		}
+		if (isDtcLabel) {
+			// Case 1: rawText present — check for SPV/fund dominance without explicit DTC
+			if (rawText) {
+				const hasFundSpvInRaw = /\b(spvs?|special\s+purpose\s+vehicle|fund\s+vehicle|co-?investment|non-?dilutive|carried\s+interest|general\s+partner|limited\s+partner)\b/.test(rawText);
+				const hasExplicitDtcKeyword = /\b(dtc\b|d2c\b|direct[\s-]to[\s-]consumer|direct\s+via\s+website|website\s+sales)/.test(rawText);
+				if (hasFundSpvInRaw && !hasExplicitDtcKeyword) {
+					return { action: "suppress", display: null, reason: "fund_spv_signals_block_dtc_without_explicit_dtc_keyword" };
+				}
+			}
+			// Case 2: rawText empty — if the current live DPU analysis is clearly non-DTC (enterprise/AI/tech/fund),
+			// or if there is no current context at all (rawText=null means stored fact has no supporting evidence),
+			// treat stored DTC label as stale and suppress it.
+			if (!rawText) {
+				if (!currentDisplay) {
+					// No raw evidence and no current context: stored label has no support — suppress.
+					return { action: "suppress", display: null, reason: "stale_dtc_label_no_supporting_evidence" };
+				}
+				// If the current deterministic analysis does NOT detect DTC/ecommerce signals, the stored
+				// DTC label is a stale artefact — suppress it. "SaaS", "Fund", "Licensing", etc. all lack DTC.
+				const currentHasDtc = /\b(dtc\b|d2c\b|direct[\s-]to[\s-]consumer|ecommerce|consumer\s*\/\s*commerce)\b/i.test(currentDisplay);
+				if (!currentHasDtc) {
+					return { action: "suppress", display: null, reason: "stale_dtc_label_conflicts_with_current_non_dtc_signals" };
+				}
+			}
+		}
 		return { action: "accept", display: promoted, reason: "policy_non_real_estate" };
 	}
 
@@ -1077,6 +1110,34 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 							},
 						]),
 					};
+				} else if (policyResolution.action === "suppress") {
+					// The stale promoted fact was suppressed. Delete the evidence_items record so the
+					// report compiler cannot read it and re-surface the stale label. The report will
+					// fall back to DPU-derived facts which can now classify correctly.
+					try {
+						const suppressedEvidenceId = `deal:${dealId}:fact:business_model_v1`;
+						await pool.query(
+							`DELETE FROM evidence_items WHERE evidence_id = $1 AND deal_id = $2::uuid`,
+							[suppressedEvidenceId, dealId]
+						);
+						console.log(
+							JSON.stringify({
+								event: "phase1_promoted_business_model_stale_record_deleted",
+								deal_id: dealId,
+								evidence_id: suppressedEvidenceId,
+								reason: policyResolution.reason,
+							})
+						);
+					} catch (deleteErr) {
+						// Non-fatal: log but don't fail the analysis job.
+						console.warn(
+							JSON.stringify({
+								event: "phase1_promoted_business_model_stale_record_delete_failed",
+								deal_id: dealId,
+								error: String(deleteErr),
+							})
+						);
+					}
 				}
 			}
 		} catch {

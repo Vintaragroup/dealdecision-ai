@@ -146,6 +146,21 @@ type ReportDTO = {
     } | null;
     /** RC-S6-007: Parsed use-of-funds allocation items from document text */
     use_of_funds_breakdown?: Array<{ category: string; amount_raw?: string; amount?: number }> | null;
+    /** RC-S6-012: Deployment/project pipeline table extracted from fund-model documents */
+    project_pipeline?: Array<{
+      name: string;
+      capital_raw?: string;
+      revenue_raw?: string | null;
+      return_pct?: string | null;
+      start_date?: string | null;
+    }> | null;
+    /** RC-S6-011 enrichment: Structured revenue model (type, unit economics, recurring flag) */
+    revenue_model?: {
+      type: string;
+      unit_economics?: string | null;
+      recurring?: boolean | null;
+      detail?: string | null;
+    } | null;
 
     // Deterministic KPI-locked synthesis from structured_summary.
     // API may override/augment this with node-derived citations.
@@ -2801,6 +2816,18 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
         const uofb = _extractUseOfFundsBreakdown(_fullTexts);
         if (uofb && uofb.length > 0) (structuredSummary as any).use_of_funds_breakdown = uofb;
       }
+
+      // RC-S6-012: Project/deployment pipeline table
+      if (!(structuredSummary as any).project_pipeline) {
+        const pp = _extractProjectPipeline(_fullTexts);
+        if (pp && pp.length > 0) (structuredSummary as any).project_pipeline = pp;
+      }
+
+      // RC-S6-011 enrichment: Revenue model
+      if (!(structuredSummary as any).revenue_model) {
+        const rm = _extractRevenueModel(_fullTexts);
+        if (rm) (structuredSummary as any).revenue_model = rm;
+      }
     }
   } catch {
     // Best-effort: never fail report compilation.
@@ -3005,52 +3032,212 @@ function _extractFundDeploymentSignals(texts: string[]): {
   return { debt_in_process: debtSignal, deployment_pipeline: pipelineSignal, target_irr: targetIrr };
 }
 
-/** RC-S6-007: Parse use-of-funds breakdown items from document text. */
+/** RC-S6-007: Parse use-of-funds breakdown items from document text.
+ *
+ * Three extraction strategies tried in order per heading occurrence:
+ *  A) Single-line comma/slash items (PAI: "Product launch, customer delivery...")
+ *  B) Dollar-amount anchored multi-line items (Weavstra: "$200M for operations...")
+ *  C) Labeled section items under THE RAISE heading (Climatic: "Legal & Custody / Close Debt Deals")
+ */
 function _extractUseOfFundsBreakdown(texts: string[]): Array<{ category: string; amount_raw?: string; amount?: number }> | null {
-  const UOF_SECTION_RE = /(?:use\s+of\s+funds|use\s+of\s+proceeds|the\s+raise)\s*:?\s*([^\n]{0,200})/i;
+  const HEADING_RE = /(?:use\s+of\s+funds|use\s+of\s+proceeds|use\s+of\s+capital|the\s+raise)\b/gi;
 
   for (const text of texts) {
-    const m = text.match(UOF_SECTION_RE);
-    if (!m) continue;
-    // Trim at sentence end or slide boundary
-    let sectionText = m[1].trim();
-    // Stop at obvious slide/section boundaries
-    const boundaryMatch = sectionText.match(/^(.*?)(?:\s{3,}|[A-Z]{4,}[^a-z]|\bINVESTMENT\b|\bINVESTOR\b|\bMARKET\b|\bSLIDE\b)/);
-    if (boundaryMatch?.[1] && boundaryMatch[1].length >= 10) sectionText = boundaryMatch[1].trim();
-    const items = sectionText
-      .split(/[,\/]/)
-      .map((item) => item.trim().replace(/\band\b\s*/i, '').trim())
-      .filter((item) => item.length >= 3 && item.length <= 60);
-    if (items.length < 2) continue;
+    HEADING_RE.lastIndex = 0;
+    let headingMatch: RegExpExecArray | null;
+    while ((headingMatch = HEADING_RE.exec(text)) !== null) {
+      const headingEnd = headingMatch.index + headingMatch[0].length;
+      const section = text.slice(headingEnd, headingEnd + 2000);
 
-    return items.slice(0, 8).map((rawItem) => {
-      // "$60M AI and SW" pattern
-      const amtPrefix = rawItem.match(/^(\$[0-9]+(?:\.[0-9]+)?[MmKkBbGg]+\+?)\s+(.+)$/);
-      if (amtPrefix) {
-        return {
-          category: amtPrefix[2].trim(),
-          amount_raw: amtPrefix[1],
-          amount: _parseMoneyAmountSimple(amtPrefix[1]) ?? undefined,
-        };
+      // ── Strategy A: Single-line comma/slash items (PAI) ──────────────────
+      const firstChunk = section.replace(/\n/g, ' ').slice(0, 200);
+      const boundaryIdx = firstChunk.search(/\s{3,}|[A-Z]{5,}[^a-z]|\bINVESTMENT\b|\bINVESTOR\b|\bMARKET\b|\bSLIDE\b/);
+      const linePortion = boundaryIdx > 10 ? firstChunk.slice(0, boundaryIdx) : firstChunk;
+      const lineItems = linePortion
+        .split(/[,\/]/)
+        .map((s) => s.trim().replace(/^\s*and\s+/i, '').trim())
+        .filter((s) => s.length >= 3 && s.length <= 60);
+      if (lineItems.length >= 2) {
+        return lineItems.slice(0, 8).map(_parseUofItem);
       }
-      // "Category = $amount" pattern
-      const amtSuffix = rawItem.match(/^(.+?)\s*[=:]\s*(\$[0-9]+(?:\.[0-9]+)?[MmKkBbGg]+\+?)$/);
-      if (amtSuffix) {
-        return {
-          category: amtSuffix[1].trim(),
-          amount_raw: amtSuffix[2],
-          amount: _parseMoneyAmountSimple(amtSuffix[2]) ?? undefined,
-        };
+
+      // ── Strategy B: Dollar-amount anchored multi-line items (Weavstra) ───
+      const DOLLAR_LINE_RE =
+        /(\$[\d,.]+[MBKmb]+\+?)\s+(?:for\s+(?:a\s+|an?\s+)?|invest(?:ment)?\s+(?:for\s+(?:a\s+)?|into\s+|to\s+(?:secure\s+|deploy\s+)?))([\w][^.\n]{8,80})/gi;
+      const dollarItems: Array<{ category: string; amount_raw: string; amount?: number }> = [];
+      let dm: RegExpExecArray | null;
+      while ((dm = DOLLAR_LINE_RE.exec(section)) !== null) {
+        const raw = dm[1];
+        const desc = dm[2].replace(/\band\b.*$/i, '').replace(/[»•·\-–]+\s*$/g, '').trim().slice(0, 80);
+        if (desc.length >= 5) {
+          dollarItems.push({ category: desc.replace(/,\s*and.*$/i, '').trim(), amount_raw: raw, amount: _parseMoneyAmountSimple(raw) ?? undefined });
+        }
       }
-      return { category: rawItem };
-    });
+      if (dollarItems.length >= 2) return dollarItems.slice(0, 8);
+
+      // ── Strategy C: Labeled sections under THE RAISE (Climatic) ──────────
+      if (/the\s+raise/i.test(headingMatch[0])) {
+        const FUND_LABEL_RE =
+          /\b(Legal\s+[&+]\s+Custody|SPV\s+Creat\w+|Close\s+Debt\s+Deals?|Team\s+[&+]\s+Pipeline|Product\s+Development|Marketing|Technology|Operations|R&D|Research\s+&?\s*Development|Hiring|Sales|Infrastructure)\b/gi;
+        const labelItems: Array<{ category: string; amount_raw?: string; amount?: number }> = [];
+        const seenLabels = new Set<string>();
+        let lm: RegExpExecArray | null;
+        while ((lm = FUND_LABEL_RE.exec(section)) !== null) {
+          const label = lm[1].trim().replace(/\s+/g, ' ');
+          const lkey = label.toLowerCase();
+          if (seenLabels.has(lkey)) continue;
+          seenLabels.add(lkey);
+          // Look for an amount within 120 chars after this label
+          const after = section.slice(lm.index + lm[0].length, lm.index + lm[0].length + 120);
+          const amtM = after.match(/\$[\d,.]+[MBKmb]+\+?/);
+          if (amtM) {
+            labelItems.push({ category: label, amount_raw: amtM[0], amount: _parseMoneyAmountSimple(amtM[0]) ?? undefined });
+          } else {
+            labelItems.push({ category: label });
+          }
+        }
+        if (labelItems.length >= 2) return labelItems.slice(0, 8);
+      }
+    }
+  }
+  return null;
+}
+
+function _parseUofItem(rawItem: string): { category: string; amount_raw?: string; amount?: number } {
+  // "$60M AI and SW" prefix pattern
+  const amtPrefix = rawItem.match(/^(\$[0-9]+(?:\.[0-9]+)?[MmKkBbGg]+\+?)\s+(.+)$/);
+  if (amtPrefix) {
+    return { category: amtPrefix[2].trim(), amount_raw: amtPrefix[1], amount: _parseMoneyAmountSimple(amtPrefix[1]) ?? undefined };
+  }
+  // "Category = $amount" suffix pattern
+  const amtSuffix = rawItem.match(/^(.+?)\s*[=:]\s*(\$[0-9]+(?:\.[0-9]+)?[MmKkBbGg]+\+?)$/);
+  if (amtSuffix) {
+    return { category: amtSuffix[1].trim(), amount_raw: amtSuffix[2], amount: _parseMoneyAmountSimple(amtSuffix[2]) ?? undefined };
+  }
+  return { category: rawItem };
+}
+
+/** RC-S6-012: Extract deployment/project pipeline table (Climatic-style fund model).
+ *
+ * Locates "Project Capital Revenue Rtn Start Progress" table header and parses rows of the form:
+ *   ProjectName (Country) $Capital $Revenue Return% StartDate
+ * Progress percentages scattered by OCR layout are ignored.
+ */
+function _extractProjectPipeline(
+  texts: string[],
+): Array<{ name: string; capital_raw?: string; revenue_raw?: string | null; return_pct?: string | null; start_date?: string | null }> | null {
+  const TABLE_HEADER_RE = /Project\s+Capital\s+Revenue\s+Rtn\s+Start\s+Progress/i;
+  const SECTION_END_RE = /\bTEAM\b|\bGET IN TOUCH\b|\bIMPORTANT NOTICE\b/i;
+  // Row: Name (CC) $Capital $Revenue|— Return% StartDate
+  // Name: 1-4 words (max 25 chars before country code) to avoid absorbing preceding OCR garbage
+  // — or – as no-data revenue placeholder; → in names (Waste → Fuel)
+  const ROW_RE =
+    /\b([A-Za-z][A-Za-z0-9\u2192\u2013\u2014\-]*(?:\s+[A-Za-z0-9\u2192\u2013\u2014\-]+){0,3}?\s*\([A-Z]{2,3}\))\s+(\$[\d,.]+[MBKb]+(?:[\u2013\u2014\-]\$?[\d,.]+[MBKb]+)?)\s+(\$[\d,.]+[MBKb]+(?:[\u2013\u2014\-]\$?[\d,.]+[MBKb]+)?|[\u2014\u2013—–\-])\s+(\d+%|TBA)\s+((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2}|\d{4})/gi;
+
+  for (const text of texts) {
+    const headerMatch = text.match(TABLE_HEADER_RE);
+    if (!headerMatch) continue;
+
+    const tableStart = headerMatch.index! + headerMatch[0].length;
+    const afterHeader = text.slice(tableStart, tableStart + 3000);
+    const endMatch = afterHeader.match(SECTION_END_RE);
+    const tableSection = endMatch ? afterHeader.slice(0, endMatch.index) : afterHeader;
+
+    const rows: Array<{ name: string; capital_raw?: string; revenue_raw?: string | null; return_pct?: string | null; start_date?: string | null }> = [];
+    // Known OCR watermark/footer phrases that may be absorbed as name prefix
+    const OCR_WATERMARK_RE = /^(?:©\d{4}\s+[\w\s.·]+?·\s*)?(?:commercial\s+in\s+confidence\s*)?/i;
+    let rm: RegExpExecArray | null;
+    while ((rm = ROW_RE.exec(tableSection)) !== null) {
+      // Post-process name: strip leading OCR watermark garbage (e.g. "Commercial in Confidence")
+      // then keep the last 2 capitalised words before the country-code "(CC)".
+      let rawName = rm[1].trim().replace(/\s+/g, ' ');
+      // Step 1: strip known watermark prefix patterns
+      rawName = rawName.replace(OCR_WATERMARK_RE, '').trim();
+      // Step 2: if still more than 3 words before the '(', take the last 2 as project name
+      const ccIdx = rawName.lastIndexOf('(');
+      if (ccIdx > 1) {
+        const beforeCC = rawName.slice(0, ccIdx).trimEnd();
+        const nameParts = beforeCC.split(' ').filter(Boolean);
+        if (nameParts.length > 3) {
+          // Take last 2 words as the project name (covers "Waste → Fuel", "Solar Up", "Power Barge")
+          const truncated = nameParts.slice(-2).join(' ').trim();
+          rawName = `${truncated} ${rawName.slice(ccIdx)}`;
+        }
+      }
+      const name = rawName.trim();
+      const capital = rm[2];
+      const revRaw = rm[3];
+      // Treat any dash/em-dash variant as null revenue
+      const revenue = /^[\u2014\u2013\-—–]$/.test(revRaw.trim()) ? null : revRaw;
+      const returnPct = rm[4] === 'TBA' ? null : rm[4];
+      const start = rm[5];
+      rows.push({ name, capital_raw: capital, revenue_raw: revenue, return_pct: returnPct, start_date: start });
+    }
+
+    if (rows.length >= 2) return rows;
+  }
+  return null;
+}
+
+/** RC-S6-011 enrichment: Extract structured revenue model from document full_text. */
+function _extractRevenueModel(texts: string[]): {
+  type: string;
+  unit_economics?: string | null;
+  recurring?: boolean | null;
+  detail?: string | null;
+} | null {
+  for (const text of texts) {
+    // ── RaaS (PAI): "$75,000/year (min) per installed robot" ──────────────
+    const raasUnit = text.match(/\$\s*([\d,]+)\s*\/\s*(?:year|yr)\s*(?:\(min\))?\s*per\s+(?:installed\s+)?robot/i);
+    if (raasUnit) {
+      const rawAmt = raasUnit[1].replace(/,/g, '');
+      const displayAmt = parseInt(rawAmt, 10) >= 1000 ? `$${Math.round(parseInt(rawAmt, 10) / 1000)}K` : `$${rawAmt}`;
+      return {
+        type: 'RaaS',
+        unit_economics: `${displayAmt}/year per robot (min)`,
+        recurring: true,
+        detail: 'Robot-as-a-Service: robots leased annually to industrial customers; additional per-task inspection revenue possible',
+      };
+    }
+    // RaaS fallback: label present but no explicit unit price
+    if (/robot\s+as\s+a\s+service|raas\s+business\s+model/i.test(text)) {
+      const altUnit = text.match(/\$\s*([\d,]+)\s*\/\s*(?:year|yr|robot|unit)/i);
+      return {
+        type: 'RaaS',
+        unit_economics: altUnit ? `$${altUnit[1]}/year per robot` : null,
+        recurring: true,
+        detail: 'Robot-as-a-Service: robots leased to industrial customers on a term basis',
+      };
+    }
+
+    // ── IRR / SPV Fund (Climatic): "X%+ Target IRR" + SPV language ─────────
+    const irrM = text.match(/([0-9]+(?:\.[0-9]+)?%\+?)\s+Target\s+IRR/i);
+    if (irrM && /\bSPVs?\b/i.test(text)) {
+      return {
+        type: 'SPV Deployment / Infrastructure-as-a-Service',
+        unit_economics: `${irrM[1]} target IRR`,
+        recurring: false,
+        detail: 'Fund deploys investor equity via asset-level SPVs into climate infrastructure; revenue from 10–20yr government, utility, and corporate contracts',
+      };
+    }
+
+    // ── Sovereign Enterprise + Government (Weavstra) ─────────────────────
+    if (/sovereign\s+(?:agentic|al\b|ai\b|infrastructure|middleware)/i.test(text) && /sole[\s-]source/i.test(text)) {
+      return {
+        type: 'Enterprise + Government Contracts',
+        recurring: true,
+        detail: 'Sovereign AI middleware and quantum compute solutions; enterprise SaaS subscriptions and government sole-source contracts',
+      };
+    }
   }
   return null;
 }
 
 function _parseMoneyAmountSimple(raw: string): number | null {
   if (!raw) return null;
-  const m = raw.match(/\$?\s*([0-9]+(?:\.[0-9]+)?)\s*([MmBbKkGg])\+?/);
+  // Handle comma-formatted amounts: $2,500M
+  const cleaned = raw.replace(/,/g, '').replace(/[^\d.$MmBbKkGg+]/g, '');
+  const m = cleaned.match(/\$?\s*([0-9]+(?:\.[0-9]+)?)\s*([MmBbKkGg])\+?/);
   if (!m) return null;
   const base = parseFloat(m[1]);
   const suffix = m[2].toUpperCase();

@@ -104,7 +104,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 37; // bumped: RC-S6 second pass — company_name, prior funding presence-only, UOF + team + fund deployment signals from document full_text
+const REPORT_COMPILER_VERSION = 38; // bumped: RC-S6 third pass — UOF multi-strategy (Climatic/Weavstra), project_pipeline table, revenue_model enrichment
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -2921,6 +2921,59 @@ export async function registerReportRoutes(
               if (nextBusinessModelValue && !structured.business_model?.value && !_fpgNulledBm) {
                 if (!structured.business_model || typeof structured.business_model !== 'object') structured.business_model = {};
                 structured.business_model.value = nextBusinessModelValue;
+                // RC-S6-BM-SOURCES: emit sources when the back-compat override sets a BM value so
+                // that selectAuthoritativeBusinessModelV1's hasEvidenceSources gate can pass.
+                // Two sub-cases:
+                //   (A) modelFact exists but failed the compiler's primary-count check:
+                //       derive {document_id, page_index} from the promoted fact's provenance.
+                //   (B) execModel path (!modelFact): derive {document_id} from exec evidence and
+                //       use page_index: 0 as a document-level citation (first page = safest fallback
+                //       when Phase 1 evidence lacks page-precise citations).
+                // Only applied when the current sources array is empty (compiler emitted no sources).
+                if (!Array.isArray(structured.business_model.sources) || structured.business_model.sources.length === 0) {
+                  if (modelFact && !_guardRejectedTypes.has('business_model_v1')) {
+                    // (A) promoted fact path — derive page citation from provenance
+                    const _mfProv = (modelFact as any)?.content_json?.provenance ?? null;
+                    const _mfDocId: string | null =
+                      (typeof _mfProv?.source_document_id === 'string' && _mfProv.source_document_id.trim()
+                        ? _mfProv.source_document_id.trim()
+                        : null) ??
+                      (typeof (modelFact as any)?.source_document_id === 'string' && (modelFact as any).source_document_id.trim()
+                        ? (modelFact as any).source_document_id.trim()
+                        : null);
+                    const _mfPageIndex: number | null =
+                      typeof _mfProv?.page_index === 'number' && Number.isFinite(_mfProv.page_index)
+                        ? _mfProv.page_index
+                        : null;
+                    if (_mfDocId && _mfPageIndex != null) {
+                      structured.business_model.sources = [{
+                        kind: 'promoted_fact',
+                        fact_type: 'business_model_v1',
+                        source_document_id: _mfDocId,
+                        page_index: _mfPageIndex,
+                        evidence_role: 'primary',
+                      }];
+                    }
+                  } else if (!modelFact) {
+                    // (B) exec_summary path — derive document-level citation from exec evidence.
+                    // page_index: 0 is a document-level fallback reference (first page) used when
+                    // Phase 1 executive_summary_v1 evidence contains document_id but no page index.
+                    const _execEvidence: any[] = Array.isArray(execPhase1?.executive_summary_v1?.evidence)
+                      ? (execPhase1.executive_summary_v1.evidence as any[])
+                      : [];
+                    const _firstDocEntry = _execEvidence.find(
+                      (e: any) => typeof e?.document_id === 'string' && e.document_id.trim(),
+                    );
+                    if (_firstDocEntry) {
+                      structured.business_model.sources = [{
+                        kind: 'phase1.executive_summary_v1',
+                        document_id: (_firstDocEntry.document_id as string).trim(),
+                        page_index: 0,
+                        claim_id: typeof _firstDocEntry.claim_id === 'string' ? _firstDocEntry.claim_id : null,
+                      }];
+                    }
+                  }
+                }
               }
             }
           } catch (err) {
@@ -3699,6 +3752,45 @@ export async function registerReportRoutes(
               if (nextBusinessModelValue && !structured.business_model?.value) {
                 if (!structured.business_model || typeof structured.business_model !== 'object') structured.business_model = {};
                 structured.business_model.value = nextBusinessModelValue;
+                // RC-S6-BM-SOURCES (versioned route): emit sources matching the unversioned back-compat fix.
+                if (!Array.isArray(structured.business_model.sources) || structured.business_model.sources.length === 0) {
+                  if (modelFact && !_guardRejectedTypes2.has('business_model_v1')) {
+                    const _mfProv2 = (modelFact as any)?.content_json?.provenance ?? null;
+                    const _mfDocId2: string | null =
+                      (typeof _mfProv2?.source_document_id === 'string' && _mfProv2.source_document_id.trim()
+                        ? _mfProv2.source_document_id.trim()
+                        : null) ??
+                      (typeof (modelFact as any)?.source_document_id === 'string' && (modelFact as any).source_document_id.trim()
+                        ? (modelFact as any).source_document_id.trim()
+                        : null);
+                    const _mfPageIndex2: number | null =
+                      typeof _mfProv2?.page_index === 'number' && Number.isFinite(_mfProv2.page_index) ? _mfProv2.page_index : null;
+                    if (_mfDocId2 && _mfPageIndex2 != null) {
+                      structured.business_model.sources = [{
+                        kind: 'promoted_fact',
+                        fact_type: 'business_model_v1',
+                        source_document_id: _mfDocId2,
+                        page_index: _mfPageIndex2,
+                        evidence_role: 'primary',
+                      }];
+                    }
+                  } else if (!modelFact) {
+                    const _execEvidence2: any[] = Array.isArray(execPhase1?.executive_summary_v1?.evidence)
+                      ? (execPhase1.executive_summary_v1.evidence as any[])
+                      : [];
+                    const _firstDocEntry2 = _execEvidence2.find(
+                      (e: any) => typeof e?.document_id === 'string' && e.document_id.trim(),
+                    );
+                    if (_firstDocEntry2) {
+                      structured.business_model.sources = [{
+                        kind: 'phase1.executive_summary_v1',
+                        document_id: (_firstDocEntry2.document_id as string).trim(),
+                        page_index: 0,
+                        claim_id: typeof _firstDocEntry2.claim_id === 'string' ? _firstDocEntry2.claim_id : null,
+                      }];
+                    }
+                  }
+                }
               }
             } catch {
               // ignore

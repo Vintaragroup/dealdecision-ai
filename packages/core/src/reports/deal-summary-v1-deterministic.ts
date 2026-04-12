@@ -26,6 +26,9 @@ export type DeterministicDealSummaryV1 = {
   market: DeterministicDealSummaryLine | null;
   paragraphs: DeterministicDealSummaryLine[];
   warnings: string[];
+  /** Multi-paragraph narrative from deal_summary_v2.summary.paragraphs.
+   * Populated in reports.ts post-compilation; feeds DealWorkspaceTopSection.dealSummaryLong. */
+  long_summary?: string | null;
 };
 
 const asNonEmptyString = (v: unknown): string | null => {

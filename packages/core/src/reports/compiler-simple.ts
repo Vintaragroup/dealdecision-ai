@@ -1990,10 +1990,26 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     }),
   );
 
+  // RC-DEALTYPE-CORRECT: correct stale context.deal_type in persisted score_explanation.
+  // An older persisted explanation can carry a wrong classification (e.g. fund_spv on a startup
+  // pitch). phase1.deal_overview_v2.deal_type is the authoritative value — extracted directly
+  // from the document, not set at ingestion time. Only applied when phase1 disagrees.
+  const _seP1DealType =
+    (dio as any)?.dio?.phase1?.deal_overview_v2?.deal_type ??
+    (dio as any)?.dio?.phase1?.executive_summary_v1?.deal_type ?? null;
+  const _seCtx = (scoreExplanation as any)?.context;
+  const _seCorrCtx =
+    _seP1DealType && typeof _seP1DealType === 'string' &&
+    _seP1DealType.toLowerCase() !== 'unknown' &&
+    _seCtx && typeof _seCtx === 'object' &&
+    (_seCtx as any).deal_type !== _seP1DealType
+      ? { ...(_seCtx as any), deal_type: _seP1DealType }
+      : _seCtx;
   const scoreExplanationAugmented = scoreExplanation && typeof scoreExplanation === 'object'
     ? ({
         ...(scoreExplanation as any),
         stage_weighted_v1: stageWeighted,
+        ...(_seCorrCtx !== _seCtx ? { context: _seCorrCtx } : {}),
       } as any)
     : scoreExplanation;
 

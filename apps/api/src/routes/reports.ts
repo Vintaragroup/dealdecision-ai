@@ -2799,7 +2799,15 @@ export async function registerReportRoutes(
           try {
             if (report && typeof report === 'object' && (report as any).structured_summary && segmentedNodes?.nodes) {
               const extras = compileStructuredSummaryExtras({ nodes: segmentedNodes.nodes as any, structured_summary: (report as any).structured_summary });
-              Object.assign((report as any).structured_summary, extras);
+              // RC-S7-PRODUCT-MARKET: do NOT blindly overwrite product/market_summary_v1 with null.
+              // The compiler's applyStructuredSummaryFillIns (compiler-simple.ts) populates these
+              // fields from deal_overview_v2 when promoted facts are absent. Object.assign would
+              // clobber that fill-in when narrative nodes fail to produce a product/market summary.
+              // Rule: extras take precedence when non-null; fall through to fill-in when null.
+              const { product_summary_v1: _eProd, market_summary_v1: _eMkt, ...otherExtras } = extras;
+              Object.assign((report as any).structured_summary, otherExtras);
+              if (_eProd != null) (report as any).structured_summary.product_summary_v1 = _eProd;
+              if (_eMkt != null) (report as any).structured_summary.market_summary_v1 = _eMkt;
             }
           } catch (err) {
             request.log.warn({ event: 'deal.report.structured_summary_extras_failed', deal_id, dio_id: row.dio_id, err }, 'structured_summary extras compilation failed');
@@ -2988,6 +2996,20 @@ export async function registerReportRoutes(
               const det = buildDeterministicDealSummaryV1FromStructuredSummary({
                 structured_summary: (report as any).structured_summary,
               });
+              // RC-S8-LONG-SUMMARY: populate long_summary from deal_summary_v2.summary.paragraphs.
+              // This is the Phase 1 LLM narrative about the deal and feeds
+              // DealWorkspaceTopSection.dealSummaryLong (slot: topSummary.dealSummary.long).
+              // deal_summary_v1-deterministic.ts does not have access to DIO directly, so we
+              // inject this after the builder returns rather than modifying the compiler.
+              try {
+                const _dsv2 = (row as any)?.dio_data?.dio?.phase1?.deal_summary_v2;
+                const _paras: unknown[] | undefined = _dsv2?.summary?.paragraphs;
+                if (Array.isArray(_paras) && _paras.some((p) => typeof p === 'string' && (p as string).trim())) {
+                  (det as any).long_summary = (_paras as string[])
+                    .filter((p) => typeof p === 'string' && p.trim())
+                    .join('\n\n');
+                }
+              } catch { /* fail-open: long_summary is supplementary, never block deal_summary_v1 */ }
               (report as any).structured_summary.deal_summary_v1 = det;
               // Back-compat: keep the older top-level location too.
               (report as any).deal_summary_v1 = det;
@@ -3636,7 +3658,12 @@ export async function registerReportRoutes(
               nodes: segmentedNodes!.nodes as any,
               structured_summary: (report as any).structured_summary,
             });
-            Object.assign((report as any).structured_summary, extras);
+            // RC-S7-PRODUCT-MARKET (versioned): same guard as unversioned route.
+            // Do not overwrite compiler fill-ins with null extras.
+            const { product_summary_v1: _eProd2, market_summary_v1: _eMkt2, ...otherExtras2 } = extras;
+            Object.assign((report as any).structured_summary, otherExtras2);
+            if (_eProd2 != null) (report as any).structured_summary.product_summary_v1 = _eProd2;
+            if (_eMkt2 != null) (report as any).structured_summary.market_summary_v1 = _eMkt2;
           }
         } catch (err) {
           request.log.warn(
@@ -3801,6 +3828,16 @@ export async function registerReportRoutes(
             const det = buildDeterministicDealSummaryV1FromStructuredSummary({
               structured_summary: (report as any).structured_summary,
             });
+            // RC-S8-LONG-SUMMARY (versioned): same as unversioned route.
+            try {
+              const _dsv2_2 = (row as any)?.dio_data?.dio?.phase1?.deal_summary_v2;
+              const _paras2: unknown[] | undefined = _dsv2_2?.summary?.paragraphs;
+              if (Array.isArray(_paras2) && _paras2.some((p) => typeof p === 'string' && (p as string).trim())) {
+                (det as any).long_summary = (_paras2 as string[])
+                  .filter((p) => typeof p === 'string' && p.trim())
+                  .join('\n\n');
+              }
+            } catch { /* fail-open */ }
             (report as any).structured_summary.deal_summary_v1 = det;
             // Back-compat: keep the older top-level location too.
             (report as any).deal_summary_v1 = det;

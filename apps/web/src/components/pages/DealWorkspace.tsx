@@ -1544,23 +1544,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return derivedScoreEvidenceFromBreakdown;
   })();
 
-  if (import.meta.env.DEV) {
-    // eslint-disable-next-line no-console
-    console.debug('Evidence tab score evidence source', {
-      providedSections: Array.isArray((phase1ScoreEvidence as any)?.sections)
-        ? (phase1ScoreEvidence as any).sections.length
-        : null,
-      breakdownSections: scoreBreakdownSections.length,
-      derivedSections: derivedScoreEvidenceFromBreakdown?.sections?.length ?? 0,
-      source: phase1ScoreEvidenceForPanel === phase1ScoreEvidence
-        ? 'phase1_score_evidence'
-        : derivedScoreEvidenceFromBreakdown
-          ? 'score_breakdown_v1'
-          : 'none',
-    });
-  }
-
-
   const recommendationRaw = typeof phase1Signals?.recommendation === 'string' ? phase1Signals.recommendation : null;
   const normalizedRecommendation = recommendationRaw ? recommendationRaw.toLowerCase().trim() : null;
   const phase1Score = typeof phase1Signals?.score === 'number' && Number.isFinite(phase1Signals.score)
@@ -2806,20 +2789,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       asks: uniq(diligence).slice(0, 12),
     });
 
-    if (import.meta.env.DEV) {
-      console.log('HERO_BINDING_DEBUG', {
-        deal_id: dealId ?? null,
-        selected_policy_id: selectedPolicyId ?? null,
-        deal_type: dealTypeRaw || null,
-        fields: {
-          product: { sourcePath: productPick.sourcePath, value: productSolutionHero || null },
-          market: { sourcePath: marketPick.sourcePath, value: marketIcpHero || null },
-          business_model: { sourcePath: businessModelPick.sourcePath, value: businessModel || null },
-          raise: { sourcePath: raisePick.sourcePath, value: raise || null, hidden: localHasMalformedNumericPlaceholder(raisePick.value || '') },
-        },
-      });
-    }
-
     return {
       snapshot: snapshot || 'Company snapshot is pending: structured facts were not extracted from the materials.',
       supportsProceeding: uniq(supports).slice(0, 6),
@@ -3438,11 +3407,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // canonicalScoreView: single score truth shared by ALL score-bearing UI surfaces
   // (TopSection gauge AND Overview tab). score0_100 is null when report is not yet applied
   // so we never show a stale DB number in the Overview tile.
-  const canonicalScoreView = {
+  // Memoized so referential stability prevents score-contract useEffects from re-running
+  // on every render cycle when reportView has not actually changed.
+  const canonicalScoreView = useMemo(() => ({
     score0_100: reportView.applied ? reportView.score : null,
     scoreSource: reportView.scoreSource,
     reportApplied: reportView.applied,
-  } as const;
+  }), [reportView]);
 
   // [SCORE-SANITIZER] Canonical reference for stripping mismatched NN/100 phrases from copy.
   // Only active when a report is applied (we have a real canonical score to compare against).

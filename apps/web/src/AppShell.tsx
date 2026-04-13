@@ -225,7 +225,7 @@ export default function AppShell() {
   const handleSaveNotificationPreferences = (prefs: NotificationPreferences) => {
     setNotificationPreferences(prefs);
     // TODO: Save to backend/localStorage when ready
-    console.log('Notification preferences saved:', prefs);
+    if (import.meta.env.DEV) console.debug('[AppShell] notification preferences saved:', prefs);
   };
 
   useEffect(() => {

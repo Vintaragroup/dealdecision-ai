@@ -104,7 +104,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 38; // bumped: RC-S6 third pass — UOF multi-strategy (Climatic/Weavstra), project_pipeline table, revenue_model enrichment
+const REPORT_COMPILER_VERSION = 40; // bumped: quality gate on product/market fill-ins (isLowQualityFillIn) — rejects boilerplate/disclaimer text
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {

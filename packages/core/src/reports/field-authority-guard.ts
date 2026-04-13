@@ -388,6 +388,47 @@ function guardBusinessModelV1(
 // ─── Structured summary fill-in logic ────────────────────────────────────────
 
 /**
+ * Hard content-quality gate applied before any fill-in is promoted to
+ * product_summary_v1 or market_summary_v1.
+ *
+ * Returns true (→ reject) when the text is:
+ *   - legal disclaimer / boilerplate from investment documents
+ *   - narrative dialogue extracted from a shareholder letter or transcript
+ *   - too long to be a summary (paragraph dump from deal_overview_v2)
+ *   - too short to be meaningful
+ *
+ * Rule: if rejected, the field stays null. We do NOT clean or rewrite.
+ * Increasing trust > increasing coverage.
+ */
+export function isLowQualityFillIn(text: string): boolean {
+  if (!text || typeof text !== 'string') return true;
+  if (text.length < 20) return true;
+  if (text.length > 500) return true;
+
+  const lower = text.toLowerCase();
+  const BANNED = [
+    'no representation',
+    'no warranty',
+    'not investment advice',
+    'for informational purposes',
+    'forward-looking statements',
+    'past performance',
+    'this document',
+    'this presentation',
+    'confidential',
+    'disclaimer',
+    'two people come to mind',
+    'as a result, no',
+    'investment involves risk',
+    'securities laws',
+    'risk factors',
+    'no assurance',
+    'cannot be guaranteed',
+  ];
+  return BANNED.some((p) => lower.includes(p));
+}
+
+/**
  * Build fill-in candidates for product_summary_v1 and market_summary_v1 from
  * higher-authority sources when promoted facts did not supply them.
  *
@@ -395,9 +436,11 @@ function guardBusinessModelV1(
  *   1. deal_overview_v2.product_solution / .market_icp  (structured extraction)
  *   2. governed_ui_copy_v1.product_solution / .market_icp  (LLM synthesis)
  *
+ * Each candidate passes through isLowQualityFillIn before being used.
+ * If the best candidate is rejected, no fill-in is produced (field stays null).
  * These are only used when the compiled structured_summary has null values.
  */
-function buildStructuredSummaryFillIns(
+export function buildStructuredSummaryFillIns(
   context: FieldAuthorityGuardContext,
 ): FieldAuthorityGuardResult['structuredSummaryFillIns'] {
   const out: FieldAuthorityGuardResult['structuredSummaryFillIns'] = {};
@@ -407,29 +450,39 @@ function buildStructuredSummaryFillIns(
   const overview = phase1?.deal_overview_v2;
   const uiCopy = phase1?.governed_ui_copy_v1;
 
-  // Product fill-in
+  // Product fill-in — each candidate checked independently; first passing wins
   const productFromOverview = asString(overview?.product_solution) || null;
   const productFromUiCopy = asString(uiCopy?.product_solution) || null;
-  const bestProduct = productFromOverview ?? productFromUiCopy ?? null;
-  if (bestProduct && bestProduct.length > 10) {
-    const authority = productFromOverview ? 'deal_overview_v2' : 'governed_ui_copy_v1';
+  const bestProduct =
+    (productFromOverview && !isLowQualityFillIn(productFromOverview) ? productFromOverview : null) ??
+    (productFromUiCopy && !isLowQualityFillIn(productFromUiCopy) ? productFromUiCopy : null) ??
+    null;
+  if (bestProduct) {
+    const authority = (productFromOverview && !isLowQualityFillIn(productFromOverview))
+      ? 'deal_overview_v2'
+      : 'governed_ui_copy_v1';
     out.product_summary_v1 = {
       value: bestProduct,
-      confidence: productFromOverview ? 0.75 : 0.6,
+      confidence: authority === 'deal_overview_v2' ? 0.75 : 0.6,
       authority,
       sources: [{ kind: `phase1.${authority}`, field: 'product_solution' }],
     };
   }
 
-  // Market fill-in
+  // Market fill-in — same pattern
   const marketFromOverview = asString(overview?.market_icp) || null;
   const marketFromUiCopy = asString(uiCopy?.market_icp) || null;
-  const bestMarket = marketFromOverview ?? marketFromUiCopy ?? null;
-  if (bestMarket && bestMarket.length > 10) {
-    const authority = marketFromOverview ? 'deal_overview_v2' : 'governed_ui_copy_v1';
+  const bestMarket =
+    (marketFromOverview && !isLowQualityFillIn(marketFromOverview) ? marketFromOverview : null) ??
+    (marketFromUiCopy && !isLowQualityFillIn(marketFromUiCopy) ? marketFromUiCopy : null) ??
+    null;
+  if (bestMarket) {
+    const authority = (marketFromOverview && !isLowQualityFillIn(marketFromOverview))
+      ? 'deal_overview_v2'
+      : 'governed_ui_copy_v1';
     out.market_summary_v1 = {
       value: bestMarket,
-      confidence: marketFromOverview ? 0.75 : 0.6,
+      confidence: authority === 'deal_overview_v2' ? 0.75 : 0.6,
       authority,
       sources: [{ kind: `phase1.${authority}`, field: 'market_icp' }],
     };

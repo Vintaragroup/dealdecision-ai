@@ -17,6 +17,8 @@
 import {
   applyFieldAuthorityGuards,
   applyStructuredSummaryFillIns,
+  buildStructuredSummaryFillIns,
+  isLowQualityFillIn,
   type FieldAuthorityGuardContext,
   type FieldAuthorityGuardResult,
 } from '../field-authority-guard';
@@ -566,5 +568,190 @@ describe('compileDIOToReportWithPromotedFacts — product/market fill-in integra
 
     // deal_overview_v2 is priority 1; should win over governed_ui_copy_v1
     expect(productValue).toContain('HIGH AUTHORITY');
+  });
+});
+
+// ─── D. isLowQualityFillIn unit tests ─────────────────────────────────────────
+
+describe('isLowQualityFillIn — banned patterns', () => {
+  it('rejects text containing legal disclaimer language', () => {
+    expect(isLowQualityFillIn(
+      'This document is for informational purposes only and contains forward-looking statements.'
+    )).toBe(true);
+  });
+
+  it('rejects text containing "no representation"', () => {
+    expect(isLowQualityFillIn(
+      'industry conditions and other factors. As a result, no representation or warranty can be given.'
+    )).toBe(true);
+  });
+
+  it('rejects text containing "two people come to mind"', () => {
+    expect(isLowQualityFillIn(
+      'When I think about what this looks like, two people come to mind in particular.'
+    )).toBe(true);
+  });
+
+  it('rejects text containing "this presentation"', () => {
+    expect(isLowQualityFillIn(
+      'This presentation has been prepared for discussion purposes only.'
+    )).toBe(true);
+  });
+
+  it('rejects text containing "confidential"', () => {
+    expect(isLowQualityFillIn('Confidential — do not distribute.')).toBe(true);
+  });
+
+  it('rejects text longer than 500 characters (paragraph dump)', () => {
+    const longText = 'A'.repeat(501);
+    expect(isLowQualityFillIn(longText)).toBe(true);
+  });
+
+  it('rejects text shorter than 20 characters (meaningless)', () => {
+    expect(isLowQualityFillIn('Short')).toBe(true);
+  });
+
+  it('rejects empty string', () => {
+    expect(isLowQualityFillIn('')).toBe(true);
+  });
+
+  it('accepts a clean structured market summary', () => {
+    expect(isLowQualityFillIn(
+      'Targeting mid-market SaaS companies with compliance needs across DevSecOps and GRC.'
+    )).toBe(false);
+  });
+
+  it('accepts a clean product description', () => {
+    expect(isLowQualityFillIn(
+      'Humanoid labor platform for heavy industrial environments, deployed via RaaS contracts.'
+    )).toBe(false);
+  });
+
+  it('accepts a text exactly 500 characters (boundary)', () => {
+    const boundary = 'B'.repeat(500);
+    expect(isLowQualityFillIn(boundary)).toBe(false);
+  });
+
+  it('accepts a text exactly 20 characters (boundary)', () => {
+    expect(isLowQualityFillIn('Twenty chars exactly')).toBe(false);
+  });
+});
+
+// ─── E. buildStructuredSummaryFillIns with quality gate ───────────────────────
+
+function makeFillInContext(overrides: {
+  deal_overview_v2?: Record<string, any>;
+  governed_ui_copy_v1?: Record<string, any>;
+}): FieldAuthorityGuardContext {
+  return {
+    deal_type: null,
+    documents: [],
+    dio: {
+      dio: {
+        phase1: {
+          deal_overview_v2: overrides.deal_overview_v2 ?? null,
+          governed_ui_copy_v1: overrides.governed_ui_copy_v1 ?? null,
+        },
+      },
+    },
+  } as any;
+}
+
+describe('buildStructuredSummaryFillIns — quality gate', () => {
+  it('rejects legal disclaimer market_icp — field stays undefined', () => {
+    const ctx = makeFillInContext({
+      deal_overview_v2: {
+        market_icp:
+          'industry conditions and other factors. As a result, no representation or warranty is given.',
+      },
+    });
+    const result = buildStructuredSummaryFillIns(ctx);
+    expect(result.market_summary_v1).toBeUndefined();
+  });
+
+  it('rejects conversational narrative market_icp (NerdWallet pattern)', () => {
+    const ctx = makeFillInContext({
+      deal_overview_v2: {
+        market_icp:
+          'When I think about what this looks like, two people come to mind in particular.',
+      },
+    });
+    const result = buildStructuredSummaryFillIns(ctx);
+    expect(result.market_summary_v1).toBeUndefined();
+  });
+
+  it('rejects forward-looking statements boilerplate as product_solution', () => {
+    const ctx = makeFillInContext({
+      deal_overview_v2: {
+        product_solution:
+          'This document contains forward-looking statements that involve risks and uncertainties.',
+      },
+    });
+    const result = buildStructuredSummaryFillIns(ctx);
+    expect(result.product_summary_v1).toBeUndefined();
+  });
+
+  it('accepts a clean, structured market_icp', () => {
+    const ctx = makeFillInContext({
+      deal_overview_v2: {
+        market_icp:
+          'Targeting mid-market SaaS companies with compliance needs across DevSecOps and GRC.',
+      },
+    });
+    const result = buildStructuredSummaryFillIns(ctx);
+    expect(result.market_summary_v1?.value).toContain('Targeting mid-market SaaS');
+    expect(result.market_summary_v1?.authority).toBe('deal_overview_v2');
+  });
+
+  it('accepts a clean product_solution', () => {
+    const ctx = makeFillInContext({
+      deal_overview_v2: {
+        product_solution:
+          'Humanoid labor platform for heavy industrial environments, deployed via RaaS contracts.',
+      },
+    });
+    const result = buildStructuredSummaryFillIns(ctx);
+    expect(result.product_summary_v1?.value).toContain('Humanoid labor platform');
+  });
+
+  it('falls through to governed_ui_copy_v1 when deal_overview_v2 value is rejected', () => {
+    const ctx = makeFillInContext({
+      deal_overview_v2: {
+        market_icp: 'This presentation is for informational purposes only.',
+      },
+      governed_ui_copy_v1: {
+        market_icp: 'B2B healthcare platforms and ambulatory surgery centers seeking non-opioid alternatives.',
+      },
+    });
+    const result = buildStructuredSummaryFillIns(ctx);
+    expect(result.market_summary_v1?.value).toContain('B2B healthcare platforms');
+    expect(result.market_summary_v1?.authority).toBe('governed_ui_copy_v1');
+  });
+
+  it('returns undefined when both overview and uiCopy values are low quality', () => {
+    const ctx = makeFillInContext({
+      deal_overview_v2: {
+        market_icp: 'This document contains forward-looking statements.',
+      },
+      governed_ui_copy_v1: {
+        market_icp: 'No warranty or representation is made herein.',
+      },
+    });
+    const result = buildStructuredSummaryFillIns(ctx);
+    expect(result.market_summary_v1).toBeUndefined();
+  });
+
+  it('does not overwrite a high-quality overview value with a fallback', () => {
+    const ctx = makeFillInContext({
+      deal_overview_v2: {
+        market_icp: 'Orthopedic surgeons treating Grade II–III cartilage defects in knees.',
+      },
+      governed_ui_copy_v1: {
+        market_icp: 'B2B healthcare platforms.',
+      },
+    });
+    const result = buildStructuredSummaryFillIns(ctx);
+    expect(result.market_summary_v1?.value).toContain('Orthopedic surgeons');
+    expect(result.market_summary_v1?.authority).toBe('deal_overview_v2');
   });
 });

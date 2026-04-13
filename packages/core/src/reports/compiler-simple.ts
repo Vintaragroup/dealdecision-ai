@@ -136,6 +136,8 @@ type ReportDTO = {
 
     /** RC-S6-009: Company name extracted from document full_text */
     company_name?: string | null;
+    /** Provenance of company_name: 'deals_name' (authoritative) or 'document_text' (heuristic) */
+    company_name_source?: string | null;
     /** RC-S6-010: Key team members parsed from document text */
     team_highlights?: Array<{ name: string; role: string; credential?: string | null }> | null;
     /** RC-S6-008: Fund deployment capital signals (e.g. debt-in-process, deployment pipeline, target IRR) */
@@ -2810,8 +2812,13 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 
     // RC-S6-009: Company name from pre-extracted opt, then from full_text
     if (!(structuredSummary as any).company_name) {
-      const cn = opts?.companyName ?? (_fullTexts.length > 0 ? _extractCompanyNameFromTexts(_fullTexts) : null);
-      if (cn) (structuredSummary as any).company_name = cn;
+      const cnFromOpts = opts?.companyName ?? null;
+      const cnFromText = (!cnFromOpts && _fullTexts.length > 0) ? _extractCompanyNameFromTexts(_fullTexts) : null;
+      const cn = cnFromOpts ?? cnFromText;
+      if (cn) {
+        (structuredSummary as any).company_name = cn;
+        (structuredSummary as any).company_name_source = cnFromOpts ? 'deals_name' : 'document_text';
+      }
     }
 
     if (_fullTexts.length > 0) {

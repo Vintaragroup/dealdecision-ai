@@ -2400,8 +2400,8 @@ export async function registerReportRoutes(
 
         // 404 only when the deal itself does not exist.
         const dealLookup = await timer.stage('db.deal_lookup', async () => {
-          return pool.query<{ id: string; llm_phase_mode: string | null }>(
-            `SELECT id, llm_phase_mode::text as llm_phase_mode FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+          return pool.query<{ id: string; llm_phase_mode: string | null; name: string | null }>(
+            `SELECT id, llm_phase_mode::text as llm_phase_mode, name FROM deals WHERE id = $1 AND deleted_at IS NULL`,
             [deal_id]
           );
         });
@@ -2715,11 +2715,15 @@ export async function registerReportRoutes(
             const compiled = await timer.stage('compile.report', async () => {
               const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
               const documents = await getDocumentsForReport(pool as any, deal_id);
-              const [pageTexts, documentFullTexts, companyName] = await Promise.all([
+              const [pageTexts, documentFullTexts, heuristicCompanyName] = await Promise.all([
                 getGoingConcernPageTexts(pool as any, deal_id),
                 getDocumentFullTextForDeal(pool as any, deal_id),
                 getCompanyNameFromDocuments(pool as any, deal_id),
               ]);
+              const dealName = typeof dealRows[0]?.name === 'string' && dealRows[0].name.trim().length > 0
+                ? dealRows[0].name.trim()
+                : null;
+              const companyName = dealName ?? heuristicCompanyName;
               return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName });
             });
             logStage('compile.report', compiled.ms, true);
@@ -3435,8 +3439,8 @@ export async function registerReportRoutes(
         }
 
         // 404 only when the deal itself does not exist.
-        const { rows: dealRows } = await pool.query<{ id: string }>(
-          `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+        const { rows: dealRows } = await pool.query<{ id: string; name: string | null }>(
+          `SELECT id, name FROM deals WHERE id = $1 AND deleted_at IS NULL`,
           [deal_id]
         );
         if (dealRows.length === 0) {
@@ -3638,11 +3642,15 @@ export async function registerReportRoutes(
           }
           const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
           const documents = await getDocumentsForReport(pool as any, deal_id);
-          const [pageTexts, documentFullTexts, companyName] = await Promise.all([
+          const [pageTexts, documentFullTexts, heuristicCompanyName] = await Promise.all([
             getGoingConcernPageTexts(pool as any, deal_id),
             getDocumentFullTextForDeal(pool as any, deal_id),
             getCompanyNameFromDocuments(pool as any, deal_id),
           ]);
+          const dealName = typeof dealRows[0]?.name === 'string' && dealRows[0].name.trim().length > 0
+            ? dealRows[0].name.trim()
+            : null;
+          const companyName = dealName ?? heuristicCompanyName;
           report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName });
         }
 

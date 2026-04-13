@@ -1772,6 +1772,18 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 					// Non-blocking — compiler falls back to DIO inputs.documents
 				}
 
+				let companyName: string | null = null;
+				try {
+					const dealNameResult = await pool.query<{ name: string | null }>(
+						`SELECT name FROM deals WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1`,
+						[dealId]
+					);
+					const rawName = dealNameResult.rows?.[0]?.name;
+					if (typeof rawName === 'string' && rawName.trim().length > 0) {
+						companyName = rawName.trim();
+					}
+				} catch { /* fail-open */ }
+
 				const compiledReport = (() => {
 					// Always use the WithPromotedFacts variant so financialFacts and documents
 					// can be supplied for consistent has_xlsx / has_cap_table / has_facts output
@@ -1780,6 +1792,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						promotedFacts,
 						financialFacts: financialFactsForOrchestrator,
 						documents: documentsForCompile,
+						companyName: companyName ?? undefined,
 					});
 				})();
 

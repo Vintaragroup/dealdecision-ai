@@ -278,21 +278,6 @@ function extractCompanyNameFromFullText(text: string): string | null {
     }
   }
 
-  // 3. Short early lines (title case or ALLCAPS, no colon, no generic headings)
-  const lines = head
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.length >= 3 && l.length <= 70 && !l.includes(':'));
-  for (const line of lines.slice(0, 15)) {
-    if (
-      /^[A-Z][A-Za-z0-9\s&.'-]{2,50}$/.test(line) &&
-      line.split(/\s+/).length <= 6 &&
-      !/^(?:Confidential|Proprietary|Disclaimer|Contents|Overview|Introduction|Executive\s+Summary|Pitch|Deck|Slide)/i.test(line)
-    ) {
-      return line;
-    }
-  }
-
   return null;
 }
 

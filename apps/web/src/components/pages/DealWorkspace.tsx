@@ -27,6 +27,8 @@ import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceHeader } from '../workspace/DealWorkspaceTopSection';
 import { DealOverviewTab } from '../workspace/DealWorkspace_overviewTab_v3';
 import { DealDeepDiveTab } from '../workspace/DealDeepDiveTab';
+import { WorkspaceRedesignedShell } from '../workspace/WorkspaceRedesignedShell';
+import { selectWorkspaceRedesignedShellProps } from '../../lib/selectors/selectWorkspaceRedesignedShellProps';
 import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import UploadDocModal from '../upload_doc_modal';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
@@ -111,7 +113,8 @@ import {
   Link2,
   MoreVertical,
   Edit,
-  Terminal
+  Terminal,
+  Layers,
 } from 'lucide-react';
 
 interface DealWorkspaceProps {
@@ -5306,6 +5309,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // Primary tabs always visible in the nav bar.
   const primaryTabs = [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
+    { id: 'workspace', label: 'Workspace', icon: <Layers className="w-4 h-4" /> },
     { id: 'deal-deep-dive', label: 'Deal Deep Dive', icon: <FileText className="w-4 h-4" /> },
     { id: 'investor-insights', label: 'Investor Insights', icon: <Lightbulb className="w-4 h-4" /> },
     { id: 'financial-audit', label: 'Financial Audit', icon: <Clipboard className="w-4 h-4" /> },
@@ -9558,6 +9562,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             {/* Data Tab */}
             {activeTab === 'data' && (
               <DataTab dealId={dealId || 'demo'} darkMode={darkMode} />
+            )}
+
+            {/* Workspace Tab — Phase B redesigned shell */}
+            {activeTab === 'workspace' && (
+              <WorkspaceRedesignedShell
+                darkMode={darkMode}
+                {...selectWorkspaceRedesignedShellProps({
+                  report: reportFromApi,
+                  overviewVM: vm.overview,
+                  lastAnalyzedAt: dioMeta?.lastAnalyzedAt ?? null,
+                  blockerCount: vm.header.blockers,
+                  deepDiveReady: Boolean(deepDiveResponse && !deepDiveLoading && !deepDiveError),
+                  insightsReady: investorInsights.status === 'ready' && !!investorInsights.report,
+                })}
+                onRunAnalysis={runAIAnalysis}
+                onOpenDeepDive={() => setActiveTab('deal-deep-dive')}
+                onOpenInsights={() => setActiveTab('investor-insights')}
+                onOpenEvidenceExplorer={() => setActiveTab('evidence')}
+              />
             )}
 
             {/* Investor Insights Tab */}

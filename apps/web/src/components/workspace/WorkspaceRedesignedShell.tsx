@@ -1,14 +1,15 @@
 /**
- * WorkspaceRedesignedShell — Phase B workspace layout (simplified flow)
+ * WorkspaceRedesignedShell — Phase B workspace layout (UX-hardened)
  *
  * Top-to-bottom reading order:
  *   1. Identity Strip      — company name, deal type, stage, raise, last analyzed
+ *   [Analysis CTA banner]  — shown instead of §2-§7 when not yet analyzed
  *   2. Snapshot Row        — conviction score + investment snapshot prose (side by side)
- *   3. Key Facts Grid      — product / market / biz model / raise terms (2×2)
+ *   3. Key Facts Grid      — product / market / biz model / raise terms (2×2, always rendered)
  *   4. Financial Strip     — vital signs inline, coverage + readiness gauges, integrity badge
- *   5. Risk Rail           — red flags + open questions + contradictions
- *   6. Detail Rows         — team / use-of-funds / pipeline / revenue model (collapsed when empty)
- *   7. Workbench Row       — deep dive / insights / evidence (single horizontal row)
+ *   5. Risk Rail           — red flags + open questions + contradictions (semantically distinct empty states)
+ *   6. Detail Rows         — revenue model / team / use-of-funds / pipeline (rendered only when data exists)
+ *   7. Workbench Row       — deep dive / insights / evidence (single horizontal row, stacked on mobile)
  *
  * Selector contract (deterministic-first, no silent Phase1 fallback):
  *   - company_name        → report.structured_summary.company_name
@@ -36,6 +37,7 @@ import {
   FileSearch,
   FlaskConical,
   Layers,
+  PlayCircle,
   ShieldAlert,
   Tag,
   TrendingUp,
@@ -156,7 +158,7 @@ function IdentityStrip({
 >) {
   const border = darkMode ? 'border-white/10' : 'border-gray-200';
   const bg = darkMode ? 'bg-white/5' : 'bg-white';
-  const title = darkMode ? 'text-white' : 'text-gray-900';
+  const titleCls = darkMode ? 'text-white' : 'text-gray-900';
   const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
   const chipCls = darkMode
     ? 'bg-white/5 border-white/10 text-gray-300'
@@ -176,66 +178,125 @@ function IdentityStrip({
   })();
 
   return (
-    <div data-testid="identity-strip" className={`rounded-xl border p-5 ${bg} ${border}`}>
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
-
-        {/* Company name */}
+    <div data-testid="identity-strip" className={`rounded-xl border p-4 sm:p-5 ${bg} ${border}`}>
+      {/* Row 1: name + timestamp */}
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-2 mb-3">
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <Building2 className={`w-4 h-4 shrink-0 ${muted}`} strokeWidth={1.5} />
-          <h2 className={`text-xl font-semibold truncate ${title}`}>
+          <h2 className={`text-lg sm:text-xl font-semibold truncate ${titleCls}`}>
             {asNES(companyName) ?? <span className={muted}>Company name not extracted</span>}
           </h2>
           <TrustBadge trust={asNES(companyName) ? 'structured' : 'not_extracted'} />
         </div>
-
-        {/* Metadata chips */}
-        <div className="flex flex-wrap items-center gap-2">
-          {dealType && (
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${chipCls}`}>
-              <Tag className="w-3 h-3" strokeWidth={1.5} />
-              {dealType}
-            </span>
-          )}
-          {stage && (
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${chipCls}`}>
-              <Layers className="w-3 h-3" strokeWidth={1.5} />
-              {stage}
-            </span>
-          )}
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${chipCls}`}>
-            <DollarSign className="w-3 h-3" strokeWidth={1.5} />
-            {raiseDisplay}
-            {!asNES(raise) && <TrustBadge trust="not_extracted" />}
+        {analysisTimestamp && (
+          <span className={`shrink-0 flex items-center gap-1.5 text-xs ${muted}`}>
+            <Calendar className="w-3.5 h-3.5" strokeWidth={1.5} />
+            Analyzed {analysisTimestamp}
           </span>
-        </div>
+        )}
+      </div>
 
-        {/* Last analyzed / Run CTA */}
-        <div className="shrink-0">
-          {analysisTimestamp ? (
-            <span className={`flex items-center gap-1.5 text-xs ${muted}`}>
-              <Calendar className="w-3.5 h-3.5" strokeWidth={1.5} />
-              Analyzed {analysisTimestamp}
-            </span>
-          ) : (
-            <button
-              type="button"
-              onClick={onRunAnalysis}
-              className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
-                darkMode
-                  ? 'bg-blue-500/20 border-blue-500/30 text-blue-300 hover:bg-blue-500/30'
-                  : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
-              }`}
-            >
-              Run Analysis
-            </button>
-          )}
-        </div>
+      {/* Row 2: chips */}
+      <div className="flex flex-wrap items-center gap-2">
+        {dealType && (
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${chipCls}`}>
+            <Tag className="w-3 h-3" strokeWidth={1.5} />
+            {dealType}
+          </span>
+        )}
+        {stage && (
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${chipCls}`}>
+            <Layers className="w-3 h-3" strokeWidth={1.5} />
+            {stage}
+          </span>
+        )}
+        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-xs font-medium ${chipCls}`}>
+          <DollarSign className="w-3 h-3" strokeWidth={1.5} />
+          {raiseDisplay}
+          {!asNES(raise) && <TrustBadge trust="not_extracted" />}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ─── Analysis CTA Banner (shown when not yet analyzed) ───────────────────────
+// Surfaces the primary missing action near the top of the page, not only in
+// the workbench. Only renders when lastAnalyzedAt is null.
+
+function AnalysisCTABanner({
+  darkMode,
+  deepDiveReady,
+  insightsReady,
+  onRunAnalysis,
+  onOpenDeepDive,
+  onOpenInsights,
+}: {
+  darkMode: boolean;
+  deepDiveReady: boolean;
+  insightsReady: boolean;
+  onRunAnalysis?: () => void;
+  onOpenDeepDive?: () => void;
+  onOpenInsights?: () => void;
+}) {
+  const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
+  const borderCls = darkMode ? 'border-amber-500/30 bg-amber-500/8' : 'border-amber-300 bg-amber-50';
+  const textCls = darkMode ? 'text-amber-300' : 'text-amber-800';
+
+  // Determine the single most important CTA
+  const primaryAction = !deepDiveReady
+    ? { label: 'Run Deep Dive', onClick: onOpenDeepDive }
+    : !insightsReady
+    ? { label: 'Generate Investor Insights', onClick: onOpenInsights }
+    : null;
+
+  return (
+    <div
+      data-testid="analysis-cta-banner"
+      className={`rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center gap-3 ${borderCls}`}
+    >
+      <PlayCircle className={`w-5 h-5 shrink-0 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} strokeWidth={1.5} />
+      <div className="flex-1 min-w-0">
+        <p className={`text-sm font-medium ${textCls}`}>This deal has not been fully analyzed yet.</p>
+        <p className={`text-xs mt-0.5 ${muted}`}>
+          Run analysis to populate the conviction score, investment snapshot, and key risk signals.
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2 shrink-0">
+        {primaryAction?.onClick && (
+          <button
+            type="button"
+            onClick={primaryAction.onClick}
+            className={`text-xs px-3 py-1.5 rounded-lg border font-medium transition-colors ${
+              darkMode
+                ? 'bg-amber-500/20 border-amber-500/30 text-amber-300 hover:bg-amber-500/30'
+                : 'bg-amber-100 border-amber-300 text-amber-800 hover:bg-amber-200'
+            }`}
+          >
+            {primaryAction.label}
+          </button>
+        )}
+        {onRunAnalysis && (
+          <button
+            type="button"
+            onClick={onRunAnalysis}
+            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+              darkMode
+                ? 'bg-white/5 border-white/10 text-gray-300 hover:bg-white/10'
+                : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            Run Analysis
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
 // ─── §2 Snapshot Row ──────────────────────────────────────────────────────────
+// Desktop: score | divider | prose side-by-side.
+// Mobile: score on top, prose beneath (no horizontal divider).
 
 function SnapshotRow({
   darkMode,
@@ -254,54 +315,62 @@ function SnapshotRow({
   const surface = darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200';
   const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
   const body = darkMode ? 'text-gray-200' : 'text-gray-700';
+  const dividerCls = darkMode ? 'bg-white/10' : 'bg-gray-200';
 
+  const hasScore = convictionScore != null;
   const scoreColor = (() => {
-    if (convictionScore == null) return muted;
-    if (convictionScore >= 70) return 'text-emerald-400';
-    if (convictionScore >= 45) return 'text-amber-400';
+    if (!hasScore) return muted;
+    if (convictionScore! >= 70) return 'text-emerald-400';
+    if (convictionScore! >= 45) return 'text-amber-400';
     return 'text-rose-400';
   })();
+  const hasSnapshot = asNES(investmentSnapshotBody) != null;
 
   return (
-    <div data-testid="snapshot-row" className={`rounded-xl border p-5 ${surface}`}>
-      <div className="flex gap-6 flex-wrap">
+    <div data-testid="snapshot-row" className={`rounded-xl border p-4 sm:p-5 ${surface}`}>
+      {/* On mobile: stacked. On sm+: side by side with vertical divider. */}
+      <div className="flex flex-col sm:flex-row sm:items-stretch gap-4 sm:gap-6">
 
-        {/* Conviction score block */}
-        <div className="shrink-0 flex flex-col justify-center min-w-[80px]">
-          <div className={`text-4xl font-bold ${scoreColor}`}>
-            {convictionScore != null ? Math.round(convictionScore) : '—'}
+        {/* Conviction score */}
+        <div className="flex sm:flex-col items-center sm:items-start gap-3 sm:gap-0 sm:justify-center sm:min-w-[72px] sm:shrink-0">
+          <div className={`text-4xl font-bold leading-none ${scoreColor}`}>
+            {hasScore ? Math.round(convictionScore!) : '—'}
           </div>
-          <div className={`text-[10px] uppercase tracking-wide mt-0.5 ${muted}`}>
-            {convictionBand ?? 'Conviction'}
+          <div className="flex flex-col">
+            <div className={`text-[10px] uppercase tracking-wide ${muted}`}>
+              {convictionBand ?? 'Conviction'}
+            </div>
+            {!hasScore && (
+              <div className={`text-[10px] ${muted} mt-0.5`}>Not evaluated</div>
+            )}
           </div>
         </div>
 
-        {/* Divider */}
-        <div className={`w-px self-stretch ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
+        {/* Vertical divider — hidden on mobile */}
+        <div className={`hidden sm:block w-px self-stretch ${dividerCls}`} />
 
         {/* Snapshot prose */}
         <div className="flex-1 min-w-0">
           <div className={`text-xs uppercase tracking-wide font-medium mb-2 ${muted}`}>Investment Snapshot</div>
-          {asNES(investmentSnapshotBody) ? (
+          {hasSnapshot ? (
             <p className={`text-sm leading-relaxed ${body}`}>{investmentSnapshotBody}</p>
           ) : (
             <p className={`text-sm ${muted}`}>
-              Investment snapshot not yet generated.
-              {onOpenInsights && (
-                <>
-                  {' '}
-                  <button
-                    type="button"
-                    onClick={onOpenInsights}
-                    className={`underline underline-offset-2 transition-colors ${
-                      darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'
-                    }`}
-                  >
-                    Run Investor Insights
-                  </button>
-                  {' '}to populate.
-                </>
+              Snapshot not yet generated —{' '}
+              {onOpenInsights ? (
+                <button
+                  type="button"
+                  onClick={onOpenInsights}
+                  className={`underline underline-offset-2 transition-colors ${
+                    darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'
+                  }`}
+                >
+                  run Investor Insights
+                </button>
+              ) : (
+                'run Investor Insights'
               )}
+              {' '}to populate.
             </p>
           )}
           {asNES(convictionPosture) && (
@@ -316,6 +385,9 @@ function SnapshotRow({
 }
 
 // ─── §3 Key Facts Grid ────────────────────────────────────────────────────────
+// Always renders all 4 cards. Empty cards show "Not extracted" — this is
+// intentionally visible so the investor knows what was looked for.
+// Mobile: 1 column. sm+: 2×2 grid.
 
 function KeyFactsGrid({
   darkMode,
@@ -331,36 +403,44 @@ function KeyFactsGrid({
   const facts: Array<{
     label: string;
     field: WorkspaceOverviewVM['keyFacts']['product'];
-    emptyLabel: string;
   }> = [
-    { label: 'Product / Solution', field: product, emptyLabel: 'Not extracted' },
-    { label: 'Market / ICP', field: market, emptyLabel: 'Not extracted' },
-    { label: 'Business Model', field: businessModel, emptyLabel: 'Not extracted' },
-    { label: 'Raise Terms', field: raiseTerms, emptyLabel: 'Not extracted' },
+    { label: 'Product / Solution', field: product },
+    { label: 'Market / ICP', field: market },
+    { label: 'Business Model', field: businessModel },
+    { label: 'Raise Terms', field: raiseTerms },
   ];
 
+  // Distinguish: not_extracted (looked for, not found) vs structured/governed (found).
+  // We do NOT say "not available" — we say "not extracted" so the investor understands
+  // the pipeline made an attempt and came up empty.
+  const emptyMessage = (trust: WorkspaceOverviewFactTrust) =>
+    trust === 'not_extracted' ? 'Not extracted from deck' : 'Not available';
+
   return (
-    <div data-testid="key-facts-grid" className="grid sm:grid-cols-2 gap-4">
-      {facts.map(({ label, field, emptyLabel }) => (
-        <div key={label} className={`rounded-xl border p-4 ${card}`}>
-          <div className="flex items-center justify-between mb-2">
-            <span className={`text-xs font-medium ${muted}`}>{label}</span>
-            <TrustBadge trust={field.trust} />
+    <div data-testid="key-facts-grid" className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+      {facts.map(({ label, field }) => {
+        const hasValue = asNES(field.value) != null;
+        return (
+          <div key={label} className={`rounded-xl border p-4 ${card}`}>
+            <div className="flex items-center justify-between mb-2">
+              <span className={`text-xs font-medium ${muted}`}>{label}</span>
+              <TrustBadge trust={field.trust} />
+            </div>
+            {hasValue ? (
+              <>
+                <p className={`text-sm leading-snug ${body}`}>{field.value}</p>
+                {field.conflict && (
+                  <p className="text-xs text-amber-400 mt-1.5">
+                    Overlay disagrees: {field.conflict.value}
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className={`text-sm italic ${muted}`}>{emptyMessage(field.trust)}</p>
+            )}
           </div>
-          {asNES(field.value) ? (
-            <>
-              <p className={`text-sm leading-snug ${body}`}>{field.value}</p>
-              {field.conflict && (
-                <p className="text-xs text-amber-400 mt-1.5">
-                  Overlay disagrees: {field.conflict.value}
-                </p>
-              )}
-            </>
-          ) : (
-            <p className={`text-sm ${muted}`}>{emptyLabel}</p>
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -449,11 +529,21 @@ function FinancialStrip({
 }
 
 // ─── §5 Risk Rail ─────────────────────────────────────────────────────────────
+// Empty-state semantics:
+//   - hasAnything=false + analyzed   → "Analyzed — no issues found"
+//   - hasAnything=false + not analyzed → "Not yet analyzed"
+// These are distinct states with different meanings to an investor.
 
 const RED_FLAG_SEVERITY_CLASS: Record<RedFlag['severity'], string> = {
-  high:   'border-l-2 border-rose-500 pl-3 text-rose-300',
-  medium: 'border-l-2 border-amber-500 pl-3 text-amber-300',
-  low:    'border-l-2 border-gray-500 pl-3 text-gray-400',
+  high:   'border-l-2 border-rose-500 pl-3',
+  medium: 'border-l-2 border-amber-500 pl-3',
+  low:    'border-l-2 border-gray-500/60 pl-3',
+};
+
+const RED_FLAG_TEXT_CLASS: Record<RedFlag['severity'], string> = {
+  high:   'text-rose-300',
+  medium: 'text-amber-300',
+  low:    'text-gray-400',
 };
 
 function RiskRail({
@@ -462,7 +552,8 @@ function RiskRail({
   blockerCount,
   openQuestions,
   contradictions,
-}: Pick<WorkspaceRedesignedShellProps, 'darkMode' | 'redFlags' | 'blockerCount' | 'openQuestions' | 'contradictions'>) {
+  lastAnalyzedAt,
+}: Pick<WorkspaceRedesignedShellProps, 'darkMode' | 'redFlags' | 'blockerCount' | 'openQuestions' | 'contradictions' | 'lastAnalyzedAt'>) {
   const surface = darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200';
   const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
   const body = darkMode ? 'text-gray-200' : 'text-gray-700';
@@ -471,20 +562,25 @@ function RiskRail({
   const hasQuestions = openQuestions.length > 0;
   const hasContradictions = contradictions.length > 0;
   const hasAnything = hasFlags || blockerCount > 0 || hasQuestions || hasContradictions;
+  const wasAnalyzed = lastAnalyzedAt != null;
 
   if (!hasAnything) {
     return (
       <div data-testid="risk-rail" className={`rounded-xl border p-4 ${surface}`}>
         <div className="flex items-center gap-2">
-          <ShieldAlert className={`w-4 h-4 ${muted}`} strokeWidth={1.5} />
-          <span className={`text-sm ${muted}`}>No red flags, blockers, or open questions identified.</span>
+          <ShieldAlert className={`w-4 h-4 ${wasAnalyzed ? 'text-emerald-400' : muted}`} strokeWidth={1.5} />
+          <span className={`text-sm ${muted}`}>
+            {wasAnalyzed
+              ? 'Analyzed — no red flags, blockers, or open questions found.'
+              : 'Risk signals not available — deal has not been analyzed yet.'}
+          </span>
         </div>
       </div>
     );
   }
 
   return (
-    <div data-testid="risk-rail" className={`rounded-xl border p-5 ${surface} space-y-4`}>
+    <div data-testid="risk-rail" className={`rounded-xl border p-4 sm:p-5 ${surface} space-y-4`}>
 
       {/* Header */}
       <div className="flex items-center gap-2">
@@ -499,12 +595,12 @@ function RiskRail({
         )}
       </div>
 
-      {/* Red flags as a flat list with severity colors */}
+      {/* Red flags */}
       {hasFlags && (
         <ul className="space-y-2">
           {redFlags.map((rf, i) => (
-            <li key={i} className={`text-sm py-1 ${RED_FLAG_SEVERITY_CLASS[rf.severity]}`}>
-              <span>{rf.message}</span>
+            <li key={i} className={`py-1 ${RED_FLAG_SEVERITY_CLASS[rf.severity]}`}>
+              <span className={`text-sm ${RED_FLAG_TEXT_CLASS[rf.severity]}`}>{rf.message}</span>
               {rf.action && (
                 <span className={`block text-xs mt-0.5 ${muted}`}>{rf.action}</span>
               )}
@@ -552,14 +648,16 @@ function RiskRail({
 
 // ─── §6 Detail Rows ───────────────────────────────────────────────────────────
 // Only renders sections where data is actually present.
+// When nothing is present but deal has been analyzed, show a concise note.
+// When not analyzed yet, do not render at all (AnalysisCTABanner covers this).
 
-function DetailRows({
+function DetailRows({  lastAnalyzedAt,
   darkMode,
   teamHighlights,
   useOfFunds,
   projectPipeline,
   revenueModel,
-}: Pick<WorkspaceRedesignedShellProps, 'darkMode' | 'teamHighlights' | 'useOfFunds' | 'projectPipeline' | 'revenueModel'>) {
+}: Pick<WorkspaceRedesignedShellProps, 'darkMode' | 'teamHighlights' | 'useOfFunds' | 'projectPipeline' | 'revenueModel' | 'lastAnalyzedAt'>) {
   const card = darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200';
   const title = darkMode ? 'text-white' : 'text-gray-900';
   const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
@@ -572,8 +670,21 @@ function DetailRows({
   const hasPipeline = Array.isArray(projectPipeline) && projectPipeline.length > 0;
   const rmHasContent = Boolean(revenueModel?.type || revenueModel?.detail || revenueModel?.unitEconomics);
 
-  // Nothing to render — skip the section entirely
-  if (!hasTeam && !hasUoF && !hasPipeline && !rmHasContent) return null;
+  // Nothing to render:
+  //   - If not analyzed: skip entirely (AnalysisCTABanner already explains this)
+  //   - If analyzed but nothing extracted: show a concise note
+  if (!hasTeam && !hasUoF && !hasPipeline && !rmHasContent) {
+    if (!lastAnalyzedAt) return null;
+    return (
+      <div data-testid="detail-rows" className={`rounded-xl border p-4 ${
+        darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
+      }`}>
+        <p className={`text-xs italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+          Team, revenue model, use of funds, and pipeline were not extracted from this deck.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div data-testid="detail-rows" className="space-y-4">
@@ -656,6 +767,8 @@ function DetailRows({
 }
 
 // ─── §7 Workbench Row ─────────────────────────────────────────────────────────
+// Desktop: 3-column grid.
+// Mobile: full-width stacked rows with larger tap targets.
 
 function WorkbenchRow({
   darkMode,
@@ -668,6 +781,7 @@ function WorkbenchRow({
   'darkMode' | 'deepDiveReady' | 'insightsReady' | 'onOpenDeepDive' | 'onOpenInsights' | 'onOpenEvidenceExplorer'
 >) {
   const surface = darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200';
+  const rowCls = darkMode ? 'border-white/5' : 'border-gray-100';
   const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
   const body = darkMode ? 'text-gray-200' : 'text-gray-700';
 
@@ -683,10 +797,10 @@ function WorkbenchRow({
     {
       icon: <Layers className="w-4 h-4" strokeWidth={1.5} />,
       label: 'Deep Dive',
-      description: 'Detailed section-by-section analysis of the deck and financials.',
+      description: 'Section-by-section analysis of the deck and financials.',
       ready: deepDiveReady,
       onOpen: onOpenDeepDive,
-      readyCta: 'Open',
+      readyCta: 'Open Deep Dive',
       notReadyCta: 'Run Deep Dive',
     },
     {
@@ -695,52 +809,59 @@ function WorkbenchRow({
       description: 'Policy-aware scoring with signal-level justifications.',
       ready: insightsReady,
       onOpen: onOpenInsights,
-      readyCta: 'Open',
-      notReadyCta: 'Generate',
+      readyCta: 'Open Insights',
+      notReadyCta: 'Generate Insights',
     },
     {
       icon: <FileSearch className="w-4 h-4" strokeWidth={1.5} />,
-      label: 'Evidence',
-      description: 'Browse raw extraction nodes by slide, field, and document.',
+      label: 'Evidence Explorer',
+      description: 'Browse extraction nodes by slide, field, and document.',
       ready: true,
       onOpen: onOpenEvidenceExplorer,
-      readyCta: 'Explore',
-      notReadyCta: 'Explore',
+      readyCta: 'Explore Evidence',
+      notReadyCta: 'Explore Evidence',
     },
   ];
 
   return (
-    <div data-testid="workbench-row" className={`rounded-xl border p-5 ${surface}`}>
-      <div className={`text-xs uppercase tracking-wide font-medium mb-4 ${muted}`}>Analyst Workbench</div>
-      <div className="grid sm:grid-cols-3 gap-4">
+    <div data-testid="workbench-row" className={`rounded-xl border ${surface}`}>
+      <div className={`px-4 sm:px-5 py-3 border-b ${rowCls}`}>
+        <span className={`text-xs uppercase tracking-wide font-medium ${muted}`}>Analyst Workbench</span>
+      </div>
+      {/* Mobile: stacked list rows. sm+: 3-column grid. */}
+      <div className="divide-y sm:divide-y-0 sm:grid sm:grid-cols-3 sm:divide-x" style={{ borderColor: darkMode ? 'rgba(255,255,255,0.05)' : '#f3f4f6' }}>
         {entries.map((e) => (
-          <div key={e.label} className="flex items-start gap-3">
-            <div className={`mt-0.5 shrink-0 ${e.ready ? 'text-emerald-400' : muted}`}>{e.icon}</div>
+          <div key={e.label} className="flex items-center gap-3 px-4 sm:px-5 py-4 sm:py-5">
+            <div className={`shrink-0 ${e.ready ? 'text-emerald-400' : muted}`}>{e.icon}</div>
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-1.5 mb-0.5">
                 <span className={`text-sm font-medium ${body}`}>{e.label}</span>
                 {!e.ready && (
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full border font-medium bg-gray-500/10 text-gray-400 border-gray-500/20`}>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full border font-medium bg-gray-500/10 text-gray-400 border-gray-500/20">
                     Not run
                   </span>
                 )}
               </div>
-              <p className={`text-xs leading-snug ${muted} mb-2`}>{e.description}</p>
-              {e.onOpen && (
-                <button
-                  type="button"
-                  onClick={e.onOpen}
-                  className={`inline-flex items-center gap-1 text-xs transition-colors ${
-                    e.ready
-                      ? darkMode ? 'text-gray-200 hover:text-white' : 'text-gray-700 hover:text-gray-900'
-                      : darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-700'
-                  }`}
-                >
-                  {e.ready ? e.readyCta : e.notReadyCta}
-                  <ChevronRight className="w-3 h-3" strokeWidth={1.5} />
-                </button>
-              )}
+              <p className={`text-xs leading-snug ${muted}`}>{e.description}</p>
             </div>
+            {e.onOpen && (
+              <button
+                type="button"
+                onClick={e.onOpen}
+                className={`shrink-0 inline-flex items-center gap-1 text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors ${
+                  e.ready
+                    ? darkMode
+                      ? 'bg-white/5 border-white/10 text-gray-200 hover:bg-white/10'
+                      : 'bg-white border-gray-200 text-gray-700 hover:bg-gray-50'
+                    : darkMode
+                    ? 'bg-blue-500/20 border-blue-500/30 text-blue-300 hover:bg-blue-500/30'
+                    : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100'
+                }`}
+              >
+                {e.ready ? e.readyCta : e.notReadyCta}
+                <ChevronRight className="w-3 h-3" strokeWidth={1.5} />
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -762,8 +883,13 @@ export function WorkspaceRedesignedShell(props: WorkspaceRedesignedShellProps) {
     deepDiveReady, insightsReady, onOpenDeepDive, onOpenInsights, onOpenEvidenceExplorer,
   } = props;
 
+  // Show the CTA banner when the deal has not been analyzed yet.
+  // "Analyzed" = lastAnalyzedAt is set (conviction + snapshot may still be null
+  // if insights haven't run, but the base analysis has been done).
+  const notYetAnalyzed = lastAnalyzedAt == null;
+
   return (
-    <div data-testid="workspace-redesigned-shell" className="w-full space-y-5 pb-10">
+    <div data-testid="workspace-redesigned-shell" className="w-full space-y-4 sm:space-y-5 pb-10">
 
       {/* 1. Identity */}
       <IdentityStrip
@@ -777,6 +903,18 @@ export function WorkspaceRedesignedShell(props: WorkspaceRedesignedShellProps) {
         onRunAnalysis={onRunAnalysis}
       />
 
+      {/* CTA banner — only when not yet analyzed. Surfaces the primary action near the top. */}
+      {notYetAnalyzed && (
+        <AnalysisCTABanner
+          darkMode={darkMode}
+          deepDiveReady={deepDiveReady}
+          insightsReady={insightsReady}
+          onRunAnalysis={onRunAnalysis}
+          onOpenDeepDive={onOpenDeepDive}
+          onOpenInsights={onOpenInsights}
+        />
+      )}
+
       {/* 2. Snapshot — conviction + prose */}
       <SnapshotRow
         darkMode={darkMode}
@@ -787,7 +925,7 @@ export function WorkspaceRedesignedShell(props: WorkspaceRedesignedShellProps) {
         onOpenInsights={onOpenInsights}
       />
 
-      {/* 3. Key facts — 2×2 grid */}
+      {/* 3. Key facts — 2×2 grid, always rendered */}
       <KeyFactsGrid
         darkMode={darkMode}
         product={product}
@@ -812,15 +950,17 @@ export function WorkspaceRedesignedShell(props: WorkspaceRedesignedShellProps) {
         blockerCount={blockerCount}
         openQuestions={openQuestions}
         contradictions={contradictions}
+        lastAnalyzedAt={lastAnalyzedAt}
       />
 
-      {/* 6. Detail rows — only renders data that exists */}
+      {/* 6. Detail rows — renders only present data; empty-state when analyzed but nothing extracted */}
       <DetailRows
         darkMode={darkMode}
         teamHighlights={teamHighlights}
         useOfFunds={useOfFunds}
         projectPipeline={projectPipeline}
         revenueModel={revenueModel}
+        lastAnalyzedAt={lastAnalyzedAt}
       />
 
       {/* 7. Workbench */}

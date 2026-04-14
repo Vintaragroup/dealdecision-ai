@@ -110,8 +110,53 @@ export function selectWorkspaceRedesignedShellProps(
   const convictionBand = asNES(convictionV1?.conviction_band);
   const convictionPosture = asNES(convictionV1?.recommendation_posture);
 
-  // Investment snapshot: prefer investment_analysis_overview_v2.summary_medium
-  const iav2: any = ss.investment_analysis_overview_v2 ?? null;
+  // Conviction narrative fields (headline, rationale, provisional flag)
+  const convictionSummaryRaw: any = convictionV1?.summary ?? null;
+  const convictionHeadline = asNES(convictionSummaryRaw?.headline);
+  const convictionRationale = asNES(convictionSummaryRaw?.rationale);
+  const convictionProvisional = convictionSummaryRaw?.provisional === true;
+
+  // Top positive contributors (conviction-backed strength signals)
+  // key is the internal snake_case dimension used for presentation-layer mapping
+  const topPositiveContributors: { key: string; label: string; scoreDelta: number | null }[] = (() => {
+    const items = convictionV1?.top_positive_contributors;
+    if (!Array.isArray(items)) return [];
+    return items
+      .map((c: any) => ({
+        key: asNES(c?.key) ?? '',
+        label: asNES(c?.label) ?? '',
+        scoreDelta: asFinite(c?.score_delta_0_100),
+      }))
+      .filter((c) => c.label.length > 0)
+      .slice(0, 5);
+  })();
+
+  // Top negative contributors (conviction-backed risk signals)
+  const topNegativeContributors: { key: string; label: string; scoreDelta: number | null }[] = (() => {
+    const items = convictionV1?.top_negative_contributors;
+    if (!Array.isArray(items)) return [];
+    return items
+      .map((c: any) => ({
+        key: asNES(c?.key) ?? '',
+        label: asNES(c?.label) ?? '',
+        scoreDelta: asFinite(c?.score_delta_0_100),
+      }))
+      .filter((c) => c.label.length > 0)
+      .slice(0, 5);
+  })();
+
+  // Required next checks (diligence checklist from conviction)
+  const requiredNextChecks: string[] = (() => {
+    const items = convictionV1?.required_next_checks;
+    if (!Array.isArray(items)) return [];
+    return items
+      .map((c: any) => asNES(typeof c === 'string' ? c : c?.text))
+      .filter((s): s is string => s !== null)
+      .slice(0, 5);
+  })();
+
+  // Investment snapshot: prefer investment_analysis_overview_v2.summary_medium (top-level on report)
+  const iav2: any = rpt.investment_analysis_overview_v2 ?? null;
   const investmentSnapshotBody = asNES(iav2?.summary_medium?.paragraphs?.[0])
     ?? asNES(iav2?.summary_medium)
     ?? overviewVM.investmentSnapshotBody
@@ -119,10 +164,16 @@ export function selectWorkspaceRedesignedShellProps(
 
   // ── Financial Column ──────────────────────────────────────────────────────
   const fb: any = rpt.financial_breakdown_v1 ?? null;
+  // Financial narrative: investor-readable overview from financial_breakdown_v1 (deterministic)
+  const financialNarrative = asNES(fb?.narrative) ?? null;
   const cs: any = fb?.current_state ?? null;
   const br: any = fb?.burn_runway ?? null;
   const ur: any = rpt.underwriting_readiness_v1 ?? null;
   const fc: any = rpt.financial_coverage_v1 ?? null;
+  // More specific financial summaries — plain-English prose from deterministic sub-models
+  const financialCurrentStateSummary = asNES(cs?.summary) ?? null;
+  const financialBurnRunwaySummary = asNES(br?.summary) ?? null;
+  const underwritingNarrative = asNES(ur?.narrative) ?? null;
 
   const financialTiles: FinancialTile[] = [];
 
@@ -168,13 +219,17 @@ export function selectWorkspaceRedesignedShellProps(
     action: asNES(rf?.action) ?? undefined,
   }));
 
-  // Open questions from deep_dive or score_explanation diligence items
+  // Open questions: prefer investment_analysis_overview_v2.open_items.items[] (most compiled),
+  // fall back to decision_summary_v1.open_questions, then diligence_open_items
   const diligenceItems: string[] = (() => {
-    const items = ss?.decision_summary_v1?.open_questions
-      ?? meta?.score_explanation?.understanding_v1?.diligence_open_items
-      ?? [];
-    if (!Array.isArray(items)) return [];
-    return items
+    const iav2Items = iav2?.open_items?.items;
+    const raw = (Array.isArray(iav2Items) && iav2Items.length > 0)
+      ? iav2Items
+      : ss?.decision_summary_v1?.open_questions
+        ?? meta?.score_explanation?.understanding_v1?.diligence_open_items
+        ?? [];
+    if (!Array.isArray(raw)) return [];
+    return raw
       .map((i: any) => asNES(typeof i === 'string' ? i : i?.text))
       .filter((s): s is string => s !== null)
       .slice(0, 5);
@@ -212,6 +267,16 @@ export function selectWorkspaceRedesignedShellProps(
     convictionScore,
     convictionBand,
     convictionPosture,
+    convictionHeadline,
+    convictionRationale,
+    convictionProvisional,
+    topPositiveContributors,
+    topNegativeContributors,
+    requiredNextChecks,
+    financialNarrative,
+    financialCurrentStateSummary,
+    financialBurnRunwaySummary,
+    underwritingNarrative,
 
     // financial
     financialTiles,

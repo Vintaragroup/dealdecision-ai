@@ -26,7 +26,7 @@ import type {
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 export type DealWorkspaceV4Props = WorkspaceRedesignedShellProps & {
-  /** Strength strings used as "Key Drivers" (from filteredStrengths in buildWorkspaceViewModel). */
+  /** Strength strings used as "Key Drivers" fallback (from filteredStrengths in buildWorkspaceViewModel). */
   keyDrivers?: string[];
   /** Navigate back (e.g. to deals list). Optional when embedded as a tab. */
   onBack?: () => void;
@@ -75,6 +75,142 @@ function mapPosture(posture: string | null): 'Proceed' | 'Caution' | 'Pass' | nu
   return null;
 }
 
+// ─── Presentation-layer copy helpers ─────────────────────────────────────────
+// All functions below operate on the rendered output only.
+// They never mutate backend payloads or introduce mock data.
+
+/**
+ * Maps a conviction dimension key + direction to investor-facing signal phrasing.
+ * Falls back to the raw label (already human-readable from familyLabel) when the
+ * key is not in the map.
+ */
+const CONTRIBUTOR_SIGNAL: Record<string, { positive: string; negative: string }> = {
+  financial_truth:          { positive: 'Verified financial data supports this deal',       negative: 'Financial data quality or completeness is uncertain' },
+  capital_structure:        { positive: 'Capital structure and ownership terms are clear',   negative: 'Capital structure or ownership terms need clarification' },
+  traction_validation:      { positive: 'Traction metrics confirmed by primary evidence',   negative: 'Traction claims lack primary-source verification' },
+  market_demand:            { positive: 'Market demand is supported by available evidence', negative: 'Market demand lacks sufficient confirming evidence' },
+  product_or_asset_quality: { positive: 'Product or asset quality is evidenced',            negative: 'Product or asset quality evidence is limited' },
+  team_execution:           { positive: 'Team demonstrates credible execution capability',  negative: 'Execution track record is thin or unverified' },
+  risk_dependencies:        { positive: 'Key risk dependencies are identifiable',           negative: 'Risk dependencies remain unresolved' },
+  external_corroboration:   { positive: 'Claims are corroborated by third-party sources',  negative: 'Limited third-party validation for key claims' },
+  evidence_quality:         { positive: 'Evidence quality is strong across documents',      negative: 'Evidence quality is insufficient to underwrite' },
+  coverage:                 { positive: 'Documentation coverage is comprehensive',          negative: 'Material gaps in documentation coverage' },
+  contradictions:           { positive: 'No material contradictions detected',              negative: 'Contradictions present across evidence sources' },
+};
+
+function mapContributorToSignal(key: string, label: string, direction: 'positive' | 'negative'): string {
+  const entry = CONTRIBUTOR_SIGNAL[key];
+  if (entry) return entry[direction];
+  return label; // familyLabel values are already human-readable
+}
+
+/**
+ * Maps internal check-code tokens inside auto-generated required-check text to
+ * investor-readable diligence prompts.
+ *
+ * Handles two auto-generated patterns from buildConvictionV1:
+ *   "Provide deterministic evidence for {code}."
+ *   "Resolve contradiction: {text}"
+ *
+ * Strings that don't match either pattern (e.g. diligenceOpenItems) are passed through.
+ */
+const CHECK_CODE_PROMPTS: Record<string, string> = {
+  business_model:           'Confirm the business model with supporting documentation',
+  product_or_asset_quality: 'Submit independent evidence of product or asset quality',
+  key_risks_detected:       'Detail identified risks and provide mitigation evidence',
+  external_corroboration:   'Provide third-party validation for core claims',
+  financial_truth:          'Submit verified financial statements or a financial model',
+  market_demand:            'Evidence market demand — cohorts, letters of intent, or contracts',
+  traction_validation:      'Validate traction metrics with primary-source data',
+  capital_structure:        'Clarify cap table, ownership terms, and any convertible instruments',
+  coverage:                 'Increase documentation coverage across key due diligence areas',
+  evidence_quality:         'Upgrade evidence quality to audited or primary-source documents',
+  team_execution:           'Submit team credentials and relevant execution history',
+  risk_dependencies:        'Identify and address material dependencies or risk factors',
+  traction:                 'Provide traction evidence — revenue, cohorts, or signed agreements',
+};
+
+const LABEL_REMAP: Array<[RegExp, string]> = [
+  [/\bProduct\/Asset Quality\b/gi, 'product or asset quality'],
+  [/\bproduct_or_asset_quality\b/gi, 'product or asset quality'],
+  [/\bFinancial Truth\b/gi, 'financial data'],
+  [/\bfinancial_truth\b/gi, 'financial data'],
+  [/\bExternal Corroboration\b/gi, 'third-party validation'],
+  [/\bexternal_corroboration\b/gi, 'third-party validation'],
+  [/\bCapital Structure\b/gi, 'capital structure'],
+  [/\bMarket Demand\b/gi, 'market demand'],
+  [/\bTeam Execution\b/gi, 'team credentials'],
+  [/\bTraction Validation\b/gi, 'traction claims'],
+  [/\bEvidence Quality\b/gi, 'evidence quality'],
+  [/\bCoverage\b(?!\s+ratio)/gi, 'documentation coverage'],
+];
+
+function applyLabelRemap(text: string): string {
+  let out = text;
+  for (const [pattern, replacement] of LABEL_REMAP) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
+function humanizeRequiredCheck(raw: string): string {
+  // Pattern A: "Provide deterministic evidence for {code}."
+  const detEvMatch = raw.match(/^Provide deterministic evidence for ([a-z_A-Z0-9]+)\.?$/i);
+  if (detEvMatch) {
+    const code = detEvMatch[1].toLowerCase();
+    return CHECK_CODE_PROMPTS[code] ?? `Provide evidence for ${code.replace(/_/g, ' ')}`;
+  }
+
+  // Pattern B: "Resolve contradiction: {text}"
+  const resolveMatch = raw.match(/^Resolve contradiction:\s*(.+)$/i);
+  if (resolveMatch) {
+    const inner = resolveMatch[1].replace(/\s*has conflicting support\s*\([^)]*\)\.?/gi, '').trim();
+    const remapped = applyLabelRemap(inner).replace(/\.$/, '');
+    return `Address conflicting signals in ${remapped}`;
+  }
+
+  // Passthrough for natural-language items (e.g. diligenceOpenItems text)
+  return raw;
+}
+
+function humanizeContradiction(text: string): string {
+  // Pattern: "X has conflicting support (code)."
+  const match = text.match(/^(.+?)\s+has conflicting support\s*\(([^)]*)\)\.?$/i);
+  if (match) {
+    const dim = applyLabelRemap(match[1].trim());
+    return `${dim} shows conflicting signals`;
+  }
+  return text;
+}
+
+/**
+ * Light formatting pass for open-question / diligence strings.
+ * - Capitalizes first letter
+ * - Appends '?' when the string starts with a question word and doesn't already end with '?'
+ * No fabrication — operates only on the supplied string.
+ */
+function formatDiligenceItem(s: string): string {
+  if (!s) return s;
+  const cap = s.charAt(0).toUpperCase() + s.slice(1);
+  if (/^(what|who|where|when|why|how|is|are|does|did|has|have|will|should|can|could|would)\b/i.test(cap) && !cap.endsWith('?')) {
+    return cap + '?';
+  }
+  return cap;
+}
+
+/**
+ * Returns true for auto-generated conviction summary strings that are mechanically
+ * derived from the score number and contributor labels — redundant given the UI already
+ * shows both. Suppressing them avoids repeating information in a less readable form.
+ */
+function isMechanicalConvictionText(text: string | null): boolean {
+  if (!text) return true;
+  if (/^conviction\s+\d+\/100/i.test(text)) return true;
+  if (/^primary deterministic support is led by/i.test(text)) return true;
+  if (/^conviction is constrained by limited deterministic support/i.test(text)) return true;
+  return false;
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function DealWorkspaceV4({
@@ -90,6 +226,12 @@ export function DealWorkspaceV4({
   convictionScore,
   convictionBand: _convictionBand,
   convictionPosture,
+  convictionHeadline,
+  convictionRationale,
+  convictionProvisional,
+  topPositiveContributors,
+  topNegativeContributors,
+  requiredNextChecks,
   investmentSnapshotBody,
   // key facts
   product,
@@ -100,6 +242,10 @@ export function DealWorkspaceV4({
   financialTiles,
   financialCoverage,
   financialIntegrityStatus,
+  financialNarrative,
+  financialCurrentStateSummary,
+  financialBurnRunwaySummary,
+  underwritingNarrative,
   // risk
   redFlags,
   openQuestions,
@@ -148,6 +294,21 @@ export function DealWorkspaceV4({
   const recommendation = mapPosture(convictionPosture);
   const investmentParas = splitIntoParas(investmentSnapshotBody);
   const activeKeyDrivers = (keyDrivers ?? []).filter(Boolean);
+
+  // Deduplicate required checks after humanizing to avoid showing equivalent prompts twice
+  const humanizedChecks: string[] = (() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const raw of requiredNextChecks) {
+      const humanized = humanizeRequiredCheck(raw);
+      const key = humanized.toLowerCase().trim();
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(humanized);
+      }
+    }
+    return out;
+  })();
 
   const revenueTile = findTile(financialTiles, 'Revenue / ARR');
   const burnTile = findTile(financialTiles, 'Monthly Burn');
@@ -267,6 +428,18 @@ export function DealWorkspaceV4({
           {/* LEFT: Investment Snapshot */}
           <div className="space-y-4">
             <h2 className={`text-sm font-medium ${sectionLabel}`}>Investment Snapshot</h2>
+            {(recommendation || convictionScore !== null) && (
+              <div className="flex items-center gap-2 flex-wrap">
+                {recommendation && (
+                  <span className={`px-2.5 py-1 rounded-full border text-xs font-medium uppercase tracking-wide ${getRecommendationColor(recommendation)}`}>
+                    {recommendation}
+                  </span>
+                )}
+                {convictionScore !== null && (
+                  <span className={`text-xs ${muted}`}>Score {convictionScore}/100</span>
+                )}
+              </div>
+            )}
             <div className="space-y-3">
               {investmentParas.length > 0 ? (
                 investmentParas.map((para, idx) => (
@@ -288,12 +461,31 @@ export function DealWorkspaceV4({
               <div className={`text-xs uppercase tracking-wide mb-2 ${muted}`}>
                 Conviction Score
               </div>
-              <div className={`text-4xl font-medium mb-1 ${getConvictionColor(convictionScore)}`}>
-                {convictionScore !== null ? convictionScore : '—'}
+              <div className="flex items-end gap-2 mb-1">
+                <div className={`text-4xl font-medium ${getConvictionColor(convictionScore)}`}>
+                  {convictionScore !== null ? convictionScore : '—'}
+                </div>
+                {convictionProvisional && (
+                  <span className={`mb-1 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide ${
+                    darkMode ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-amber-50 text-amber-600 border border-amber-200'
+                  }`}>
+                    Provisional
+                  </span>
+                )}
               </div>
-              <div className={`text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+              <div className={`text-xs mb-3 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
                 {convictionScore !== null ? 'out of 100' : 'Not extracted'}
               </div>
+              {convictionHeadline && !isMechanicalConvictionText(convictionHeadline) && (
+                <p className={`text-xs font-medium leading-snug mb-1 ${heading}`}>
+                  {convictionHeadline}
+                </p>
+              )}
+              {convictionRationale && !isMechanicalConvictionText(convictionRationale) && (
+                <p className={`text-xs leading-relaxed ${sectionLabel}`}>
+                  {convictionRationale}
+                </p>
+              )}
             </div>
 
             {/* Recommendation */}
@@ -308,8 +500,34 @@ export function DealWorkspaceV4({
               </div>
             </div>
 
-            {/* Key Drivers (shown only when present) */}
-            {activeKeyDrivers.length > 0 && (
+            {/* Key Drivers: prefer conviction contributors, fall back to legacy keyDrivers */}
+            {(topPositiveContributors.length > 0 || topNegativeContributors.length > 0) ? (
+              <div>
+                <div className={`text-xs uppercase tracking-wide mb-3 ${muted}`}>Key Drivers</div>
+                <div className="space-y-2">
+                  {topPositiveContributors.map((c, idx) => (
+                    <div key={`pos-${idx}`} className="flex items-start gap-2">
+                      <div
+                        className={`w-1 h-1 rounded-full mt-1.5 flex-shrink-0 ${
+                          darkMode ? 'bg-emerald-400' : 'bg-emerald-500'
+                        }`}
+                      />
+                      <span className={`text-xs ${sectionLabel}`}>{mapContributorToSignal(c.key, c.label, 'positive')}</span>
+                    </div>
+                  ))}
+                  {topNegativeContributors.map((c, idx) => (
+                    <div key={`neg-${idx}`} className="flex items-start gap-2">
+                      <div
+                        className={`w-1 h-1 rounded-full mt-1.5 flex-shrink-0 ${
+                          darkMode ? 'bg-red-400' : 'bg-red-500'
+                        }`}
+                      />
+                      <span className={`text-xs ${sectionLabel}`}>{mapContributorToSignal(c.key, c.label, 'negative')}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : activeKeyDrivers.length > 0 && (
               <div>
                 <div className={`text-xs uppercase tracking-wide mb-3 ${muted}`}>Key Drivers</div>
                 <div className="space-y-2">
@@ -321,6 +539,25 @@ export function DealWorkspaceV4({
                         }`}
                       />
                       <span className={`text-xs ${sectionLabel}`}>{driver}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Required Next Checks (diligence checklist from conviction) */}
+            {humanizedChecks.length > 0 && (
+              <div>
+                <div className={`text-xs uppercase tracking-wide mb-3 ${muted}`}>Required Checks</div>
+                <div className="space-y-2">
+                  {humanizedChecks.map((check, idx) => (
+                    <div key={idx} className="flex items-start gap-2">
+                      <div
+                        className={`w-1 h-1 rounded-full mt-1.5 flex-shrink-0 ${
+                          darkMode ? 'bg-amber-400' : 'bg-amber-500'
+                        }`}
+                      />
+                      <span className={`text-xs ${sectionLabel}`}>{check}</span>
                     </div>
                   ))}
                 </div>
@@ -339,7 +576,7 @@ export function DealWorkspaceV4({
                 <Target className={`w-4 h-4 mt-0.5 ${muted}`} />
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Product</div>
               </div>
-              <div className={`text-sm ${product.value && product.value !== '—' ? heading : muted}`}>
+              <div className={`text-sm leading-relaxed ${product.value && product.value !== '—' ? body : muted}`}>
                 {product.value && product.value !== '—' ? product.value : 'Not extracted'}
               </div>
             </div>
@@ -349,7 +586,7 @@ export function DealWorkspaceV4({
                 <TrendingUp className={`w-4 h-4 mt-0.5 ${muted}`} />
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Market</div>
               </div>
-              <div className={`text-sm ${market.value && market.value !== '—' ? heading : muted}`}>
+              <div className={`text-sm leading-relaxed ${market.value && market.value !== '—' ? body : muted}`}>
                 {market.value && market.value !== '—' ? market.value : 'Not extracted'}
               </div>
             </div>
@@ -414,7 +651,7 @@ export function DealWorkspaceV4({
                           <div className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase shrink-0 ${getSeverityColor(item.severity)}`}>
                             {item.severity}
                           </div>
-                          <span className={`text-sm flex-1 ${body}`}>{item.text}</span>
+                          <span className={`text-sm flex-1 ${body}`}>{humanizeContradiction(item.text)}</span>
                         </div>
                       ))}
                     </div>
@@ -431,7 +668,7 @@ export function DealWorkspaceV4({
                       {openQuestions.map((item, idx) => (
                         <div key={idx} className="flex items-start gap-2">
                           <div className={`w-1 h-1 rounded-full mt-2 shrink-0 ${darkMode ? 'bg-gray-600' : 'bg-gray-400'}`} />
-                          <span className={`text-sm ${sectionLabel}`}>{item}</span>
+                          <span className={`text-sm ${sectionLabel}`}>{formatDiligenceItem(item)}</span>
                         </div>
                       ))}
                     </div>
@@ -445,6 +682,19 @@ export function DealWorkspaceV4({
         {/* Financial Snapshot (Horizontal Strip) */}
         <div>
           <h2 className={`text-sm font-medium mb-4 ${sectionLabel}`}>Financial Snapshot</h2>
+          {(financialCurrentStateSummary || financialBurnRunwaySummary || financialNarrative) && (
+            <div className="space-y-1.5 mb-4">
+              {financialCurrentStateSummary && (
+                <p className={`text-sm leading-relaxed ${body}`}>{financialCurrentStateSummary}</p>
+              )}
+              {financialBurnRunwaySummary && (
+                <p className={`text-sm leading-relaxed ${body}`}>{financialBurnRunwaySummary}</p>
+              )}
+              {!financialCurrentStateSummary && !financialBurnRunwaySummary && financialNarrative && (
+                <p className={`text-sm leading-relaxed ${body}`}>{financialNarrative}</p>
+              )}
+            </div>
+          )}
           <div className="flex items-center gap-3 flex-wrap">
 
             <div className={`flex-1 min-w-[120px] px-4 py-3 rounded-lg border ${card}`}>
@@ -491,6 +741,9 @@ export function DealWorkspaceV4({
               </div>
             )}
           </div>
+          {underwritingNarrative && (
+            <p className={`text-xs leading-relaxed mt-3 ${muted}`}>{underwritingNarrative}</p>
+          )}
         </div>
 
         {/* Team Highlights (collapsible, only when data present) */}

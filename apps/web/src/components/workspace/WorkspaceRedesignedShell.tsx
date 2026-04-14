@@ -109,6 +109,29 @@ export type WorkspaceRedesignedShellProps = {
   convictionScore: number | null;
   convictionBand: string | null;
   convictionPosture: string | null;
+  /** One-line rationale headline from conviction_v1.summary.headline */
+  convictionHeadline: string | null;
+  /** Full rationale prose from conviction_v1.summary.rationale */
+  convictionRationale: string | null;
+  /** Whether the conviction score is provisional (unverified signals present) */
+  convictionProvisional: boolean;
+  /** Conviction-backed positive contributors (strength signals with score impact) */
+  topPositiveContributors: { key: string; label: string; scoreDelta: number | null }[];
+  /** Conviction-backed negative contributors (risk signals with score impact) */
+  topNegativeContributors: { key: string; label: string; scoreDelta: number | null }[];
+  /** Required next checks from conviction_v1.required_next_checks */
+  requiredNextChecks: string[];
+  /**
+   * 2–4 sentence investor-readable financial overview from financial_breakdown_v1.narrative.
+   * Deterministic (not LLM). Null when financials are absent.
+   */
+  financialNarrative: string | null;
+  /** Plain-English summary of current financial state from financial_breakdown_v1.current_state.summary. */
+  financialCurrentStateSummary: string | null;
+  /** Plain-English burn and runway summary from financial_breakdown_v1.burn_runway.summary. */
+  financialBurnRunwaySummary: string | null;
+  /** 1–2 sentence investor-readable underwriting summary from underwriting_readiness_v1.narrative. */
+  underwritingNarrative: string | null;
 
   // ── Key facts ─────────────────────────────────────────────────────────────
   product: WorkspaceOverviewVM['keyFacts']['product'];

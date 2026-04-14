@@ -114,12 +114,18 @@ export type SelectWorkspaceRedesignedShellInput = {
   deepDiveReady: boolean;
   /** Whether investor insights have been run */
   insightsReady: boolean;
+  /**
+   * Canonical workspace verdict from resolveWorkspaceVerdict().
+   * Used as fallback recommendation source when conviction_v1 is absent.
+   * Priority chain: conviction_v1.recommendation_posture → workspaceVerdict.verdict → null
+   */
+  workspaceVerdict?: { verdict: string; source: string } | null;
 };
 
 export function selectWorkspaceRedesignedShellProps(
   input: SelectWorkspaceRedesignedShellInput
 ): Omit<WorkspaceRedesignedShellProps, 'darkMode' | 'onRunAnalysis' | 'onOpenDeepDive' | 'onOpenInsights' | 'onOpenEvidenceExplorer'> {
-  const { report, overviewVM, lastAnalyzedAt, blockerCount, deepDiveReady, insightsReady } = input;
+  const { report, overviewVM, lastAnalyzedAt, blockerCount, deepDiveReady, insightsReady, workspaceVerdict } = input;
   const rpt = (report && typeof report === 'object') ? report as any : {};
   const ss = (rpt.structured_summary && typeof rpt.structured_summary === 'object') ? rpt.structured_summary as any : {};
   const meta = (rpt.metadata && typeof rpt.metadata === 'object') ? rpt.metadata as any : {};
@@ -154,11 +160,62 @@ export function selectWorkspaceRedesignedShellProps(
   // ── Conviction Column — delegate to overviewVM keyFacts + rcS6 ───────────
   const { product, market, businessModel: bm, raise: raiseTerms } = overviewVM.keyFacts;
 
-  // Conviction scalar from report
+  // ── Score + Recommendation source arbitration ────────────────────────────
+  // Priority (per SCORING_SOURCE_OF_TRUTH_CONTRACT.md Foundation doc):
+  //   conviction_v1  (reasoning-backed deterministic model, full family inputs)
+  //   score_band_v2  (fallback — only when conviction_v1 is absent)
+  //
+  // Recommendation priority:
+  //   conviction_v1.recommendation_posture (derived from conviction score)
+  //   workspaceVerdict.verdict             (from resolveWorkspaceVerdict — canonical resolver)
+  //   null                                 (no recommendation available)
+
   const convictionV1: any = ss.conviction_v1 ?? rpt.conviction_v1 ?? null;
-  const convictionScore = asFinite(convictionV1?.conviction_score_0_100);
+  const convictionV1Present = convictionV1 != null;
+
+  // Score: prefer conviction_v1, fall back to score_band_v2 when conviction absent.
+  const _convictionRawScore = asFinite(convictionV1?.conviction_score_0_100);
+  const _bandFallbackScore = asFinite(meta?.score_band_v2?.overall_score)
+    ?? asFinite(meta?.score_explanation?.totals?.overall_score);
+  const convictionScore = _convictionRawScore ?? (!convictionV1Present ? _bandFallbackScore : null);
+  const convictionScoreSource: 'conviction_v1' | 'score_band_v2' | 'none' =
+    _convictionRawScore != null ? 'conviction_v1'
+    : (!convictionV1Present && _bandFallbackScore != null) ? 'score_band_v2'
+    : 'none';
+
   const convictionBand = asNES(convictionV1?.conviction_band);
-  const convictionPosture = asNES(convictionV1?.recommendation_posture);
+
+  // Recommendation posture: prefer conviction_v1, fall back to workspaceVerdict when conviction absent.
+  const _convictionRawPosture = asNES(convictionV1?.recommendation_posture);
+  const _verdictFallbackPosture: string | null = (() => {
+    if (convictionV1Present || !workspaceVerdict?.verdict) return null;
+    // Map WorkspaceVerdict → posture format expected by mapPosture() in DealWorkspaceV4
+    switch (workspaceVerdict.verdict) {
+      case 'FUND':       return 'INVEST';
+      case 'CONSIDER':   return 'CONSIDER';
+      case 'PASS':       return 'PASS';
+      case 'HARD_PASS':  return 'HARD_PASS';
+      default:           return null;
+    }
+  })();
+  const convictionPosture = _convictionRawPosture ?? _verdictFallbackPosture;
+  const convictionPostureSource: 'conviction_v1' | 'workspace_verdict' | 'none' =
+    _convictionRawPosture != null ? 'conviction_v1'
+    : _verdictFallbackPosture != null ? 'workspace_verdict'
+    : 'none';
+
+  // DEV trace: score + recommendation source arbitration
+  if (import.meta.env.DEV) {
+    console.group('[TRACE:selectWorkspaceRedesignedShellProps] score + recommendation source');
+    console.log('conviction_v1 present?', convictionV1Present);
+    console.log('convictionScore:', convictionScore, '| source:', convictionScoreSource);
+    console.log('convictionPosture:', convictionPosture, '| source:', convictionPostureSource);
+    if (!convictionV1Present) {
+      console.log('fallback path: score_band_v2.overall_score =', _bandFallbackScore);
+      console.log('fallback path: workspaceVerdict =', workspaceVerdict?.verdict ?? null, '(source:', workspaceVerdict?.source ?? 'none', ')');
+    }
+    console.groupEnd();
+  }
 
   // Conviction narrative fields (headline, rationale, provisional flag)
   const convictionSummaryRaw: any = convictionV1?.summary ?? null;

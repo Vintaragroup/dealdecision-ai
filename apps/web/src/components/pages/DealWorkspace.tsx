@@ -7023,6 +7023,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         blockerCount: vm.header.blockers,
         deepDiveReady: Boolean(deepDiveResponse && !deepDiveLoading && !deepDiveError),
         insightsReady: investorInsights.status === 'ready' && !!investorInsights.report,
+        workspaceVerdict: _workspaceVerdict,
       })}
       keyDrivers={filteredStrengths}
       onBack={handleBack}

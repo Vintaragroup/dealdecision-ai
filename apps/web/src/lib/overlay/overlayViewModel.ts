@@ -138,30 +138,36 @@ export function buildOverlayViewModel(overviewResponse: any): OverlayViewModel {
   const overviewText = paragraphs.length > 0 ? paragraphs[0] : null;
   const deepText = paragraphs.length > 1 ? paragraphs.slice(1).join('\n\n') : null;
 
-  const product = asNonEmptyString((dealOverviewV2 as any)?.product_solution) ?? null;
-  const market_icp = asNonEmptyString((dealOverviewV2 as any)?.market_icp) ?? null;
-  const business_model = asNonEmptyString((dealOverviewV2 as any)?.business_model) ?? null;
+  // Prefer governed_ui_copy_v1 for narrative fields; fall back to deal_overview_v2
+  const governedCopy = (phase1 as any)?.governed_ui_copy_v1;
+  const govOk = governedCopy != null && (governedCopy as any).schema_version === 'governed_ui_copy_v1';
+
+  const product =
+    (govOk ? asNonEmptyString((governedCopy as any)?.product_solution) : null) ??
+    asNonEmptyString((dealOverviewV2 as any)?.product_solution) ??
+    null;
+  const market_icp =
+    (govOk ? asNonEmptyString((governedCopy as any)?.market_icp) : null) ??
+    asNonEmptyString((dealOverviewV2 as any)?.market_icp) ??
+    null;
+  const business_model =
+    (govOk ? asNonEmptyString((governedCopy as any)?.business_model) : null) ??
+    asNonEmptyString((dealOverviewV2 as any)?.business_model) ??
+    null;
   const raise_terms =
+    (govOk ? asNonEmptyString((governedCopy as any)?.raise_terms) : null) ??
     asNonEmptyString((dealOverviewV2 as any)?.raise_terms) ??
     asNonEmptyString((dealOverviewV2 as any)?.raise) ??
     null;
 
   // ── TRACE: governed copy path audit ─────────────────────────────────────────
   if (import.meta.env.DEV) {
-    const governedCopy = (phase1 as any)?.governed_ui_copy_v1;
-    const govOk = governedCopy && (governedCopy as any).schema_version === 'governed_ui_copy_v1';
-    console.group('[TRACE:buildOverlayViewModel] facts resolution');
-    console.log('Source: facts read from deal_overview_v2 (NOT governed_ui_copy_v1)');
-    console.log('deal_overview_v2.product_solution →', product);
-    console.log('deal_overview_v2.market_icp →', market_icp);
-    console.log('deal_overview_v2.raise →', raise_terms);
-    console.log('governed_ui_copy_v1 present?', govOk);
-    if (govOk) {
-      console.log('governed_ui_copy_v1.product_solution →', (governedCopy as any).product_solution ?? null);
-      console.log('governed_ui_copy_v1.market_icp →', (governedCopy as any).market_icp ?? null);
-      console.log('governed_ui_copy_v1.raise_terms →', (governedCopy as any).raise_terms ?? null);
-      console.log('NOTE: governed values are NOT used here — this is the stale path');
-    }
+    console.group('[TRACE:buildOverlayViewModel] facts resolution (FIX APPLIED)');
+    console.log('governed_ui_copy_v1 present + valid?', govOk);
+    console.log('product →', product, '| source:', govOk && asNonEmptyString((governedCopy as any)?.product_solution) ? 'governed_ui_copy_v1' : 'deal_overview_v2');
+    console.log('market_icp →', market_icp, '| source:', govOk && asNonEmptyString((governedCopy as any)?.market_icp) ? 'governed_ui_copy_v1' : 'deal_overview_v2');
+    console.log('business_model →', business_model, '| source:', govOk && asNonEmptyString((governedCopy as any)?.business_model) ? 'governed_ui_copy_v1' : 'deal_overview_v2');
+    console.log('raise_terms →', raise_terms, '| source:', govOk && asNonEmptyString((governedCopy as any)?.raise_terms) ? 'governed_ui_copy_v1' : 'deal_overview_v2 (raise_terms/raise)');
     console.groupEnd();
   }
 

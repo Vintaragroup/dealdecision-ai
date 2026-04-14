@@ -28,6 +28,46 @@ function asNES(v: unknown): string | null {
   return s.length > 0 ? s : null;
 }
 
+/**
+ * Returns true for financial summary strings that are null-state placeholders produced by
+ * the deterministic sub-models when input data is absent. These must not be rendered as
+ * insight prose to the investor.
+ */
+function isNullStateSummary(s: string): boolean {
+  return /no financial data|not available|unavailable|no data|cannot be determined/i.test(s);
+}
+
+/**
+ * Known internal dimension / field-name tokens that can surface from machine-generated
+ * diligence item sources (score_explanation.understanding_v1.diligence_open_items and
+ * score_explanation.totals.unadjusted_missing_inputs). These are system labels, not
+ * investor-readable questions.
+ */
+const INTERNAL_DILIGENCE_TOKENS: ReadonlySet<string> = new Set([
+  'key_risks_detected', 'business_model', 'product_or_asset_quality', 'external_corroboration',
+  'financial_truth', 'capital_structure', 'traction_validation', 'market_demand', 'team_execution',
+  'risk_dependencies', 'evidence_quality', 'coverage', 'traction', 'revenue', 'team', 'market',
+  'product', 'raise', 'exit', 'financials', 'contradictions',
+]);
+
+/**
+ * Returns true for a diligence item that is an internal system token rather than a
+ * real investor-facing question. Filters:
+ *   - Bare snake_case identifiers (e.g. "key_risks_detected")
+ *   - Known internal dimension labels (case-insensitive exact match)
+ *   - Fewer than 4 whitespace-separated words (too shallow to be a meaningful question)
+ */
+function isMechanicalDiligenceItem(s: string): boolean {
+  const t = s.trim();
+  // Bare snake_case: all lowercase letters, digits, underscores — at least one underscore
+  if (/^[a-z][a-z0-9_]+$/.test(t) && t.includes('_')) return true;
+  // Known internal token (case-insensitive, whole-string match)
+  if (INTERNAL_DILIGENCE_TOKENS.has(t.toLowerCase())) return true;
+  // Too short — fewer than 4 words is a field label, not a diligence question
+  if (t.split(/\s+/).length < 4) return true;
+  return false;
+}
+
 function asFinite(v: unknown): number | null {
   if (typeof v !== 'number' || !Number.isFinite(v)) return null;
   return v;
@@ -155,12 +195,25 @@ export function selectWorkspaceRedesignedShellProps(
       .slice(0, 5);
   })();
 
-  // Investment snapshot: prefer investment_analysis_overview_v2.summary_medium (top-level on report)
+  // Investment snapshot: combine all three iav2 summary fields for a fuller narrative.
+  // summary         = deal_summary_v2.summary.one_liner (crisper context-setter)
+  // summary_medium  = paragraphs[0] (main descriptive paragraph)
+  // summary_long    = paragraphs[1]+[2] joined (additional depth when present)
+  // Deduplicate: skip any part that is wholly contained within a longer part already collected.
   const iav2: any = rpt.investment_analysis_overview_v2 ?? null;
-  const investmentSnapshotBody = asNES(iav2?.summary_medium?.paragraphs?.[0])
-    ?? asNES(iav2?.summary_medium)
-    ?? overviewVM.investmentSnapshotBody
-    ?? null;
+  const investmentSnapshotBody = (() => {
+    const parts: string[] = [
+      asNES(iav2?.summary),
+      asNES(iav2?.summary_medium),
+      asNES(iav2?.summary_long),
+    ].filter((s): s is string => s !== null);
+    const deduped = parts.reduce<string[]>((acc, s) => {
+      if (!acc.some((prev) => prev.includes(s))) acc.push(s);
+      return acc;
+    }, []);
+    const combined = deduped.join('\n\n');
+    return combined.length > 0 ? combined : (overviewVM.investmentSnapshotBody ?? null);
+  })();
 
   // ── Financial Column ──────────────────────────────────────────────────────
   const fb: any = rpt.financial_breakdown_v1 ?? null;
@@ -170,9 +223,17 @@ export function selectWorkspaceRedesignedShellProps(
   const br: any = fb?.burn_runway ?? null;
   const ur: any = rpt.underwriting_readiness_v1 ?? null;
   const fc: any = rpt.financial_coverage_v1 ?? null;
-  // More specific financial summaries — plain-English prose from deterministic sub-models
-  const financialCurrentStateSummary = asNES(cs?.summary) ?? null;
-  const financialBurnRunwaySummary = asNES(br?.summary) ?? null;
+  // More specific financial summaries — plain-English prose from deterministic sub-models.
+  // Null-state strings ("not available", "no financial data", etc.) are suppressed so they
+  // do not render as insight prose when underlying data is absent.
+  const financialCurrentStateSummary = (() => {
+    const s = asNES(cs?.summary);
+    return s && !isNullStateSummary(s) ? s : null;
+  })();
+  const financialBurnRunwaySummary = (() => {
+    const s = asNES(br?.summary);
+    return s && !isNullStateSummary(s) ? s : null;
+  })();
   const underwritingNarrative = asNES(ur?.narrative) ?? null;
 
   const financialTiles: FinancialTile[] = [];
@@ -220,7 +281,9 @@ export function selectWorkspaceRedesignedShellProps(
   }));
 
   // Open questions: prefer investment_analysis_overview_v2.open_items.items[] (most compiled),
-  // fall back to decision_summary_v1.open_questions, then diligence_open_items
+  // fall back to decision_summary_v1.open_questions, then diligence_open_items.
+  // Mechanical items (bare snake_case tokens, known internal labels, fewer than 4 words)
+  // are filtered out before the slice so they don't surface as investor-facing questions.
   const diligenceItems: string[] = (() => {
     const iav2Items = iav2?.open_items?.items;
     const raw = (Array.isArray(iav2Items) && iav2Items.length > 0)
@@ -231,7 +294,7 @@ export function selectWorkspaceRedesignedShellProps(
     if (!Array.isArray(raw)) return [];
     return raw
       .map((i: any) => asNES(typeof i === 'string' ? i : i?.text))
-      .filter((s): s is string => s !== null)
+      .filter((s): s is string => s !== null && !isMechanicalDiligenceItem(s))
       .slice(0, 5);
   })();
 

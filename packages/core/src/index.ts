@@ -29,6 +29,11 @@ export * from './scoring/decision-v1';
 export * from './scoring/vc-scoring-v2';
 export * from './scoring/vc-venture-lens-v1';
 export * from './scoring/canonical-decision';
+export * from './models/scoring-v2-stubs';
+// Phase 2: fully-computed V2 scoring modules
+export * from './scoring/business-quality-v2';
+export * from './scoring/evidence-quality-v2';
+export * from './scoring/conviction-v2';
 export * from './classification/content-archetypes';
 export * from './classification/business-model-arbitrator';
 export * from './classification/policy-aware-schema';

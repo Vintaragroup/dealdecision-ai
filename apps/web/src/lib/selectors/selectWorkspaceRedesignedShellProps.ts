@@ -180,15 +180,20 @@ export function selectWorkspaceRedesignedShellProps(
   // Score: always use score_band_v2.overall_score as the displayed number.
   // conviction_v1 score is retained for internal reference but is not the primary display value.
   const _convictionRawScore = asFinite(convictionV1?.conviction_score_0_100);
+  const _bqV2Score = asFinite(meta?.business_quality_v2?.score);
   const _bandFallbackScore = asFinite(meta?.score_band_v2?.overall_score)
     ?? asFinite(meta?.score_explanation?.totals?.overall_score);
-  const convictionScore = _bandFallbackScore ?? _convictionRawScore;
-  const convictionScoreSource: 'score_band_v2' | 'conviction_v1' | 'none' =
-    _bandFallbackScore != null ? 'score_band_v2'
+  const convictionScore = _bqV2Score ?? _bandFallbackScore ?? _convictionRawScore;
+  const convictionScoreSource: 'business_quality_v2' | 'score_band_v2' | 'conviction_v1' | 'none' =
+    _bqV2Score != null ? 'business_quality_v2'
+    : _bandFallbackScore != null ? 'score_band_v2'
     : _convictionRawScore != null ? 'conviction_v1'
     : 'none';
 
   const convictionBand = asNES(convictionV1?.conviction_band);
+
+  // V2 Phase 1: evidence quality label from evidence_quality_v2 stub
+  const evidenceQualityLabel = asNES(meta?.evidence_quality_v2?.label) ?? null;
 
   // Recommendation: always use workspaceVerdict (decision_v1 path) as the primary displayed verdict.
   // conviction_v1 posture is available for explanation only — never overrides decision_v1 for primary display.
@@ -214,9 +219,11 @@ export function selectWorkspaceRedesignedShellProps(
   if (import.meta.env.DEV) {
     console.group('[TRACE:selectWorkspaceRedesignedShellProps] score + recommendation source');
     console.log('conviction_v1 present?', convictionV1Present);
-    console.log('convictionScore:', convictionScore, '| source:', convictionScoreSource, '| band_score:', _bandFallbackScore, '| conviction_raw:', _convictionRawScore);
+    console.log('convictionScore:', convictionScore, '| source:', convictionScoreSource, '| bqV2:', _bqV2Score, '| band_score:', _bandFallbackScore, '| conviction_raw:', _convictionRawScore);
     console.log('convictionPosture:', convictionPosture, '| source:', convictionPostureSource);
     console.log('workspaceVerdict:', workspaceVerdict?.verdict ?? null, '(source:', workspaceVerdict?.source ?? 'none', ')');
+    console.log('evidenceQualityLabel (V2):', evidenceQualityLabel, '| evidence_quality_v2:', (meta as any)?.evidence_quality_v2?.label ?? null);
+    console.log('canonical_decision_v2.verdict:', (meta as any)?.canonical_decision_v2?.verdict ?? null, '| conflict_detected:', Boolean((meta as any)?.canonical_decision_v2?.conflict_detected));
     // Model tension: log when decision_v1 and conviction_v1 yield different verdicts.
     // This measures how often the two scoring models disagree — do not suppress.
     if (_verdictPosture && _convictionRawPosture) {
@@ -225,12 +232,24 @@ export function selectWorkspaceRedesignedShellProps(
         : _convictionRawPosture === 'consider' ? 'CONSIDER'
         : _convictionRawPosture === 'pass' ? 'PASS'
         : null;
-      if (_cvVerdict && _cvVerdict !== workspaceVerdict?.verdict) {
-        console.warn(
-          '[SCORE-GOVERNANCE] Model tension — decision_v1 and conviction_v1 disagree:',
+      // V2: use conflict_detected field from canonical_decision_v2 stub to detect model tension.
+      const _v2ConflictDetected = Boolean(meta?.canonical_decision_v2?.conflict_detected);
+      if (_v2ConflictDetected) {
+        console.log(
+          '[SCORE-GOVERNANCE] V2 conflict_detected=true (decision_v1 vs conviction_v1 disagree):',
           {
             decision_v1_verdict: workspaceVerdict?.verdict,
             decision_v1_rec_key: (meta?.decision_v1 as any)?.recommendation_key,
+            v2_verdict: (meta?.canonical_decision_v2 as any)?.verdict,
+            conviction_v1_posture: _convictionRawPosture,
+          },
+        );
+      } else if (_cvVerdict && _cvVerdict !== workspaceVerdict?.verdict) {
+        // Legacy tension log: V2 stub absent for this cached report.
+        console.log(
+          '[SCORE-GOVERNANCE] Model tension (pre-V2) — decision_v1 and conviction_v1 disagree:',
+          {
+            decision_v1_verdict: workspaceVerdict?.verdict,
             conviction_v1_posture: _convictionRawPosture,
             band_score: _bandFallbackScore,
             conviction_score: _convictionRawScore,
@@ -249,8 +268,10 @@ export function selectWorkspaceRedesignedShellProps(
 
   // Top positive contributors (conviction-backed strength signals)
   // key is the internal snake_case dimension used for presentation-layer mapping
+  // V2: prefer conviction_v2.top_positive_contributors when present
   const topPositiveContributors: { key: string; label: string; scoreDelta: number | null }[] = (() => {
-    const items = convictionV1?.top_positive_contributors;
+    const v2items = meta?.conviction_v2?.top_positive_contributors;
+    const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.top_positive_contributors;
     if (!Array.isArray(items)) return [];
     return items
       .map((c: any) => ({
@@ -263,8 +284,10 @@ export function selectWorkspaceRedesignedShellProps(
   })();
 
   // Top negative contributors (conviction-backed risk signals)
+  // V2: prefer conviction_v2.top_negative_contributors when present
   const topNegativeContributors: { key: string; label: string; scoreDelta: number | null }[] = (() => {
-    const items = convictionV1?.top_negative_contributors;
+    const v2items = meta?.conviction_v2?.top_negative_contributors;
+    const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.top_negative_contributors;
     if (!Array.isArray(items)) return [];
     return items
       .map((c: any) => ({
@@ -277,8 +300,10 @@ export function selectWorkspaceRedesignedShellProps(
   })();
 
   // Required next checks (diligence checklist from conviction)
+  // V2: prefer conviction_v2.key_unknowns when present (stub field mapping)
   const requiredNextChecks: string[] = (() => {
-    const items = convictionV1?.required_next_checks;
+    const v2items = meta?.conviction_v2?.key_unknowns;
+    const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.required_next_checks;
     if (!Array.isArray(items)) return [];
     return items
       .map((c: any) => asNES(typeof c === 'string' ? c : c?.text))
@@ -392,10 +417,14 @@ export function selectWorkspaceRedesignedShellProps(
   })();
 
   // Contradictions from conviction or investor_insights
+  // V2: prepend conviction_v2.opposing_case when present
   const contradictionsRaw: string[] = (() => {
+    const v2opposing = asNES(meta?.conviction_v2?.opposing_case);
     const items = convictionV1?.contradictions ?? [];
-    if (!Array.isArray(items)) return [];
-    return items
+    if (!Array.isArray(items) && !v2opposing) return [];
+    const base: unknown[] = Array.isArray(items) ? items : [];
+    const all = v2opposing ? [v2opposing, ...base] : base;
+    return all
       .map((c: any) => asNES(typeof c === 'string' ? c : c?.description ?? c?.text))
       .filter((s): s is string => s !== null)
       .slice(0, 5);
@@ -408,6 +437,9 @@ export function selectWorkspaceRedesignedShellProps(
     console.log('market  (overviewVM.keyFacts.market): ', market?.value ?? market);
     console.log('raiseTerms:', raiseTerms?.value ?? raiseTerms);
     console.log('investmentSnapshotBody:', investmentSnapshotBody);
+    console.log('[V2] evidenceQualityLabel:', evidenceQualityLabel);
+    console.log('[V2] convictionScoreSource:', convictionScoreSource, '| bqV2Score:', _bqV2Score);
+    console.log('[V2] canonical_decision_v2:', (meta as any)?.canonical_decision_v2 ?? null);
     console.groupEnd();
   }
 

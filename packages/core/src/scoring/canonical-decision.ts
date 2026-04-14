@@ -527,3 +527,157 @@ export function resolveCanonicalDecision(
     resolver_note,
   };
 }
+
+// ─── Canonical Decision V2 ────────────────────────────────────────────────────
+//
+// Produces the one authoritative V2 verdict from the three Phase-2 scoring gates
+// (business quality, evidence quality, conviction). This function is called once
+// per report compile inside attachScoringV2Computed() and its result is written
+// to meta.canonical_decision_v2.
+//
+// 10-step resolution order (evaluated top-to-bottom, first match wins):
+//  1. guardrail.triggered                                      → hard_pass
+//  2. conviction.gate === 'hard_pass'                          → hard_pass
+//  3. BQ < 45                                                  → pass
+//  4. evidence.gate === 'blocked'                              → pass
+//  5. evidence.gate === 'capped' && conviction.gate === 'capped'→ investigate
+//  6. BQ ≥ 75 && evidence.gate==='clear' && conviction.gate==='clear' → fund
+//  7. BQ ≥ 65 && evidence.gate in [clear,caution] && conviction.gate==='clear' → advance
+//  8. evidence.gate === 'capped' || conviction.gate === 'capped' → investigate
+//  9. BQ ≥ 45                                                  → investigate
+// 10. fallback                                                 → pass
+
+import type {
+  CanonicalVerdictV2,
+  EvidenceGateResultV2,
+  ConvictionGateResultV2,
+  BusinessQualityBandV2,
+} from '../models/scoring-v2-stubs.js';
+import { CANONICAL_VERDICT_LABELS } from '../models/scoring-v2-stubs.js';
+
+export interface CanonicalDecisionV2Input {
+  bq_score: number;
+  bq_band: BusinessQualityBandV2;
+  eq_score: number | null;
+  cv_score: number;
+  evidence_gate: EvidenceGateResultV2;
+  conviction_gate: ConvictionGateResultV2;
+  guardrail_triggered: boolean;
+  source_v1_decision_key?: string;
+}
+
+export interface CanonicalDecisionV2Result {
+  verdict: CanonicalVerdictV2;
+  verdict_label: string;
+  business_quality_score: number;
+  business_quality_band: BusinessQualityBandV2;
+  evidence_gate: EvidenceGateResultV2;
+  conviction_gate: ConvictionGateResultV2;
+  /** Composite confidence (0–1) = 0.60*(EQ/100) + 0.40*(CV/100). */
+  confidence: number;
+  confidence_label: 'High' | 'Moderate' | 'Low';
+  conflict_detected: boolean;
+  conflict_signals: string[];
+  hard_pass_guardrail_triggered: boolean;
+  source_v1_decision_key: string;
+  resolution_step: number;
+  /** Phase 2: always false. */
+  stub: false;
+  version: 'canonical_v2';
+  computed_at: string;
+}
+
+export function computeCanonicalDecisionV2(
+  input: CanonicalDecisionV2Input,
+): CanonicalDecisionV2Result {
+  const {
+    bq_score,
+    bq_band,
+    eq_score,
+    cv_score,
+    evidence_gate,
+    conviction_gate,
+    guardrail_triggered,
+    source_v1_decision_key = 'unknown',
+  } = input;
+
+  // ─── 10-step resolution ──────────────────────────────────────────────────
+
+  let verdict: CanonicalVerdictV2;
+  let resolution_step: number;
+
+  if (guardrail_triggered) {
+    verdict = 'hard_pass'; resolution_step = 1;
+  } else if (conviction_gate === 'hard_pass') {
+    verdict = 'hard_pass'; resolution_step = 2;
+  } else if (bq_score < 45) {
+    verdict = 'pass'; resolution_step = 3;
+  } else if (evidence_gate === 'blocked') {
+    verdict = 'pass'; resolution_step = 4;
+  } else if (evidence_gate === 'capped' && conviction_gate === 'capped') {
+    verdict = 'investigate'; resolution_step = 5;
+  } else if (bq_score >= 75 && evidence_gate === 'clear' && conviction_gate === 'clear') {
+    verdict = 'fund'; resolution_step = 6;
+  } else if (
+    bq_score >= 65 &&
+    (evidence_gate === 'clear' || evidence_gate === 'caution') &&
+    conviction_gate === 'clear'
+  ) {
+    verdict = 'advance'; resolution_step = 7;
+  } else if (evidence_gate === 'capped' || conviction_gate === 'capped') {
+    verdict = 'investigate'; resolution_step = 8;
+  } else if (bq_score >= 45) {
+    verdict = 'investigate'; resolution_step = 9;
+  } else {
+    verdict = 'pass'; resolution_step = 10;
+  }
+
+  // ─── Confidence composite ────────────────────────────────────────────────
+
+  const eqNorm = eq_score !== null ? Math.min(1, Math.max(0, eq_score / 100)) : 0.5;
+  const cvNorm = Math.min(1, Math.max(0, cv_score / 100));
+  const confidence = Math.round((0.60 * eqNorm + 0.40 * cvNorm) * 100) / 100;
+
+  let confidence_label: 'High' | 'Moderate' | 'Low';
+  if (confidence >= 0.75) {
+    confidence_label = 'High';
+  } else if (confidence >= 0.50) {
+    confidence_label = 'Moderate';
+  } else {
+    confidence_label = 'Low';
+  }
+
+  // ─── Conflict detection ──────────────────────────────────────────────────
+
+  const conflict_signals: string[] = [];
+  if (Math.abs(bq_score - cv_score) > 20) {
+    conflict_signals.push(
+      `BQ (${bq_score}) vs CV (${cv_score}) diverge by ${Math.abs(bq_score - cv_score).toFixed(0)} points`,
+    );
+  }
+  if (eq_score !== null && Math.abs(bq_score - eq_score) > 20) {
+    conflict_signals.push(
+      `BQ (${bq_score}) vs EQ (${eq_score}) diverge by ${Math.abs(bq_score - eq_score).toFixed(0)} points`,
+    );
+  }
+  const conflict_detected = conflict_signals.length > 0;
+
+  return {
+    verdict,
+    verdict_label: CANONICAL_VERDICT_LABELS[verdict],
+    business_quality_score: bq_score,
+    business_quality_band: bq_band,
+    evidence_gate,
+    conviction_gate,
+    confidence,
+    confidence_label,
+    conflict_detected,
+    conflict_signals,
+    hard_pass_guardrail_triggered: guardrail_triggered,
+    source_v1_decision_key,
+    resolution_step,
+    stub: false,
+    version: 'canonical_v2',
+    computed_at: new Date().toISOString(),
+  };
+}

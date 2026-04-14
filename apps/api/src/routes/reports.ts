@@ -15,6 +15,10 @@ import { z } from 'zod';
 import { buildDeterministicDealSummaryV1FromStructuredSummary, compileDIOToReport, compileDIOToReportWithPromotedFacts, toPolicyAwareBusinessModelDisplay } from '@dealdecision/core';
 import { buildDeterministicScoreInputsV1 } from '@dealdecision/core';
 import { computeDecisionV1, computeHardPassGuardrailV2, getScoreBandV2 } from '@dealdecision/core';
+import { computeBusinessQualityV2 } from '@dealdecision/core';
+import { computeEvidenceQualityV2 } from '@dealdecision/core';
+import { computeConvictionV2 } from '@dealdecision/core';
+import { computeCanonicalDecisionV2 } from '@dealdecision/core';
 import { LlmNarrationV1Schema, degradeNarrationV1, validateNoNewFacts } from '@dealdecision/core';
 import { buildNarrationPrompt } from '@dealdecision/core';
 import type { LlmNarrationV1Type } from '@dealdecision/core';
@@ -104,7 +108,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 40; // bumped: quality gate on product/market fill-ins (isLowQualityFillIn) — rejects boilerplate/disclaimer text
+const REPORT_COMPILER_VERSION = 42; // bumped: scoring_v2 fully computed (stub: false)
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -2092,6 +2096,471 @@ function alignReportSectionsToDecisionV1(args: {
   }
 }
 
+
+// ─── Scoring V2 Phase 1 — stub builder ────────────────────────────────────────
+// Populates canonical_decision_v2, business_quality_v2, evidence_quality_v2,
+// and conviction_v2 from existing V1 artifacts.  All stubs carry `stub: true`.
+// No formula changes.  Must be called AFTER meta.decision_v1 is set.
+
+function _bqBandFromKey(key: string): string {
+  const MAP: Record<string, string> = {
+    not_investment_grade: 'Not Investment Grade',
+    early_consideration: 'Early Consideration',
+    emerging_opportunity: 'Emerging Opportunity',
+    strong_opportunity: 'Strong Opportunity',
+    fund_grade: 'Fund Grade',
+    exceptional: 'Exceptional',
+  };
+  return MAP[key] ?? key;
+}
+
+function _bqBandKeyFromScoreBandKey(scoreBandKey: string): string {
+  // score_band_v2 uses the same 6-key vocabulary as BusinessQualityBandV2.
+  const valid = new Set([
+    'not_investment_grade', 'early_consideration', 'emerging_opportunity',
+    'strong_opportunity', 'fund_grade', 'exceptional',
+  ]);
+  return valid.has(scoreBandKey) ? scoreBandKey : 'not_investment_grade';
+}
+
+function _eqLabelFromScore(score: number | null): string | null {
+  if (score === null) return null;
+  if (score >= 65) return 'Strong Evidence';
+  if (score >= 40) return 'Adequate Evidence';
+  if (score >= 20) return 'Thin Evidence';
+  return 'Insufficient Evidence';
+}
+
+function _eqGateFromScore(score: number | null): string {
+  if (score === null) return 'blocked';
+  if (score >= 65) return 'clear';
+  if (score >= 40) return 'caution';
+  if (score >= 20) return 'capped';
+  return 'blocked';
+}
+
+function _cvLabelFromScore(score: number | null): string | null {
+  if (score === null) return null;
+  if (score >= 70) return 'Strong Conviction';
+  if (score >= 45) return 'Moderate Conviction';
+  if (score >= 20) return 'Low Conviction';
+  return 'Insufficient Conviction';
+}
+
+function _cvGateFromScore(score: number | null): string {
+  if (score === null) return 'clear'; // Phase 1 default: no conviction → no gate penalty
+  if (score < 20) return 'hard_pass';
+  if (score < 45) return 'capped';
+  return 'clear';
+}
+
+function _canonicalVerdictFromDecisionKey(
+  recKey: string,
+  guardrailTriggered: boolean,
+): string {
+  if (guardrailTriggered) return 'hard_pass';
+  switch (recKey) {
+    case 'fund_confident':
+    case 'fund_track':
+      return 'fund';
+    case 'fund_caution':
+    case 'strong_consider':
+      return 'advance';
+    case 'consider_caution':
+    case 'consider':
+      return 'investigate';
+    case 'hard_pass':
+      return 'hard_pass';
+    default:
+      return 'pass';
+  }
+}
+
+function _verdictLabel(verdict: string): string {
+  const MAP: Record<string, string> = {
+    fund: 'Fund', advance: 'Advance', investigate: 'Investigate',
+    pass: 'Pass', hard_pass: 'Hard Pass',
+  };
+  return MAP[verdict] ?? 'Pass';
+}
+
+function attachScoringV2Stubs(args: { meta: any; report: any; dealId?: string }): void {
+  try {
+    const { meta, report } = args;
+
+    // ── Source inputs ──
+    const scoreBand = meta?.score_band_v2 ?? null;
+    const decisionV1 = meta?.decision_v1 ?? null;
+    const guardrail = meta?.hard_pass_guardrail_v2 ?? null;
+
+    const bqScore: number | null =
+      typeof scoreBand?.overall_score === 'number' && Number.isFinite(scoreBand.overall_score)
+        ? scoreBand.overall_score
+        : typeof report?.overallScore === 'number' && Number.isFinite(report.overallScore)
+          ? report.overallScore
+          : null;
+
+    // Guard: can't build stubs without the primary score
+    if (bqScore === null) return;
+
+    const bqBandKey = _bqBandKeyFromScoreBandKey(scoreBand?.key ?? '');
+    const bqBandLabel = _bqBandFromKey(bqBandKey);
+
+    // ── Conviction V1 source (lives at report top-level or structured_summary) ──
+    const convictionV1: any =
+      report?.conviction_v1 ?? report?.structured_summary?.conviction_v1 ?? null;
+    const cvScore: number | null =
+      typeof convictionV1?.conviction_score_0_100 === 'number' &&
+      Number.isFinite(convictionV1.conviction_score_0_100)
+        ? convictionV1.conviction_score_0_100
+        : null;
+
+    // ── Evidence quality from coverage_ratio ──
+    const totals = report?.metadata?.score_explanation?.totals ?? null;
+    const coverageRatio: number | null =
+      typeof totals?.coverage_ratio === 'number' && Number.isFinite(totals.coverage_ratio)
+        ? totals.coverage_ratio
+        : null;
+    const eqScore: number | null =
+      coverageRatio !== null ? Math.round(Math.max(0, Math.min(100, coverageRatio * 100))) : null;
+
+    // ── Build: business_quality_v2 ──
+    meta.business_quality_v2 = {
+      score: bqScore,
+      band: bqBandKey,
+      band_label: bqBandLabel,
+      dimension_breakdown: { market: null, product: null, traction: null, business_model: null, team: null },
+      fhc: null,
+      data_sources_used: [],
+      formula_weights: null,
+      stub: true,
+      source: 'score_band_v2',
+      version: 'business_quality_v2',
+    };
+
+    // ── Build: evidence_quality_v2 ──
+    meta.evidence_quality_v2 = {
+      score: eqScore,
+      label: _eqLabelFromScore(eqScore),
+      coverage_ratio: coverageRatio,
+      dci: null,
+      confidence_score: null,
+      flag_counts: { critical: 0, error: 0, warn: 0 },
+      gate: { result: _eqGateFromScore(eqScore), reason: null, effective_verdict_ceiling: null },
+      missing_signals: [],
+      stub: true,
+      source: 'coverage_ratio',
+      version: 'evidence_quality_v2',
+    };
+
+    // ── Build: conviction_v2 ──
+    const keyUnknowns: string[] = [];
+    if (Array.isArray(convictionV1?.required_next_checks)) {
+      for (const c of convictionV1.required_next_checks) {
+        const t = typeof c === 'string' ? c : (c?.text ?? null);
+        if (typeof t === 'string' && t.trim()) keyUnknowns.push(t.trim());
+        if (keyUnknowns.length >= 5) break;
+      }
+    }
+
+    const posContribs: Array<{ key: string; label: string; score_delta_0_100: number | null }> = [];
+    if (Array.isArray(convictionV1?.top_positive_contributors)) {
+      for (const c of convictionV1.top_positive_contributors) {
+        const key = typeof c?.key === 'string' ? c.key : '';
+        const label = typeof c?.label === 'string' ? c.label : '';
+        const delta = typeof c?.score_delta_0_100 === 'number' ? c.score_delta_0_100 : null;
+        if (label) posContribs.push({ key, label, score_delta_0_100: delta });
+        if (posContribs.length >= 5) break;
+      }
+    }
+
+    const negContribs: Array<{ key: string; label: string; score_delta_0_100: number | null }> = [];
+    if (Array.isArray(convictionV1?.top_negative_contributors)) {
+      for (const c of convictionV1.top_negative_contributors) {
+        const key = typeof c?.key === 'string' ? c.key : '';
+        const label = typeof c?.label === 'string' ? c.label : '';
+        const delta = typeof c?.score_delta_0_100 === 'number' ? c.score_delta_0_100 : null;
+        if (label) negContribs.push({ key, label, score_delta_0_100: delta });
+        if (negContribs.length >= 5) break;
+      }
+    }
+
+    const opposingCase: string | null =
+      typeof report?.challenge_pass?.opposing_case === 'string'
+        ? report.challenge_pass.opposing_case
+        : null;
+
+    meta.conviction_v2 = {
+      score: cvScore,
+      label: _cvLabelFromScore(cvScore),
+      verdict_resistance_score: null,
+      conviction_composite: cvScore,
+      urss: null,
+      memory_influence: null,
+      gate: { result: _cvGateFromScore(cvScore), reason: null, effective_verdict_ceiling: null },
+      key_unknowns: keyUnknowns,
+      top_positive_contributors: posContribs,
+      top_negative_contributors: negContribs,
+      opposing_case: opposingCase,
+      stub: true,
+      source: 'conviction_v1',
+      version: 'conviction_v2',
+    };
+
+    // ── Build: canonical_decision_v2 ──
+    const recKey: string = typeof decisionV1?.recommendation_key === 'string'
+      ? decisionV1.recommendation_key
+      : 'pass';
+    const guardrailTriggered: boolean = Boolean(guardrail?.triggered);
+    const canonicalVerdict = _canonicalVerdictFromDecisionKey(recKey, guardrailTriggered);
+
+    // Conflict: score_band_v2 and conviction_v1 differ by > 20 pts
+    const conflictDetected: boolean =
+      cvScore !== null && Math.abs(bqScore - cvScore) > 20;
+
+    meta.canonical_decision_v2 = {
+      verdict: canonicalVerdict,
+      verdict_label: _verdictLabel(canonicalVerdict),
+      business_quality_score: bqScore,
+      business_quality_band: bqBandKey,
+      evidence_gate: _eqGateFromScore(eqScore),
+      conviction_gate: _cvGateFromScore(cvScore),
+      confidence: null,
+      confidence_label: null,
+      conflict_detected: conflictDetected,
+      hard_pass_guardrail_triggered: guardrailTriggered,
+      source_v1_decision_key: recKey,
+      stub: true,
+      version: 'canonical_v2',
+      computed_at: new Date().toISOString(),
+    };
+
+    // ── Structured log ──
+    console.log(JSON.stringify({
+      event: 'scoring_v2_stubs_attached',
+      deal_id: args.dealId ?? null,
+      verdict: canonicalVerdict,
+      source_recommendation_key: recKey,
+      bq_score: bqScore,
+      eq_score: eqScore ?? null,
+      eq_label: meta.evidence_quality_v2.label ?? null,
+      cv_score: cvScore ?? null,
+      conflict_detected: conflictDetected,
+      stub: true,
+      ts: new Date().toISOString(),
+    }));
+  } catch {
+    // Best-effort: never fail /report for V2 stub attachment.
+  }
+}
+
+/**
+ * Phase 2: fully-computed V2 scoring artifacts (stub: false on all outputs).
+ *
+ * Replaces attachScoringV2Stubs(). Pulls available signals from the compiled
+ * report payload and runs the three Phase-2 scorers (BQ, EQ, CV) plus the
+ * canonical decision resolver.
+ *
+ * Signal mapping:
+ *   dimension_score      ← meta.score_band_v2.overall_score
+ *   financial_health     ← report.underwriting_readiness_v1.score_0_100
+ *   market_proxy         ← score_explanation.totals.coverage_ratio * 100
+ *   confidence_score_01  ← score_explanation.totals.confidence_score (0–1)
+ *   coverage_ratio       ← score_explanation.totals.coverage_ratio (0–1)
+ *   verdict_resistance   ← report.challenge_pass.verdict_resistance_score
+ *   flags                ← report.challenge_pass.flag_count_{critical,error,warn}
+ *   conviction_v1_score  ← report.conviction_v1.conviction_score_0_100
+ *   urss                 ← report.underwriting_readiness_v1.score_0_100
+ */
+function attachScoringV2Computed(args: { meta: any; report: any; dealId?: string }): void {
+  try {
+    const { meta, report } = args;
+
+    // ── Extract signals ──────────────────────────────────────────────────────
+
+    const scoreBand = meta?.score_band_v2 ?? null;
+    const decisionV1 = meta?.decision_v1 ?? null;
+    const guardrail = meta?.hard_pass_guardrail_v2 ?? null;
+    const totals = report?.metadata?.score_explanation?.totals ?? null;
+    const challengePass = report?.challenge_pass ?? null;
+    const convictionV1: any =
+      report?.conviction_v1 ?? report?.structured_summary?.conviction_v1 ?? null;
+    const underwritingReadiness = report?.underwriting_readiness_v1 ?? null;
+
+    const dimensionScore: number | null =
+      typeof scoreBand?.overall_score === 'number' && Number.isFinite(scoreBand.overall_score)
+        ? scoreBand.overall_score
+        : typeof report?.overallScore === 'number' && Number.isFinite(report.overallScore)
+          ? report.overallScore
+          : null;
+
+    // Guard: cannot build V2 artifacts without primary score
+    if (dimensionScore === null) return;
+
+    const fhcProxy: number | null =
+      typeof underwritingReadiness?.score_0_100 === 'number' &&
+      Number.isFinite(underwritingReadiness.score_0_100)
+        ? underwritingReadiness.score_0_100
+        : null;
+
+    const coverageRatio: number | null =
+      typeof totals?.coverage_ratio === 'number' && Number.isFinite(totals.coverage_ratio)
+        ? totals.coverage_ratio
+        : null;
+
+    const marketProxy: number | null =
+      coverageRatio !== null ? Math.min(100, Math.max(0, coverageRatio * 100)) : null;
+
+    const confidenceScore01: number | null =
+      typeof totals?.confidence_score === 'number' && Number.isFinite(totals.confidence_score)
+        ? totals.confidence_score
+        : null;
+
+    const verdictResistance: number | null =
+      typeof challengePass?.verdict_resistance_score === 'number' &&
+      Number.isFinite(challengePass.verdict_resistance_score)
+        ? challengePass.verdict_resistance_score
+        : null;
+
+    const flagsCritical: number =
+      typeof challengePass?.flag_count_critical === 'number' ? challengePass.flag_count_critical : 0;
+    const flagsError: number =
+      typeof challengePass?.flag_count_error === 'number' ? challengePass.flag_count_error : 0;
+    const flagsWarn: number =
+      typeof challengePass?.flag_count_warn === 'number' ? challengePass.flag_count_warn : 0;
+
+    const convictionV1Score: number | null =
+      typeof convictionV1?.conviction_score_0_100 === 'number' &&
+      Number.isFinite(convictionV1.conviction_score_0_100)
+        ? convictionV1.conviction_score_0_100
+        : null;
+
+    const urss: number | null = fhcProxy; // same field — underwriting_readiness_v1.score_0_100
+
+    // ── Passthrough narrative fields (conviction_v1 / challenge_pass) ────────
+
+    const keyUnknowns: string[] = [];
+    if (Array.isArray(convictionV1?.required_next_checks)) {
+      for (const c of convictionV1.required_next_checks) {
+        const t = typeof c === 'string' ? c : (c?.text ?? null);
+        if (typeof t === 'string' && t.trim()) keyUnknowns.push(t.trim());
+        if (keyUnknowns.length >= 5) break;
+      }
+    }
+
+    const posContribs: Array<{ key: string; label: string; score_delta_0_100: number | null }> = [];
+    if (Array.isArray(convictionV1?.top_positive_contributors)) {
+      for (const c of convictionV1.top_positive_contributors) {
+        const key = typeof c?.key === 'string' ? c.key : '';
+        const label = typeof c?.label === 'string' ? c.label : '';
+        const delta = typeof c?.score_delta_0_100 === 'number' ? c.score_delta_0_100 : null;
+        if (label) posContribs.push({ key, label, score_delta_0_100: delta });
+        if (posContribs.length >= 5) break;
+      }
+    }
+
+    const negContribs: Array<{ key: string; label: string; score_delta_0_100: number | null }> = [];
+    if (Array.isArray(convictionV1?.top_negative_contributors)) {
+      for (const c of convictionV1.top_negative_contributors) {
+        const key = typeof c?.key === 'string' ? c.key : '';
+        const label = typeof c?.label === 'string' ? c.label : '';
+        const delta = typeof c?.score_delta_0_100 === 'number' ? c.score_delta_0_100 : null;
+        if (label) negContribs.push({ key, label, score_delta_0_100: delta });
+        if (negContribs.length >= 5) break;
+      }
+    }
+
+    const opposingCase: string | null =
+      typeof challengePass?.opposing_case === 'string' ? challengePass.opposing_case : null;
+
+    // ── Dimension breakdown from score_band_v2 ───────────────────────────────
+
+    const dimScores = scoreBand?.dimension_scores ?? null;
+
+    // ── Compute: business_quality_v2 ─────────────────────────────────────────
+
+    const bqResult = computeBusinessQualityV2({
+      dimension_score: dimensionScore,
+      financial_health_proxy: fhcProxy,
+      market_proxy: marketProxy,
+      dimension_scores: dimScores
+        ? {
+            market: typeof dimScores.market === 'number' ? dimScores.market : null,
+            product: typeof dimScores.product === 'number' ? dimScores.product : null,
+            traction: typeof dimScores.traction === 'number' ? dimScores.traction : null,
+            business_model: typeof dimScores.business_model === 'number' ? dimScores.business_model : null,
+            team: typeof dimScores.team === 'number' ? dimScores.team : null,
+          }
+        : null,
+    });
+    meta.business_quality_v2 = bqResult;
+
+    // ── Compute: evidence_quality_v2 ─────────────────────────────────────────
+
+    const eqResult = computeEvidenceQualityV2({
+      confidence_score_01: confidenceScore01,
+      coverage_ratio: coverageRatio,
+      flags_critical: flagsCritical,
+      flags_error: flagsError,
+      flags_warn: flagsWarn,
+    });
+    meta.evidence_quality_v2 = eqResult;
+
+    // ── Compute: conviction_v2 ───────────────────────────────────────────────
+
+    const cvResult = computeConvictionV2({
+      verdict_resistance_score: verdictResistance,
+      conviction_v1_score: convictionV1Score,
+      urss,
+      key_unknowns: keyUnknowns,
+      top_positive_contributors: posContribs,
+      top_negative_contributors: negContribs,
+      opposing_case: opposingCase,
+    });
+    meta.conviction_v2 = cvResult;
+
+    // ── Compute: canonical_decision_v2 ───────────────────────────────────────
+
+    const recKey: string =
+      typeof decisionV1?.recommendation_key === 'string' ? decisionV1.recommendation_key : 'pass';
+    const guardrailTriggered: boolean = Boolean(guardrail?.triggered);
+
+    const canonicalResult = computeCanonicalDecisionV2({
+      bq_score: bqResult.score,
+      bq_band: bqResult.band,
+      eq_score: eqResult.score,
+      cv_score: cvResult.score,
+      evidence_gate: eqResult.gate.result,
+      conviction_gate: cvResult.gate.result,
+      guardrail_triggered: guardrailTriggered,
+      source_v1_decision_key: recKey,
+    });
+    meta.canonical_decision_v2 = canonicalResult;
+
+    // ── Structured log ────────────────────────────────────────────────────────
+
+    console.log(JSON.stringify({
+      event: 'scoring_v2_computed',
+      deal_id: args.dealId ?? null,
+      verdict: canonicalResult.verdict,
+      confidence: canonicalResult.confidence,
+      confidence_label: canonicalResult.confidence_label,
+      resolution_step: canonicalResult.resolution_step,
+      bq_score: bqResult.score,
+      bq_band: bqResult.band,
+      eq_score: eqResult.score,
+      eq_gate: eqResult.gate.result,
+      cv_score: cvResult.score,
+      cv_gate: cvResult.gate.result,
+      conflict_detected: canonicalResult.conflict_detected,
+      stub: false,
+      ts: new Date().toISOString(),
+    }));
+  } catch {
+    // Best-effort: never fail /report for V2 scoring computation.
+  }
+}
+
 function attachScoreBandAndGuardrailV2(args: {
   nextMetadata: any;
   report: any;
@@ -2205,6 +2674,9 @@ function attachScoreBandAndGuardrailV2(args: {
 
     // Ensure any pre-rendered section text uses canonical decision_v1 too.
     alignReportSectionsToDecisionV1({ nextMetadata: meta, report: args.report });
+
+    // Phase 2: replace stubs with fully-computed V2 scoring artifacts.
+    attachScoringV2Computed({ meta, report: args.report });
 
     args.nextMetadata = meta;
   } catch {

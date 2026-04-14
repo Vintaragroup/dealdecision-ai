@@ -5,12 +5,13 @@
  * Replaces duplicated inline derivation in DealWorkspace.tsx.
  *
  * Priority chain (first match wins):
- *   0. orchReport.canonical_decision.verdict              → map 5-band → 4-verdict
- *   1. report.metadata.hard_pass_guardrail_v2.triggered  → HARD_PASS
- *   2. report.metadata.decision_v1.recommendation_key    → map 6-band → 4-verdict
- *   3. phase1Signals.recommendation (pre-report state)   → keyword match → verdict
- *   4. score threshold fallback (≥70 FUND, ≥55 CONSIDER) → verdict
- *   5. default                                           → PASS
+ *   0.  orchReport.canonical_decision.verdict                    → map 5-band → 4-verdict
+ *   0.5 report.metadata.canonical_decision_v2.verdict (V2 stub) → map CanonicalVerdictV2 → 4-verdict  [Phase 1]
+ *   1.  report.metadata.hard_pass_guardrail_v2.triggered        → HARD_PASS
+ *   2.  report.metadata.decision_v1.recommendation_key          → map 6-band → 4-verdict
+ *   3.  phase1Signals.recommendation (pre-report state)         → keyword match → verdict
+ *   4.  score threshold fallback (≥70 FUND, ≥55 CONSIDER)      → verdict
+ *   5.  default                                                  → PASS
  */
 
 import { mapCanonicalVerdictToWorkspace } from './canonicalVerdictDisplay';
@@ -20,6 +21,7 @@ export type WorkspaceVerdict = 'HARD_PASS' | 'FUND' | 'CONSIDER' | 'PASS';
 
 export type WorkspaceVerdictSource =
   | 'canonical_decision'
+  | 'canonical_v2'
   | 'guardrail'
   | 'decision_v1'
   | 'phase1_signals'
@@ -73,6 +75,22 @@ function mapDecisionV1Label(label: string): WorkspaceVerdict | null {
   return mapDecisionV1LabelInternal(label);
 }
 
+/**
+ * Maps a `CanonicalVerdictV2` string → `WorkspaceVerdict`.
+ * Phase 1 lossy: `advance` and `investigate` both map to CONSIDER
+ * (WorkspaceVerdict gains ADVANCE/INVESTIGATE in Phase 2).
+ */
+function mapCanonicalV2VerdictToWorkspace(verdict: string): WorkspaceVerdict | null {
+  switch (verdict) {
+    case 'fund':        return 'FUND';
+    case 'advance':     return 'CONSIDER'; // Phase 1 lossy
+    case 'investigate': return 'CONSIDER'; // Phase 1 lossy
+    case 'pass':        return 'PASS';
+    case 'hard_pass':   return 'HARD_PASS';
+    default:            return null;
+  }
+}
+
 /** Score-only threshold fallback. */
 function scoreToVerdict(score: number): WorkspaceVerdict {
   if (score >= 70) return 'FUND';
@@ -98,10 +116,41 @@ export function resolveWorkspaceVerdict(args: {
 }): ResolvedWorkspaceVerdict {
   const { orchReport, report, score, phase1Signals } = args;
 
-  // ── 0. Canonical decision (highest authority when available) ───────────────
+  // ── 0. Canonical decision from orchReport (highest authority when available) ──
   const canonicalVerdict = orchReport?.canonical_decision?.verdict;
   if (canonicalVerdict) {
     return { verdict: mapCanonicalVerdictToWorkspace(canonicalVerdict), source: 'canonical_decision' };
+  }
+
+  // ── 0.5 canonical_decision_v2 stub (Phase 1 V2 contract) ──────────────────
+  // Preferred over legacy decision_v1 when the V2 stub is present.
+  // advance and investigate both map to CONSIDER — WorkspaceVerdict is extended in Phase 2.
+  if (report && typeof report === 'object') {
+    const r = report as Record<string, unknown>;
+    const meta = r['metadata'];
+    if (meta && typeof meta === 'object') {
+      const m = meta as Record<string, unknown>;
+      const cdv2 = m['canonical_decision_v2'];
+      if (cdv2 && typeof cdv2 === 'object') {
+        const v2 = cdv2 as Record<string, unknown>;
+        const v2verdict = v2['verdict'];
+        if (typeof v2verdict === 'string' && v2verdict.trim()) {
+          const mapped = mapCanonicalV2VerdictToWorkspace(v2verdict.trim());
+          if (mapped !== null) {
+            if (typeof window !== 'undefined' && (window as any).__DEV__) {
+              console.log('[V2-VERDICT] canonical_decision_v2 resolved verdict:', {
+                v2_verdict: v2verdict,
+                mapped_to: mapped,
+                source: 'canonical_v2',
+                conflict_detected: Boolean(v2['conflict_detected']),
+                stub: v2['stub'] ?? false,
+              });
+            }
+            return { verdict: mapped, source: 'canonical_v2' };
+          }
+        }
+      }
+    }
   }
 
   // ── 1. Hard-pass guardrail (overrides everything) ──────────────────────────

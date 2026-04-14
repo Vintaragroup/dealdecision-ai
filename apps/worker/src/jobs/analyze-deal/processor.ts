@@ -102,6 +102,26 @@ function countWords(value: string): number {
 	return words.length;
 }
 
+const SUMMARY_BROKEN_ARTICLE_RX = /\bis an\s+for\b/gi;
+const SUMMARY_INVESTMENT_KEYWORDS_RX =
+	/\b(invest|investment|conviction|recommend|recommendation|proceed|pass|hold|score|risk|raise|round|valuation|diligence|gating)\b/i;
+
+function cleanupSummarySentence(text: string): string {
+	if (!text) return text;
+	let out = text.replace(SUMMARY_BROKEN_ARTICLE_RX, "is for");
+	out = out.replace(/\s+/g, " ").trim();
+	return out;
+}
+
+function enforceInvestmentOneLiner(text: string, opts: { recommendation?: string | null }): string {
+	const cleaned = cleanupSummarySentence(text);
+	if (!cleaned) return cleaned;
+	if (SUMMARY_INVESTMENT_KEYWORDS_RX.test(cleaned)) return cleaned;
+	const rec = typeof opts.recommendation === "string" && opts.recommendation.trim().length > 0 ? opts.recommendation.trim() : null;
+	const prefix = rec ? `Investment view (${rec})` : "Investment view";
+	return `${prefix}: ${cleaned}`;
+}
+
 function countSentences(value: string): number {
 	const s = String(value ?? "").trim();
 	if (!s) return 0;
@@ -414,10 +434,15 @@ async function generateDealSummaryV2FromPhase1(input: {
 			"If a detail is missing, state it explicitly as a gap (e.g., 'Raise/terms not provided').",
 			"Output MUST be valid JSON only (no markdown, no backticks, no extra text).",
 			"Return JSON with EXACT schema and keys: {\"generated_at\": string, \"model\": \"gpt-4o-mini\", \"summary\": {\"one_liner\": string, \"paragraphs\": [string,string,string]}, \"strengths\": string[], \"risks\": string[], \"open_questions\": string[]}.",
+			"Investment framing requirements:",
+			"- summary.one_liner MUST read like an investment viewpoint (recommendation, conviction, or gating raise context). Do NOT write 'Company X is a...' marketing blurbs.",
+			"- summary.paragraphs[0]: describe what the deal is (raise/instrument/stage) and the current recommendation posture.",
+			"- summary.paragraphs[1]: describe the top conviction drivers (team/product/traction) referencing available quantitative or qualitative proof.",
+			"- summary.paragraphs[2]: describe the key risks, gaps, or next diligence items blocking full conviction.",
 			"Requirements: summary.paragraphs MUST be exactly 3 paragraphs.",
 			"Each paragraph MUST be 2–4 sentences and at least 60 words.",
-			"No bullet points in paragraphs. Use investor-grade, neutral language.",
-			"Prefer deal_overview_v2 for product/ICP/model and executive_summary_v2.signals for recommendation/score/confidence.",
+			"No bullet points in paragraphs. Use investor-grade, analytical language, referencing recommendation/score when provided.",
+			"Prefer deal_overview_v2 for product/ICP/model, executive_summary_v2.signals for recommendation/score/confidence, and decision_summary_v1 for open risks.",
 		],
 	});
 	const system = promptRuntime.systemPrompt;
@@ -562,6 +587,11 @@ async function generateDealSummaryV2FromPhase1(input: {
 	}
 	// Ensure model matches the required one even if the model omits it.
 	coerced.model = "gpt-4o-mini";
+	const execSummarySignals = input.phase1_executive_summary_v2 && typeof input.phase1_executive_summary_v2 === "object"
+		? (input.phase1_executive_summary_v2 as any)
+		: null;
+	const recommendation = typeof execSummarySignals?.recommendation === "string" ? execSummarySignals.recommendation : null;
+	coerced.summary.one_liner = enforceInvestmentOneLiner(coerced.summary.one_liner, { recommendation });
 	console.log(
 		JSON.stringify({
 			event: "phase1_deal_summary_v2_built",

@@ -240,34 +240,29 @@ export function DealWorkspaceV4({
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            {onRunAnalysis && (
-              <Button variant="outline" size="sm" className="gap-1.5" onClick={onRunAnalysis}>
-                <Sparkles className="w-3.5 h-3.5" />
-                Re-run Analysis
-              </Button>
-            )}
-            {onOpenEvidenceExplorer && (
-              <Button variant="outline" size="sm" className="gap-1.5" onClick={onOpenEvidenceExplorer}>
-                <FileText className="w-3.5 h-3.5" />
-                Open Evidence
-              </Button>
-            )}
-            {onOpenDeepDive && (
-              <Button variant="outline" size="sm" className="gap-1.5" onClick={onOpenDeepDive}>
-                <Search className="w-3.5 h-3.5" />
-                Deep Dive
-              </Button>
-            )}
-          </div>
+
         </div>
       </div>
 
       {/* Main Content */}
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-8">
+        {onRunAnalysis && (
+          <div className="flex items-center justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              darkMode={darkMode}
+              className="gap-1.5"
+              onClick={onRunAnalysis}
+            >
+              <Sparkles className="w-4 h-4" />
+              Re-run Analysis
+            </Button>
+          </div>
+        )}
 
         {/* Decision Layer (Above the Fold) */}
-        <div className="grid grid-cols-[70%_30%] gap-6">
+        <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-6">
 
           {/* LEFT: Investment Snapshot */}
           <div className="space-y-4">

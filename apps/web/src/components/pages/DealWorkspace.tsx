@@ -6933,6 +6933,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       })}
       keyDrivers={filteredStrengths}
       onBack={handleBack}
+      onRunAnalysis={runAIAnalysis}
     />
   );
 }

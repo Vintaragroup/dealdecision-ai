@@ -146,6 +146,25 @@ export function buildOverlayViewModel(overviewResponse: any): OverlayViewModel {
     asNonEmptyString((dealOverviewV2 as any)?.raise) ??
     null;
 
+  // ── TRACE: governed copy path audit ─────────────────────────────────────────
+  if (import.meta.env.DEV) {
+    const governedCopy = (phase1 as any)?.governed_ui_copy_v1;
+    const govOk = governedCopy && (governedCopy as any).schema_version === 'governed_ui_copy_v1';
+    console.group('[TRACE:buildOverlayViewModel] facts resolution');
+    console.log('Source: facts read from deal_overview_v2 (NOT governed_ui_copy_v1)');
+    console.log('deal_overview_v2.product_solution →', product);
+    console.log('deal_overview_v2.market_icp →', market_icp);
+    console.log('deal_overview_v2.raise →', raise_terms);
+    console.log('governed_ui_copy_v1 present?', govOk);
+    if (govOk) {
+      console.log('governed_ui_copy_v1.product_solution →', (governedCopy as any).product_solution ?? null);
+      console.log('governed_ui_copy_v1.market_icp →', (governedCopy as any).market_icp ?? null);
+      console.log('governed_ui_copy_v1.raise_terms →', (governedCopy as any).raise_terms ?? null);
+      console.log('NOTE: governed values are NOT used here — this is the stale path');
+    }
+    console.groupEnd();
+  }
+
   const strengths = uniqStrings(asStringArray((dealSummaryV2 as any)?.strengths));
 
   const risks = uniqStrings(asStringArray((dealSummaryV2 as any)?.risks));

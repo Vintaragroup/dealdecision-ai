@@ -439,6 +439,21 @@ export function buildWorkspaceMirrorOverviewVM(overview: any): WorkspaceMirrorOv
   const productPicked = pickString(governedUiCopyOk ? governedUiCopyObj?.product_solution : null, dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).product_solution : null);
   const marketPicked = pickString(governedUiCopyOk ? governedUiCopyObj?.market_icp : null, dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).market_icp : null);
 
+  // ── TRACE: governed copy resolution ─────────────────────────────────────────
+  if (import.meta.env.DEV) {
+    console.group('[TRACE:buildWorkspaceMirrorOverviewVM] facts resolution');
+    console.log('governed_ui_copy_v1 present + valid?', governedUiCopyOk);
+    console.log('governed_ui_copy_v1.product_solution →', governedUiCopyOk ? (governedUiCopyObj?.product_solution ?? null) : '(not present)');
+    console.log('governed_ui_copy_v1.market_icp →', governedUiCopyOk ? (governedUiCopyObj?.market_icp ?? null) : '(not present)');
+    console.log('governed_ui_copy_v1.raise_terms →', governedUiCopyOk ? (governedUiCopyObj?.raise_terms ?? null) : '(not present)');
+    console.log('deal_overview_v2.product_solution →', dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).product_solution ?? null : null);
+    console.log('deal_overview_v2.market_icp →', dealOverviewV2 && typeof dealOverviewV2 === 'object' ? (dealOverviewV2 as any).market_icp ?? null : null);
+    console.log('productPicked →', productPicked.value, '| source:', productPicked.source);
+    console.log('marketPicked →', marketPicked.value, '| source:', marketPicked.source);
+    console.log('raisePicked (base) — see raisePicked below');
+    console.groupEnd();
+  }
+
   // Business model: governed_ui_copy_v1 → deal_overview_v2 → display_facts_v1.business_model.text
   // display_facts_v1 text is a last-resort deterministic fallback built from
   // structured_summary; it only activates when both governed and phase1 raw are absent.

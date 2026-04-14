@@ -5362,7 +5362,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     selectedPolicyId,
     governedDealOneLiner: governedDealOneLinerDisplay,
     // [CONTRACT: DataFlow_contract.md §2.4] investmentSnapshotBody from investment_analysis_overview_v2.summary_medium.
-    investmentSnapshotBody: safeText((reportFromApi as any)?.investment_analysis_overview_v2?.summary_medium),
+    investmentSnapshotBody: (() => {
+      const overlayBody = overlayParagraphs.length > 0 ? overlayParagraphs.join('\n\n') : null;
+      if (overlayBody) return overlayBody;
+      const iav2 = (reportFromApi as any)?.investment_analysis_overview_v2 ?? null;
+      const summaryParts = [
+        safeText(iav2?.summary_medium),
+        safeText(iav2?.summary),
+        safeText(iav2?.summary_long),
+      ].filter((s): s is string => Boolean(s));
+      return summaryParts.join('\n\n') || null;
+    })(),
     selectedHeaderReady: selectedHeader.ready,
     raiseValue: selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null,
     raiseLabel: selectedHeader.ready ? (selectedHeader.raise.label ?? null) : null,
@@ -5538,6 +5548,89 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       },
     });
   }, [dealId, policyFamily, selectedPolicyId, looksRealEstate, governedKeyFacts, vm.overview, icMemo, topSectionActionRefinement, selectedHeader.ready, selectedHeader.raise.value, topSectionRevenue, topSectionGrowth, topSectionCustomers, heroFieldBindings]);
+
+  // ── TRACE: governed-copy → overviewVM data-flow audit ───────────────────────
+  // Tracks exactly where governed_ui_copy_v1 values are lost between sources.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+
+    const govRaw = (governedOverview.overview as any)?.overview_json;
+    const govJsonParsed = govRaw && typeof govRaw === 'string' ? (() => { try { return JSON.parse(govRaw); } catch { return null; } })() : (govRaw && typeof govRaw === 'object' ? govRaw : null);
+    const govPhase1 = govJsonParsed?.phase1 ?? null;
+    const govCopy = govPhase1?.governed_ui_copy_v1 ?? null;
+    const govCopyOk = govCopy && govCopy.schema_version === 'governed_ui_copy_v1';
+
+    console.group(`[TRACE:DealWorkspace] governed copy → overviewVM flow | dealId=${dealId ?? 'none'}`);
+
+    console.group('1 | useGovernedLlmOverview output');
+    console.log('status:', governedOverview.status);
+    console.log('created_at:', governedOverview.created_at);
+    console.log('input_hash:', governedOverview.input_hash);
+    console.log('overview_json.phase1.governed_ui_copy_v1 present?', govCopyOk);
+    if (govCopyOk) {
+      console.log('  .product_solution:', govCopy.product_solution ?? null);
+      console.log('  .market_icp:      ', govCopy.market_icp ?? null);
+      console.log('  .raise_terms:     ', govCopy.raise_terms ?? null);
+    }
+    console.groupEnd();
+
+    console.group('2 | buildOverlayViewModel output (overlayVM)');
+    console.log('overlayVM.facts.product:    ', overlayVM.facts.product);
+    console.log('overlayVM.facts.market_icp: ', overlayVM.facts.market_icp);
+    console.log('overlayVM.facts.raise_terms:', overlayVM.facts.raise_terms);
+    console.log('NOTE: overlayVM reads deal_overview_v2 directly — ignores governed_ui_copy_v1');
+    console.groupEnd();
+
+    console.group('3 | buildWorkspaceMirrorOverviewVM output (workspaceMirrorVM)');
+    console.log('workspaceMirrorVM.missing:', workspaceMirrorVM.missing);
+    if (!workspaceMirrorVM.missing) {
+      console.log('facts.product_solution:', workspaceMirrorVM.facts.product_solution.value, '| source:', workspaceMirrorVM.facts.product_solution.source);
+      console.log('facts.market_icp:      ', workspaceMirrorVM.facts.market_icp.value, '| source:', workspaceMirrorVM.facts.market_icp.source);
+      console.log('facts.raise:           ', workspaceMirrorVM.facts.raise.value, '| source:', workspaceMirrorVM.facts.raise.source);
+    }
+    console.groupEnd();
+
+    console.group('4 | overlayProduct / overlayMarketIcp fed to selectDealWorkspaceOverviewModel');
+    console.log('overlayProduct   (= overlayVM.facts.product || overviewProductCanonical):', overlayProduct);
+    console.log('overlayMarketIcp (= overlayVM.facts.market_icp || overviewMarketIcpCanonical):', overlayMarketIcp);
+    console.log('overlayRaiseTerms:', overlayRaiseTerms);
+    console.groupEnd();
+
+    console.group('5 | workspaceOverviewModel.keyFacts (selectDealWorkspaceOverviewModel output)');
+    console.log('product.value: ', workspaceOverviewModel.keyFacts.product.value, '| source:', (workspaceOverviewModel.keyFacts.product as any).source ?? 'n/a');
+    console.log('market.value:  ', workspaceOverviewModel.keyFacts.market.value, '| source:', (workspaceOverviewModel.keyFacts.market as any).source ?? 'n/a');
+    console.log('raise.value:   ', workspaceOverviewModel.keyFacts.raise_terms.value, '| source:', (workspaceOverviewModel.keyFacts.raise_terms as any).source ?? 'n/a');
+    console.groupEnd();
+
+    console.group('6 | vm.overview (buildWorkspaceViewModel output) — what selectWorkspaceRedesignedShellProps receives');
+    console.log('investmentSnapshotBody:', vm.overview.investmentSnapshotBody);
+    console.log('productSummary:        ', vm.overview.productSummary);
+    console.log('marketSummary:         ', vm.overview.marketSummary);
+    console.log('raiseTerms:            ', vm.overview.raiseTerms);
+    console.groupEnd();
+
+    console.groupEnd();
+  }, [
+    dealId,
+    governedOverview.status,
+    governedOverview.created_at,
+    governedOverview.input_hash,
+    governedOverview.overview,
+    overlayVM.facts.product,
+    overlayVM.facts.market_icp,
+    overlayVM.facts.raise_terms,
+    workspaceMirrorVM,
+    overlayProduct,
+    overlayMarketIcp,
+    overlayRaiseTerms,
+    workspaceOverviewModel.keyFacts.product.value,
+    workspaceOverviewModel.keyFacts.market.value,
+    workspaceOverviewModel.keyFacts.raise_terms.value,
+    vm.overview.investmentSnapshotBody,
+    vm.overview.productSummary,
+    vm.overview.marketSummary,
+    vm.overview.raiseTerms,
+  ]);
 
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {

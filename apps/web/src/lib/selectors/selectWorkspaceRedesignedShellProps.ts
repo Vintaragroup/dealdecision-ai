@@ -124,6 +124,16 @@ export function selectWorkspaceRedesignedShellProps(
   const ss = (rpt.structured_summary && typeof rpt.structured_summary === 'object') ? rpt.structured_summary as any : {};
   const meta = (rpt.metadata && typeof rpt.metadata === 'object') ? rpt.metadata as any : {};
 
+  // ── TRACE: what overviewVM delivers at selector boundary ────────────────────
+  if (import.meta.env.DEV) {
+    console.group('[TRACE:selectWorkspaceRedesignedShellProps] overviewVM keyFacts at selector entry');
+    console.log('overviewVM.keyFacts.product.value: ', overviewVM.keyFacts.product?.value);
+    console.log('overviewVM.keyFacts.market.value:  ', overviewVM.keyFacts.market?.value);
+    console.log('overviewVM.keyFacts.raise_terms.value:', overviewVM.keyFacts.raise_terms?.value);
+    console.log('overviewVM.investmentSnapshotBody: ', overviewVM.investmentSnapshotBody);
+    console.groupEnd();
+  }
+
   // ── Identity Strip ────────────────────────────────────────────────────────
   const companyName = asNES(ss.company_name);
 
@@ -202,6 +212,8 @@ export function selectWorkspaceRedesignedShellProps(
   // Deduplicate: skip any part that is wholly contained within a longer part already collected.
   const iav2: any = rpt.investment_analysis_overview_v2 ?? null;
   const investmentSnapshotBody = (() => {
+    const overlayBody = asNES(overviewVM.investmentSnapshotBody);
+    if (overlayBody) return overlayBody;
     const parts: string[] = [
       asNES(iav2?.summary),
       asNES(iav2?.summary_medium),
@@ -212,7 +224,7 @@ export function selectWorkspaceRedesignedShellProps(
       return acc;
     }, []);
     const combined = deduped.join('\n\n');
-    return combined.length > 0 ? combined : (overviewVM.investmentSnapshotBody ?? null);
+    return combined.length > 0 ? combined : null;
   })();
 
   // ── Financial Column ──────────────────────────────────────────────────────
@@ -307,6 +319,16 @@ export function selectWorkspaceRedesignedShellProps(
       .filter((s): s is string => s !== null)
       .slice(0, 5);
   })();
+
+  // ── TRACE: final resolved props at selector exit ─────────────────────────────
+  if (import.meta.env.DEV) {
+    console.group('[TRACE:selectWorkspaceRedesignedShellProps] final resolved props (selector exit)');
+    console.log('product (overviewVM.keyFacts.product):', product?.value ?? product);
+    console.log('market  (overviewVM.keyFacts.market): ', market?.value ?? market);
+    console.log('raiseTerms:', raiseTerms?.value ?? raiseTerms);
+    console.log('investmentSnapshotBody:', investmentSnapshotBody);
+    console.groupEnd();
+  }
 
   return {
     // identity

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   ArrowLeft,
   Sparkles,
@@ -527,6 +527,20 @@ export function DealWorkspaceV4({
   const recommendation = mapPosture(convictionPosture);
   const investmentParas = splitIntoParas(investmentSnapshotBody);
   const activeKeyDrivers = (keyDrivers ?? []).filter(Boolean);
+
+  // ── TRACE: final props received by DealWorkspaceV4 ──────────────────────────
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    console.group('[TRACE:DealWorkspaceV4] final rendered props');
+    console.log('product:              ', product ?? null);
+    console.log('market:               ', market ?? null);
+    console.log('raiseTerms:           ', raiseTerms ?? null);
+    console.log('businessModel:        ', businessModel ?? null);
+    console.log('investmentSnapshotBody:', investmentSnapshotBody ?? null);
+    console.log('convictionScore:      ', convictionScore ?? null);
+    console.log('convictionPosture:    ', convictionPosture ?? null);
+    console.groupEnd();
+  }, [product, market, raiseTerms, businessModel, investmentSnapshotBody, convictionScore, convictionPosture]);
 
   // Deduplicate required checks after humanizing to avoid showing equivalent prompts twice
   const humanizedChecks: string[] = (() => {

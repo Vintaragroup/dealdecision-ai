@@ -686,10 +686,20 @@ type PersistableGovernedOverviewRow = GovernedLLMOverviewV1 & {
 };
 
 async function persistGovernedOverview(pool: Pool, overview: PersistableGovernedOverviewRow): Promise<{ inserted: boolean }> {
-  const res = await pool.query(
+  const res = await pool.query<{ inserted: boolean }>(
     `INSERT INTO governed_llm_overviews (deal_id, schema_version, llm_phase_mode, input_hash, run_id, step_run_id, summary_text, claims, disclosures, overview_json, consistency_warnings)
      VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb)
-     ON CONFLICT (deal_id, input_hash, schema_version) DO NOTHING`,
+     ON CONFLICT (deal_id, input_hash, schema_version) DO UPDATE
+       SET summary_text          = EXCLUDED.summary_text,
+           claims                = EXCLUDED.claims,
+           disclosures           = EXCLUDED.disclosures,
+           llm_phase_mode        = EXCLUDED.llm_phase_mode,
+           run_id                = EXCLUDED.run_id,
+           step_run_id           = EXCLUDED.step_run_id,
+           overview_json         = EXCLUDED.overview_json,
+           consistency_warnings  = EXCLUDED.consistency_warnings,
+           created_at            = now()
+     RETURNING (xmax = 0) AS inserted`,
     [
       overview.deal_id,
       overview.schema_version,
@@ -705,7 +715,7 @@ async function persistGovernedOverview(pool: Pool, overview: PersistableGoverned
     ]
   );
 
-  return { inserted: (res as any)?.rowCount === 1 };
+  return { inserted: Boolean(res.rows?.[0]?.inserted) };
 }
 
 async function persistDiagnosticsSnapshotBestEffort(args: {

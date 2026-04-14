@@ -142,10 +142,10 @@ const normalizeEvidenceIds = (ids: unknown): string[] => {
 };
 
 const FALLBACK_ORDER: Exclude<DealWorkspaceOverviewSource, null>[] = [
+  'overlay',
   'structured_summary',
   'deal_summary_v1',
   'deterministic_slot',
-  'overlay',
   'phase1',
 ];
 

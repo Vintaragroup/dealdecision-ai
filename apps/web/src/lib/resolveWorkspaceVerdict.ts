@@ -7,7 +7,7 @@
  * Priority chain (first match wins):
  *   0. orchReport.canonical_decision.verdict              → map 5-band → 4-verdict
  *   1. report.metadata.hard_pass_guardrail_v2.triggered  → HARD_PASS
- *   2. report.metadata.decision_v1.label                 → map 6-band → 4-verdict
+ *   2. report.metadata.decision_v1.recommendation_key    → map 6-band → 4-verdict
  *   3. phase1Signals.recommendation (pre-report state)   → keyword match → verdict
  *   4. score threshold fallback (≥70 FUND, ≥55 CONSIDER) → verdict
  *   5. default                                           → PASS
@@ -32,15 +32,18 @@ export interface ResolvedWorkspaceVerdict {
 }
 
 /**
- * Map a stored `decision_v1.label` (6-band backend key) to the canonical 4-verdict.
+ * Map a `decision_v1.recommendation_key` to the canonical 4-verdict.
  *
+ * Accepts the machine key emitted by `computeDecisionV1()` — NOT the human label.
+ * Also accepts the legacy band key `'consider_caution'` for backward compatibility.
  * Exported so DealWorkspace display sites can use the same mapping without
- * duplicating a switch statement. Returns null when the label is unrecognised.
+ * duplicating a switch statement. Returns null when the key is unrecognised.
  *
- * Mapping:
- *   hard_pass                         → HARD_PASS
+ * Mapping (recommendation_key values from computeDecisionV1):
+ *   hard_pass                                  → HARD_PASS
  *   fund_confident | fund_track | fund_caution → FUND
- *   strong_consider | consider_caution         → CONSIDER
+ *   strong_consider | consider                 → CONSIDER
+ *   consider_caution (legacy band key)         → CONSIDER
  *   (anything else)                            → null
  */
 export function mapDecisionV1LabelToVerdict(label: string): WorkspaceVerdict | null {
@@ -57,7 +60,8 @@ function mapDecisionV1LabelInternal(label: string): WorkspaceVerdict | null {
     case 'fund_caution':
       return 'FUND';
     case 'strong_consider':
-    case 'consider_caution':
+    case 'consider':         // actual recommendation_key emitted by computeDecisionV1 for consider_caution band
+    case 'consider_caution': // legacy band key — kept for backward compatibility
       return 'CONSIDER';
     default:
       return null;
@@ -115,7 +119,10 @@ export function resolveWorkspaceVerdict(args: {
     }
   }
 
-  // ── 2. decision_v1.label (canonical stored recommendation) ─────────────────
+  // ── 2. decision_v1.recommendation_key (canonical stored recommendation) ─────
+  // NOTE: read recommendation_key (machine key), NOT label (human display string).
+  // The label is a presentational field and does not match the switch cases.
+  // See SCORING_SOURCE_OF_TRUTH_CONTRACT.md Rule 8.
   if (report && typeof report === 'object') {
     const r = report as Record<string, unknown>;
     const meta = r['metadata'];
@@ -123,9 +130,9 @@ export function resolveWorkspaceVerdict(args: {
       const m = meta as Record<string, unknown>;
       const d1 = m['decision_v1'];
       if (d1 && typeof d1 === 'object') {
-        const labelRaw = (d1 as Record<string, unknown>)['label'];
-        if (typeof labelRaw === 'string' && labelRaw.trim()) {
-          const mapped = mapDecisionV1Label(labelRaw.trim());
+        const keyRaw = (d1 as Record<string, unknown>)['recommendation_key'];
+        if (typeof keyRaw === 'string' && keyRaw.trim()) {
+          const mapped = mapDecisionV1Label(keyRaw.trim());
           if (mapped !== null) {
             return { verdict: mapped, source: 'decision_v1' };
           }

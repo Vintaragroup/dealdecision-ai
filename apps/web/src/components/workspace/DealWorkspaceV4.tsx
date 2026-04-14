@@ -69,7 +69,9 @@ function splitIntoParas(body: string | null): string[] {
 function mapPosture(posture: string | null): 'Proceed' | 'Caution' | 'Pass' | null {
   if (!posture) return null;
   const p = posture.toUpperCase();
-  if (p === 'INVEST') return 'Proceed';
+  // 'INVEST' — from workspaceVerdict fallback path
+  // 'YES' / 'STRONG_YES' — from conviction_v1.recommendation_posture (fund bands)
+  if (p === 'INVEST' || p === 'YES' || p === 'STRONG_YES') return 'Proceed';
   if (p === 'CONSIDER') return 'Caution';
   if (p === 'PASS' || p === 'HARD_PASS') return 'Pass';
   return null;

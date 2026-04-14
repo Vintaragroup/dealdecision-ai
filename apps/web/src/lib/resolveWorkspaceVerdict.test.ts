@@ -290,7 +290,11 @@ describe('mapDecisionV1LabelToVerdict — all 6 backend bands', () => {
     expect(mapDecisionV1LabelToVerdict('strong_consider')).toBe('CONSIDER');
   });
 
-  it('consider_caution → CONSIDER', () => {
+  it('consider → CONSIDER (actual recommendation_key emitted by computeDecisionV1)', () => {
+    expect(mapDecisionV1LabelToVerdict('consider')).toBe('CONSIDER');
+  });
+
+  it('consider_caution → CONSIDER (legacy band key, backward compat)', () => {
     expect(mapDecisionV1LabelToVerdict('consider_caution')).toBe('CONSIDER');
   });
 

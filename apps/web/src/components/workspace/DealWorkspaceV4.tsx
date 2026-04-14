@@ -211,6 +211,239 @@ function isMechanicalConvictionText(text: string | null): boolean {
   return false;
 }
 
+// ─── Section-level narrative composition ─────────────────────────────────────
+// Pure presentation-layer functions. All output is derived from props that are
+// already in scope. No content is invented. Every sentence traces back to a
+// deterministic field or a conviction signal.
+
+type _Contributor = { key: string; label: string; scoreDelta: number | null };
+
+/**
+ * Strips known internal system artifacts from governed copy strings.
+ * Targeted: standalone "deterministic" / "governed" adjective use.
+ * Conservative — does not stem or rewrite sentences.
+ */
+function cleanCopy(s: string | null): string | null {
+  if (!s) return null;
+  let out = s;
+  out = out.replace(/\bdeterministic\s+(?=evidence|signal|support|data|model|score)/gi, '');
+  out = out.replace(/[ \t]{2,}/g, ' ').trim();
+  return out || null;
+}
+
+/** Ensures a string ends with a period and starts with a capital letter. */
+function normalizeSentence(s: string): string {
+  const capped = s.charAt(0).toUpperCase() + s.slice(1);
+  return /[.!?]$/.test(capped) ? capped : capped + '.';
+}
+
+/**
+ * Composes an investor-memo-style narrative for the Investment Snapshot from conviction props.
+ * Returns an array of paragraph strings, rendered as separate <p> elements.
+ * Returns an empty array when conviction data is fully absent (caller falls back to summary text).
+ */
+function composeInvestmentNarrative({
+  recommendation,
+  convictionScore,
+  convictionRationale,
+  topPositiveContributors,
+  topNegativeContributors,
+  humanizedChecks,
+}: {
+  recommendation: 'Proceed' | 'Caution' | 'Pass' | null;
+  convictionScore: number | null;
+  convictionRationale: string | null;
+  topPositiveContributors: _Contributor[];
+  topNegativeContributors: _Contributor[];
+  humanizedChecks: string[];
+}): string[] {
+  const lines: string[] = [];
+  const hasAnySignals =
+    recommendation !== null ||
+    convictionScore !== null ||
+    topPositiveContributors.length > 0 ||
+    topNegativeContributors.length > 0;
+
+  if (!hasAnySignals) return lines;
+
+  // Opening: non-mechanical conviction rationale, or constructed posture sentence.
+  const rationale = !isMechanicalConvictionText(convictionRationale) ? convictionRationale : null;
+  if (rationale) {
+    lines.push(normalizeSentence(rationale));
+  } else if (recommendation || convictionScore !== null) {
+    const scorePhrase = convictionScore !== null ? ` (${convictionScore}/100)` : '';
+    if (recommendation === 'Proceed') {
+      lines.push(`Initial analysis supports proceeding${scorePhrase}.`);
+    } else if (recommendation === 'Caution') {
+      lines.push(`Initial analysis warrants caution${scorePhrase} — key conditions must be met before committing capital.`);
+    } else if (recommendation === 'Pass') {
+      lines.push(`Initial analysis indicates this deal does not meet the required conviction threshold${scorePhrase}.`);
+    }
+  }
+
+  // Strengths sentence: up to 3 positive signals joined as prose.
+  if (topPositiveContributors.length > 0) {
+    const signals = topPositiveContributors
+      .slice(0, 3)
+      .map((c) => mapContributorToSignal(c.key, c.label, 'positive').toLowerCase());
+    const joined =
+      signals.length === 1
+        ? signals[0]
+        : signals.length === 2
+          ? `${signals[0]} and ${signals[1]}`
+          : `${signals[0]}, ${signals[1]}, and ${signals[2]}`;
+    lines.push(`Supporting evidence indicates ${joined}.`);
+  }
+
+  // Concerns sentence: up to 2 negative signals.
+  if (topNegativeContributors.length > 0) {
+    const concerns = topNegativeContributors
+      .slice(0, 2)
+      .map((c) => mapContributorToSignal(c.key, c.label, 'negative').toLowerCase());
+    const joined =
+      concerns.length === 1
+        ? concerns[0]
+        : `${concerns[0]}, and ${concerns[1]}`;
+    lines.push(`Areas requiring further validation: ${joined}.`);
+  }
+
+  // Next-steps sentence: first 2 humanized checks.
+  if (humanizedChecks.length > 0) {
+    const checks = humanizedChecks.slice(0, 2).map((c) => c.replace(/\.$/, '').toLowerCase());
+    const sentence =
+      checks.length === 1
+        ? `Before proceeding: ${checks[0]}.`
+        : `Before proceeding, validate: ${checks[0]}, and ${checks[1]}.`;
+    lines.push(sentence);
+  }
+
+  return lines;
+}
+
+/**
+ * Composes a product card narrative. Returns `primary` (the governed value, cleaned and
+ * normalized) and an optional `signal` line sourced from conviction contributor keys.
+ */
+function composeProductNarrative({
+  productValue,
+  topPositiveContributors,
+  topNegativeContributors,
+}: {
+  productValue: string | null;
+  topPositiveContributors: _Contributor[];
+  topNegativeContributors: _Contributor[];
+}): { primary: string | null; signal: string | null } {
+  const primary = productValue
+    ? normalizeSentence(cleanCopy(productValue) ?? productValue)
+    : null;
+
+  const hasQualityPositive = topPositiveContributors.some(
+    (c) => c.key === 'product_or_asset_quality' || c.key === 'traction_validation',
+  );
+  const hasQualityNegative = topNegativeContributors.some(
+    (c) => c.key === 'product_or_asset_quality' || c.key === 'evidence_quality',
+  );
+
+  const signal = hasQualityPositive
+    ? 'Product quality is evidenced by available documentation.'
+    : hasQualityNegative
+      ? 'Product quality evidence is limited — independent verification required.'
+      : null;
+
+  return { primary, signal };
+}
+
+/**
+ * Composes a market card narrative. Cleans internal artifacts from the governed value
+ * and appends a demand-validation signal line sourced from conviction contributor keys.
+ */
+function composeMarketNarrative({
+  marketValue,
+  topPositiveContributors,
+  topNegativeContributors,
+}: {
+  marketValue: string | null;
+  topPositiveContributors: _Contributor[];
+  topNegativeContributors: _Contributor[];
+}): { primary: string | null; signal: string | null } {
+  const primary = marketValue
+    ? normalizeSentence(cleanCopy(marketValue) ?? marketValue)
+    : null;
+
+  const hasDemandPositive = topPositiveContributors.some(
+    (c) => c.key === 'market_demand' || c.key === 'external_corroboration',
+  );
+  const hasDemandNegative = topNegativeContributors.some(
+    (c) => c.key === 'market_demand' || c.key === 'external_corroboration' || c.key === 'traction_validation',
+  );
+
+  const signal = hasDemandPositive
+    ? 'Market demand is substantiated by available evidence.'
+    : hasDemandNegative
+      ? 'Market demand validation is limited — traction or third-party corroboration is needed.'
+      : null;
+
+  return { primary, signal };
+}
+
+/**
+ * Composes the Financial Snapshot prose section from targeted sub-model summaries,
+ * tile availability, and integrity status. Returns up to 3 investor-readable sentences.
+ */
+function composeFinancialNarrative({
+  financialCurrentStateSummary,
+  financialBurnRunwaySummary,
+  financialNarrative,
+  revenueTile,
+  burnTile,
+  runwayTile,
+  financialIntegrityStatus,
+}: {
+  financialCurrentStateSummary: string | null;
+  financialBurnRunwaySummary: string | null;
+  financialNarrative: string | null;
+  revenueTile: FinancialTile;
+  burnTile: FinancialTile;
+  runwayTile: FinancialTile;
+  financialIntegrityStatus: 'validated' | 'unvalidated' | 'partial' | null;
+}): string[] {
+  const lines: string[] = [];
+
+  // Primary: targeted summaries from sub-models (already null-state filtered by selector).
+  if (financialCurrentStateSummary) lines.push(normalizeSentence(financialCurrentStateSummary));
+  if (financialBurnRunwaySummary) lines.push(normalizeSentence(financialBurnRunwaySummary));
+  // Fallback: top-level narrative when both sub-summaries are absent.
+  if (lines.length === 0 && financialNarrative) lines.push(normalizeSentence(financialNarrative));
+
+  // Validation note.
+  if (financialIntegrityStatus === 'unvalidated' || financialIntegrityStatus === 'partial') {
+    lines.push('Financial figures are unaudited — independent validation is required before relying on these projections.');
+  }
+
+  // Missing data note: only add when we have some context (at least one prose line).
+  if (lines.length > 0) {
+    const missingLabels = [
+      revenueTile.value === '—' ? 'revenue' : null,
+      burnTile.value === '—' ? 'burn rate' : null,
+      runwayTile.value === '—' ? 'runway' : null,
+    ].filter((l): l is string => l !== null);
+
+    if (missingLabels.length > 0) {
+      const joined =
+        missingLabels.length === 1
+          ? missingLabels[0]
+          : missingLabels.length === 2
+            ? `${missingLabels[0]} and ${missingLabels[1]}`
+            : `${missingLabels[0]}, ${missingLabels[1]}, and ${missingLabels[2]}`;
+      lines.push(
+        `${joined.charAt(0).toUpperCase() + joined.slice(1)} data is not available and should be obtained before proceeding.`,
+      );
+    }
+  }
+
+  return lines;
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function DealWorkspaceV4({
@@ -318,6 +551,42 @@ export function DealWorkspaceV4({
     financialIntegrityStatus && financialIntegrityStatus !== 'validated';
   const showCoverageBadge =
     financialCoverage !== null && financialCoverage < 80;
+
+  // ── Section-level composition ────────────────────────────────────────────
+
+  // Investment Snapshot: composed from conviction signals. Falls back to investmentParas
+  // when conviction data is absent (e.g. analysis not yet run).
+  const convictionNarrativeLines = composeInvestmentNarrative({
+    recommendation,
+    convictionScore,
+    convictionRationale,
+    topPositiveContributors,
+    topNegativeContributors,
+    humanizedChecks,
+  });
+
+  // Product / Market: primary governed value + optional signal line from contributors.
+  const { primary: productPrimary, signal: productSignal } = composeProductNarrative({
+    productValue: product.value && product.value !== '—' ? product.value : null,
+    topPositiveContributors,
+    topNegativeContributors,
+  });
+  const { primary: marketPrimary, signal: marketSignal } = composeMarketNarrative({
+    marketValue: market.value && market.value !== '—' ? market.value : null,
+    topPositiveContributors,
+    topNegativeContributors,
+  });
+
+  // Financial Snapshot: targeted summaries + tile availability + integrity context.
+  const financialProseLines = composeFinancialNarrative({
+    financialCurrentStateSummary,
+    financialBurnRunwaySummary,
+    financialNarrative,
+    revenueTile,
+    burnTile,
+    runwayTile,
+    financialIntegrityStatus,
+  });
 
   const hasTeam = teamHighlights.length > 0;
   const hasUoF = useOfFunds.length > 0;
@@ -441,7 +710,13 @@ export function DealWorkspaceV4({
               </div>
             )}
             <div className="space-y-3">
-              {investmentParas.length > 0 ? (
+              {convictionNarrativeLines.length > 0 ? (
+                convictionNarrativeLines.map((line, idx) => (
+                  <p key={idx} className={`text-sm leading-relaxed ${body}`}>
+                    {line}
+                  </p>
+                ))
+              ) : investmentParas.length > 0 ? (
                 investmentParas.map((para, idx) => (
                   <p key={idx} className={`text-sm leading-relaxed ${body}`}>
                     {para}
@@ -576,8 +851,15 @@ export function DealWorkspaceV4({
                 <Target className={`w-4 h-4 mt-0.5 ${muted}`} />
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Product</div>
               </div>
-              <div className={`text-sm leading-relaxed ${product.value && product.value !== '—' ? body : muted}`}>
-                {product.value && product.value !== '—' ? product.value : 'Not extracted'}
+              <div className="space-y-1.5">
+                {productPrimary ? (
+                  <p className={`text-sm leading-relaxed ${body}`}>{productPrimary}</p>
+                ) : (
+                  <p className={`text-sm ${muted}`}>Not extracted</p>
+                )}
+                {productSignal && (
+                  <p className={`text-xs leading-relaxed ${muted}`}>{productSignal}</p>
+                )}
               </div>
             </div>
 
@@ -586,8 +868,15 @@ export function DealWorkspaceV4({
                 <TrendingUp className={`w-4 h-4 mt-0.5 ${muted}`} />
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Market</div>
               </div>
-              <div className={`text-sm leading-relaxed ${market.value && market.value !== '—' ? body : muted}`}>
-                {market.value && market.value !== '—' ? market.value : 'Not extracted'}
+              <div className="space-y-1.5">
+                {marketPrimary ? (
+                  <p className={`text-sm leading-relaxed ${body}`}>{marketPrimary}</p>
+                ) : (
+                  <p className={`text-sm ${muted}`}>Not extracted</p>
+                )}
+                {marketSignal && (
+                  <p className={`text-xs leading-relaxed ${muted}`}>{marketSignal}</p>
+                )}
               </div>
             </div>
 
@@ -682,17 +971,11 @@ export function DealWorkspaceV4({
         {/* Financial Snapshot (Horizontal Strip) */}
         <div>
           <h2 className={`text-sm font-medium mb-4 ${sectionLabel}`}>Financial Snapshot</h2>
-          {(financialCurrentStateSummary || financialBurnRunwaySummary || financialNarrative) && (
-            <div className="space-y-1.5 mb-4">
-              {financialCurrentStateSummary && (
-                <p className={`text-sm leading-relaxed ${body}`}>{financialCurrentStateSummary}</p>
-              )}
-              {financialBurnRunwaySummary && (
-                <p className={`text-sm leading-relaxed ${body}`}>{financialBurnRunwaySummary}</p>
-              )}
-              {!financialCurrentStateSummary && !financialBurnRunwaySummary && financialNarrative && (
-                <p className={`text-sm leading-relaxed ${body}`}>{financialNarrative}</p>
-              )}
+          {financialProseLines.length > 0 && (
+            <div className="space-y-2 mb-4">
+              {financialProseLines.map((line, idx) => (
+                <p key={idx} className={`text-sm leading-relaxed ${body}`}>{line}</p>
+              ))}
             </div>
           )}
           <div className="flex items-center gap-3 flex-wrap">

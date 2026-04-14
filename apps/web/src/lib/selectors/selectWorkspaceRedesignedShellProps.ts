@@ -116,8 +116,8 @@ export type SelectWorkspaceRedesignedShellInput = {
   insightsReady: boolean;
   /**
    * Canonical workspace verdict from resolveWorkspaceVerdict().
-   * Used as fallback recommendation source when conviction_v1 is absent.
-   * Priority chain: conviction_v1.recommendation_posture → workspaceVerdict.verdict → null
+   * Primary recommendation source (score-governance-v1 policy).
+   * Always drives the displayed recommendation — conviction_v1 posture is explanation-only.
    */
   workspaceVerdict?: { verdict: string; source: string } | null;
 };
@@ -161,34 +161,40 @@ export function selectWorkspaceRedesignedShellProps(
   const { product, market, businessModel: bm, raise: raiseTerms } = overviewVM.keyFacts;
 
   // ── Score + Recommendation source arbitration ────────────────────────────
-  // Priority (per SCORING_SOURCE_OF_TRUTH_CONTRACT.md Foundation doc):
-  //   conviction_v1  (reasoning-backed deterministic model, full family inputs)
-  //   score_band_v2  (fallback — only when conviction_v1 is absent)
+  // Score governance policy (score-governance-v1):
+  //   Displayed score  → score_band_v2.overall_score  (primary)
+  //                    → conviction_v1 score           (only when band score absent)
   //
-  // Recommendation priority:
-  //   conviction_v1.recommendation_posture (derived from conviction score)
-  //   workspaceVerdict.verdict             (from resolveWorkspaceVerdict — canonical resolver)
-  //   null                                 (no recommendation available)
+  // Recommendation policy (score-governance-v1):
+  //   Displayed verdict → workspaceVerdict / decision_v1  (primary — always)
+  //                     → conviction_v1 posture            (only when decision_v1 absent)
+  //
+  // conviction_v1 is used for explanation only:
+  //   top_positive_contributors, top_negative_contributors,
+  //   required_next_checks, summary.rationale, summary.headline
+  // It does NOT drive the primary displayed score or recommendation.
 
   const convictionV1: any = ss.conviction_v1 ?? rpt.conviction_v1 ?? null;
   const convictionV1Present = convictionV1 != null;
 
-  // Score: prefer conviction_v1, fall back to score_band_v2 when conviction absent.
+  // Score: always use score_band_v2.overall_score as the displayed number.
+  // conviction_v1 score is retained for internal reference but is not the primary display value.
   const _convictionRawScore = asFinite(convictionV1?.conviction_score_0_100);
   const _bandFallbackScore = asFinite(meta?.score_band_v2?.overall_score)
     ?? asFinite(meta?.score_explanation?.totals?.overall_score);
-  const convictionScore = _convictionRawScore ?? (!convictionV1Present ? _bandFallbackScore : null);
-  const convictionScoreSource: 'conviction_v1' | 'score_band_v2' | 'none' =
-    _convictionRawScore != null ? 'conviction_v1'
-    : (!convictionV1Present && _bandFallbackScore != null) ? 'score_band_v2'
+  const convictionScore = _bandFallbackScore ?? _convictionRawScore;
+  const convictionScoreSource: 'score_band_v2' | 'conviction_v1' | 'none' =
+    _bandFallbackScore != null ? 'score_band_v2'
+    : _convictionRawScore != null ? 'conviction_v1'
     : 'none';
 
   const convictionBand = asNES(convictionV1?.conviction_band);
 
-  // Recommendation posture: prefer conviction_v1, fall back to workspaceVerdict when conviction absent.
+  // Recommendation: always use workspaceVerdict (decision_v1 path) as the primary displayed verdict.
+  // conviction_v1 posture is available for explanation only — never overrides decision_v1 for primary display.
   const _convictionRawPosture = asNES(convictionV1?.recommendation_posture);
-  const _verdictFallbackPosture: string | null = (() => {
-    if (convictionV1Present || !workspaceVerdict?.verdict) return null;
+  const _verdictPosture: string | null = (() => {
+    if (!workspaceVerdict?.verdict) return null;
     // Map WorkspaceVerdict → posture format expected by mapPosture() in DealWorkspaceV4
     switch (workspaceVerdict.verdict) {
       case 'FUND':       return 'INVEST';
@@ -198,21 +204,39 @@ export function selectWorkspaceRedesignedShellProps(
       default:           return null;
     }
   })();
-  const convictionPosture = _convictionRawPosture ?? _verdictFallbackPosture;
-  const convictionPostureSource: 'conviction_v1' | 'workspace_verdict' | 'none' =
-    _convictionRawPosture != null ? 'conviction_v1'
-    : _verdictFallbackPosture != null ? 'workspace_verdict'
+  const convictionPosture = _verdictPosture ?? _convictionRawPosture;
+  const convictionPostureSource: 'workspace_verdict' | 'conviction_v1' | 'none' =
+    _verdictPosture != null ? 'workspace_verdict'
+    : _convictionRawPosture != null ? 'conviction_v1'
     : 'none';
 
   // DEV trace: score + recommendation source arbitration
   if (import.meta.env.DEV) {
     console.group('[TRACE:selectWorkspaceRedesignedShellProps] score + recommendation source');
     console.log('conviction_v1 present?', convictionV1Present);
-    console.log('convictionScore:', convictionScore, '| source:', convictionScoreSource);
+    console.log('convictionScore:', convictionScore, '| source:', convictionScoreSource, '| band_score:', _bandFallbackScore, '| conviction_raw:', _convictionRawScore);
     console.log('convictionPosture:', convictionPosture, '| source:', convictionPostureSource);
-    if (!convictionV1Present) {
-      console.log('fallback path: score_band_v2.overall_score =', _bandFallbackScore);
-      console.log('fallback path: workspaceVerdict =', workspaceVerdict?.verdict ?? null, '(source:', workspaceVerdict?.source ?? 'none', ')');
+    console.log('workspaceVerdict:', workspaceVerdict?.verdict ?? null, '(source:', workspaceVerdict?.source ?? 'none', ')');
+    // Model tension: log when decision_v1 and conviction_v1 yield different verdicts.
+    // This measures how often the two scoring models disagree — do not suppress.
+    if (_verdictPosture && _convictionRawPosture) {
+      const _cvVerdict =
+        (_convictionRawPosture === 'strong_yes' || _convictionRawPosture === 'yes') ? 'FUND'
+        : _convictionRawPosture === 'consider' ? 'CONSIDER'
+        : _convictionRawPosture === 'pass' ? 'PASS'
+        : null;
+      if (_cvVerdict && _cvVerdict !== workspaceVerdict?.verdict) {
+        console.warn(
+          '[SCORE-GOVERNANCE] Model tension — decision_v1 and conviction_v1 disagree:',
+          {
+            decision_v1_verdict: workspaceVerdict?.verdict,
+            decision_v1_rec_key: (meta?.decision_v1 as any)?.recommendation_key,
+            conviction_v1_posture: _convictionRawPosture,
+            band_score: _bandFallbackScore,
+            conviction_score: _convictionRawScore,
+          },
+        );
+      }
     }
     console.groupEnd();
   }

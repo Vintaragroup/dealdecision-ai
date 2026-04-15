@@ -1,0 +1,274 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "created": "2026-04-15",
+    "purpose": "Regression-grade golden assertions for the 10-file financial extraction eval suite",
+    "categories": {
+      "startup_baseline": "Standard startup financial model — revenue, burn, cash, headcount expected",
+      "adversarial_edge": "Atypical layout, format, or scope — must not regress to worse classification",
+      "real_estate_schema_divergent": "Commercial/multifamily RE model — NOI/IRR/waterfall schema, not startup burn/runway"
+    },
+    "verdict_levels": {
+      "PASS": "All required metric families present, current-state signals confirmed",
+      "PASS_WITH_WARNINGS": "Extraction succeeded but with known structural gaps (e.g. missing revenue)",
+      "FAIL": "Extraction failed or extractable content is zero"
+    }
+  },
+  "files": [
+    {
+      "filename": "capex.xls",
+      "category": "adversarial_edge",
+      "notes": "Single-purpose CAPEX tracker. Not a P&L or revenue model. Only one usable metric token (cash). Legacy .xls format — no vision worker support; xlrd path only.",
+      "expected": {
+        "verdict": "PASS_WITH_WARNINGS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["cash"],
+        "metric_families_forbidden": ["revenue", "burn", "runway"],
+        "metric_families_optional": [],
+        "has_current_state": true,
+        "has_projections": false,
+        "is_real_estate": false,
+        "min_metric_tokens": 1,
+        "presence": {
+          "revenue": false,
+          "burn": false,
+          "cash": true,
+          "runway": false,
+          "projected_values": false
+        },
+        "expected_warnings": [
+          "No revenue metrics detected"
+        ],
+        "must_not_regress_to": "FAIL"
+      }
+    },
+    {
+      "filename": "financial-model-template-cmu-compton-10-12-23-1.xlsx",
+      "category": "startup_baseline",
+      "notes": "CMU-origin startup financial model. Large (1MB+). Multi-sheet with revenue, headcount, gross margin. Has both current and projected data. Direct openpyxl path required due to size.",
+      "expected": {
+        "verdict": "PASS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["cash", "revenue"],
+        "metric_families_forbidden": [],
+        "metric_families_optional": ["gross_margin", "headcount", "burn"],
+        "has_current_state": true,
+        "has_projections": true,
+        "is_real_estate": false,
+        "min_metric_tokens": 50,
+        "presence": {
+          "revenue": true,
+          "burn": false,
+          "cash": true,
+          "runway": false,
+          "projected_values": true
+        },
+        "expected_warnings": [],
+        "must_not_regress_to": "PASS_WITH_WARNINGS"
+      }
+    },
+    {
+      "filename": "Financial-Projections-Template.xlsx",
+      "category": "startup_baseline",
+      "notes": "Standard startup financial projections template. Revenue, cash, headcount present. All current-state signals — no ordinal year labels detected.",
+      "expected": {
+        "verdict": "PASS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["cash", "revenue"],
+        "metric_families_forbidden": [],
+        "metric_families_optional": ["headcount", "burn", "ebitda"],
+        "has_current_state": true,
+        "has_projections": false,
+        "is_real_estate": false,
+        "min_metric_tokens": 15,
+        "presence": {
+          "revenue": true,
+          "burn": false,
+          "cash": true,
+          "runway": false,
+          "projected_values": false
+        },
+        "expected_warnings": [],
+        "must_not_regress_to": "PASS_WITH_WARNINGS"
+      }
+    },
+    {
+      "filename": "IC-Startup-Financial-Projections-9026 (1).xlsx",
+      "category": "startup_baseline",
+      "notes": "IC-format startup financial projections. Revenue, EBITDA, gross margin, cash present. Structured 4-sheet model. Strong signal quality.",
+      "expected": {
+        "verdict": "PASS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["cash", "revenue", "ebitda"],
+        "metric_families_forbidden": [],
+        "metric_families_optional": ["gross_margin", "headcount", "burn"],
+        "has_current_state": true,
+        "has_projections": false,
+        "is_real_estate": false,
+        "min_metric_tokens": 20,
+        "presence": {
+          "revenue": true,
+          "burn": false,
+          "cash": true,
+          "runway": false,
+          "projected_values": false
+        },
+        "expected_warnings": [],
+        "must_not_regress_to": "PASS_WITH_WARNINGS"
+      }
+    },
+    {
+      "filename": "margin.xls",
+      "category": "adversarial_edge",
+      "notes": "Margin/P&L analysis workbook in legacy .xls format. Revenue, EBITDA, gross margin present. xlrd extraction path. Must produce current-state revenue signal without vision worker.",
+      "expected": {
+        "verdict": "PASS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["revenue", "cash", "ebitda"],
+        "metric_families_forbidden": [],
+        "metric_families_optional": ["gross_margin", "burn"],
+        "has_current_state": true,
+        "has_projections": false,
+        "is_real_estate": false,
+        "min_metric_tokens": 8,
+        "presence": {
+          "revenue": true,
+          "burn": false,
+          "cash": true,
+          "runway": false,
+          "projected_values": false
+        },
+        "expected_warnings": [],
+        "must_not_regress_to": "PASS_WITH_WARNINGS"
+      }
+    },
+    {
+      "filename": "Multifamily-Redevelopment-Model-v7.1-asfp9a.xlsx",
+      "category": "real_estate_schema_divergent",
+      "notes": "Multifamily redevelopment RE model. NOI/IRR/waterfall patterns present. burn is operating expense not startup burn. real_estate family MUST be detected. revenue signals map to RE NOI/gross income, not startup ARR.",
+      "expected": {
+        "verdict": "PASS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["real_estate", "cash"],
+        "metric_families_forbidden": [],
+        "metric_families_optional": ["revenue", "burn", "ebitda"],
+        "has_current_state": true,
+        "has_projections": false,
+        "is_real_estate": true,
+        "min_metric_tokens": 10,
+        "presence": {
+          "revenue": true,
+          "burn": true,
+          "cash": true,
+          "runway": false,
+          "projected_values": false
+        },
+        "expected_warnings": [],
+        "must_not_regress_to": "PASS_WITH_WARNINGS",
+        "schema_note": "burn/revenue here are RE operating metrics, NOT startup burn rate / ARR — downstream consumer must apply schema guard before promoting to burn_rate or revenue_canonical"
+      }
+    },
+    {
+      "filename": "sf_blog_model.xlsx",
+      "category": "real_estate_schema_divergent",
+      "notes": "SF Bay Area real estate acquisition model. Most complete RE schema example: burn, cash, ebitda, gross_margin, headcount (staff), real_estate, revenue all present. Best baseline for RE category.",
+      "expected": {
+        "verdict": "PASS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["real_estate", "burn", "cash"],
+        "metric_families_forbidden": [],
+        "metric_families_optional": ["ebitda", "gross_margin", "headcount", "revenue"],
+        "has_current_state": true,
+        "has_projections": false,
+        "is_real_estate": true,
+        "min_metric_tokens": 10,
+        "presence": {
+          "revenue": true,
+          "burn": true,
+          "cash": true,
+          "runway": false,
+          "projected_values": false
+        },
+        "expected_warnings": [],
+        "must_not_regress_to": "PASS_WITH_WARNINGS",
+        "schema_note": "burn/revenue are RE operating metrics. real_estate family detection is the primary correctness gate here."
+      }
+    },
+    {
+      "filename": "Tech-Startup-Financial-statement-template.xlsx",
+      "category": "startup_baseline",
+      "notes": "Classic tech startup financial statement template. Richest startup baseline: burn, cash, EBITDA, gross margin, headcount, revenue all present. 35 metric tokens. Best startup baseline for regression anchoring.",
+      "expected": {
+        "verdict": "PASS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["revenue", "burn", "cash", "ebitda"],
+        "metric_families_forbidden": [],
+        "metric_families_optional": ["gross_margin", "headcount"],
+        "has_current_state": true,
+        "has_projections": false,
+        "is_real_estate": false,
+        "min_metric_tokens": 25,
+        "presence": {
+          "revenue": true,
+          "burn": true,
+          "cash": true,
+          "runway": false,
+          "projected_values": false
+        },
+        "expected_warnings": [],
+        "must_not_regress_to": "PASS_WITH_WARNINGS"
+      }
+    },
+    {
+      "filename": "tpe-financial-model-template.xlsm",
+      "category": "startup_baseline",
+      "notes": "Large macro-enabled (.xlsm) startup financial model. 27 sheets, 113 metric tokens. High-signal revenue detection (80 signals). Direct openpyxl path due to size. Burn not detected — model may be revenue-first.",
+      "expected": {
+        "verdict": "PASS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["revenue", "cash", "ebitda"],
+        "metric_families_forbidden": [],
+        "metric_families_optional": ["headcount", "gross_margin", "burn"],
+        "has_current_state": true,
+        "has_projections": false,
+        "is_real_estate": false,
+        "min_metric_tokens": 80,
+        "presence": {
+          "revenue": true,
+          "burn": false,
+          "cash": true,
+          "runway": false,
+          "projected_values": false
+        },
+        "expected_warnings": [],
+        "must_not_regress_to": "PASS_WITH_WARNINGS"
+      }
+    },
+    {
+      "filename": "Value-Add-Apartment-Acquisition-Model_v0.964-pdsdzt.xlsm",
+      "category": "real_estate_schema_divergent",
+      "notes": "Value-add apartment acquisition model (.xlsm). Lowest token count (9) in the suite. RE schema — burn/cash/real_estate/revenue detected but these map to RE acquisition metrics not startup financials.",
+      "expected": {
+        "verdict": "PASS",
+        "extraction_succeeded": true,
+        "metric_families_required": ["real_estate", "cash"],
+        "metric_families_forbidden": [],
+        "metric_families_optional": ["revenue", "burn"],
+        "has_current_state": true,
+        "has_projections": false,
+        "is_real_estate": true,
+        "min_metric_tokens": 5,
+        "presence": {
+          "revenue": true,
+          "burn": true,
+          "cash": true,
+          "runway": false,
+          "projected_values": false
+        },
+        "expected_warnings": [],
+        "must_not_regress_to": "PASS_WITH_WARNINGS",
+        "schema_note": "Lowest-density RE model. real_estate family detection is the primary correctness gate."
+      }
+    }
+  ]
+}

@@ -1,0 +1,242 @@
+{
+  "generated_at": "2026-04-15T19:23:26.686385+00:00",
+  "total": 10,
+  "passes": 9,
+  "pass_with_warnings": 1,
+  "fails": 0,
+  "files": [
+    {
+      "filename": "capex.xls",
+      "verdict": "PASS WITH WARNINGS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "cash"
+      ],
+      "total_facts_found": 1,
+      "has_current_state": true,
+      "has_projections": false,
+      "is_real_estate": false,
+      "recommended_action": "extraction fix",
+      "warnings": [],
+      "verdict_reasons": [
+        "WARNING: No revenue metrics detected"
+      ]
+    },
+    {
+      "filename": "financial-model-template-cmu-compton-10-12-23-1.xlsx",
+      "verdict": "PASS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "cash",
+        "gross_margin",
+        "headcount",
+        "revenue"
+      ],
+      "total_facts_found": 180,
+      "has_current_state": true,
+      "has_projections": true,
+      "is_real_estate": false,
+      "recommended_action": "none",
+      "warnings": [
+        "File is 1062KB \u2014 vision worker bypassed (>500KB threshold). Used direct openpyxl scan."
+      ],
+      "verdict_reasons": [
+        "Current-period revenue detected (10 signals)"
+      ]
+    },
+    {
+      "filename": "Financial-Projections-Template.xlsx",
+      "verdict": "PASS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "cash",
+        "headcount",
+        "revenue"
+      ],
+      "total_facts_found": 24,
+      "has_current_state": true,
+      "has_projections": false,
+      "is_real_estate": false,
+      "recommended_action": "none",
+      "warnings": [
+        "File is 208KB \u2014 vision worker bypassed (>500KB threshold). Used direct openpyxl scan."
+      ],
+      "verdict_reasons": [
+        "Current-period revenue detected (6 signals)"
+      ]
+    },
+    {
+      "filename": "IC-Startup-Financial-Projections-9026 (1).xlsx",
+      "verdict": "PASS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "cash",
+        "ebitda",
+        "gross_margin",
+        "revenue"
+      ],
+      "total_facts_found": 27,
+      "has_current_state": true,
+      "has_projections": false,
+      "is_real_estate": false,
+      "recommended_action": "none",
+      "warnings": [
+        "File is 383KB \u2014 vision worker bypassed (>500KB threshold). Used direct openpyxl scan."
+      ],
+      "verdict_reasons": [
+        "Current-period revenue detected (5 signals)"
+      ]
+    },
+    {
+      "filename": "margin.xls",
+      "verdict": "PASS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "cash",
+        "ebitda",
+        "gross_margin",
+        "revenue"
+      ],
+      "total_facts_found": 12,
+      "has_current_state": true,
+      "has_projections": false,
+      "is_real_estate": false,
+      "recommended_action": "none",
+      "warnings": [],
+      "verdict_reasons": [
+        "Current-period revenue detected (7 signals)"
+      ]
+    },
+    {
+      "filename": "Multifamily-Redevelopment-Model-v7.1-asfp9a.xlsx",
+      "verdict": "PASS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "burn",
+        "cash",
+        "ebitda",
+        "real_estate",
+        "revenue"
+      ],
+      "total_facts_found": 19,
+      "has_current_state": true,
+      "has_projections": false,
+      "is_real_estate": true,
+      "recommended_action": "none",
+      "warnings": [
+        "File is 255KB \u2014 vision worker bypassed (>500KB threshold). Used direct openpyxl scan."
+      ],
+      "verdict_reasons": [
+        "Real-estate schema detected (NOI/IRR/waterfall patterns found)",
+        "Current-period revenue detected (3 signals)",
+        "Current-period burn detected"
+      ]
+    },
+    {
+      "filename": "sf_blog_model.xlsx",
+      "verdict": "PASS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "burn",
+        "cash",
+        "ebitda",
+        "gross_margin",
+        "headcount",
+        "real_estate",
+        "revenue"
+      ],
+      "total_facts_found": 16,
+      "has_current_state": true,
+      "has_projections": false,
+      "is_real_estate": true,
+      "recommended_action": "none",
+      "warnings": [
+        "File is 253KB \u2014 vision worker bypassed (>500KB threshold). Used direct openpyxl scan."
+      ],
+      "verdict_reasons": [
+        "Real-estate schema detected (NOI/IRR/waterfall patterns found)",
+        "Current-period revenue detected (3 signals)",
+        "Current-period burn detected"
+      ]
+    },
+    {
+      "filename": "Tech-Startup-Financial-statement-template.xlsx",
+      "verdict": "PASS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "burn",
+        "cash",
+        "ebitda",
+        "gross_margin",
+        "headcount",
+        "revenue"
+      ],
+      "total_facts_found": 35,
+      "has_current_state": true,
+      "has_projections": false,
+      "is_real_estate": false,
+      "recommended_action": "none",
+      "warnings": [
+        "File is 100KB \u2014 vision worker bypassed (>500KB threshold). Used direct openpyxl scan."
+      ],
+      "verdict_reasons": [
+        "Current-period revenue detected (21 signals)",
+        "Current-period burn detected"
+      ]
+    },
+    {
+      "filename": "tpe-financial-model-template.xlsm",
+      "verdict": "PASS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "cash",
+        "ebitda",
+        "headcount",
+        "revenue"
+      ],
+      "total_facts_found": 113,
+      "has_current_state": true,
+      "has_projections": false,
+      "is_real_estate": false,
+      "recommended_action": "none",
+      "warnings": [
+        "File is 734KB \u2014 vision worker bypassed (>500KB threshold). Used direct openpyxl scan."
+      ],
+      "verdict_reasons": [
+        "Current-period revenue detected (80 signals)"
+      ]
+    },
+    {
+      "filename": "Value-Add-Apartment-Acquisition-Model_v0.964-pdsdzt.xlsm",
+      "verdict": "PASS",
+      "extraction_succeeded": true,
+      "metric_families": [
+        "burn",
+        "cash",
+        "real_estate",
+        "revenue"
+      ],
+      "total_facts_found": 9,
+      "has_current_state": true,
+      "has_projections": false,
+      "is_real_estate": true,
+      "recommended_action": "none",
+      "warnings": [
+        "File is 1010KB \u2014 vision worker bypassed (>500KB threshold). Used direct openpyxl scan."
+      ],
+      "verdict_reasons": [
+        "Real-estate schema detected (NOI/IRR/waterfall patterns found)",
+        "Current-period revenue detected (1 signals)",
+        "Current-period burn detected"
+      ]
+    }
+  ],
+  "recurring_patterns": {
+    "no-revenue": 10,
+    "real-estate": 3,
+    "burn-gap": 4
+  },
+  "top_issues": [
+    "Real-estate workbooks (NOI/IRR/waterfall) do not map to standard burn/revenue keys \u2014 schema differentiation needed"
+  ]
+}

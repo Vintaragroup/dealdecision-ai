@@ -1,0 +1,160 @@
+{
+  "generated_at": "2026-04-15T19:34:14.332624+00:00",
+  "total_files": 10,
+  "total_regressions": 0,
+  "total_warnings": 0,
+  "overall_status": "PASS",
+  "files": [
+    {
+      "filename": "capex.xls",
+      "category": "adversarial_edge",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 7,
+      "total_assertions": 7
+    },
+    {
+      "filename": "financial-model-template-cmu-compton-10-12-23-1.xlsx",
+      "category": "startup_baseline",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 5,
+      "total_assertions": 5
+    },
+    {
+      "filename": "Financial-Projections-Template.xlsx",
+      "category": "startup_baseline",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 4,
+      "total_assertions": 4
+    },
+    {
+      "filename": "IC-Startup-Financial-Projections-9026 (1).xlsx",
+      "category": "startup_baseline",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 5,
+      "total_assertions": 5
+    },
+    {
+      "filename": "margin.xls",
+      "category": "adversarial_edge",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 5,
+      "total_assertions": 5
+    },
+    {
+      "filename": "Multifamily-Redevelopment-Model-v7.1-asfp9a.xlsx",
+      "category": "real_estate_schema_divergent",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 4,
+      "total_assertions": 4
+    },
+    {
+      "filename": "sf_blog_model.xlsx",
+      "category": "real_estate_schema_divergent",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 5,
+      "total_assertions": 5
+    },
+    {
+      "filename": "Tech-Startup-Financial-statement-template.xlsx",
+      "category": "startup_baseline",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 6,
+      "total_assertions": 6
+    },
+    {
+      "filename": "tpe-financial-model-template.xlsm",
+      "category": "startup_baseline",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 5,
+      "total_assertions": 5
+    },
+    {
+      "filename": "Value-Add-Apartment-Acquisition-Model_v0.964-pdsdzt.xlsm",
+      "category": "real_estate_schema_divergent",
+      "status": "PASS",
+      "regressions": [],
+      "warnings": [],
+      "passing_count": 4,
+      "total_assertions": 4
+    }
+  ],
+  "categories": {
+    "adversarial_edge": {
+      "confidence_level": "high",
+      "pass_count": 2,
+      "warning_count": 0,
+      "fail_count": 0,
+      "recurring_issues": []
+    },
+    "startup_baseline": {
+      "confidence_level": "high",
+      "pass_count": 5,
+      "warning_count": 0,
+      "fail_count": 0,
+      "recurring_issues": []
+    },
+    "real_estate_schema_divergent": {
+      "confidence_level": "high",
+      "pass_count": 3,
+      "warning_count": 0,
+      "fail_count": 0,
+      "recurring_issues": []
+    }
+  },
+  "engineering_fixes": [
+    {
+      "priority_bucket": "period-parser-column-label-resolution",
+      "priority_weight": 5,
+      "files_affected_count": 10,
+      "files_affected": [
+        "all files"
+      ],
+      "description": "col_A / col_B period labels are unresolved. The period parser cannot decode column headers from the structured workbook back to calendar dates. Affects all XLSX extractions where column headers are dates or months.",
+      "risk": "high",
+      "breadth": "wide"
+    },
+    {
+      "priority_bucket": "re-schema-guard-before-metric-promotion",
+      "priority_weight": 3,
+      "files_affected_count": 3,
+      "files_affected": [
+        "Multifamily-Redevelopment-Model-v7.1-asfp9a.xlsx",
+        "sf_blog_model.xlsx",
+        "Value-Add-Apartment-Acquisition-Model_v0.964-pdsdzt.xlsm"
+      ],
+      "description": "Real-estate burn/revenue signals must NOT be promoted to burn_rate or revenue_canonical without a schema guard. These files' burn/revenue are RE operating metrics, not startup financials.",
+      "risk": "high",
+      "breadth": "narrow"
+    },
+    {
+      "priority_bucket": "vision-worker-xls-support",
+      "priority_weight": 2,
+      "files_affected_count": 2,
+      "files_affected": [
+        "capex.xls",
+        "margin.xls"
+      ],
+      "description": "Vision worker /extract-xlsx only handles .xlsx/.xlsm via openpyxl. .xls files fall back to xlrd direct scan \u2014 not production-parity. If .xls files can appear in deals, a dedicated extraction path is needed.",
+      "risk": "medium",
+      "breadth": "narrow"
+    }
+  ]
+}

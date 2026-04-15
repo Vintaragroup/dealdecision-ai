@@ -30,7 +30,7 @@ interface DealWorkspaceHeaderProps {
   raiseAmount: string;
   industry: string;
   score: number;
-  verdict: 'INVEST' | 'CONSIDER' | 'PASS' | 'HARD_PASS';
+  verdict: 'INVEST' | 'INVESTIGATE' | 'CONSIDER' | 'PASS' | 'HARD_PASS';
   primaryIssues: string[];
   blockers: number;
   concerns: number;
@@ -157,6 +157,8 @@ export function DealWorkspaceHeader({
     switch (verdict) {
       case 'INVEST':
         return darkMode ? 'text-emerald-400' : 'text-emerald-600';
+      case 'INVESTIGATE':
+        return darkMode ? 'text-amber-400' : 'text-amber-600';
       case 'CONSIDER':
         return darkMode ? 'text-blue-400' : 'text-blue-600';
       case 'PASS':

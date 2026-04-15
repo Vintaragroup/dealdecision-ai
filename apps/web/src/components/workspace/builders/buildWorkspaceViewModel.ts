@@ -41,7 +41,7 @@ export interface WorkspaceViewModelInputs {
 
   // ── Score / verdict ──────────────────────────────────────────────────────
   reportViewScore: number;
-  verdict: 'INVEST' | 'CONSIDER' | 'PASS' | 'HARD_PASS';
+  verdict: 'INVEST' | 'INVESTIGATE' | 'CONSIDER' | 'PASS' | 'HARD_PASS';
   blockers: number;
 
   // ── Signal quality ───────────────────────────────────────────────────────

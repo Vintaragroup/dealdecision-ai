@@ -1681,7 +1681,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   };
   const decisionAccent = decisionLabel === 'FUND'
     ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
-    : decisionLabel === 'CONSIDER'
+    : (decisionLabel === 'CONSIDER' || decisionLabel === 'INVESTIGATE')
       ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
       : (decisionLabel === 'PASS' || decisionLabel === 'HARD_PASS')
         ? 'bg-red-500/10 border-red-500/40 text-red-200'
@@ -1723,7 +1723,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     decisionTileScore0_100 != null ? _workspaceVerdict.verdict : '—';
   const decisionTileAccent = decisionTileLabel === 'FUND'
     ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
-    : decisionTileLabel === 'CONSIDER'
+    : (decisionTileLabel === 'CONSIDER' || decisionTileLabel === 'INVESTIGATE')
       ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
       : (decisionTileLabel === 'PASS' || decisionTileLabel === 'HARD_PASS')
         ? 'bg-red-500/10 border-red-500/40 text-red-200'
@@ -5334,6 +5334,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const vmVerdict: WorkspaceViewModelInputs['verdict'] =
     _workspaceVerdict.verdict === 'HARD_PASS' ? 'HARD_PASS'
     : _workspaceVerdict.verdict === 'FUND' ? 'INVEST'
+    : _workspaceVerdict.verdict === 'INVESTIGATE' ? 'INVESTIGATE'
     : _workspaceVerdict.verdict === 'CONSIDER' ? 'CONSIDER'
     : 'PASS';
 

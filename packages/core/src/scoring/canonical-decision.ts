@@ -564,6 +564,12 @@ export interface CanonicalDecisionV2Input {
   conviction_gate: ConvictionGateResultV2;
   guardrail_triggered: boolean;
   source_v1_decision_key?: string;
+  /**
+   * Pass false when challenge_pass was absent and verdict_resistance was defaulted.
+   * Conflict detection is suppressed when this is false — defaulted VR contributes
+   * no real information about score divergence.
+   */
+  verdict_resistance_present?: boolean;
 }
 
 export interface CanonicalDecisionV2Result {
@@ -610,7 +616,9 @@ export function computeCanonicalDecisionV2(
     verdict = 'hard_pass'; resolution_step = 1;
   } else if (conviction_gate === 'hard_pass') {
     verdict = 'hard_pass'; resolution_step = 2;
-  } else if (bq_score < 45) {
+  } else if (bq_score < 42) {
+    // Lowered from 45: deals in [42, 45) with no hard blockers can reach
+    // step 8/9 (investigate) rather than receiving an automatic pass.
     verdict = 'pass'; resolution_step = 3;
   } else if (evidence_gate === 'blocked') {
     verdict = 'pass'; resolution_step = 4;
@@ -648,17 +656,22 @@ export function computeCanonicalDecisionV2(
   }
 
   // ─── Conflict detection ──────────────────────────────────────────────────
+  // Only emit conflict when verdict_resistance had real data (not a default).
+  // Defaulted VR inflates CV predictably — firing conflict on absent data
+  // would make this signal meaningless.
 
   const conflict_signals: string[] = [];
-  if (Math.abs(bq_score - cv_score) > 20) {
-    conflict_signals.push(
-      `BQ (${bq_score}) vs CV (${cv_score}) diverge by ${Math.abs(bq_score - cv_score).toFixed(0)} points`,
-    );
-  }
-  if (eq_score !== null && Math.abs(bq_score - eq_score) > 20) {
-    conflict_signals.push(
-      `BQ (${bq_score}) vs EQ (${eq_score}) diverge by ${Math.abs(bq_score - eq_score).toFixed(0)} points`,
-    );
+  if (input.verdict_resistance_present !== false) {
+    if (Math.abs(bq_score - cv_score) > 20) {
+      conflict_signals.push(
+        `BQ (${bq_score}) vs CV (${cv_score}) diverge by ${Math.abs(bq_score - cv_score).toFixed(0)} points`,
+      );
+    }
+    if (eq_score !== null && Math.abs(bq_score - eq_score) > 20) {
+      conflict_signals.push(
+        `BQ (${bq_score}) vs EQ (${eq_score}) diverge by ${Math.abs(bq_score - eq_score).toFixed(0)} points`,
+      );
+    }
   }
   const conflict_detected = conflict_signals.length > 0;
 

@@ -11,7 +11,7 @@
  *    + 0.20 * (100 - URSS_scaled)
  *
  * Input defaults when null:
- *   verdict_resistance → 100  (no challenge = full resistance)
+ *   verdict_resistance → 70   (neutral prior: not disproven, but unverified)
  *   conviction_v1_score → 50  (neutral, conservative)
  *   urss               → 0   (conservative: no readiness penalty assumed)
  *
@@ -26,7 +26,7 @@
  * on its own; "hard_pass" means conviction actively recommends against advancing.
  */
 
-import type { ConvictionGateResultV2 } from '../models/scoring-v2-stubs.js';
+import type { ConvictionGateResultV2, ConvictionLabelV2 } from '../models/scoring-v2-stubs.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -87,6 +87,10 @@ export interface ConvictionV2Result {
   }>;
   opposing_case: string | null;
   missing_signals: string[];
+  /** true when challenge_pass provided a real verdict_resistance_score. */
+  verdict_resistance_present: boolean;
+  /** Conviction label derived from score. */
+  label: ConvictionLabelV2 | null;
   /** Phase 2: always false. */
   stub: false;
   version: 'conviction_v2';
@@ -94,7 +98,7 @@ export interface ConvictionV2Result {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const DEFAULT_VERDICT_RESISTANCE = 100;
+const DEFAULT_VERDICT_RESISTANCE = 70; // neutral prior when challenge_pass is absent
 const DEFAULT_CONVICTION_V1      = 50;
 const DEFAULT_URSS               = 0;
 const URSS_HARD_PASS_THRESHOLD   = 75;
@@ -146,12 +150,11 @@ export function computeConvictionV2(input: ConvictionV2Input): ConvictionV2Resul
   const missingSignals: string[] = [];
 
   // Apply defaults with tracking
-  const vr =
-    input.verdict_resistance_score !== null && Number.isFinite(input.verdict_resistance_score)
-      ? clamp(input.verdict_resistance_score)
-      : DEFAULT_VERDICT_RESISTANCE;
-  if (input.verdict_resistance_score === null) {
-    missingSignals.push('verdict_resistance_score (challenge_pass) — defaulted to 100');
+  const vrPresent =
+    input.verdict_resistance_score !== null && Number.isFinite(input.verdict_resistance_score);
+  const vr = vrPresent ? clamp(input.verdict_resistance_score!) : DEFAULT_VERDICT_RESISTANCE;
+  if (!vrPresent) {
+    missingSignals.push('verdict_resistance_score (challenge_pass) — defaulted to 70');
   }
 
   const cv1 =
@@ -179,6 +182,12 @@ export function computeConvictionV2(input: ConvictionV2Input): ConvictionV2Resul
   const rawCV = 0.50 * vr + 0.30 * cv1 + 0.20 * (100 - urssScaled);
   const score = round1(clamp(rawCV));
 
+  const label: ConvictionLabelV2 =
+    score >= 70 ? 'Strong Conviction'
+    : score >= 45 ? 'Moderate Conviction'
+    : score >= 20 ? 'Low Conviction'
+    : 'Insufficient Conviction';
+
   return {
     score,
     verdict_resistance: vr,
@@ -191,6 +200,8 @@ export function computeConvictionV2(input: ConvictionV2Input): ConvictionV2Resul
     top_negative_contributors: input.top_negative_contributors ?? [],
     opposing_case: input.opposing_case ?? null,
     missing_signals: missingSignals,
+    verdict_resistance_present: vrPresent,
+    label,
     stub: false,
     version: 'conviction_v2',
   };

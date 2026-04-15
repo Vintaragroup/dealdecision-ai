@@ -66,12 +66,13 @@ function splitIntoParas(body: string | null): string[] {
     .filter(Boolean);
 }
 
-function mapPosture(posture: string | null): 'Proceed' | 'Caution' | 'Pass' | null {
+function mapPosture(posture: string | null): 'Proceed' | 'Investigate' | 'Caution' | 'Pass' | null {
   if (!posture) return null;
   const p = posture.toUpperCase();
   // 'INVEST' — from workspaceVerdict fallback path
   // 'YES' / 'STRONG_YES' — from conviction_v1.recommendation_posture (fund bands)
   if (p === 'INVEST' || p === 'YES' || p === 'STRONG_YES') return 'Proceed';
+  if (p === 'INVESTIGATE') return 'Investigate';
   if (p === 'CONSIDER') return 'Caution';
   if (p === 'PASS' || p === 'HARD_PASS') return 'Pass';
   return null;
@@ -252,7 +253,7 @@ function composeInvestmentNarrative({
   topNegativeContributors,
   humanizedChecks,
 }: {
-  recommendation: 'Proceed' | 'Caution' | 'Pass' | null;
+  recommendation: 'Proceed' | 'Investigate' | 'Caution' | 'Pass' | null;
   convictionScore: number | null;
   convictionRationale: string | null;
   topPositiveContributors: _Contributor[];
@@ -276,6 +277,8 @@ function composeInvestmentNarrative({
     const scorePhrase = convictionScore !== null ? ` (${convictionScore}/100)` : '';
     if (recommendation === 'Proceed') {
       lines.push(`Initial analysis supports proceeding${scorePhrase}.`);
+    } else if (recommendation === 'Investigate') {
+      lines.push(`Initial analysis warrants further investigation${scorePhrase} — not yet ready to pass or commit.`);
     } else if (recommendation === 'Caution') {
       lines.push(`Initial analysis warrants caution${scorePhrase} — key conditions must be met before committing capital.`);
     } else if (recommendation === 'Pass') {
@@ -615,8 +618,9 @@ export function DealWorkspaceV4({
 
   // ── Styling helpers ──────────────────────────────────────────────────────
 
-  const getRecommendationColor = (rec: 'Proceed' | 'Caution' | 'Pass' | null) => {
+  const getRecommendationColor = (rec: 'Proceed' | 'Investigate' | 'Caution' | 'Pass' | null) => {
     if (rec === 'Proceed') return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+    if (rec === 'Investigate') return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
     if (rec === 'Caution') return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
     if (rec === 'Pass') return 'bg-red-500/10 text-red-400 border-red-500/20';
     return darkMode

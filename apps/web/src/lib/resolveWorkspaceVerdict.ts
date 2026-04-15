@@ -17,7 +17,7 @@
 import { mapCanonicalVerdictToWorkspace } from './canonicalVerdictDisplay';
 import type { CanonicalDecisionWeb } from './apiClient';
 
-export type WorkspaceVerdict = 'HARD_PASS' | 'FUND' | 'CONSIDER' | 'PASS';
+export type WorkspaceVerdict = 'HARD_PASS' | 'FUND' | 'INVESTIGATE' | 'CONSIDER' | 'PASS';
 
 export type WorkspaceVerdictSource =
   | 'canonical_decision'
@@ -77,14 +77,13 @@ function mapDecisionV1Label(label: string): WorkspaceVerdict | null {
 
 /**
  * Maps a `CanonicalVerdictV2` string → `WorkspaceVerdict`.
- * Phase 1 lossy: `advance` and `investigate` both map to CONSIDER
- * (WorkspaceVerdict gains ADVANCE/INVESTIGATE in Phase 2).
+ * Phase 2: `investigate` and `advance` surface as the first-class INVESTIGATE verdict.
  */
 function mapCanonicalV2VerdictToWorkspace(verdict: string): WorkspaceVerdict | null {
   switch (verdict) {
     case 'fund':        return 'FUND';
-    case 'advance':     return 'CONSIDER'; // Phase 1 lossy
-    case 'investigate': return 'CONSIDER'; // Phase 1 lossy
+    case 'advance':     return 'INVESTIGATE'; // Phase 2: advance surfaces as investigate
+    case 'investigate': return 'INVESTIGATE'; // Phase 2: first-class verdict
     case 'pass':        return 'PASS';
     case 'hard_pass':   return 'HARD_PASS';
     default:            return null;

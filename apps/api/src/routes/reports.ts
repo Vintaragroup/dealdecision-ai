@@ -2534,6 +2534,7 @@ function attachScoringV2Computed(args: { meta: any; report: any; dealId?: string
       conviction_gate: cvResult.gate.result,
       guardrail_triggered: guardrailTriggered,
       source_v1_decision_key: recKey,
+      verdict_resistance_present: cvResult.verdict_resistance_present,
     });
     meta.canonical_decision_v2 = canonicalResult;
 

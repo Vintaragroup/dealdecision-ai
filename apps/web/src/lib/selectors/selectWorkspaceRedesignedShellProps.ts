@@ -202,10 +202,11 @@ export function selectWorkspaceRedesignedShellProps(
     if (!workspaceVerdict?.verdict) return null;
     // Map WorkspaceVerdict → posture format expected by mapPosture() in DealWorkspaceV4
     switch (workspaceVerdict.verdict) {
-      case 'FUND':       return 'INVEST';
-      case 'CONSIDER':   return 'CONSIDER';
-      case 'PASS':       return 'PASS';
-      case 'HARD_PASS':  return 'HARD_PASS';
+      case 'FUND':        return 'INVEST';
+      case 'INVESTIGATE': return 'INVESTIGATE';
+      case 'CONSIDER':    return 'CONSIDER';
+      case 'PASS':        return 'PASS';
+      case 'HARD_PASS':   return 'HARD_PASS';
       default:           return null;
     }
   })();

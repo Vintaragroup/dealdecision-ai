@@ -82,6 +82,10 @@ function formatMetricValue(metric: unknown): string {
   const currency = asNES(m.currency) ?? '';
   const unit = asNES(m.unit) ?? '';
   const period = asNES(m.period_label);
+  const sourceKind = asNES(m.source_kind);
+  const periodType = asNES(m.period_type);
+  const temporalScope = asNES(m.temporal_scope);
+  const isProvisional = m.is_provisional === true;
 
   let formatted = '';
   if (Math.abs(num) >= 1_000_000_000) {
@@ -94,11 +98,32 @@ function formatMetricValue(metric: unknown): string {
     formatted = `${currency}${num}`;
   }
 
-  if (unit && unit !== '$' && unit !== 'USD') {
+  // Skip 'number' — it is a type descriptor, not a display unit.
+  if (unit && unit !== '$' && unit !== 'USD' && unit !== 'number') {
     formatted += ` ${unit}`;
   }
-  if (period) formatted += ` (${period})`;
+
+  // Suppress raw period_label when it would mislead:
+  //   - structured_derived monthly: "September" is a DB-order artifact from tied facts,
+  //     not a meaningful billing period for an investor.
+  //   - projected / provisional: period is a forecast label (e.g. "Year 12"), not current state.
+  const suppressPeriod =
+    (sourceKind === 'structured_derived' && periodType === 'monthly') ||
+    temporalScope === 'projected' ||
+    isProvisional;
+  if (period && !suppressPeriod) formatted += ` (${period})`;
   return formatted;
+}
+
+/**
+ * Normalise a runway metric object for display: replace a missing or type-descriptor unit
+ * ('number') with 'mo' so the value renders as "65 mo" rather than a bare integer.
+ */
+function toRunwayMetric(m: unknown): unknown {
+  if (!m || typeof m !== 'object') return m;
+  const raw = m as any;
+  const u = asNES(raw.unit);
+  return (!u || u === 'number') ? { ...raw, unit: 'mo' } : raw;
 }
 
 export type SelectWorkspaceRedesignedShellInput = {
@@ -357,19 +382,39 @@ export function selectWorkspaceRedesignedShellProps(
 
   const financialTiles: FinancialTile[] = [];
 
-  const pushTile = (label: string, metricOrValue: unknown, trustWhenPresent: FinancialTile['trust'] = 'structured') => {
+  const pushTile = (label: string, metricOrValue: unknown) => {
     const v = formatMetricValue(metricOrValue);
+    const m = (metricOrValue && typeof metricOrValue === 'object') ? metricOrValue as any : null;
+
+    // Patch C: derive trust from source quality so TrustBadge renders where it adds meaning.
+    //   xlsx high-confidence  → 'structured'       (no badge — confirmed structured fact)
+    //   kpi_tile              → 'structured'       (no badge — tile-derived but reliable)
+    //   structured_derived    → 'interim_extraction' (Interim badge — computed from raw signals)
+    //   provisional/projected → 'interim_extraction' (Interim badge — unconfirmed forecast)
+    //   other / unknown       → 'structured'       (silent default)
+    const derivedTrust = ((): FinancialTile['trust'] => {
+      if (!m) return 'structured';
+      const sk = asNES(m.source_kind);
+      if (sk === 'structured_derived') return 'interim_extraction';
+      if (m.is_provisional === true || asNES(m.temporal_scope) === 'projected') return 'interim_extraction';
+      return 'structured';
+    })();
+
+    // Patch B: flag projected/provisional metrics so rendering layers can show a "proj." marker.
+    const isProjected = m != null && (m.is_provisional === true || asNES(m.temporal_scope) === 'projected');
+
     financialTiles.push({
       label,
       value: v,
-      trust: v !== '—' ? trustWhenPresent : 'not_extracted',
+      trust: v !== '—' ? derivedTrust : 'not_extracted',
       nullReason: v === '—' ? 'Not extracted' : null,
+      isProjected: isProjected || undefined,
     });
   };
 
   pushTile('Revenue / ARR', cs?.revenue);
-  pushTile('Monthly Burn', br?.monthly_burn ?? cs?.burn_rate);
-  pushTile('Runway', br?.runway_months ?? cs?.runway_months);
+  pushTile('Monthly Burn', br?.monthly_burn ?? cs?.burn_rate ?? br?.alternative_burn_fact);
+  pushTile('Runway', toRunwayMetric(br?.runway_months ?? cs?.runway_months));
   pushTile('Cash', br?.cash ?? cs?.cash);
   pushTile('Gross Margin', cs?.gross_margin_pct);
 

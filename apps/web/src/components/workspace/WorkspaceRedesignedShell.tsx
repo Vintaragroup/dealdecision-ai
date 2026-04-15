@@ -90,7 +90,14 @@ const TrustBadge = ({ trust }: { trust: WorkspaceOverviewFactTrust }) => {
 
 export type RedFlag = { severity: 'high' | 'medium' | 'low'; message: string; action?: string };
 
-export type FinancialTile = { label: string; value: string; trust: WorkspaceOverviewFactTrust; nullReason?: string | null };
+export type FinancialTile = {
+  label: string;
+  value: string;
+  trust: WorkspaceOverviewFactTrust;
+  nullReason?: string | null;
+  /** True when the metric is provisional or projected — rendering layers show a compact "proj." marker. */
+  isProjected?: boolean;
+};
 
 export type WorkspaceRedesignedShellProps = {
   darkMode: boolean;
@@ -513,7 +520,12 @@ function FinancialStrip({
           {financialTiles.map((tile) => (
             <div key={tile.label} className={`rounded-lg border px-3 py-2 min-w-[100px] ${chipCard}`}>
               <div className={`text-[11px] ${muted} mb-0.5`}>{tile.label}</div>
-              <div className={`text-sm font-semibold ${tile.value !== '—' ? title : muted}`}>{tile.value}</div>
+              <div className={`text-sm font-semibold ${tile.value !== '—' ? title : muted}`}>
+                {tile.value}
+                {tile.isProjected && tile.value !== '—' && (
+                  <span className={`ml-1 text-[10px] font-normal ${muted}`}>proj.</span>
+                )}
+              </div>
               <TrustBadge trust={tile.trust} />
               {tile.nullReason && tile.value === '—' && (
                 <div className={`text-[10px] mt-0.5 ${muted}`}>{tile.nullReason}</div>

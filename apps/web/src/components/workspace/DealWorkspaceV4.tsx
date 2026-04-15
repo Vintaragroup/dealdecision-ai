@@ -1021,6 +1021,9 @@ export function DealWorkspaceV4({
               <div className={`text-xs mb-1 ${muted}`}>Runway</div>
               <span className={`text-sm font-medium ${runwayTile.value !== '—' ? heading : muted}`}>
                 {runwayTile.value}
+                {runwayTile.isProjected && runwayTile.value !== '—' && (
+                  <span className={`ml-1 text-[10px] font-normal ${muted}`}>proj.</span>
+                )}
               </span>
             </div>
 

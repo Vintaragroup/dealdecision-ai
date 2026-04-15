@@ -624,6 +624,14 @@ def main(strict: bool = False) -> int:
         reg_str = f"  ({len(fr.regressions)} regression(s))" if fr.regressions else ""
         warn_str = f"  ({len(fr.warnings)} warning(s))" if fr.warnings else ""
         print(f"  {icon} {fr.filename}{reg_str}{warn_str}")
+        for a in fr.regressions:
+            print(f"      REGRESSION  {a.assertion}")
+            print(f"                  expected : {a.expected}")
+            print(f"                  actual   : {a.actual}")
+        for a in fr.warnings:
+            print(f"      WARNING     {a.assertion}")
+            print(f"                  expected : {a.expected}")
+            print(f"                  actual   : {a.actual}")
 
     print()
     for cat_name, cat in sorted(category_results.items()):

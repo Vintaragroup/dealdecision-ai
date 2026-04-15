@@ -1,18 +1,17 @@
 name: Financial Extraction Regression
 
 # ─────────────────────────────────────────────────────────────────────
-# Triggers
-#   pull_request   → runs on PRs that touch the extraction pipeline,
-#                    financial facts, or the eval suite itself
-#   push → main    → guard the main branch
-#   workflow_dispatch → run manually at any time
+# Fully offline — no live services, no secrets required.
 #
-# No live services required — runs fully offline against static
-# fixture files in evaluation/financial_Audit/.
+# Runs against static fixture files in evaluation/financial_Audit/.
+# Gate: fails on any regression or warning (--strict mode).
 #
-# Exit code semantics (--strict mode):
+# Exit code semantics (--strict):
 #   0 → all 10 assertions pass, zero warnings
 #   1 → one or more regressions OR warnings detected
+#
+# Artifacts uploaded on every run (including failure) so CI failures
+# are diagnosable without re-running locally.
 # ─────────────────────────────────────────────────────────────────────
 on:
   pull_request:
@@ -32,7 +31,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: financial-extraction-regression-${{ github.ref }}
+  group: financial-audit-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -42,29 +41,18 @@ jobs:
     timeout-minutes: 10
 
     steps:
+      # ── 1. Source ─────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Python setup ──────────────────────────────────────────────
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-          cache-dependency-path: evaluation/financial_Audit/requirements.txt
-
-      - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install openpyxl==3.1.5 xlrd==2.0.1
-
-      # ── Node / pnpm (required for `pnpm eval:financial:regression:ci`) ──
+      # ── 2. pnpm (must precede setup-node for cache: pnpm to work) ─
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 10.28.1
           run_install: false
 
+      # ── 3. Node (pnpm cache keyed on lockfile) ────────────────────
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -74,19 +62,34 @@ jobs:
       - name: Install Node dependencies
         run: pnpm install --frozen-lockfile
 
-      # ── Run extraction on the 10 fixture files ────────────────────
-      - name: Run extraction (build overall_summary.json)
-        run: python3 evaluation/financial_Audit/run_audit.py
+      # ── 4. Python (pip cache keyed on requirements.txt hash) ──────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: evaluation/financial_Audit/requirements.txt
 
-      # ── Run regression evaluator (strict mode) ────────────────────
-      # The evaluator prints a ##[group] CI summary block that GitHub
-      # Actions renders as a collapsible log section.
-      # Exit code 1 on any regression or warning (--strict).
-      - name: Run financial regression suite (strict)
-        run: pnpm eval:financial:regression:ci
+      # ── 5. Python deps ────────────────────────────────────────────
+      - name: Install Python dependencies
+        run: pip install -r evaluation/financial_Audit/requirements.txt
 
-      # ── Upload regression report as artifact ─────────────────────
-      # Uploaded even on failure so the report is always inspectable.
+      # ── 6. Extraction run (writes overall_summary.json) ──────────
+      - name: Run extraction
+        run: python evaluation/financial_Audit/run_audit.py
+
+      # ── 7. Regression assertions (strict — fail on warnings too) ──
+      # Prints per-file pass/fail with assertion details to stdout.
+      # Emits ##[group] CI summary block (collapsible in Actions UI).
+      # Exit code 1 on any regression or warning.
+      - name: Assert golden suite
+        run: python evaluation/financial_Audit/evaluate_regression.py --strict
+
+      # ── 8. Upload report artifacts ────────────────────────────────
+      # if: always() ensures upload even when step 7 exits non-zero.
+      # regression_check.md  — human-readable per-file pass/fail
+      # regression_check.json — machine-readable for downstream tools
+      # overall_summary.json  — raw extraction output (debug source)
       - name: Upload regression report
         uses: actions/upload-artifact@v4
         if: always()
@@ -96,4 +99,5 @@ jobs:
             evaluation/financial_Audit/results/regression_check.md
             evaluation/financial_Audit/results/regression_check.json
             evaluation/financial_Audit/results/overall_summary.json
+          if-no-files-found: warn
           retention-days: 30

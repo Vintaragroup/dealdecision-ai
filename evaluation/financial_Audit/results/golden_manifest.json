@@ -4,9 +4,9 @@
     "created": "2026-04-15",
     "purpose": "Regression-grade golden assertions for the 10-file financial extraction eval suite",
     "categories": {
-      "startup_baseline": "Standard startup financial model — revenue, burn, cash, headcount expected",
-      "adversarial_edge": "Atypical layout, format, or scope — must not regress to worse classification",
-      "real_estate_schema_divergent": "Commercial/multifamily RE model — NOI/IRR/waterfall schema, not startup burn/runway"
+      "startup_baseline": "Standard startup financial model \u2014 revenue, burn, cash, headcount expected",
+      "adversarial_edge": "Atypical layout, format, or scope \u2014 must not regress to worse classification",
+      "real_estate_schema_divergent": "Commercial/multifamily RE model \u2014 NOI/IRR/waterfall schema, not startup burn/runway"
     },
     "verdict_levels": {
       "PASS": "All required metric families present, current-state signals confirmed",
@@ -18,12 +18,18 @@
     {
       "filename": "capex.xls",
       "category": "adversarial_edge",
-      "notes": "Single-purpose CAPEX tracker. Not a P&L or revenue model. Only one usable metric token (cash). Legacy .xls format — no vision worker support; xlrd path only.",
+      "notes": "Single-purpose CAPEX tracker. Not a P&L or revenue model. Only one usable metric token (cash). Legacy .xls format \u2014 no vision worker support; xlrd path only.",
       "expected": {
         "verdict": "PASS_WITH_WARNINGS",
         "extraction_succeeded": true,
-        "metric_families_required": ["cash"],
-        "metric_families_forbidden": ["revenue", "burn", "runway"],
+        "metric_families_required": [
+          "cash"
+        ],
+        "metric_families_forbidden": [
+          "revenue",
+          "burn",
+          "runway"
+        ],
         "metric_families_optional": [],
         "has_current_state": true,
         "has_projections": false,
@@ -49,9 +55,16 @@
       "expected": {
         "verdict": "PASS",
         "extraction_succeeded": true,
-        "metric_families_required": ["cash", "revenue"],
+        "metric_families_required": [
+          "cash",
+          "revenue"
+        ],
         "metric_families_forbidden": [],
-        "metric_families_optional": ["gross_margin", "headcount", "burn"],
+        "metric_families_optional": [
+          "gross_margin",
+          "headcount",
+          "burn"
+        ],
         "has_current_state": true,
         "has_projections": true,
         "is_real_estate": false,
@@ -70,13 +83,20 @@
     {
       "filename": "Financial-Projections-Template.xlsx",
       "category": "startup_baseline",
-      "notes": "Standard startup financial projections template. Revenue, cash, headcount present. All current-state signals — no ordinal year labels detected.",
+      "notes": "Standard startup financial projections template. Revenue, cash, headcount present. All current-state signals \u2014 no ordinal year labels detected.",
       "expected": {
         "verdict": "PASS",
         "extraction_succeeded": true,
-        "metric_families_required": ["cash", "revenue"],
+        "metric_families_required": [
+          "cash",
+          "revenue"
+        ],
         "metric_families_forbidden": [],
-        "metric_families_optional": ["headcount", "burn", "ebitda"],
+        "metric_families_optional": [
+          "headcount",
+          "burn",
+          "ebitda"
+        ],
         "has_current_state": true,
         "has_projections": false,
         "is_real_estate": false,
@@ -99,9 +119,17 @@
       "expected": {
         "verdict": "PASS",
         "extraction_succeeded": true,
-        "metric_families_required": ["cash", "revenue", "ebitda"],
+        "metric_families_required": [
+          "cash",
+          "revenue",
+          "ebitda"
+        ],
         "metric_families_forbidden": [],
-        "metric_families_optional": ["gross_margin", "headcount", "burn"],
+        "metric_families_optional": [
+          "gross_margin",
+          "headcount",
+          "burn"
+        ],
         "has_current_state": true,
         "has_projections": false,
         "is_real_estate": false,
@@ -124,9 +152,16 @@
       "expected": {
         "verdict": "PASS",
         "extraction_succeeded": true,
-        "metric_families_required": ["revenue", "cash", "ebitda"],
+        "metric_families_required": [
+          "revenue",
+          "cash",
+          "ebitda"
+        ],
         "metric_families_forbidden": [],
-        "metric_families_optional": ["gross_margin", "burn"],
+        "metric_families_optional": [
+          "gross_margin",
+          "burn"
+        ],
         "has_current_state": true,
         "has_projections": false,
         "is_real_estate": false,
@@ -149,9 +184,16 @@
       "expected": {
         "verdict": "PASS",
         "extraction_succeeded": true,
-        "metric_families_required": ["real_estate", "cash"],
+        "metric_families_required": [
+          "real_estate",
+          "cash"
+        ],
         "metric_families_forbidden": [],
-        "metric_families_optional": ["revenue", "burn", "ebitda"],
+        "metric_families_optional": [
+          "revenue",
+          "burn",
+          "ebitda"
+        ],
         "has_current_state": true,
         "has_projections": false,
         "is_real_estate": true,
@@ -165,7 +207,7 @@
         },
         "expected_warnings": [],
         "must_not_regress_to": "PASS_WITH_WARNINGS",
-        "schema_note": "burn/revenue here are RE operating metrics, NOT startup burn rate / ARR — downstream consumer must apply schema guard before promoting to burn_rate or revenue_canonical"
+        "schema_note": "burn/revenue here are RE operating metrics, NOT startup burn rate / ARR \u2014 downstream consumer must apply schema guard before promoting to burn_rate or revenue_canonical"
       }
     },
     {
@@ -175,9 +217,18 @@
       "expected": {
         "verdict": "PASS",
         "extraction_succeeded": true,
-        "metric_families_required": ["real_estate", "burn", "cash"],
+        "metric_families_required": [
+          "real_estate",
+          "burn",
+          "cash"
+        ],
         "metric_families_forbidden": [],
-        "metric_families_optional": ["ebitda", "gross_margin", "headcount", "revenue"],
+        "metric_families_optional": [
+          "ebitda",
+          "gross_margin",
+          "headcount",
+          "revenue"
+        ],
         "has_current_state": true,
         "has_projections": false,
         "is_real_estate": true,
@@ -201,9 +252,17 @@
       "expected": {
         "verdict": "PASS",
         "extraction_succeeded": true,
-        "metric_families_required": ["revenue", "burn", "cash", "ebitda"],
+        "metric_families_required": [
+          "revenue",
+          "burn",
+          "cash",
+          "ebitda"
+        ],
         "metric_families_forbidden": [],
-        "metric_families_optional": ["gross_margin", "headcount"],
+        "metric_families_optional": [
+          "gross_margin",
+          "headcount"
+        ],
         "has_current_state": true,
         "has_projections": false,
         "is_real_estate": false,
@@ -222,13 +281,21 @@
     {
       "filename": "tpe-financial-model-template.xlsm",
       "category": "startup_baseline",
-      "notes": "Large macro-enabled (.xlsm) startup financial model. 27 sheets, 113 metric tokens. High-signal revenue detection (80 signals). Direct openpyxl path due to size. Burn not detected — model may be revenue-first.",
+      "notes": "Large macro-enabled (.xlsm) startup financial model. 27 sheets, 113 metric tokens. High-signal revenue detection (80 signals). Direct openpyxl path due to size. Burn not detected \u2014 model may be revenue-first.",
       "expected": {
         "verdict": "PASS",
         "extraction_succeeded": true,
-        "metric_families_required": ["revenue", "cash", "ebitda"],
+        "metric_families_required": [
+          "revenue",
+          "cash",
+          "ebitda"
+        ],
         "metric_families_forbidden": [],
-        "metric_families_optional": ["headcount", "gross_margin", "burn"],
+        "metric_families_optional": [
+          "headcount",
+          "gross_margin",
+          "burn"
+        ],
         "has_current_state": true,
         "has_projections": false,
         "is_real_estate": false,
@@ -247,13 +314,19 @@
     {
       "filename": "Value-Add-Apartment-Acquisition-Model_v0.964-pdsdzt.xlsm",
       "category": "real_estate_schema_divergent",
-      "notes": "Value-add apartment acquisition model (.xlsm). Lowest token count (9) in the suite. RE schema — burn/cash/real_estate/revenue detected but these map to RE acquisition metrics not startup financials.",
+      "notes": "Value-add apartment acquisition model (.xlsm). Lowest token count (9) in the suite. RE schema \u2014 burn/cash/real_estate/revenue detected but these map to RE acquisition metrics not startup financials.",
       "expected": {
         "verdict": "PASS",
         "extraction_succeeded": true,
-        "metric_families_required": ["real_estate", "cash"],
+        "metric_families_required": [
+          "real_estate",
+          "cash"
+        ],
         "metric_families_forbidden": [],
-        "metric_families_optional": ["revenue", "burn"],
+        "metric_families_optional": [
+          "revenue",
+          "burn"
+        ],
         "has_current_state": true,
         "has_projections": false,
         "is_real_estate": true,

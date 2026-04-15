@@ -404,11 +404,31 @@ export function selectCanonicalRevenueFact(
   // month extracted from a deck or sparse XLSX), which must not become the annual
   // revenue headline.
   const nonMonthlyFacts = revenueFacts.filter((f) => f.period_type !== 'monthly');
-  if (nonMonthlyFacts.length === 0) {
-    const distinctMonthlyPeriods = new Set(revenueFacts.map((f) => f.period_label)).size;
+
+  // Extended monthly-fallback condition: also trigger when every non-monthly fact is from a
+  // low-quality source (deck / unknown) AND a rich structured monthly series (4+ distinct
+  // xlsx/kpi_tile/etc. periods) exists. This prevents a provisional deck non-monthly fact from
+  // blocking selection of high-confidence xlsx monthly revenue data.
+  //
+  // Example (Webmaxco / Fix 12): deck $8K (period_type='unknown') + 19 xlsx monthly $8K facts.
+  // The only non-monthly xlsx fact (col_B) was correctly rejected by the corruption guard,
+  // but the deck fact kept nonMonthlyFacts.length > 0, blocking the monthly fallback.
+  const hasValidNonMonthlyStructured = nonMonthlyFacts.some(
+    (f) => f.source_kind !== 'deck' && f.source_kind !== 'unknown',
+  );
+  const monthlyStructuredFacts = revenueFacts.filter(
+    (f) => f.period_type === 'monthly' && f.source_kind !== 'deck' && f.source_kind !== 'unknown',
+  );
+  const useMonthlyFallback =
+    nonMonthlyFacts.length === 0 ||
+    (!hasValidNonMonthlyStructured && monthlyStructuredFacts.length >= 4);
+
+  if (useMonthlyFallback) {
+    const monthlyFacts = revenueFacts.filter((f) => f.period_type === 'monthly');
+    const distinctMonthlyPeriods = new Set(monthlyFacts.map((f) => f.period_label)).size;
     if (distinctMonthlyPeriods < 4) return undefined;
     // Rolling-monthly model: select best monthly fact using standard source/confidence ranking.
-    return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], revenueFacts, { requireNonProjected: true });
+    return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], monthlyFacts, { requireNonProjected: true });
   }
 
   // ── Three-tier selection for non-monthly revenue facts ──────────────────────
@@ -454,9 +474,11 @@ export function selectCanonicalRevenueFact(
   // "Current-period signal" = period_label in {'current','TTM'} OR period_type in
   // {'annual','ttm'} (annual/ttm are redundant with Tier A but included for safety).
   //
-  // StackOP safety: StackOP's XLSX quarterly facts have specific period labels
-  // (e.g. "Q1 2025") not 'current', so this guard does not fire there and Tier B
-  // continues to select the kpi_tile correctly.
+  // StackOP safety: StackOP's XLSX quarterly facts have period labels like "Q1 2025"
+  // and temporal_scope='historical' — neither matches this guard, so Tier B
+  // continues to select the kpi_tile correctly for that deal.
+  // Stackon Factor: Q2 2026 has temporal_scope='current' (in-progress quarter),
+  // so the guard fires and kpi_tile is suppressed in favour of the xlsx current fact.
   const hasStrongXlsxCurrentFact = trustFilteredFacts.some(
     (f) =>
       f.source_kind === 'xlsx' &&
@@ -465,7 +487,8 @@ export function selectCanonicalRevenueFact(
       (f.period_label === 'current' ||
         f.period_label === 'TTM' ||
         f.period_type === 'annual' ||
-        f.period_type === 'ttm'),
+        f.period_type === 'ttm' ||
+        f.temporal_scope === 'current'),
   );
 
   // Tier B — current-signal KPI facts (kpi_tile, pdf_kpi_line).

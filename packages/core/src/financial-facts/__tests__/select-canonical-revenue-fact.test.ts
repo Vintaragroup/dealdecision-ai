@@ -237,6 +237,83 @@ describe('selectCanonicalRevenueFact — monthly-only guard', () => {
   });
 });
 
+// ─── Fix 12 — Webmaxco deck-blocks-monthly pattern ───────────────────────────
+//
+// When the only non-monthly facts are from low-quality sources (deck / unknown)
+// and a 4+ period structured monthly xlsx series exists, the monthly fallback
+// must fire and select the best xlsx monthly fact instead of the provisional deck.
+
+describe('selectCanonicalRevenueFact — deck-blocks-monthly guard (Fix 12 / Webmaxco)', () => {
+  // Helper: deck fact with period_type='unknown' (the typical deck non-monthly shape)
+  const deckNonMonthly = (value: number) =>
+    deckFact('revenue', value, { period_type: 'unknown', period_label: 'current' });
+
+  test('[Fix 12 / Webmaxco] deck non-monthly + 9 xlsx monthly → monthly fallback fires, xlsx wins', () => {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep'];
+    const facts = [
+      deckNonMonthly(8_000),
+      ...months.map((m) => monthlyFact('revenue', 8_000, m)),
+    ];
+    const result = selectCanonicalRevenueFact(facts);
+    expect(result).not.toBeUndefined();
+    expect(result?.source_kind).toBe('xlsx');
+    expect(result?.period_type).toBe('monthly');
+    expect(result?.value).toBe(8_000);
+  });
+
+  test('[Fix 12] deck non-monthly + exactly 4 xlsx monthly → threshold met, xlsx wins', () => {
+    const facts = [
+      deckNonMonthly(10_000),
+      monthlyFact('revenue', 10_000, 'January'),
+      monthlyFact('revenue', 10_000, 'February'),
+      monthlyFact('revenue', 10_000, 'March'),
+      monthlyFact('revenue', 10_000, 'April'),
+    ];
+    const result = selectCanonicalRevenueFact(facts);
+    expect(result).not.toBeUndefined();
+    expect(result?.source_kind).toBe('xlsx');
+    expect(result?.period_type).toBe('monthly');
+  });
+
+  test('[Fix 12] deck non-monthly + only 3 xlsx monthly → threshold not met, deck wins', () => {
+    // Only 3 monthly xlsx facts — below the 4-period threshold.
+    // Fallback must NOT fire: deck wins through normal tier logic.
+    const facts = [
+      deckNonMonthly(5_000),
+      monthlyFact('revenue', 5_000, 'January'),
+      monthlyFact('revenue', 5_000, 'February'),
+      monthlyFact('revenue', 5_000, 'March'),
+    ];
+    const result = selectCanonicalRevenueFact(facts);
+    expect(result).not.toBeUndefined();
+    expect(result?.source_kind).toBe('deck');
+  });
+
+  test('[Fix 12] deck non-monthly only (no monthly facts) → deck wins normally', () => {
+    const facts = [deckNonMonthly(12_000)];
+    const result = selectCanonicalRevenueFact(facts);
+    expect(result).not.toBeUndefined();
+    expect(result?.source_kind).toBe('deck');
+    expect(result?.value).toBe(12_000);
+  });
+
+  test('[Fix 12 no-fire] xlsx non-monthly present → deck-blocks-monthly guard does not fire', () => {
+    // When a valid xlsx non-monthly fact exists, normal 3-tier selection runs;
+    // the monthly xlsx series does not interfere.
+    const xlsxAnnual = fact('revenue', 50_000, { period_type: 'annual', period_label: 'FY2025' });
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'];
+    const facts = [
+      deckNonMonthly(8_000),
+      xlsxAnnual,
+      ...months.map((m) => monthlyFact('revenue', 8_000, m)),
+    ];
+    const result = selectCanonicalRevenueFact(facts);
+    expect(result?.source_kind).toBe('xlsx');
+    expect(result?.period_type).toBe('annual');
+    expect(result?.value).toBe(50_000);
+  });
+});
+
 // ─── Corruption rejection ─────────────────────────────────────────────────────
 
 describe('selectCanonicalRevenueFact — corruption rejection', () => {
@@ -553,6 +630,53 @@ describe('selectCanonicalRevenueFact — Tier B guard (Stackon Factor regression
       unit: 'number',
     });
     const result = selectCanonicalRevenueFact([kpi, xlsxMed]);
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+
+  test('[Stackon Factor Q2] high-confidence xlsx temporal_scope=current quarterly beats kpi_tile (Tier B suppressed)', () => {
+    // REGRESSION: after deleting the stale period_label='current' fact, the Q2 2026 fact
+    // has period_label='Q2 2026', period_type='quarterly', temporal_scope='current'.
+    // The guard must fire on temporal_scope='current' so kpi_tile $23K is suppressed.
+    const xlsxQ2Current = fact('revenue', 4_500, {
+      source_kind: 'xlsx',
+      period_label: 'Q2 2026',
+      period_type: 'quarterly',
+      confidence: 'high',
+      temporal_scope: 'current',
+    });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+    });
+    // Tier B suppressed (temporal_scope='current' fires guard) → Tier C selects xlsx
+    const result = selectCanonicalRevenueFact([kpi, xlsxQ2Current]);
+    expect(result?.source_kind).toBe('xlsx');
+    expect(result?.value).toBe(4_500);
+  });
+
+  test('[StackOP pattern] temporal_scope=historical does NOT suppress Tier B (kpi_tile wins)', () => {
+    // StackOP historical quarterly xlsx facts must NOT suppress Tier B.
+    // Only temporal_scope='current' (or period_label='current'/'TTM' / period_type annual/ttm)
+    // triggers the guard.
+    const q1Historical = fact('revenue', 18_000, {
+      source_kind: 'xlsx',
+      period_label: 'Q1 2025',
+      period_type: 'quarterly',
+      confidence: 'high',
+      temporal_scope: 'historical',
+    });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+    });
+    const result = selectCanonicalRevenueFact([q1Historical, kpi]);
     expect(result?.source_kind).toBe('kpi_tile');
     expect(result?.value).toBe(23_000);
   });

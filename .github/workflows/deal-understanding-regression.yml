@@ -9,12 +9,19 @@ on:
       - 'evaluation/deal_understanding/**'
       - 'scripts/deal-understanding-regression.ts'
       - '.github/workflows/deal-understanding-regression.yml'
+  push:
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       api_base_url:
         description: "Override API base URL for benchmark validation"
         required: false
         type: string
+
+concurrency:
+  group: deal-understanding-regression-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   regression-gate:
@@ -47,7 +54,13 @@ jobs:
 
           echo "api_base_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Node.js
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.1
+          run_install: false
+
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -57,9 +70,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Enable corepack
-        run: corepack enable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

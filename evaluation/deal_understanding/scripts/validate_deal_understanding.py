@@ -32,9 +32,8 @@ Usage
 
 Notes
 -----
-  Layer 1–4 checks require GET /api/v1/deals/{deal_id}/understanding.
-  TODO (DDA-UNDERSTANDING): implement that endpoint before enabling live deals.
-  Until then, live-deal checks will record SKIP with an explanation.
+Layer 1–5 checks require GET /api/v1/deals/{deal_id}/understanding.
+    SKIP is recorded when the endpoint returns a non-200 response or is unreachable.
 
   Synthetic deals (_synthetic: true) skip the API call entirely and run
   Layer 0 spec coherence checks only.
@@ -120,7 +119,7 @@ REFERENCE_DEALS: dict[str, dict] = {
         "ground_truth_file": "Complyant.json",
     },
     # ── Pending live deals ───────────────────────────────────────────────────
-    # TODO (DDA-UNDERSTANDING): uncomment once understanding endpoint is live.
+    # TODO: uncomment and populate ground_truth/<Name>.json to add a live deal.
     # "DealDecision": {
     #     "deal_id":           "517be946-cab9-4bc1-8982-9522ff9dab32",
     #     "ground_truth_file": "DealDecision.json",
@@ -155,18 +154,22 @@ def fetch_understanding(deal_id: str) -> dict | None:
     """
     Fetch the compiled understanding for a deal from the running API.
 
-    TODO (DDA-UNDERSTANDING): implement GET /api/v1/deals/{deal_id}/understanding.
-    Expected response shape:
+    Response shape:
     {
       "understanding": {
         "what_company_does": "...",
+        "problem": "...",
+        "solution": "...",
+        "why_now": "...",
         "business_model": "...",
         "revenue_model": "...",
         "go_to_market": "...",
         "target_customer": "...",
         "traction_summary": "...",
+        "risks": "...",
         "market_positioning": "...",
-        "competitive_differentiation": "..."
+        "competitive_differentiation": "...",
+        "investment_signals": "..."
       }
     }
     """
@@ -177,8 +180,7 @@ def fetch_understanding(deal_id: str) -> dict | None:
     except urllib.error.HTTPError as e:
         if e.code == 404:
             print(
-                f"  [WARN] Understanding endpoint not found for {deal_id}. "
-                f"TODO (DDA-UNDERSTANDING): implement the endpoint.",
+                f"  [WARN] Deal not found for {deal_id} (HTTP 404).",
                 file=sys.stderr,
             )
         else:
@@ -222,7 +224,7 @@ def run_understanding_check(check: dict, understanding: dict | None) -> CheckRes
         return (
             False,
             "—",
-            "SKIP — understanding data not available (API endpoint not implemented or unreachable)",
+            "SKIP — understanding data not available (API unreachable or deal not found)",
         )
 
     value = _field_text(understanding, field)
@@ -586,8 +588,8 @@ def run_deal_validation(deal_name: str, deal_cfg: dict) -> dict:
             "L0-SPEC",
             "INFO",
             None,
-            "Layer 1–5 checks require GET /api/v1/deals/{deal_id}/understanding. "
-            "TODO (DDA-UNDERSTANDING): implement endpoint and re-run as live deal.",
+            "Layer 1–5 checks require a live deal entry. "
+            "Add deal_id and set _synthetic: false to enable live API validation.",
             "",
         )
         result["scores"] = compute_scores(result)
@@ -609,13 +611,12 @@ def run_deal_validation(deal_name: str, deal_cfg: dict) -> dict:
                 "spec coherence — API unavailable",
             )
         record(
-            "Understanding API unavailable — L1–L5 checks pending endpoint",
+            "Understanding API unavailable — L1–L5 checks skipped",
             "L1-FIDELITY",
             "SKIP",
             None,
-            "SKIP — could not fetch understanding for deal_id="
-            f"{deal_id!r}. "
-            "TODO (DDA-UNDERSTANDING): implement GET /api/v1/deals/{deal_id}/understanding",
+            f"SKIP — could not fetch understanding for deal_id={deal_id!r}. "
+            "Ensure DEAL_UNDERSTANDING_API_BASE_URL is reachable and the deal exists.",
         )
         result["scores"] = compute_scores(result)
         return result

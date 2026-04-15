@@ -514,6 +514,9 @@ export function inferPeriodType(label: string): FinancialFactPeriodType {
   if (/^(Q[1-4][\s\-_]\d{4}|\d{4}[\s\-_]Q[1-4])$/i.test(s)) return "quarterly";
   // Standalone quarter ("Q1", "Q2", ...)
   if (/^Q[1-4]$/i.test(s)) return "quarterly";
+  // NQyyyy format (e.g. "4Q2026", "1Q2025") and yyyyQN format (e.g. "2026Q4")
+  if (/^\d[Qq]\d{4}$/.test(s)) return "quarterly";
+  if (/^\d{4}[Qq]\d$/.test(s)) return "quarterly";
   if (/^\d{4}-\d{2}$/.test(s)) return "monthly";
   // Month names ("January", "Feb", "Mar") and ordinal months ("Month 1", "Month 12")
   if (/^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*$/i.test(s)) return "monthly";

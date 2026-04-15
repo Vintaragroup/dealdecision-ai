@@ -101,6 +101,43 @@ describe("parsePeriodLabel — quarterly labels", () => {
       expect(r.year).toBe(2026);
       expect(r.is_projected).toBe(true);
     });
+
+    it("1Q2026 → quarter=1, year=2026 (4-digit year)", () => {
+      const r = parsePeriodLabel("1Q2026");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(1);
+      expect(r.year).toBe(2026);
+      expect(r.normalized).toBe("Q1 2026");
+    });
+
+    it("3Q2026 → quarter=3, year=2026 (4-digit year)", () => {
+      const r = parsePeriodLabel("3Q2026");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(3);
+      expect(r.year).toBe(2026);
+    });
+
+    it("4Q2026E → quarter=4, year=2026, is_projected=true (4-digit year)", () => {
+      const r = parsePeriodLabel("4Q2026E");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(4);
+      expect(r.year).toBe(2026);
+      expect(r.is_projected).toBe(true);
+    });
+
+    it("2026Q1 → quarter=1, year=2026 (year-leading 4-digit)", () => {
+      const r = parsePeriodLabel("2026Q1");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(1);
+      expect(r.year).toBe(2026);
+    });
+
+    it("2026Q3 → quarter=3, year=2026 (year-leading 4-digit)", () => {
+      const r = parsePeriodLabel("2026Q3");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(3);
+      expect(r.year).toBe(2026);
+    });
   });
 
   describe("FY-prefixed quarterly (FY25 Q1, FY2025-Q3)", () => {

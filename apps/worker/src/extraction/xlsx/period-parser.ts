@@ -164,6 +164,28 @@ export function parsePeriodLabel(raw: string): PeriodInfo {
     }
   }
 
+  // ── 3a. "1Q2026", "3Q2026E" (quarter-leading full 4-digit year) ──────────
+  {
+    const m = /^([1-4])Q(\d{4})([EeFf])?$/i.exec(s);
+    if (m) {
+      const year = Number(m[2]);
+      if (year >= 2000 && year <= 2100) {
+        return buildQuarterlyInfo(Number(m[1]), year, Boolean(m[3]));
+      }
+    }
+  }
+
+  // ── 3b. "2026Q1", "2026Q3E" (year-leading, quarter-trailing) ────────────
+  {
+    const m = /^(\d{4})Q([1-4])([EeFf])?$/i.exec(s);
+    if (m) {
+      const year = Number(m[1]);
+      if (year >= 2000 && year <= 2100) {
+        return buildQuarterlyInfo(Number(m[2]), year, Boolean(m[3]));
+      }
+    }
+  }
+
   // ── 4. "FY25 Q1", "FY2025-Q3", "FY25Q1E" ─────────────────────────────────
   {
     const m = /^FY(\d{2}|\d{4})[\s\-_]?Q([1-4])([EeFf])?$/i.exec(s);

@@ -448,6 +448,116 @@ describe('selectCanonicalRevenueFact — Tier A/B priority (Fix 10 / StackFactor
   });
 });
 
+// ─── Tier B guard — hasStrongXlsxCurrentFact (Stackon Factor regression) ─────
+
+describe('selectCanonicalRevenueFact — Tier B guard (Stackon Factor regression)', () => {
+  // REGRESSION: "Subscription Revenue Recognized" xlsx, period_label='current',
+  // period_type='quarterly' (not annual/TTM) → misses Tier A → without guard, Tier B
+  // fires and kpi_tile $23K wins over xlsx $2.7M despite xlsx source rank being 10 vs 3.
+
+  test('[Stackon Factor] high-confidence xlsx period_label=current quarterly beats kpi_tile (Tier B suppressed)', () => {
+    const xlsxCurrent = fact('revenue', 2_739_000, {
+      source_kind: 'xlsx',
+      period_label: 'current',
+      period_type: 'quarterly',
+      confidence: 'high',
+    });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+    });
+    // Tier B suppressed (hasStrongXlsxCurrentFact=true) → Tier C selects xlsx (rank 10 > 3)
+    const result = selectCanonicalRevenueFact([kpi, xlsxCurrent]);
+    expect(result?.source_kind).toBe('xlsx');
+    expect(result?.value).toBe(2_739_000);
+  });
+
+  test('[Tier B guard] kpi_tile still wins when xlsx period_label=current has confidence=low', () => {
+    // Guard requires confidence='high'. Low-confidence xlsx must NOT suppress Tier B.
+    const xlsxLow = fact('revenue', 2_739_000, {
+      source_kind: 'xlsx',
+      period_label: 'current',
+      period_type: 'quarterly',
+      confidence: 'low',
+    });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+    });
+    const result = selectCanonicalRevenueFact([kpi, xlsxLow]);
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+
+  test('[Tier B guard] kpi_tile still wins when xlsx period_label=current is projected', () => {
+    // Guard requires !isProjectedFact. Projected xlsx must NOT suppress Tier B.
+    const xlsxProj = fact('revenue', 2_739_000, {
+      source_kind: 'xlsx',
+      period_label: 'current',
+      period_type: 'quarterly',
+      confidence: 'high',
+      temporal_scope: 'projected',
+    });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+    });
+    const result = selectCanonicalRevenueFact([kpi, xlsxProj]);
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+
+  test('[StackOP pattern] Tier B fires correctly when xlsx facts only have specific quarter labels', () => {
+    // StackOP: quarterly xlsx facts have labels like "Q1 2025" (not 'current').
+    // hasStrongXlsxCurrentFact=false → Tier B fires → kpi_tile wins.
+    const q1 = fact('revenue', 18_000, {
+      source_kind: 'xlsx', period_label: 'Q1 2025', period_type: 'quarterly', confidence: 'high',
+    });
+    const q2 = fact('revenue', 20_000, {
+      source_kind: 'xlsx', period_label: 'Q2 2025', period_type: 'quarterly', confidence: 'high',
+    });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+    });
+    const result = selectCanonicalRevenueFact([q1, q2, kpi]);
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+
+  test('[Tier B guard] kpi_tile still wins when xlsx is medium-confidence current quarterly', () => {
+    // Only high-confidence xlsx triggers the guard. Medium-confidence must not suppress Tier B.
+    const xlsxMed = fact('revenue', 500_000, {
+      source_kind: 'xlsx',
+      period_label: 'current',
+      period_type: 'quarterly',
+      confidence: 'medium',
+    });
+    const kpi = fact('revenue', 23_000, {
+      source_kind: 'kpi_tile',
+      period_label: 'current',
+      period_type: 'unknown',
+      confidence: 'medium',
+      unit: 'number',
+    });
+    const result = selectCanonicalRevenueFact([kpi, xlsxMed]);
+    expect(result?.source_kind).toBe('kpi_tile');
+    expect(result?.value).toBe(23_000);
+  });
+});
+
 // ─── Fix 10b: unit='number' kpi_tile inclusion ────────────────────────────────
 describe("selectCanonicalRevenueFact — unit='number' kpi_tile facts (Fix 10b / StackFactor)", () => {
   test('kpi_tile revenue with unit=number is selected (not filtered out)', () => {

@@ -441,6 +441,33 @@ export function selectCanonicalRevenueFact(
     if (tierAResult != null) return tierAResult;
   }
 
+  // Tier B guard — suppress Tier B when a high-confidence, non-projected XLSX fact
+  // with a current-period signal already exists in trustFilteredFacts.
+  //
+  // Problem this solves: Tier A only covers period_type==='annual'|'ttm'. An XLSX
+  // fact with period_label='current' and period_type='quarterly' (e.g. "Subscription
+  // Revenue Recognized" in Stackon Factor) misses Tier A. Without this guard, Tier B
+  // fires and selects the kpi_tile (the only Tier B eligible fact) even though the
+  // XLSX source rank (10) far exceeds kpi_tile (3). When suppressd, Tier C applies
+  // the full source/confidence ranking and the XLSX fact wins correctly.
+  //
+  // "Current-period signal" = period_label in {'current','TTM'} OR period_type in
+  // {'annual','ttm'} (annual/ttm are redundant with Tier A but included for safety).
+  //
+  // StackOP safety: StackOP's XLSX quarterly facts have specific period labels
+  // (e.g. "Q1 2025") not 'current', so this guard does not fire there and Tier B
+  // continues to select the kpi_tile correctly.
+  const hasStrongXlsxCurrentFact = trustFilteredFacts.some(
+    (f) =>
+      f.source_kind === 'xlsx' &&
+      f.confidence === 'high' &&
+      !isProjectedFact(f) &&
+      (f.period_label === 'current' ||
+        f.period_label === 'TTM' ||
+        f.period_type === 'annual' ||
+        f.period_type === 'ttm'),
+  );
+
   // Tier B — current-signal KPI facts (kpi_tile, pdf_kpi_line).
   //   When no confirmed annual/TTM income-statement fact exists, a non-projected KPI
   //   tile is the most reliable "actual current traction" signal: the company itself
@@ -448,14 +475,18 @@ export function selectCanonicalRevenueFact(
   //   projection. A quarterly or unknown-period XLSX entry with unclear temporal scope
   //   must NOT outrank a directly measured KPI tile.
   //
-  //   This pass only fires when Tier A is empty, ensuring it never overrides a
-  //   confirmed annual income-statement figure.
-  const tierBFacts = trustFilteredFacts.filter(
-    (f) =>
-      (f.source_kind === 'kpi_tile' || f.source_kind === 'pdf_kpi_line') &&
-      !isProjectedFact(f) &&
-      !isProvisionalFact(f),
-  );
+  //   This pass only fires when Tier A is empty AND no high-confidence XLSX
+  //   current/TTM fact exists (hasStrongXlsxCurrentFact === false), ensuring it
+  //   never overrides a confirmed fiscal-period or current-period income-statement
+  //   figure.
+  const tierBFacts = hasStrongXlsxCurrentFact
+    ? []
+    : trustFilteredFacts.filter(
+        (f) =>
+          (f.source_kind === 'kpi_tile' || f.source_kind === 'pdf_kpi_line') &&
+          !isProjectedFact(f) &&
+          !isProvisionalFact(f),
+      );
   if (tierBFacts.length > 0) {
     const tierBResult = selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], tierBFacts, { requireNonProjected: true });
     if (tierBResult != null) return tierBResult;

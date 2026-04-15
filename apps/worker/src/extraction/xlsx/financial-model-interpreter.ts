@@ -164,6 +164,21 @@ function buildColumnMeta(
     }
 
     const info = parsePeriodLabel(header);
+
+    // Future-quarter guard: when a column belongs to the current calendar year
+    // but its quarter number is strictly after the current quarter, the column
+    // represents a forward-looking forecast period, not a realized current-period
+    // figure. Override scope_context so that classifyTemporalScope() returns
+    // "projected" rather than "current" for these columns.
+    //
+    // Example (evaluated in Q2 2026): "3Q2026" → quarter=3 > currentQ=2 → projected.
+    //                                  "2Q2026" → quarter=2 == currentQ → not overridden (current).
+    const currentQ = Math.ceil((new Date().getMonth() + 1) / 3);
+    const isFutureQuarterInCurrentYear =
+      info.year === currentYear &&
+      info.quarter !== null &&
+      info.quarter > currentQ;
+
     return {
       label: header,
       normalized_label: info.normalized || header,
@@ -173,7 +188,9 @@ function buildColumnMeta(
       scenario: null,
       // scope_context from parsePeriodLabel covers projected and TTM signals.
       // classifyTemporalScope() falls back to year-vs-currentYear when it is "".
-      temporal_scope_context: info.scope_context,
+      // Future-quarter override: force "projected" scope_context so downstream
+      // classifyTemporalScope() does not treat Q3/Q4 of the current year as "current".
+      temporal_scope_context: isFutureQuarterInCurrentYear ? "projected" : info.scope_context,
     };
   });
 }
@@ -224,6 +241,31 @@ const CAP_TABLE_SUPPRESSED_FIELDS = new Set<FieldTypeV1>([
 ]);
 
 /**
+ * Revenue-like field types that should NOT be emitted from an employee /
+ * payroll / headcount sheet. These sheets detail salary schedules and
+ * headcount plans; bare "Sales" or "Revenue" row labels in them represent
+ * the sales-team headcount or compensation cost, not top-line revenue.
+ *
+ * Deliberately excludes opex_v1 so that total compensation expense rows
+ * (legitimately an operating cost) are still captured.
+ */
+const EMPLOYEE_SHEET_SUPPRESSED_FIELDS = new Set<FieldTypeV1>([
+  "revenue_canonical_v1",
+  "forecast_revenue_v1",
+  "booked_revenue_v1",
+  "recognized_revenue_v1",
+  "arr_v1",
+  "mrr_v1",
+]);
+
+/**
+ * Pattern that identifies employee / payroll / headcount sheet names.
+ * Matched case-insensitively against opts.slide_title (= sheet name).
+ */
+const EMPLOYEE_SHEET_RE =
+  /\b(employee|headcount|payroll|salar(y|ies)|compensation|comp|staff(ing)?|hiring|personnel|workforce|hires?|org\s*chart)\b/i;
+
+/**
  * Convert a `FinancialTable` into typed metrics.
  *
  * Each non-null cell in the table produces at most one TypedMetric.
@@ -250,6 +292,10 @@ export function parseFinancialTable(
 
   const colMeta = buildColumnMeta(table.column_headers, currentYear);
 
+  // Detect employee/payroll sheets once per table, outside the row loop.
+  const isEmployeeSheet =
+    typeof opts.slide_title === "string" && EMPLOYEE_SHEET_RE.test(opts.slide_title);
+
   const evidence: EvidenceRef = {
     source_document_id: opts.document_id ?? opts.deal_id,
     page_index: opts.page_index ?? null,
@@ -269,6 +315,13 @@ export function parseFinancialTable(
     // vesting tables, and share-class rows produce numeric values that can match
     // revenue / EBITDA patterns — suppress them at the sheet-kind boundary.
     if (table.table_kind === "cap_table" && CAP_TABLE_SUPPRESSED_FIELDS.has(field_type)) continue;
+
+    // Employee/payroll/headcount sheets must not emit revenue-like metrics.
+    // Row labels such as bare "Sales" in a salary schedule represent the
+    // sales-team headcount or compensation cost, not top-line revenue.
+    // opex_v1 is intentionally not in EMPLOYEE_SHEET_SUPPRESSED_FIELDS so
+    // total compensation/salary rows continue to be captured as opex facts.
+    if (isEmployeeSheet && EMPLOYEE_SHEET_SUPPRESSED_FIELDS.has(field_type)) continue;
 
     for (let colIdx = 0; colIdx < colMeta.length; colIdx++) {
       const cellValue = row[colIdx];

@@ -4,31 +4,21 @@
   "mode": "deal_understanding_audit",
   "source_type": "pdf_only",
   "_synthetic": false,
-
   "ground_truth": {
     "what_company_does": "An AI platform that predicts athlete injury risk and performance outcomes using historical sports data.",
-
     "business_model": "Data platform / SaaS API with dual B2B and B2C subscription model",
-
     "revenue_model": "Subscription revenue from sportsbook operators via API access and from consumers via paid app subscriptions",
-
     "go_to_market": "Initial focus on B2B sportsbook operators followed by expansion into B2C betting and fantasy users",
-
     "target_customer": "Sportsbook operators, sports bettors, and fantasy sports users",
-
     "traction_summary": "No clear revenue or customer traction disclosed; current traction consists of partnerships, thought leadership, and product development",
-
     "market_positioning": "AI-driven sports analytics platform targeting the gap in accurate injury and performance prediction",
-
     "competitive_differentiation": "Claims of proprietary data, multiple AI models, and high prediction accuracy across multiple sports use cases",
-
     "key_strengths": [
       "Clear high-value use case in sports betting and team decision-making",
       "Large potential market across B2B and B2C segments",
       "Strong narrative around AI-driven prediction capability",
       "Multiple monetization paths (API + consumer product)"
     ],
-
     "key_risks": [
       "Lack of demonstrated revenue or paying customers",
       "Heavy reliance on projections and TAM rather than traction",
@@ -36,7 +26,6 @@
       "Highly competitive and data-intensive market",
       "Execution risk in transitioning from B2B to B2C"
     ],
-
     "investor_relevance_notes": [
       "This is an early-stage AI/data company with limited proof of commercialization",
       "Key risk is whether predictions are accurate and valuable in real-world usage",
@@ -45,7 +34,6 @@
       "Model accuracy claims need independent validation"
     ]
   },
-
   "validation": {
     "_schema": "deal_understanding_audit_v1",
     "understanding_checks": [
@@ -53,18 +41,66 @@
         "label": "what_company_does identifies AI / prediction / data platform",
         "field": "what_company_does",
         "check_type": "contains_any",
-        "expected_terms": ["ai", "prediction", "data", "analytics", "platform", "sports"],
+        "expected_terms": [
+          "ai",
+          "prediction",
+          "data",
+          "analytics",
+          "platform",
+          "sports"
+        ],
         "layer": "L1-FIDELITY"
       },
       {
         "label": "business_model identifies consumer product or data/analytics model",
         "field": "business_model",
         "check_type": "contains_any",
-        "expected_terms": ["consumer", "b2b", "b2c", "api", "subscription", "data", "analytics"],
+        "expected_terms": [
+          "consumer",
+          "b2b",
+          "b2c",
+          "api",
+          "subscription",
+          "data",
+          "analytics"
+        ],
         "layer": "L1-FIDELITY"
+      },
+      {
+        "label": "solution identifies an AI, prediction, or data analytics product",
+        "field": "solution",
+        "check_type": "contains_any",
+        "expected_terms": [
+          "prediction",
+          "ai",
+          "analytics",
+          "model",
+          "data",
+          "sports"
+        ],
+        "layer": "L1-FIDELITY"
+      },
+      {
+        "label": "risks surface model accuracy, commercialization, or validation concerns",
+        "field": "risks",
+        "check_type": "contains_any",
+        "expected_terms": [
+          "accuracy",
+          "model",
+          "competitive",
+          "validation",
+          "traction",
+          "commercia"
+        ],
+        "layer": "L2-UNDERSTANDING"
+      },
+      {
+        "label": "investment_signals is populated",
+        "field": "investment_signals",
+        "check_type": "not_empty",
+        "layer": "L3-USEFULNESS"
       }
     ],
-
     "consistency_checks": [
       {
         "label": "business_model and revenue_model are both populated",
@@ -74,33 +110,120 @@
         "layer": "L2-UNDERSTANDING"
       }
     ],
-
     "hallucination_checks": [
       {
         "label": "traction_summary does not claim ARR as current actuals",
         "field": "traction_summary",
         "check_type": "must_not_contain",
-        "prohibited_patterns": ["$1m arr current", "$139m arr current", "existing revenue"],
+        "prohibited_patterns": [
+          "$1m arr current",
+          "$139m arr current",
+          "existing revenue"
+        ],
         "layer": "L4-HALLUCINATION"
       },
       {
         "label": "traction_summary does not treat TAM as traction",
         "field": "traction_summary",
         "check_type": "must_not_contain",
-        "prohibited_patterns": ["$238b revenue", "large existing market revenue"],
+        "prohibited_patterns": [
+          "$238b revenue",
+          "large existing market revenue"
+        ],
+        "layer": "L4-HALLUCINATION"
+      },
+      {
+        "label": "solution does not misclassify as beverage, apparel, or medical device",
+        "field": "solution",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": [
+          "non-alcoholic",
+          "beverage",
+          "golf apparel",
+          "lead testing"
+        ],
         "layer": "L4-HALLUCINATION"
       }
     ],
-
     "completeness_checks": [
-      { "label": "what_company_does is populated", "field": "what_company_does", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
-      { "label": "business_model is populated", "field": "business_model", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
-      { "label": "revenue_model is populated", "field": "revenue_model", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
-      { "label": "go_to_market is populated", "field": "go_to_market", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
-      { "label": "target_customer is populated", "field": "target_customer", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
-      { "label": "traction_summary is populated", "field": "traction_summary", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
-      { "label": "market_positioning is populated", "field": "market_positioning", "check_type": "not_empty", "layer": "L5-COMPLETENESS" },
-      { "label": "competitive_differentiation is populated", "field": "competitive_differentiation", "check_type": "not_empty", "layer": "L5-COMPLETENESS" }
+      {
+        "label": "what_company_does is populated",
+        "field": "what_company_does",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "business_model is populated",
+        "field": "business_model",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "revenue_model is populated",
+        "field": "revenue_model",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "go_to_market is populated",
+        "field": "go_to_market",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "target_customer is populated",
+        "field": "target_customer",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "traction_summary is populated",
+        "field": "traction_summary",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "market_positioning is populated",
+        "field": "market_positioning",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "competitive_differentiation is populated",
+        "field": "competitive_differentiation",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "problem is populated",
+        "field": "problem",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "solution is populated",
+        "field": "solution",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "why_now is populated",
+        "field": "why_now",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "risks is populated",
+        "field": "risks",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "investment_signals is populated",
+        "field": "investment_signals",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      }
     ]
   }
 }

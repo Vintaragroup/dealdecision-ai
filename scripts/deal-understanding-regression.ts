@@ -29,25 +29,25 @@ const VALIDATOR_PATH = path.join(
 
 const REQUIRED_DEALS: Record<string, DealThreshold> = {
   Palm: {
-    pass: 18,
+    pass: 27,
     fail: 0,
     skip: 0,
     dealId: "5c8c7d6e-c992-4be7-8b10-268eac36f663",
   },
   Probility: {
-    pass: 18,
+    pass: 27,
     fail: 0,
     skip: 0,
     dealId: "42be8b30-2b7d-45e0-ade0-99427a505c59",
   },
   Verse: {
-    pass: 18,
+    pass: 27,
     fail: 0,
     skip: 0,
     dealId: "bcd59d33-7887-41cd-80b9-742bc5ba945a",
   },
   ToxyScreen: {
-    pass: 17,
+    pass: 26,
     fail: 0,
     skip: 0,
     dealId: "05042123-6c4f-4dcb-9131-a95fce3cd28c",
@@ -201,11 +201,17 @@ async function main(): Promise<void> {
   const validatorReportPath = path.join(runDir, "validator-report.md");
   const validatorStdoutPath = path.join(runDir, "validator.stdout.log");
   const validatorStderrPath = path.join(runDir, "validator.stderr.log");
+  const validatorSummaryJsonPath = path.join(runDir, "validator-summary.json");
   const summaryPath = path.join(runDir, "regression-summary.json");
 
   const validatorResult = spawnSync(
     pythonBin,
-    [VALIDATOR_PATH, "--api", apiBase, "--output", validatorReportPath],
+    [
+      VALIDATOR_PATH,
+      "--api", apiBase,
+      "--output", validatorReportPath,
+      "--summary-json", validatorSummaryJsonPath,
+    ],
     {
       cwd: REPO_ROOT,
       encoding: "utf8",

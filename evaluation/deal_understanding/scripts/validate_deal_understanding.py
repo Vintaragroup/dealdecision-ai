@@ -813,6 +813,11 @@ def main() -> int:
         metavar="URL",
         help=f"API base URL (default: {API_BASE})",
     )
+    parser.add_argument(
+        "--summary-json",
+        metavar="FILE",
+        help="Write JSON summary artifact to FILE (pass/fail counts + failure detail per deal)",
+    )
     args = parser.parse_args()
 
     API_BASE = args.api
@@ -836,6 +841,30 @@ def main() -> int:
         r = run_deal_validation(name, cfg)
         results.append(r)
 
+    # ── Per-failure detail to stderr (visible inline in CI logs) ──────────────
+    all_failures = [
+        (r["deal_name"], f)
+        for r in results
+        for f in r["findings"]
+        if f["status"] == "FAIL"
+    ]
+    in_ci = bool(os.environ.get("GITHUB_ACTIONS"))
+    if all_failures:
+        if in_ci:
+            print("::group::Deal Understanding — Failing Checks Detail", file=sys.stderr)
+        print(f"\n{len(all_failures)} failing check(s):\n", file=sys.stderr)
+        for deal_name, f in all_failures:
+            note_suffix = f"  (note: {f['note']})" if f.get("note") else ""
+            print(
+                f"  FAIL  {deal_name}  [{f['layer']}]  {f['label']}\n"
+                f"        {f['message']}{note_suffix}",
+                file=sys.stderr,
+            )
+        if in_ci:
+            print("::endgroup::", file=sys.stderr)
+    else:
+        print("\nAll checks passed.", file=sys.stderr)
+
     report_md = format_report(results, run_ts)
 
     if args.output:
@@ -845,6 +874,47 @@ def main() -> int:
         print(f"Report written to {out_path}", file=sys.stderr)
     else:
         print(report_md)
+
+    # ── Optional JSON summary artifact ────────────────────────────────────────
+    if args.summary_json:
+        summary_path = Path(args.summary_json)
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        summary_data = {
+            "run_ts": run_ts,
+            "deals": [
+                {
+                    "deal_name":  r["deal_name"],
+                    "deal_id":    r["deal_id"],
+                    "pass_count": r["pass_count"],
+                    "fail_count": r["fail_count"],
+                    "skip_count": r["skip_count"],
+                    "failures": [
+                        {
+                            "layer":   f["layer"],
+                            "label":   f["label"],
+                            "message": f["message"],
+                            "note":    f.get("note", ""),
+                        }
+                        for f in r["findings"]
+                        if f["status"] == "FAIL"
+                    ],
+                }
+                for r in results
+            ],
+            "total_failures": len(all_failures),
+            "total_warnings": sum(
+                1 for r in results for f in r["findings"] if f["status"] == "WARN"
+            ),
+            "all_required_deals_checked": all(
+                not r.get("error") for r in results
+            ),
+            "passed": len(all_failures) == 0,
+        }
+        summary_path.write_text(
+            json.dumps(summary_data, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Summary JSON written to {summary_path}", file=sys.stderr)
 
     any_fail = any(r["fail_count"] > 0 for r in results)
     return 1 if any_fail else 0

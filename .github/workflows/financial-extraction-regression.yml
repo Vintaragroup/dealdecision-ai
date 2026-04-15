@@ -5,6 +5,7 @@ name: Financial Extraction Regression
 #
 # Runs against static fixture files in evaluation/financial_Audit/.
 # Gate: fails on any regression or warning (--strict mode).
+# Runs on EVERY pull request — no path filter applied.
 #
 # Exit code semantics (--strict):
 #   0 → all 10 assertions pass, zero warnings
@@ -15,16 +16,6 @@ name: Financial Extraction Regression
 # ─────────────────────────────────────────────────────────────────────
 on:
   pull_request:
-    paths:
-      - 'apps/worker/src/extraction/xlsx/**'
-      - 'apps/worker/src/lib/financial-*.ts'
-      - 'apps/worker/src/lib/financial-facts/**'
-      - 'apps/worker/src/lib/cap-table-*.ts'
-      - 'packages/core/src/models/financial-*.ts'
-      - 'packages/core/src/reports/**'
-      - 'services/vision_worker/app/extractors/xlsx_structured.py'
-      - 'evaluation/financial_Audit/**'
-      - '.github/workflows/financial-extraction-regression.yml'
   push:
     branches:
       - main

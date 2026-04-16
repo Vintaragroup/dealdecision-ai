@@ -41,15 +41,39 @@ const TRACTION_ALT_LABELS: Record<string, string> = {
 const SEC_BOILERPLATE_RE =
   /\b(exhibit\b|note \d+|unaudited condensed|description of the mergers?|pro forma|pursuant to|incorporated by reference|herein by reference|table of contents)\b/i;
 
-// SEC content patterns that indicate a useful, investor-readable snippet.
-const SEC_USEFUL_RE =
-  /\b(revenue recognition|business model|risk factor|transaction terms?|product description|operating results?|gross margin|net revenue|cash flow|net loss)\b/i;
+/**
+ * Returns a context-specific fallback summary for SEC boilerplate snippets.
+ * Diversifies by sniffing keyword context from the raw text so multiple boilerplate
+ * items do not collapse to the same generic string.
+ */
+function secBoilerplateFallback(rawText: string): string {
+  const tl = rawText.toLowerCase();
+  if (/\b(revenue recognition|net revenue|gross margin|revenue model|operating results?)\b/.test(tl)) {
+    return 'SEC filings confirm revenue recognition policy and reported financial results';
+  }
+  if (/\b(risk factor|regulatory|compliance|litigation|legal proceeding)\b/.test(tl)) {
+    return 'SEC filings highlight regulatory and operational risk factors';
+  }
+  if (/\b(transaction|merger|acquisition|deal term|deal structure|consideration)\b/.test(tl)) {
+    return 'SEC filings describe transaction structure and deal terms';
+  }
+  if (/\b(product|service|technology|platform|solution)\b/.test(tl)) {
+    return 'SEC filings describe core product offering and business description';
+  }
+  return 'SEC filings support business model and transaction structure';
+}
 
 /**
  * Translates a raw evidence card into a meaning-based { label, summary } pair.
- * The label answers "what type of claim does this prove?" and the summary
- * answers "what does this evidence support about the deal?".
- * Neither field exposes raw source keys, JSON blobs, or cell-path fragments.
+ *
+ * Label answers: "What type of claim does this prove?"
+ * Summary answers: "What specific claim does this evidence support?"
+ *
+ * Rules:
+ * - Labels are Title Case
+ * - No raw keys, JSON blobs, cell paths, or generic phrases like "supports projections"
+ * - Summaries reference domain topics (revenue, demand, product, customers, etc.)
+ * - Max 140 chars per summary
  */
 function summarizeEvidence(e: EvidenceCard): { label: string; summary: string } {
   const s = (e.source || '').toLowerCase();
@@ -57,28 +81,44 @@ function summarizeEvidence(e: EvidenceCard): { label: string; summary: string } 
   const raw = (e.text || '').trim();
   const tl = raw.toLowerCase();
 
-  // --- JSON blob: not investor-readable, replace with a typed description ---
+  // ── JSON blob ──────────────────────────────────────────────────────────────
   if (/{[^{}]*"(min|max|value|count|amount|total|sum|avg|mean|median)"\s*:/.test(raw)) {
-    const numMatch = raw.match(/"(?:value|amount|total|sum|count|avg|mean|median)"\s*:\s*([\d.]+)/);
-    const hint = numMatch ? ` (${numMatch[1]})` : '';
-    return { label: 'Financial model evidence', summary: `Structured financial model data${hint} supports projections` };
+    // Inspect JSON keys to provide context-specific summary
+    const jsonKeys = [...raw.matchAll(/"([a-z_]+)"\s*:/gi)].map((m) => m[1].toLowerCase());
+    const hasRevenue = jsonKeys.some((j) => /revenue|arr|mrr|income|sales/.test(j));
+    const hasChannel = jsonKeys.some((j) => /smb|enterprise|channel|segment|tier/.test(j));
+    const hasRaise   = jsonKeys.some((j) => /raise|round|equity|valuation|dilut/.test(j));
+    const numMatch   = raw.match(/"(?:value|amount|total|sum|count|avg|mean|median)"\s*:\s*([\d.]+)/);
+    const hint       = numMatch ? ` (${numMatch[1]})` : '';
+    if (hasChannel)  return { label: 'Financial Model Evidence', summary: `Financial model${hint} includes channel-level assumptions supporting segmented revenue projections` };
+    if (hasRevenue)  return { label: 'Revenue Evidence',         summary: `Financial model${hint} supports revenue projections and growth assumptions` };
+    if (hasRaise)    return { label: 'Capital Structure Evidence', summary: `Financial model${hint} supports raise size and ownership structure` };
+    return { label: 'Financial Model Evidence', summary: `Structured financial model data${hint} supports quantitative projections` };
   }
 
-  // --- Spreadsheet cell-path: "SheetName.col_X: value" ---
+  // ── Spreadsheet cell-path: "SheetName.col_X: value" ───────────────────────
   const cellPath = raw.match(/^([A-Za-z][\w\s]{2,})\.col_[A-Z]:\s*(.*)/);
   if (cellPath) {
-    const sheet = cellPath[1].trim();
-    return { label: 'Financial model evidence', summary: `Financial model data from ${sheet} supports financial projections` };
+    const sheet  = cellPath[1].trim();
+    const sl     = sheet.toLowerCase();
+    if (/smb|enterprise|channel|segment|assumption/.test(sl))
+      return { label: 'Financial Model Evidence', summary: `${sheet} model assumptions support segmented revenue and channel projections` };
+    if (/revenue|sales|arr|mrr/.test(sl))
+      return { label: 'Revenue Evidence', summary: `Revenue model data from ${sheet} supports financial performance projections` };
+    if (/alloc|cap table|equity|ownership/.test(sl))
+      return { label: 'Capital Structure Evidence', summary: `${sheet} data supports ownership allocation and capital structure` };
+    if (/valuation|dcf|irr/.test(sl))
+      return { label: 'Capital Structure Evidence', summary: `Valuation model data from ${sheet} supports investment return analysis` };
+    return { label: 'Financial Model Evidence', summary: `Financial model data from ${sheet} supports quantitative projections` };
   }
 
-  // --- SEC boilerplate: replace with fallback summary ---
-  const isSecSource =
-    /\b(audited|audit|s-1|10-k|10-q|prospectus|sec filing|annual report|form s-)\b/.test(tl);
+  // ── SEC boilerplate: diversified fallback, never a raw snippet ─────────────
+  const isSecSource = /\b(audited|audit|s-1|10-k|10-q|prospectus|sec filing|annual report|form s-)\b/.test(tl);
   if (isSecSource && SEC_BOILERPLATE_RE.test(tl)) {
-    return { label: 'SEC / filing evidence', summary: 'SEC filings support business model and transaction structure' };
+    return { label: 'SEC / Filing Evidence', summary: secBoilerplateFallback(tl) };
   }
 
-  // --- Clean the raw text for use as the summary sentence ---
+  // ── Clean raw text for use as the summary sentence ─────────────────────────
   let cleaned = raw
     .replace(/^(?:canonical_metric|display_fact|extracted_number):[^=]+=\s*/i, '')
     .replace(/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+:\s+/i, '')
@@ -87,44 +127,79 @@ function summarizeEvidence(e: EvidenceCard): { label: string; summary: string } 
     .replace(/\s{2,}/g, ' ')
     .replace(/(\b\w{3,}\b)(\s+\1){2,}/gi, '$1')
     .trim();
-  if (cleaned.length > 120) cleaned = cleaned.slice(0, 117) + '\u2026';
+  if (cleaned.length > 140) cleaned = cleaned.slice(0, 137) + '\u2026';
 
-  // --- Classify by content keywords (priority order) ---
+  // ── Keyword classification (priority order) ────────────────────────────────
   if (/\b(revenue|arr|mrr|burn|runway|cashflow|ebitda|margin|income|expense|cogs|gross profit|net loss|operating)\b/.test(tl)) {
-    return { label: 'Revenue evidence', summary: cleaned || 'Financial performance data supports revenue analysis' };
+    return {
+      label: 'Revenue Evidence',
+      summary: cleaned || 'Financial performance data supports revenue and growth analysis',
+    };
   }
   if (/\b(valuation|pre.?money|post.?money|raise|round|equity|cap table|dilution|share|ownership)\b/.test(tl)) {
-    return { label: 'Capital structure evidence', summary: cleaned || 'Capital structure data supports valuation analysis' };
+    return {
+      label: 'Capital Structure Evidence',
+      summary: cleaned || 'Capital structure data supports raise size and ownership analysis',
+    };
   }
-  if (/\b(tam|sam|market size|addressable|segment|vertical|industry|market demand|total market)\b/.test(tl)) {
-    return { label: 'Market demand evidence', summary: cleaned || 'Market sizing data supports addressable opportunity' };
+  if (/\b(tam|sam|market size|addressable|vertical|market demand|total market)\b/.test(tl)) {
+    return {
+      label: 'Market Demand Evidence',
+      summary: cleaned || 'Market sizing data supports addressable opportunity assessment',
+    };
   }
   if (/\b(customer|subscriber|user|loi|letter of intent|partner|channel|distributor|contracted|pipeline|booking|committed|reseller)\b/.test(tl)) {
-    return { label: 'Customer / traction evidence', summary: cleaned || 'Customer signals support go-to-market evidence' };
+    return {
+      label: 'Customer / Traction Evidence',
+      summary: cleaned || 'Customer signals and pipeline data support go-to-market traction',
+    };
   }
   if (/\b(business model|revenue model|pricing|monetiz|subscription|saas|paas|license|recurring|service fee)\b/.test(tl)) {
-    return { label: 'Business model evidence', summary: cleaned || 'Business model data supports revenue structure analysis' };
+    return {
+      label: 'Business Model Evidence',
+      summary: cleaned || 'Business model data supports recurring revenue structure analysis',
+    };
   }
   if (/\b(risk|regulatory|compliance|litigation|legal|patent dispute|competitor|barrier|challenge|concentration)\b/.test(tl)) {
-    return { label: 'Risk evidence', summary: cleaned || 'Risk signals support due diligence review' };
+    return {
+      label: 'Risk Evidence',
+      summary: cleaned || 'Risk signals identified for due diligence review',
+    };
   }
   if (/\b(product|feature|platform|technology|patent|capability|roadmap|mvp|launch|release)\b/.test(tl)) {
-    return { label: 'Product evidence', summary: cleaned || 'Product signals support technology and capability analysis' };
+    return {
+      label: 'Product Evidence',
+      summary: cleaned || 'Product signals support technology and capability analysis',
+    };
   }
   if (/\b(team|founder|executive|ceo|cto|experience|background|track record|headcount)\b/.test(tl)) {
-    return { label: 'Team evidence', summary: cleaned || 'Team background supports management quality assessment' };
+    return {
+      label: 'Team Evidence',
+      summary: cleaned || 'Team background supports management quality assessment',
+    };
   }
   if (isSecSource) {
-    return { label: 'SEC / filing evidence', summary: cleaned || 'SEC filings support business model and transaction structure' };
+    return {
+      label: 'SEC / Filing Evidence',
+      summary: cleaned || secBoilerplateFallback(tl),
+    };
   }
   if (s.includes('xlsx') || s.includes('model') || k.includes('xlsx')) {
-    return { label: 'Financial model evidence', summary: cleaned || 'Financial model data supports financial projections' };
+    return {
+      label: 'Financial Model Evidence',
+      summary: cleaned || 'Financial model data supports quantitative projections',
+    };
   }
   if (s === 'phaseb_visual') {
-    return { label: 'Visual evidence', summary: cleaned || 'Visual content supports investor presentation analysis' };
+    return {
+      label: 'Visual Evidence',
+      summary: cleaned || 'Visual content supports investor presentation analysis',
+    };
   }
-  // Generic fallback
-  const fallbackLabel = k === 'metric' ? 'Financial metric' : k === 'summary' ? 'Summary insight' : 'Evidence';
+  const fallbackLabel =
+    k === 'metric' ? 'Financial Metric' :
+    k === 'summary' ? 'Summary Insight' :
+    'Evidence';
   return { label: fallbackLabel, summary: cleaned || 'Relevant evidence found in submitted documents' };
 }
 
@@ -211,13 +286,14 @@ export function WorkbenchEvidenceSummary({
 
   const supported = scoreBreakdownSections.filter((s) => s.support_status === 'supported');
   const unsupported = scoreBreakdownSections.filter((s) => s.support_status === 'missing');
-  const weak = scoreBreakdownSections.filter((s) => s.support_status === 'weak');
 
   // Differentiate truly missing (no evidence linked) from incomplete (evidence exists but
   // not yet validated). Shown separately in the coverage header and Unsupported Claims list.
   const truelyMissing = unsupported.filter((s) => (s.evidence_count_linked ?? 0) === 0);
   const incompleteValidation = unsupported.filter((s) => (s.evidence_count_linked ?? 0) > 0);
 
+  // Expand pool to 8 before deduplication: if top items share the same summarized text,
+  // the dedup IIFE needs candidates further down the ranked list to fill 3 unique slots.
   const topEvidence = [...evidence]
     .filter((e) => typeof e.text === 'string' && e.text.trim().length > 20)
     .sort((a, b) => {
@@ -230,7 +306,7 @@ export function WorkbenchEvidenceSummary({
       const cb = typeof b.confidence === 'number' ? b.confidence : 0;
       return cb - ca;
     })
-    .slice(0, 3);
+    .slice(0, 8);
 
   const hasAnything =
     evidenceCount > 0 ||
@@ -308,23 +384,26 @@ export function WorkbenchEvidenceSummary({
         <div className="px-4 py-3 space-y-1.5">
           <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Section Coverage</div>
           {scoreBreakdownSections.slice(0, 6).map((s) => {
-            // For traction/customer sections marked missing: if broad traction evidence exists
-            // in the live evidence list, show as partial (amber) rather than absent (red).
+            // isIncomplete: amber ◐ — evidence exists OR traction section has broad signal
+            // isMissing:    red   ○ — no evidence and no traction alt signal
+            // Both checks are consistent with the header counters and Unsupported Claims logic.
+            const hasSectionEvidence = (s.evidence_count_linked ?? 0) > 0;
             const isTractionAlt =
               s.support_status === 'missing' &&
               TRACTION_SECTION_KEYS.has(s.key) &&
               hasBroadTractionEvidence(evidence);
+            const isIncomplete = s.support_status === 'weak' || isTractionAlt || (s.support_status === 'missing' && hasSectionEvidence);
             const dot =
               s.support_status === 'supported'
                 ? 'text-emerald-400'
-                : s.support_status === 'weak' || isTractionAlt
+                : isIncomplete
                 ? 'text-amber-400'
                 : s.support_status === 'missing'
                 ? 'text-red-400'
                 : muted;
             const symbol =
               s.support_status === 'supported' ? '●' :
-              (s.support_status === 'weak' || isTractionAlt) ? '◐' :
+              isIncomplete ? '◐' :
               s.support_status === 'missing' ? '○' : '–';
             return (
               <div key={s.key} className="flex items-center justify-between gap-2">
@@ -381,15 +460,24 @@ export function WorkbenchEvidenceSummary({
       {topEvidence.length > 0 && (
         <div className="px-4 py-3 space-y-2">
           <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Top Evidence</div>
-          {topEvidence.map((e) => {
-            const { label, summary } = summarizeEvidence(e);
-            return (
-              <div key={e.evidence_id} className={`text-xs ${sub} leading-relaxed`}>
-                <span className={`font-medium ${muted} mr-1`}>{label}:</span>
-                <span className="line-clamp-2">{summary}</span>
-              </div>
-            );
-          })}
+          {(() => {
+            // Deduplicate: skip items whose summary is identical to one already rendered.
+            const seen = new Set<string>();
+            const items: JSX.Element[] = [];
+            for (const e of topEvidence) {
+              const { label, summary } = summarizeEvidence(e);
+              if (seen.has(summary)) continue;
+              seen.add(summary);
+              items.push(
+                <div key={e.evidence_id} className={`text-xs ${sub} leading-relaxed`}>
+                  <span className={`font-medium ${muted} mr-1`}>{label}:</span>
+                  <span className="line-clamp-2">{summary}</span>
+                </div>
+              );
+              if (items.length === 3) break;
+            }
+            return items;
+          })()}
         </div>
       )}
 

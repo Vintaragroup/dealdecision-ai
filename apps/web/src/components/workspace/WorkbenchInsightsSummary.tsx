@@ -24,7 +24,9 @@ export function WorkbenchInsightsSummary({
   convictionRationale,
   convictionPosture,
   convictionBand,
-  convictionScore,
+  // convictionScore is wired from DealWorkspace but not rendered in the compact panel
+  // (the governed score is shown only in Investment Snapshot to avoid competing numerics).
+  convictionScore: _convictionScore,
   topPositiveContributors,
   topNegativeContributors,
   requiredNextChecks,
@@ -105,8 +107,6 @@ export function WorkbenchInsightsSummary({
   const bandSecondary = convictionBand && convictionBand.toUpperCase() !== postureLabel?.toUpperCase()
     ? convictionBand
     : null;
-    ? convictionBand
-    : null;
   const bandVerdictConflict = bandSecondary != null;  // true when models disagree
 
   // Human-readable band label.
@@ -148,20 +148,16 @@ export function WorkbenchInsightsSummary({
       )}
 
       {/* Diagnostic context — only shown when conviction_v1 band disagrees with the governed
-           workspace verdict. Framed as an explanatory note, never as a second recommendation. */}
+           workspace verdict. No numeric score is shown here — only the band label and an
+           explanatory sentence. The governed score is visible in Investment Snapshot only. */}
       {bandVerdictConflict && (
         <div className={`px-4 py-2.5 space-y-1 ${darkMode ? 'bg-white/[0.02]' : 'bg-amber-50/50'}`}>
           <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Diagnostic Context</div>
-          <div className={`flex flex-wrap items-center gap-x-3 gap-y-1 text-xs ${muted}`}>
-            {convictionScore !== null && (
-              <span>Diagnostic score: {convictionScore}/100</span>
-            )}
-            {bandLabel && (
-              <span>Band: {bandLabel}</span>
-            )}
-          </div>
+          {bandLabel && (
+            <div className={`text-xs ${muted}`}>Band: {bandLabel}</div>
+          )}
           <p className={`text-xs leading-relaxed ${muted} opacity-80`}>
-            Diagnostic conviction signal is weaker than the governed workspace verdict.
+            Deterministic signals are weaker than the governed workspace verdict.
           </p>
         </div>
       )}

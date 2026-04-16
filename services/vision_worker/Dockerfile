@@ -21,13 +21,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Fail-fast verification: ensure the runtime has OCR + PDF tooling.
+# Note: avoid `| head` here — head exits early and causes SIGPIPE (exit 141)
+# when combined with set -euo pipefail. Print full version output instead.
 RUN set -euo pipefail; \
     command -v tesseract; \
-    tesseract --version | head -n 1; \
+    tesseract --version; \
     command -v pdftoppm; \
-    pdftoppm -v 2>&1 | head -n 1; \
+    pdftoppm -v 2>&1 || true; \
     command -v pdftotext; \
-    pdftotext -v 2>&1 | head -n 1
+    pdftotext -v 2>&1 || true
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt

@@ -1274,7 +1274,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			return null;
 		})();
 
-		await runIntelligenceStage(pool, {
+		const stage5Result = await runIntelligenceStage(pool, {
 			deal_id: dealId,
 			deal_name: dealName ?? dealId,
 			org_id: null,
@@ -1318,6 +1318,44 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				burn_resolved_source_kind:    ft.burn_rate?.resolved_source_kind ?? null,
 			} : null,
 		});
+
+		// Patch report_payload with Stage 5 challenge pass output so the report
+		// compiler can surface conviction/evidence signal in the API response.
+		// Only patch when Stage 5 ran a real pass (run_id non-empty, no error).
+		if (stage5Result.run_id !== "" && stage5Result.stage5_error === null) {
+			try {
+				const cp = stage5Result.challenge_pass_result;
+				await pool.query(
+					`UPDATE public.investor_insight_reports
+					   SET report_payload = COALESCE(report_payload, '{}'::jsonb) || $2::jsonb
+					 WHERE id = $1::uuid`,
+					[
+						reportId,
+						JSON.stringify({
+							challenge_pass: {
+								opposing_case:            cp.opposing_case_summary,
+								verdict_resistance_score: cp.verdict_resistance_score,
+								verdict_resistance_label: cp.verdict_resistance_label,
+								flag_count_critical:      cp.flag_count_critical,
+								flag_count_error:         cp.flag_count_error,
+								flag_count_warn:          cp.flag_count_warn,
+								primary_challenge_reason: cp.primary_challenge_reason,
+								missing_evidence:         cp.missing_evidence,
+								diligence_gaps:           cp.diligence_gaps,
+							},
+						}),
+					],
+				);
+			} catch (patchErr) {
+				// Non-fatal: never block return for a report_payload patch failure.
+				console.error(JSON.stringify({
+					event: "INVESTOR_INSIGHTS_STAGE5_PATCH_FAILED",
+					deal_id: dealId,
+					error: patchErr instanceof Error ? patchErr.message : String(patchErr),
+					ts: new Date().toISOString(),
+				}));
+			}
+		}
 	} catch (s5Err) {
 		// Stage 5 is fully non-blocking. Any failure here must not affect the
 		// primary return value or report persistence.

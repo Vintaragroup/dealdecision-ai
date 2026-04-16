@@ -17,6 +17,21 @@ interface Props {
   darkMode: boolean;
   onOpenFull?: () => void;
   onGenerate?: () => void;
+  // Decision Proof Block inputs (Stage 5 challenge_pass data)
+  primaryChallengeReason?: string | null;
+  missingEvidenceItems?: Array<{
+    evidence_type: string;
+    description: string;
+    verdict_sensitivity: string;
+    diligence_question: string;
+  }>;
+  contradictions?: string[];
+  scoreBreakdownSections?: Array<{
+    key: string;
+    label: string;
+    support_status?: string;
+    missing_reasons?: string[];
+  }>;
 }
 
 export function WorkbenchInsightsSummary({
@@ -34,6 +49,10 @@ export function WorkbenchInsightsSummary({
   darkMode,
   onOpenFull,
   onGenerate,
+  primaryChallengeReason,
+  missingEvidenceItems = [],
+  contradictions = [],
+  scoreBreakdownSections = [],
 }: Props) {
   const border = darkMode ? 'border-white/10' : 'border-gray-200';
   const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
@@ -128,6 +147,73 @@ export function WorkbenchInsightsSummary({
     return stripped.length > 15 ? stripped : null;
   })();
 
+  // ── Decision Proof Block ──────────────────────────────────────────────────
+  // Priority-ordered synthesis of the most decisive signals from Stage 5 challenge_pass.
+  // Rules: no scores, no generic language, max 5 bullets, every bullet maps to a real signal.
+  const PRIORITY_SECTION_KEYS = new Set([
+    'market', 'product', 'financials', 'financial', 'traction', 'revenue', 'customers',
+  ]);
+  const PRIORITY_EVIDENCE_RE = /market|customer|revenue|financial|arr|burn|traction|churn/i;
+
+  // 1. Primary Blocker — high-sensitivity missing evidence first, then primary_challenge_reason,
+  //    then the first unsupported priority section as a final fallback.
+  const primaryBlocker: string | null = (() => {
+    const highMissing = missingEvidenceItems.find((m) => m.verdict_sensitivity === 'High');
+    if (highMissing) return highMissing.description;
+    if (primaryChallengeReason) return primaryChallengeReason;
+    const unsupportedPriority = scoreBreakdownSections.find(
+      (s) => s.support_status === 'missing' && PRIORITY_SECTION_KEYS.has(s.key)
+    );
+    if (unsupportedPriority) {
+      const reason = unsupportedPriority.missing_reasons?.[0];
+      return reason
+        ? `${unsupportedPriority.label}: ${reason}`
+        : `${unsupportedPriority.label} evidence not validated`;
+    }
+    return null;
+  })();
+
+  // 2. Key Conflict — prefer a short-form contradiction; truncate the opposing case if needed.
+  const keyConflict: string | null = (() => {
+    if (!contradictions.length) return null;
+    const short = contradictions.find((c) => c.length < 200 && c.length > 10);
+    if (short) return short;
+    // Truncate the first (opposing case) to its leading sentence.
+    const firstSentence = contradictions[0]?.split(/\.\s+/)[0]?.trim();
+    return firstSentence && firstSentence.length > 10 ? firstSentence + '.' : null;
+  })();
+
+  // 3. What Supports This Deal — top 2 positive contributors (already evidence-tied).
+  const decisionSupportItems = topPositiveContributors.slice(0, 2);
+
+  // 4. What Is Missing — prefer market/customer/financial gaps, High sensitivity first.
+  const decisionMissingItems: string[] = (() => {
+    if (!missingEvidenceItems.length) return [];
+    return [...missingEvidenceItems]
+      .sort((a, b) => {
+        const aMatch = PRIORITY_EVIDENCE_RE.test(`${a.evidence_type} ${a.description}`) ? 0 : 1;
+        const bMatch = PRIORITY_EVIDENCE_RE.test(`${b.evidence_type} ${b.description}`) ? 0 : 1;
+        if (aMatch !== bMatch) return aMatch - bMatch;
+        const sensOrder: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
+        return (sensOrder[a.verdict_sensitivity] ?? 2) - (sensOrder[b.verdict_sensitivity] ?? 2);
+      })
+      .slice(0, 2)
+      .map((m) => m.description);
+  })();
+
+  // 5. Upgrade Path — convert the top missing evidence into a "this deal could advance if…" line.
+  const upgradePath: string | null = (() => {
+    const first =
+      missingEvidenceItems.find((m) => m.verdict_sensitivity === 'High') ??
+      missingEvidenceItems[0];
+    if (!first?.diligence_question) return null;
+    return `This deal could advance if: ${first.diligence_question}`;
+  })();
+
+  const hasDecisionProof = !!(
+    primaryBlocker || keyConflict || decisionSupportItems.length || decisionMissingItems.length || upgradePath
+  );
+
   return (
     <div className={`border-t ${border} divide-y ${darkMode ? 'divide-white/5' : 'divide-gray-100'}`}>
 
@@ -149,7 +235,7 @@ export function WorkbenchInsightsSummary({
 
       {/* Diagnostic context — only shown when conviction_v1 band disagrees with the governed
            workspace verdict. No numeric score is shown here — only the band label and an
-           explanatory sentence. The governed score is visible in Investment Snapshot only. */}
+           explanatory note, not a second verdict. */}
       {bandVerdictConflict && (
         <div className={`px-4 py-2.5 space-y-1 ${darkMode ? 'bg-white/[0.02]' : 'bg-amber-50/50'}`}>
           <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Diagnostic Context</div>
@@ -159,6 +245,60 @@ export function WorkbenchInsightsSummary({
           <p className={`text-xs leading-relaxed ${muted} opacity-80`}>
             Deterministic signals are weaker than the governed workspace verdict.
           </p>
+        </div>
+      )}
+
+      {/* Decision Proof Block — signal-level synthesis from Stage 5 challenge_pass data.
+           Shows only when at least one signal is present. No scores are rendered. */}
+      {hasDecisionProof && (
+        <div className="px-4 py-3 space-y-2">
+          <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Decision Proof</div>
+          {primaryBlocker && (
+            <div className={`flex items-start gap-2 text-xs ${sub}`}>
+              <span className="mt-0.5 shrink-0 text-red-400">▼</span>
+              <span>
+                <span className={`font-medium ${darkMode ? 'text-red-300' : 'text-red-600'}`}>Primary Blocker</span>
+                {' — '}
+                {primaryBlocker}
+              </span>
+            </div>
+          )}
+          {keyConflict && (
+            <div className={`flex items-start gap-2 text-xs ${sub}`}>
+              <span className="mt-0.5 shrink-0 text-amber-400">◆</span>
+              <span>
+                <span className={`font-medium ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>Key Conflict</span>
+                {' — '}
+                {keyConflict}
+              </span>
+            </div>
+          )}
+          {decisionSupportItems.map((s) => (
+            <div key={s.key} className={`flex items-start gap-2 text-xs ${sub}`}>
+              <span className="mt-0.5 shrink-0 text-emerald-400">▲</span>
+              <span>
+                <span className={`font-medium ${darkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>Supports</span>
+                {' — '}
+                {s.label}
+              </span>
+            </div>
+          ))}
+          {decisionMissingItems.map((m, i) => (
+            <div key={i} className={`flex items-start gap-2 text-xs ${sub}`}>
+              <span className={`mt-0.5 shrink-0 ${muted}`}>○</span>
+              <span>
+                <span className={`font-medium ${muted}`}>Missing</span>
+                {' — '}
+                {m}
+              </span>
+            </div>
+          ))}
+          {upgradePath && (
+            <div className={`flex items-start gap-2 text-xs`}>
+              <span className="mt-0.5 shrink-0 text-blue-400">→</span>
+              <span className={`italic ${muted}`}>{upgradePath}</span>
+            </div>
+          )}
         </div>
       )}
 

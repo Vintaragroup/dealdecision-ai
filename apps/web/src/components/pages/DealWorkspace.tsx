@@ -7059,6 +7059,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             insightsReady={investorInsights.status === 'ready' && !!investorInsights.report}
             darkMode={darkMode}
             onOpenFull={() => setActivePanel('insights')}
+            primaryChallengeReason={shellProps.primaryChallengeReason ?? null}
+            missingEvidenceItems={shellProps.missingEvidenceItems ?? []}
+            contradictions={shellProps.contradictions ?? []}
+            scoreBreakdownSections={scoreBreakdownSections}
           />
         }
         evidencePanel={

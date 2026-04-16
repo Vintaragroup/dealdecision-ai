@@ -489,6 +489,27 @@ export function selectWorkspaceRedesignedShellProps(
       .slice(0, 5);
   })();
 
+  // Decision Proof Block inputs — from Stage 5 challenge_pass in report_payload
+  const challengePass: any = rpt.challenge_pass ?? null;
+  const primaryChallengeReason = asNES(challengePass?.primary_challenge_reason) ?? null;
+  const missingEvidenceItems: Array<{
+    evidence_type: string;
+    description: string;
+    verdict_sensitivity: string;
+    diligence_question: string;
+  }> = (() => {
+    const raw = challengePass?.missing_evidence;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((m: any) => m && asNES(m?.description))
+      .map((m: any) => ({
+        evidence_type: asNES(m?.evidence_type) ?? '',
+        description: asNES(m?.description) ?? '',
+        verdict_sensitivity: asNES(m?.verdict_sensitivity) ?? 'Medium',
+        diligence_question: asNES(m?.diligence_question) ?? '',
+      }));
+  })();
+
   // ── TRACE: final resolved props at selector exit ─────────────────────────────
   if (import.meta.env.DEV) {
     console.group('[TRACE:selectWorkspaceRedesignedShellProps] final resolved props (selector exit)');
@@ -550,5 +571,7 @@ export function selectWorkspaceRedesignedShellProps(
     // workbench
     deepDiveReady,
     insightsReady,
+    primaryChallengeReason,
+    missingEvidenceItems,
   };
 }

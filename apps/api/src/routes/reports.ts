@@ -108,7 +108,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 42; // bumped: scoring_v2 fully computed (stub: false)
+const REPORT_COMPILER_VERSION = 43; // bumped: stage-5 challenge_pass now patched to report_payload
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {

@@ -167,6 +167,15 @@ export type WorkspaceRedesignedShellProps = {
   // ── Workbench ─────────────────────────────────────────────────────────────
   deepDiveReady: boolean;
   insightsReady: boolean;
+  /** Primary challenge reason from Stage 5 challenge_pass (short prose) */
+  primaryChallengeReason?: string | null;
+  /** Missing evidence items from Stage 5 challenge_pass.missing_evidence[] */
+  missingEvidenceItems?: Array<{
+    evidence_type: string;
+    description: string;
+    verdict_sensitivity: string;
+    diligence_question: string;
+  }>;
   onOpenDeepDive?: () => void;
   onOpenInsights?: () => void;
   onOpenEvidenceExplorer?: () => void;

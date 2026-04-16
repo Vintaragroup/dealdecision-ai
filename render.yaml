@@ -140,6 +140,10 @@ services:
         value: "off"
       - key: DETERMINISTIC_SCORE_V1_ENABLED
         value: "1"
+      - key: DDAI_INTELLIGENCE_LAYER_ENABLED
+        value: "1"
+      - key: DDAI_INTELLIGENCE_ROLLOUT_MODE
+        value: "persist_only"
 
   - type: web
     name: dealdecision-vision-v2

@@ -114,7 +114,9 @@ export function WorkbenchInsightsSummary({
                 {postureLabel}
               </span>
               {bandSecondary && (
-                <span className={`text-xs ${muted}`}>({bandSecondary})</span>
+                <span className={`text-xs ${muted}`}>
+                  Diagnostic band: {bandSecondary.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())}
+                </span>
               )}
             </div>
           )}

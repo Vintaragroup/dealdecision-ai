@@ -7027,6 +7027,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   return (
     <>
+      {activePanel === null && (
       <DealWorkspaceV4
         darkMode={darkMode}
         {...shellProps}
@@ -7070,9 +7071,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           />
         }
       />
+      )}
 
       {activePanel !== null && (
-        <div className={`fixed inset-0 z-50 overflow-auto ${darkMode ? 'bg-[#0d1117]' : 'bg-gray-50'}`}>
+        <div className={darkMode ? 'bg-[#0d1117]' : 'bg-gray-50'}>
           <div className={`sticky top-0 z-10 flex items-center gap-3 px-4 py-3 border-b ${darkMode ? 'bg-[#0d1117] border-white/10' : 'bg-white border-gray-200'}`}>
             <button
               onClick={() => setActivePanel(null)}

@@ -79,7 +79,9 @@ function formatMetricValue(metric: unknown): string {
   if (m.value == null) return '—';
   const num = asFinite(m.value);
   if (num == null) return '—';
-  const currency = asNES(m.currency) ?? '';
+  // Normalize currency prefix: 'USD' → '$', any other value is used verbatim.
+  const rawCurrency = asNES(m.currency) ?? '';
+  const currencySymbol = rawCurrency === 'USD' || rawCurrency === 'usd' ? '$' : rawCurrency;
   const unit = asNES(m.unit) ?? '';
   const period = asNES(m.period_label);
   const sourceKind = asNES(m.source_kind);
@@ -89,29 +91,43 @@ function formatMetricValue(metric: unknown): string {
 
   let formatted = '';
   if (Math.abs(num) >= 1_000_000_000) {
-    formatted = `${currency}${(num / 1_000_000_000).toFixed(1)}B`;
+    formatted = `${currencySymbol}${(num / 1_000_000_000).toFixed(1)}B`;
   } else if (Math.abs(num) >= 1_000_000) {
-    formatted = `${currency}${(num / 1_000_000).toFixed(1)}M`;
+    formatted = `${currencySymbol}${(num / 1_000_000).toFixed(1)}M`;
   } else if (Math.abs(num) >= 1_000) {
-    formatted = `${currency}${(num / 1_000).toFixed(0)}K`;
+    formatted = `${currencySymbol}${(num / 1_000).toFixed(0)}K`;
   } else {
-    formatted = `${currency}${num}`;
+    formatted = `${currencySymbol}${num}`;
   }
 
-  // Skip 'number' — it is a type descriptor, not a display unit.
-  if (unit && unit !== '$' && unit !== 'USD' && unit !== 'number') {
-    formatted += ` ${unit}`;
+  // Unit display: skip type-descriptor tokens and map known machine suffixes to human labels.
+  const SKIP_UNITS = new Set(['$', 'USD', 'usd', 'number', 'currency', 'Currency', 'dollars', 'dollar']);
+  const UNIT_LABELS: Record<string, string> = {
+    moproj: 'mo. proj.',
+    'mo.proj': 'mo. proj.',
+    mo_proj: 'mo. proj.',
+    'months projected': 'mo. proj.',
+    months: 'mo',
+    mo: 'mo',
+  };
+  if (unit && !SKIP_UNITS.has(unit)) {
+    formatted += ` ${UNIT_LABELS[unit] ?? unit}`;
   }
 
   // Suppress raw period_label when it would mislead:
   //   - structured_derived monthly: "September" is a DB-order artifact from tied facts,
   //     not a meaningful billing period for an investor.
   //   - projected / provisional: period is a forecast label (e.g. "Year 12"), not current state.
+  //     In these cases we append "proj." instead of suppressing entirely.
   const suppressPeriod =
     (sourceKind === 'structured_derived' && periodType === 'monthly') ||
     temporalScope === 'projected' ||
     isProvisional;
-  if (period && !suppressPeriod) formatted += ` (${period})`;
+  if (period && !suppressPeriod) {
+    formatted += ` (${period})`;
+  } else if ((temporalScope === 'projected' || isProvisional) && !unit.toLowerCase().includes('proj')) {
+    formatted += ' proj.';
+  }
   return formatted;
 }
 

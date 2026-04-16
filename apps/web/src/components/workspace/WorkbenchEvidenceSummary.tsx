@@ -54,23 +54,89 @@ function humanizeEvidenceKind(source: string, kind: string): string {
 }
 
 /**
- * Strips raw extraction key prefixes (canonical_metric:path=, display_fact:path=, etc.)
- * and formats bullet separators for investor-readable display.
+ * Strips raw extraction key prefixes, summarizes JSON blobs, and handles spreadsheet
+ * cell-path patterns to produce investor-readable evidence text.
  */
 function cleanEvidenceText(text: string): string {
   const t = (text || '').trim();
   if (!t) return '';
+
+  // Detect JSON-like blobs: replace with a short descriptive label.
+  if (/{[^{}]*"(min|max|value|count|amount|total|sum|avg|mean|median)"\s*:/.test(t)) {
+    const numMatch = t.match(/"(?:value|amount|total|sum|count|avg|mean|median)"\s*:\s*([\d.]+)/);
+    const numHint = numMatch ? ` (${numMatch[1]})` : '';
+    return `Structured model data${numHint} \u2014 see full evidence explorer for details`;
+  }
+
+  // Detect spreadsheet cell-path patterns: "Sheet Name.col_B: value"
+  const cellPathMatch = t.match(/^([A-Za-z][\w\s]{2,})\.col_[A-Z]:\s*(.*)/);
+  if (cellPathMatch) {
+    const sheetName = cellPathMatch[1].trim();
+    const rawValue = cellPathMatch[2].trim();
+    const valueHint = rawValue && rawValue.length < 60 && !/^[{[]/.test(rawValue)
+      ? `: ${rawValue}`
+      : '';
+    return `Financial model \u2014 ${sheetName}${valueHint}`;
+  }
+
   // Strip raw key prefix patterns: canonical_metric:some:path = value
   let cleaned = t.replace(/^(?:canonical_metric|display_fact|extracted_number):[^=]+=\s*/i, '');
   // Strip remaining snake_case:label: prefixes left at start
   cleaned = cleaned.replace(/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+:\s+/i, '');
   // Replace " • " bullet separators with ", " for readability
   cleaned = cleaned.replace(/\s+•\s+/g, ', ');
-  // Collapse whitespace
-  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+  // Collapse repeated whitespace and newlines
+  cleaned = cleaned.replace(/[\r\n]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  // Strip OCR repeat patterns: 3+ consecutive identical tokens
+  cleaned = cleaned.replace(/(\b\w{3,}\b)(\s+\1){2,}/gi, '$1');
   // Cap at 140 characters
   if (cleaned.length > 140) cleaned = cleaned.slice(0, 137) + '\u2026';
   return cleaned || t.slice(0, 140);
+}
+
+/**
+ * Returns a content-aware human-readable evidence type label by inspecting
+ * both source/kind metadata and text content.
+ */
+function describeEvidenceType(source: string, kind: string, text: string): string {
+  const s = (source || '').toLowerCase();
+  const k = (kind || '').toLowerCase();
+  const t = (text || '').toLowerCase();
+  if (/\b(audited|audit|s-1|10-k|10-q|prospectus|sec filing|annual report)\b/.test(t)) return 'SEC / filing evidence';
+  if (s.includes('xlsx') || s.includes('model') || k.includes('xlsx') || /\bcol_[a-z]\b|spreadsheet/.test(t)) return 'Financial model evidence';
+  if (s === 'extraction' || s === 'phaseb_visual') {
+    if (/\b(revenue|arr|mrr|burn|runway|cashflow|ebitda|margin|income|expense|cogs)\b/.test(t)) return 'Revenue / financial evidence';
+    if (/\b(customer|subscriber|user|contract|loi|partner|channel|distributor)\b/.test(t)) return 'Customer / traction evidence';
+    if (/\b(tam|sam|market size|addressable|segment|vertical|industry)\b/.test(t)) return 'Market evidence';
+    if (/\b(product|feature|platform|technology|patent|capability)\b/.test(t)) return 'Product evidence';
+    if (/\b(team|founder|executive|ceo|cto|experience|background)\b/.test(t)) return 'Team evidence';
+    if (/\b(valuation|pre.money|post.money|raise|round|equity|cap table)\b/.test(t)) return 'Raise / valuation evidence';
+    if (k === 'metric') return 'Financial metric';
+    if (k === 'summary') return 'Summary insight';
+    if (k === 'section') return 'Analysis insight';
+    if (s === 'phaseb_visual') return 'Visual evidence';
+    return 'Extracted evidence';
+  }
+  if (s === 'fetch_evidence') return 'Document evidence';
+  return humanizeEvidenceKind(source, kind);
+}
+
+/**
+ * Softens raw "Add evidence for missing sections: X" language from the scoring pipeline
+ * into investor-friendly copy. When `hasRelatedEvidence` is true the section is not truly
+ * absent — the validation step simply did not complete.
+ */
+function humanizeMissingReason(reason: string, sectionLabel: string, hasRelatedEvidence: boolean): string {
+  if (/add evidence for missing sections?/i.test(reason)) {
+    if (hasRelatedEvidence) return `${sectionLabel} evidence exists, but section-level validation is incomplete`;
+    return `${sectionLabel} evidence has not yet been extracted`;
+  }
+  if (/^missing:\s*/i.test(reason)) {
+    const tail = reason.replace(/^missing:\s*/i, '');
+    if (hasRelatedEvidence) return `${sectionLabel} evidence exists \u2014 ${tail.toLowerCase()} not yet validated`;
+    return tail;
+  }
+  return reason;
 }
 
 /**
@@ -272,7 +338,11 @@ export function WorkbenchEvidenceSummary({
                 <span>
                   {isTractionAlt
                     ? `${TRACTION_ALT_LABELS[s.key] ?? 'Customer/Traction Evidence'} — evidence present, claim not validated`
-                    : `${s.label ?? s.key}${s.missing_reasons?.[0] ? ` — ${s.missing_reasons[0]}` : ''}`}
+                    : humanizeMissingReason(
+                        s.missing_reasons?.[0] ?? '',
+                        s.label ?? s.key,
+                        hasBroadTractionEvidence(evidence),
+                      )}
                 </span>
               </div>
             );
@@ -285,7 +355,7 @@ export function WorkbenchEvidenceSummary({
         <div className="px-4 py-3 space-y-2">
           <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Top Evidence</div>
           {topEvidence.map((e) => {
-            const typeLabel = humanizeEvidenceKind(e.source, e.kind);
+            const typeLabel = describeEvidenceType(e.source, e.kind, e.text);
             const displayText = cleanEvidenceText(e.text);
             return (
               <div key={e.evidence_id} className={`text-xs ${sub} leading-relaxed`}>

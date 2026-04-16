@@ -7052,6 +7052,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             convictionRationale={shellProps.convictionRationale ?? null}
             convictionPosture={shellProps.convictionPosture ?? null}
             convictionBand={shellProps.convictionBand ?? null}
+            convictionScore={(shellProps.convictionScore as number | null | undefined) ?? null}
             topPositiveContributors={shellProps.topPositiveContributors ?? []}
             topNegativeContributors={shellProps.topNegativeContributors ?? []}
             requiredNextChecks={shellProps.requiredNextChecks ?? []}

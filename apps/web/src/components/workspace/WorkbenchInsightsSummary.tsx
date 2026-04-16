@@ -105,12 +105,28 @@ export function WorkbenchInsightsSummary({
   const bandSecondary = convictionBand && convictionBand.toUpperCase() !== postureLabel?.toUpperCase()
     ? convictionBand
     : null;
+    ? convictionBand
+    : null;
   const bandVerdictConflict = bandSecondary != null;  // true when models disagree
 
   // Human-readable band label.
   const bandLabel = bandSecondary
     ? bandSecondary.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
     : null;
+
+  // Strip mechanical conviction score strings from the rationale before rendering.
+  // These are auto-generated phrases that leak the conviction_v1 score into prose —
+  // redundant and confusing when the diagnostic context block already shows the score.
+  const usableRationale = (() => {
+    const r = convictionRationale?.trim();
+    if (!r) return null;
+    if (/^conviction\s+\d+\/100/i.test(r)) return null;
+    if (/^primary deterministic support is led by/i.test(r)) return null;
+    if (/^conviction is constrained by/i.test(r)) return null;
+    // Strip inline "Conviction N/100" fragments embedded mid-sentence.
+    const stripped = r.replace(/\bconviction\s+\d+\/100\b[^.]*\.?\s*/gi, '').trim();
+    return stripped.length > 15 ? stripped : null;
+  })();
 
   return (
     <div className={`border-t ${border} divide-y ${darkMode ? 'divide-white/5' : 'divide-gray-100'}`}>
@@ -190,10 +206,10 @@ export function WorkbenchInsightsSummary({
       )}
 
       {/* Rationale */}
-      {convictionRationale && (
+      {usableRationale && (
         <div className="px-4 py-3">
           <div className={`text-xs font-medium uppercase tracking-wider mb-1.5 ${muted}`}>Why This Decision</div>
-          <p className={`text-xs leading-relaxed ${muted}`}>{convictionRationale}</p>
+          <p className={`text-xs leading-relaxed ${muted}`}>{usableRationale}</p>
         </div>
       )}
 

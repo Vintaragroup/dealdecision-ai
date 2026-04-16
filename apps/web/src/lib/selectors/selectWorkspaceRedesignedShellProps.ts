@@ -103,30 +103,27 @@ function formatMetricValue(metric: unknown): string {
   // Unit display: skip type-descriptor tokens and map known machine suffixes to human labels.
   const SKIP_UNITS = new Set(['$', 'USD', 'usd', 'number', 'currency', 'Currency', 'dollars', 'dollar']);
   const UNIT_LABELS: Record<string, string> = {
-    moproj: 'mo. proj.',
-    'mo.proj': 'mo. proj.',
-    mo_proj: 'mo. proj.',
-    'months projected': 'mo. proj.',
-    months: 'mo',
-    mo: 'mo',
+    moproj: 'mo. projected',
+    'mo.proj': 'mo. projected',
+    mo_proj: 'mo. projected',
+    'months projected': 'mo. projected',
+    months: 'mo.',
+    mo: 'mo.',
   };
   if (unit && !SKIP_UNITS.has(unit)) {
     formatted += ` ${UNIT_LABELS[unit] ?? unit}`;
   }
 
-  // Suppress raw period_label when it would mislead:
-  //   - structured_derived monthly: "September" is a DB-order artifact from tied facts,
-  //     not a meaningful billing period for an investor.
-  //   - projected / provisional: period is a forecast label (e.g. "Year 12"), not current state.
-  //     In these cases we append "proj." instead of suppressing entirely.
+  // Append a projected suffix for provisional/projected metrics, but only once.
+  // Check the formatted string itself (not just the unit) to prevent proj.proj. duplication.
   const suppressPeriod =
     (sourceKind === 'structured_derived' && periodType === 'monthly') ||
     temporalScope === 'projected' ||
     isProvisional;
   if (period && !suppressPeriod) {
     formatted += ` (${period})`;
-  } else if ((temporalScope === 'projected' || isProvisional) && !unit.toLowerCase().includes('proj')) {
-    formatted += ' proj.';
+  } else if ((temporalScope === 'projected' || isProvisional) && !formatted.toLowerCase().includes('projected')) {
+    formatted += ' projected';
   }
   return formatted;
 }

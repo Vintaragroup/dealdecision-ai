@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   ArrowLeft,
   Sparkles,
@@ -30,6 +30,12 @@ export type DealWorkspaceV4Props = WorkspaceRedesignedShellProps & {
   keyDrivers?: string[];
   /** Navigate back (e.g. to deals list). Optional when embedded as a tab. */
   onBack?: () => void;
+  /** Compact inline summary rendered inside the Deep Dive accordion body. */
+  deepDivePanel?: React.ReactNode;
+  /** Compact inline summary rendered inside the Investor Insights accordion body. */
+  insightsPanel?: React.ReactNode;
+  /** Compact inline summary rendered inside the Evidence Explorer accordion body. */
+  evidencePanel?: React.ReactNode;
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -504,6 +510,10 @@ export function DealWorkspaceV4({
   onOpenDeepDive,
   onOpenInsights,
   onOpenEvidenceExplorer,
+  // panel slots
+  deepDivePanel,
+  insightsPanel,
+  evidencePanel,
   // extra
   keyDrivers,
 }: DealWorkspaceV4Props) {
@@ -1202,65 +1212,80 @@ export function DealWorkspaceV4({
           <div className="space-y-3">
 
             {/* Deep Dive Panel */}
-            <button
-              onClick={() => { toggleSection('deepDive'); if (onOpenDeepDive) onOpenDeepDive(); }}
-              className={`w-full flex items-center justify-between p-4 rounded-lg border transition-colors ${
-                darkMode
-                  ? 'bg-white/[0.02] border-white/10 hover:bg-white/[0.04]'
-                  : 'bg-white border-gray-200 hover:bg-gray-50'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <Search className={`w-4 h-4 ${sectionLabel}`} />
-                <div className="text-left">
-                  <div className={`text-sm font-medium ${heading}`}>Deep Dive Panel</div>
-                  <div className={`text-xs ${muted}`}>
-                    {deepDiveReady ? 'Section-by-section analysis available' : 'Run specific analyses on team, market, product'}
+            <div className={`rounded-lg border overflow-hidden ${
+              darkMode ? 'border-white/10' : 'border-gray-200'
+            }`}>
+              <button
+                onClick={() => toggleSection('deepDive')}
+                className={`w-full flex items-center justify-between p-4 transition-colors ${
+                  darkMode
+                    ? 'bg-white/[0.02] hover:bg-white/[0.04]'
+                    : 'bg-white hover:bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Search className={`w-4 h-4 ${sectionLabel}`} />
+                  <div className="text-left">
+                    <div className={`text-sm font-medium ${heading}`}>Deep Dive Panel</div>
+                    <div className={`text-xs ${muted}`}>
+                      {deepDiveReady ? 'Section-by-section analysis available' : 'Run specific analyses on team, market, product'}
+                    </div>
                   </div>
                 </div>
-              </div>
-              {expandedSections.deepDive ? <ChevronDown className={`w-4 h-4 ${sectionLabel}`} /> : <ChevronRight className={`w-4 h-4 ${sectionLabel}`} />}
-            </button>
+                {expandedSections.deepDive ? <ChevronDown className={`w-4 h-4 ${sectionLabel}`} /> : <ChevronRight className={`w-4 h-4 ${sectionLabel}`} />}
+              </button>
+              {expandedSections.deepDive && deepDivePanel}
+            </div>
 
             {/* Investor Insights */}
-            <button
-              onClick={() => { toggleSection('insights'); if (onOpenInsights) onOpenInsights(); }}
-              className={`w-full flex items-center justify-between p-4 rounded-lg border transition-colors ${
-                darkMode
-                  ? 'bg-white/[0.02] border-white/10 hover:bg-white/[0.04]'
-                  : 'bg-white border-gray-200 hover:bg-gray-50'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <Sparkles className={`w-4 h-4 ${sectionLabel}`} />
-                <div className="text-left">
-                  <div className={`text-sm font-medium ${heading}`}>Investor Insights Diagnostics</div>
-                  <div className={`text-xs ${muted}`}>
-                    {insightsReady ? 'AI-powered analysis ready' : 'AI-powered professional perspective analysis'}
+            <div className={`rounded-lg border overflow-hidden ${
+              darkMode ? 'border-white/10' : 'border-gray-200'
+            }`}>
+              <button
+                onClick={() => toggleSection('insights')}
+                className={`w-full flex items-center justify-between p-4 transition-colors ${
+                  darkMode
+                    ? 'bg-white/[0.02] hover:bg-white/[0.04]'
+                    : 'bg-white hover:bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Sparkles className={`w-4 h-4 ${sectionLabel}`} />
+                  <div className="text-left">
+                    <div className={`text-sm font-medium ${heading}`}>Investor Insights Diagnostics</div>
+                    <div className={`text-xs ${muted}`}>
+                      {insightsReady ? 'AI-powered analysis ready' : 'AI-powered professional perspective analysis'}
+                    </div>
                   </div>
                 </div>
-              </div>
-              {expandedSections.insights ? <ChevronDown className={`w-4 h-4 ${sectionLabel}`} /> : <ChevronRight className={`w-4 h-4 ${sectionLabel}`} />}
-            </button>
+                {expandedSections.insights ? <ChevronDown className={`w-4 h-4 ${sectionLabel}`} /> : <ChevronRight className={`w-4 h-4 ${sectionLabel}`} />}
+              </button>
+              {expandedSections.insights && insightsPanel}
+            </div>
 
             {/* Evidence Explorer */}
-            <button
-              onClick={() => { toggleSection('evidence'); if (onOpenEvidenceExplorer) onOpenEvidenceExplorer(); }}
-              className={`w-full flex items-center justify-between p-4 rounded-lg border transition-colors ${
-                darkMode
-                  ? 'bg-white/[0.02] border-white/10 hover:bg-white/[0.04]'
-                  : 'bg-white border-gray-200 hover:bg-gray-50'
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <FileText className={`w-4 h-4 ${sectionLabel}`} />
-                <div className="text-left">
-                  <div className={`text-sm font-medium ${heading}`}>Evidence Explorer</div>
-                  <div className={`text-xs ${muted}`}>Review source documents and data extractions</div>
+            <div className={`rounded-lg border overflow-hidden ${
+              darkMode ? 'border-white/10' : 'border-gray-200'
+            }`}>
+              <button
+                onClick={() => toggleSection('evidence')}
+                className={`w-full flex items-center justify-between p-4 transition-colors ${
+                  darkMode
+                    ? 'bg-white/[0.02] hover:bg-white/[0.04]'
+                    : 'bg-white hover:bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <FileText className={`w-4 h-4 ${sectionLabel}`} />
+                  <div className="text-left">
+                    <div className={`text-sm font-medium ${heading}`}>Evidence Explorer</div>
+                    <div className={`text-xs ${muted}`}>Review source documents and data extractions</div>
+                  </div>
                 </div>
-              </div>
-              {expandedSections.evidence ? <ChevronDown className={`w-4 h-4 ${sectionLabel}`} /> : <ChevronRight className={`w-4 h-4 ${sectionLabel}`} />}
-            </button>
+                {expandedSections.evidence ? <ChevronDown className={`w-4 h-4 ${sectionLabel}`} /> : <ChevronRight className={`w-4 h-4 ${sectionLabel}`} />}
+              </button>
+              {expandedSections.evidence && evidencePanel}
+            </div>
           </div>
         </div>
 

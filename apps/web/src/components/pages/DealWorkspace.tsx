@@ -30,6 +30,9 @@ import { DealDeepDiveTab } from '../workspace/DealDeepDiveTab';
 import { WorkspaceRedesignedShell } from '../workspace/WorkspaceRedesignedShell';
 import { selectWorkspaceRedesignedShellProps } from '../../lib/selectors/selectWorkspaceRedesignedShellProps';
 import { DealWorkspaceV4 } from '../workspace/DealWorkspaceV4';
+import { WorkbenchDeepDiveSummary } from '../workspace/WorkbenchDeepDiveSummary';
+import { WorkbenchInsightsSummary } from '../workspace/WorkbenchInsightsSummary';
+import { WorkbenchEvidenceSummary } from '../workspace/WorkbenchEvidenceSummary';
 import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import UploadDocModal from '../upload_doc_modal';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
@@ -231,6 +234,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [deepDiveLoading, setDeepDiveLoading] = useState(false);
   const [deepDiveError, setDeepDiveError] = useState<string | null>(null);
   const deepDiveLoadedDealIdRef = useRef<string | null>(null);
+  const [activePanel, setActivePanel] = useState<'deep-dive' | 'insights' | 'evidence' | null>(null);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
   const [analystFocusNodeId, setAnalystFocusNodeId] = useState<string | null>(null);
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
@@ -1633,8 +1637,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setSelectedScoreSectionKey(null);
       setHighlightedEvidenceIds([]);
       setSelectedScoreSectionMismatch(false);
-      setActiveTab('evidence');
-      setShowScoreBreakdown(true);
+      setActivePanel('evidence');
       return;
     }
     const primaryIds = Array.isArray(section?.evidence_ids_linked)
@@ -1650,8 +1653,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setHighlightedEvidenceIds(ids);
     setSelectedScoreSectionMismatch(mismatch);
     setScoreTraceModeOverride(null);
-    setActiveTab('evidence');
-    setShowScoreBreakdown(true);
+    setActivePanel('evidence');
   };
 
   const handleScoreTraceDebugTrace = (section: any, fallbackKey?: string | null) => {
@@ -1676,8 +1678,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setHighlightedEvidenceIds(ids);
     setSelectedScoreSectionMismatch(mismatch);
     setScoreTraceModeOverride('trace');
-    setActiveTab('evidence');
-    setShowScoreBreakdown(true);
+    setActivePanel('evidence');
   };
   const decisionAccent = decisionLabel === 'FUND'
     ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
@@ -7014,21 +7015,115 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
   };
 
+  const shellProps = selectWorkspaceRedesignedShellProps({
+    report: reportFromApi,
+    overviewVM: vm.overview,
+    lastAnalyzedAt: dioMeta?.lastAnalyzedAt ?? null,
+    blockerCount: vm.header.blockers,
+    deepDiveReady: Boolean(deepDiveResponse && !deepDiveLoading && !deepDiveError),
+    insightsReady: investorInsights.status === 'ready' && !!investorInsights.report,
+    workspaceVerdict: _workspaceVerdict,
+  });
+
   return (
-    <DealWorkspaceV4
-      darkMode={darkMode}
-      {...selectWorkspaceRedesignedShellProps({
-        report: reportFromApi,
-        overviewVM: vm.overview,
-        lastAnalyzedAt: dioMeta?.lastAnalyzedAt ?? null,
-        blockerCount: vm.header.blockers,
-        deepDiveReady: Boolean(deepDiveResponse && !deepDiveLoading && !deepDiveError),
-        insightsReady: investorInsights.status === 'ready' && !!investorInsights.report,
-        workspaceVerdict: _workspaceVerdict,
-      })}
-      keyDrivers={filteredStrengths}
-      onBack={handleBack}
-      onRunAnalysis={runAIAnalysis}
-    />
+    <>
+      <DealWorkspaceV4
+        darkMode={darkMode}
+        {...shellProps}
+        keyDrivers={filteredStrengths}
+        onBack={handleBack}
+        onRunAnalysis={runAIAnalysis}
+        onOpenDeepDive={() => setActivePanel('deep-dive')}
+        onOpenInsights={() => setActivePanel('insights')}
+        onOpenEvidenceExplorer={() => setActivePanel('evidence')}
+        deepDivePanel={
+          <WorkbenchDeepDiveSummary
+            deepDive={deepDiveResponse?.deep_dive ?? null}
+            loading={deepDiveLoading}
+            error={deepDiveError}
+            darkMode={darkMode}
+            onOpenFull={() => setActivePanel('deep-dive')}
+          />
+        }
+        insightsPanel={
+          <WorkbenchInsightsSummary
+            convictionHeadline={shellProps.convictionHeadline ?? null}
+            convictionRationale={shellProps.convictionRationale ?? null}
+            convictionPosture={shellProps.convictionPosture ?? null}
+            convictionBand={shellProps.convictionBand ?? null}
+            topPositiveContributors={shellProps.topPositiveContributors ?? []}
+            topNegativeContributors={shellProps.topNegativeContributors ?? []}
+            requiredNextChecks={shellProps.requiredNextChecks ?? []}
+            insightsReady={investorInsights.status === 'ready' && !!investorInsights.report}
+            darkMode={darkMode}
+            onOpenFull={() => setActivePanel('insights')}
+          />
+        }
+        evidencePanel={
+          <WorkbenchEvidenceSummary
+            evidence={evidence}
+            evidenceLoading={evidenceLoading}
+            scoreBreakdownSections={scoreBreakdownSections}
+            documentTitles={documentTitles}
+            darkMode={darkMode}
+            onOpenFull={() => setActivePanel('evidence')}
+          />
+        }
+      />
+
+      {activePanel !== null && (
+        <div className={`fixed inset-0 z-50 overflow-auto ${darkMode ? 'bg-[#0d1117]' : 'bg-gray-50'}`}>
+          <div className={`sticky top-0 z-10 flex items-center gap-3 px-4 py-3 border-b ${darkMode ? 'bg-[#0d1117] border-white/10' : 'bg-white border-gray-200'}`}>
+            <button
+              onClick={() => setActivePanel(null)}
+              className={`flex items-center gap-2 text-sm font-medium transition-colors ${
+                darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+              Back to Workspace
+            </button>
+          </div>
+          <div className="p-4">
+            {activePanel === 'deep-dive' && (
+              <DealDeepDiveTab
+                deepDiveResponse={deepDiveResponse}
+                loading={deepDiveLoading}
+                error={deepDiveError}
+                darkMode={darkMode}
+                debugEnabled={workspaceDebugEnabled}
+              />
+            )}
+            {activePanel === 'insights' && dealId && (
+              <InvestorInsightsTab
+                dealId={dealId}
+                darkMode={darkMode}
+                dealName={displayName}
+              />
+            )}
+            {activePanel === 'evidence' && (
+              <EvidencePanel
+                darkMode={darkMode}
+                evidence={evidence}
+                loading={evidenceLoading}
+                lastUpdated={lastEvidenceRefresh}
+                onRefresh={loadEvidence}
+                onFetchEvidence={handleFetchEvidence}
+                onLocateVisualEvidenceNode={(visualAssetId) => setAnalystFocusNodeId(visualAssetId)}
+                documentTitles={documentTitles}
+                scoreEvidence={phase1ScoreEvidenceForPanel}
+                selectedScoreSectionKey={selectedScoreSectionKey}
+                scoreBreakdownSections={scoreBreakdownSections}
+                highlightedEvidenceIds={highlightedEvidenceIds}
+                selectedScoreSectionMismatch={selectedScoreSectionMismatch}
+                externalTraceMode={scoreTraceModeOverride}
+                scoreTraceAudit={scoreTraceAudit}
+                resolvedEvidence={resolvedEvidence}
+              />
+            )}
+          </div>
+        </div>
+      )}
+    </>
   );
 }

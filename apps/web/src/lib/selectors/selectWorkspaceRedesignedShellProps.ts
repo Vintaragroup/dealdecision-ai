@@ -510,6 +510,28 @@ export function selectWorkspaceRedesignedShellProps(
       }));
   })();
 
+  // claim_support_v1 items — primary source for Decision Proof Block.
+  // Extracted directly from report_payload; challenge_pass above is the fallback.
+  const claimSupportItems: Array<{
+    claim: string;
+    category: string;
+    status: 'supported' | 'incomplete' | 'missing' | 'contradicted';
+    reasons: string[];
+    evidence_refs: string[];
+  }> | null = (() => {
+    const raw = rpt.claim_support_v1?.items;
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+    return raw
+      .filter((i: any) => i && asNES(i?.claim) && asNES(i?.status))
+      .map((i: any) => ({
+        claim: asNES(i.claim) ?? '',
+        category: asNES(i.category) ?? '',
+        status: i.status as 'supported' | 'incomplete' | 'missing' | 'contradicted',
+        reasons: Array.isArray(i.reasons) ? i.reasons.filter((r: any) => typeof r === 'string' && r.trim().length > 0) : [],
+        evidence_refs: Array.isArray(i.evidence_refs) ? i.evidence_refs.filter((r: any) => typeof r === 'string') : [],
+      }));
+  })();
+
   // ── TRACE: final resolved props at selector exit ─────────────────────────────
   if (import.meta.env.DEV) {
     console.group('[TRACE:selectWorkspaceRedesignedShellProps] final resolved props (selector exit)');
@@ -573,5 +595,6 @@ export function selectWorkspaceRedesignedShellProps(
     insightsReady,
     primaryChallengeReason,
     missingEvidenceItems,
+    claimSupportItems,
   };
 }

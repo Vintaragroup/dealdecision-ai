@@ -7063,6 +7063,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             missingEvidenceItems={shellProps.missingEvidenceItems ?? []}
             contradictions={shellProps.contradictions ?? []}
             scoreBreakdownSections={scoreBreakdownSections}
+            claimSupportItems={shellProps.claimSupportItems ?? null}
           />
         }
         evidencePanel={

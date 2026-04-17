@@ -192,6 +192,8 @@ export type {
 } from "./models/conviction-v1";
 export { buildDeterministicDealSummaryV1FromStructuredSummary } from "./reports/deal-summary-v1-deterministic";
 export { buildInvestmentAnalysisOverviewV2 } from "./reports/investment-analysis-overview-v2";
+export { buildClaimSupportV1 } from "./reports/claim-support-v1";
+export type { ClaimSupportV1, ClaimSupportItemV1, ClaimSupportCategory, ClaimSupportStatus } from "./reports/claim-support-v1";
 export {
   buildDealDeepDiveV1,
   generateDeepDiveDiscoverySectionV1,

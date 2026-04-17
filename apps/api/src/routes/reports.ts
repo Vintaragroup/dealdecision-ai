@@ -12,7 +12,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { buildDeterministicDealSummaryV1FromStructuredSummary, compileDIOToReport, compileDIOToReportWithPromotedFacts, toPolicyAwareBusinessModelDisplay } from '@dealdecision/core';
+import { buildDeterministicDealSummaryV1FromStructuredSummary, compileDIOToReport, compileDIOToReportWithPromotedFacts, toPolicyAwareBusinessModelDisplay, buildClaimSupportV1 } from '@dealdecision/core';
 import { buildDeterministicScoreInputsV1 } from '@dealdecision/core';
 import { computeDecisionV1, computeHardPassGuardrailV2, getScoreBandV2 } from '@dealdecision/core';
 import { computeBusinessQualityV2 } from '@dealdecision/core';
@@ -108,7 +108,7 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 43; // bumped: stage-5 challenge_pass now patched to report_payload
+const REPORT_COMPILER_VERSION = 44; // bumped: challenge_pass now read from deal_challenge_pass_results into compiled report
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -3516,6 +3516,60 @@ export async function registerReportRoutes(
         const payload: any = { ready: true, version: version ?? report?.version ?? 1, artifact };
         payload.deal_summary = dealSummaryV1;
 
+        // Inject challenge_pass from deal_challenge_pass_results so that conviction_v2 scoring
+        // and the Decision Proof Block receive real data. This runs before attachScoreBandAndGuardrailV2
+        // so the verdict_resistance and flag signals are available to attachScoringV2Computed.
+        // The result is written into ingestion_reports cache; cache-hits carry the embedded value.
+        // Fail-open: absence degrades V2 scoring gracefully but never blocks /report.
+        try {
+          if (report && typeof report === 'object') {
+            const _cpResult = await (pool as any).query(
+              `SELECT verdict_resistance_score, verdict_resistance_label,
+                      opposing_case_summary, primary_challenge_reason,
+                      flag_count_critical, flag_count_error, flag_count_warn,
+                      missing_evidence, diligence_gaps, challenge_factors,
+                      overconfident_claims, memory_challenge_used, memory_challenge_summary
+                 FROM deal_challenge_pass_results
+                WHERE deal_id = $1
+                ORDER BY created_at DESC
+                LIMIT 1`,
+              [deal_id]
+            );
+            const _cpRow = _cpResult.rows?.[0] ?? null;
+            if (_cpRow) {
+              (report as any).challenge_pass = {
+                verdict_resistance_score: _cpRow.verdict_resistance_score ?? null,
+                verdict_resistance_label: _cpRow.verdict_resistance_label ?? null,
+                opposing_case: _cpRow.opposing_case_summary ?? null,
+                primary_challenge_reason: _cpRow.primary_challenge_reason ?? null,
+                flag_count_critical: _cpRow.flag_count_critical ?? 0,
+                flag_count_error: _cpRow.flag_count_error ?? 0,
+                flag_count_warn: _cpRow.flag_count_warn ?? 0,
+                missing_evidence: _cpRow.missing_evidence ?? [],
+                diligence_gaps: _cpRow.diligence_gaps ?? [],
+                challenge_factors: _cpRow.challenge_factors ?? [],
+                overconfident_claims: _cpRow.overconfident_claims ?? [],
+                memory_challenge_used: _cpRow.memory_challenge_used ?? false,
+                memory_challenge_summary: _cpRow.memory_challenge_summary ?? null,
+              };
+            }
+          }
+        } catch {
+          // fail-open: challenge_pass is optional enrichment
+        }
+
+        // Derive claim_support_v1 from conviction_v1 + challenge_pass signals.
+        // Runs after challenge_pass is attached so missing_evidence is available.
+        // Fail-open: absence never blocks /report.
+        try {
+          if (report && typeof report === 'object') {
+            const claimSupport = buildClaimSupportV1(report);
+            if (claimSupport) (report as any).claim_support_v1 = claimSupport;
+          }
+        } catch {
+          // fail-open
+        }
+
         // Deterministic deck archetype inference (diagnostics only; no enforcement).
         try {
           if (Array.isArray(segmentedNodes?.nodes) && segmentedNodes!.nodes.length > 0) {
@@ -4331,6 +4385,55 @@ export async function registerReportRoutes(
         }
 
         // narrateEnabled computed above for cache gating
+
+        // Inject challenge_pass from deal_challenge_pass_results (versioned route — same contract as main route).
+        // Must run before attachScoreBandAndGuardrailV2 so conviction_v2 / flag signals are populated.
+        try {
+          if (report && typeof report === 'object') {
+            const _cpResult2 = await (pool as any).query(
+              `SELECT verdict_resistance_score, verdict_resistance_label,
+                      opposing_case_summary, primary_challenge_reason,
+                      flag_count_critical, flag_count_error, flag_count_warn,
+                      missing_evidence, diligence_gaps, challenge_factors,
+                      overconfident_claims, memory_challenge_used, memory_challenge_summary
+                 FROM deal_challenge_pass_results
+                WHERE deal_id = $1
+                ORDER BY created_at DESC
+                LIMIT 1`,
+              [deal_id]
+            );
+            const _cpRow2 = _cpResult2.rows?.[0] ?? null;
+            if (_cpRow2) {
+              (report as any).challenge_pass = {
+                verdict_resistance_score: _cpRow2.verdict_resistance_score ?? null,
+                verdict_resistance_label: _cpRow2.verdict_resistance_label ?? null,
+                opposing_case: _cpRow2.opposing_case_summary ?? null,
+                primary_challenge_reason: _cpRow2.primary_challenge_reason ?? null,
+                flag_count_critical: _cpRow2.flag_count_critical ?? 0,
+                flag_count_error: _cpRow2.flag_count_error ?? 0,
+                flag_count_warn: _cpRow2.flag_count_warn ?? 0,
+                missing_evidence: _cpRow2.missing_evidence ?? [],
+                diligence_gaps: _cpRow2.diligence_gaps ?? [],
+                challenge_factors: _cpRow2.challenge_factors ?? [],
+                overconfident_claims: _cpRow2.overconfident_claims ?? [],
+                memory_challenge_used: _cpRow2.memory_challenge_used ?? false,
+                memory_challenge_summary: _cpRow2.memory_challenge_summary ?? null,
+              };
+            }
+          }
+        } catch {
+          // fail-open: challenge_pass is optional enrichment
+        }
+
+        // Derive claim_support_v1 (versioned route — same contract as main route).
+        try {
+          if (report && typeof report === 'object') {
+            const claimSupport2 = buildClaimSupportV1(report);
+            if (claimSupport2) (report as any).claim_support_v1 = claimSupport2;
+          }
+        } catch {
+          // fail-open
+        }
 
         // Best-effort: attach deterministic deck archetype metadata for versioned reports too.
         try {

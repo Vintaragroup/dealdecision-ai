@@ -4,6 +4,14 @@ interface ContributorItem {
   scoreDelta: number | null;
 }
 
+interface ClaimSupportItemProp {
+  claim: string;
+  category: string;
+  status: 'supported' | 'incomplete' | 'missing' | 'contradicted';
+  reasons: string[];
+  evidence_refs: string[];
+}
+
 interface Props {
   convictionHeadline: string | null;
   convictionRationale: string | null;
@@ -17,7 +25,7 @@ interface Props {
   darkMode: boolean;
   onOpenFull?: () => void;
   onGenerate?: () => void;
-  // Decision Proof Block inputs (Stage 5 challenge_pass data)
+  // Decision Proof Block inputs (Stage 5 challenge_pass data — fallback when claim_support_v1 absent)
   primaryChallengeReason?: string | null;
   missingEvidenceItems?: Array<{
     evidence_type: string;
@@ -32,6 +40,8 @@ interface Props {
     support_status?: string;
     missing_reasons?: string[];
   }>;
+  // Primary source for Decision Proof Block — overrides challenge_pass derivation when present.
+  claimSupportItems?: ClaimSupportItemProp[] | null;
 }
 
 export function WorkbenchInsightsSummary({
@@ -53,6 +63,7 @@ export function WorkbenchInsightsSummary({
   missingEvidenceItems = [],
   contradictions = [],
   scoreBreakdownSections = [],
+  claimSupportItems = null,
 }: Props) {
   const border = darkMode ? 'border-white/10' : 'border-gray-200';
   const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
@@ -148,66 +159,121 @@ export function WorkbenchInsightsSummary({
   })();
 
   // ── Decision Proof Block ──────────────────────────────────────────────────
-  // Priority-ordered synthesis of the most decisive signals from Stage 5 challenge_pass.
-  // Rules: no scores, no generic language, max 5 bullets, every bullet maps to a real signal.
+  // Primary source: claim_support_v1 items (deterministic, all 6 categories).
+  // Fallback: challenge_pass signals (primaryChallengeReason, missingEvidenceItems,
+  //           contradictions, scoreBreakdownSections).
   const PRIORITY_SECTION_KEYS = new Set([
     'market', 'product', 'financials', 'financial', 'traction', 'revenue', 'customers',
   ]);
   const PRIORITY_EVIDENCE_RE = /market|customer|revenue|financial|arr|burn|traction|churn/i;
+  const PRIORITY_CLAIM_CATS = new Set(['market', 'financials', 'traction', 'capital_structure']);
 
-  // 1. Primary Blocker — high-sensitivity missing evidence first, then primary_challenge_reason,
-  //    then the first unsupported priority section as a final fallback.
-  const primaryBlocker: string | null = (() => {
-    const highMissing = missingEvidenceItems.find((m) => m.verdict_sensitivity === 'High');
-    if (highMissing) return highMissing.description;
-    if (primaryChallengeReason) return primaryChallengeReason;
-    const unsupportedPriority = scoreBreakdownSections.find(
-      (s) => s.support_status === 'missing' && PRIORITY_SECTION_KEYS.has(s.key)
+  // Pre-compute claim_support_v1-derived sections (primary path).
+  const _csDerived = (() => {
+    if (!claimSupportItems || claimSupportItems.length === 0) return null;
+    const contradicted = claimSupportItems.filter((i) => i.status === 'contradicted');
+    const missing = claimSupportItems.filter((i) => i.status === 'missing');
+    const supported = claimSupportItems.filter((i) => i.status === 'supported');
+    const missingOrIncomplete = claimSupportItems.filter(
+      (i) => i.status === 'missing' || i.status === 'incomplete',
     );
-    if (unsupportedPriority) {
-      const reason = unsupportedPriority.missing_reasons?.[0];
-      return reason
-        ? `${unsupportedPriority.label}: ${reason}`
-        : `${unsupportedPriority.label} evidence not validated`;
-    }
-    return null;
+
+    const pbItem =
+      contradicted.find((i) => PRIORITY_CLAIM_CATS.has(i.category)) ??
+      missing.find((i) => PRIORITY_CLAIM_CATS.has(i.category)) ??
+      contradicted[0] ??
+      missing[0] ??
+      null;
+
+    const kcItem = contradicted.filter((i) => i !== pbItem)[0] ?? null;
+
+    const topMissing =
+      missing.find((i) => PRIORITY_CLAIM_CATS.has(i.category)) ?? missing[0] ?? null;
+
+    return {
+      primaryBlocker: pbItem?.reasons[0] ?? null,
+      keyConflict: kcItem?.reasons[0] ?? null,
+      supportItems: supported.slice(0, 2).map((i): ContributorItem => ({
+        key: i.category,
+        label: i.claim,
+        scoreDelta: null,
+      })),
+      missingItems: missingOrIncomplete
+        .filter((i) => i !== pbItem)
+        .sort((a, b) => {
+          const aP = PRIORITY_CLAIM_CATS.has(a.category) ? 0 : 1;
+          const bP = PRIORITY_CLAIM_CATS.has(b.category) ? 0 : 1;
+          if (aP !== bP) return aP - bP;
+          return a.status === 'missing' ? -1 : 1;
+        })
+        .slice(0, 2)
+        .flatMap((i) => i.reasons.slice(0, 1)),
+      upgradePath: topMissing?.reasons[0]
+        ? `This deal strengthens if: ${topMissing.reasons[0]}`
+        : null,
+    };
   })();
 
-  // 2. Key Conflict — prefer a short-form contradiction; truncate the opposing case if needed.
-  const keyConflict: string | null = (() => {
-    if (!contradictions.length) return null;
-    const short = contradictions.find((c) => c.length < 200 && c.length > 10);
-    if (short) return short;
-    // Truncate the first (opposing case) to its leading sentence.
-    const firstSentence = contradictions[0]?.split(/\.\s+/)[0]?.trim();
-    return firstSentence && firstSentence.length > 10 ? firstSentence + '.' : null;
-  })();
+  // 1. Primary Blocker
+  const primaryBlocker: string | null = _csDerived
+    ? _csDerived.primaryBlocker
+    : (() => {
+        const highMissing = missingEvidenceItems.find((m) => m.verdict_sensitivity === 'High');
+        if (highMissing) return highMissing.description;
+        if (primaryChallengeReason) return primaryChallengeReason;
+        const unsupportedPriority = scoreBreakdownSections.find(
+          (s) => s.support_status === 'missing' && PRIORITY_SECTION_KEYS.has(s.key)
+        );
+        if (unsupportedPriority) {
+          const reason = unsupportedPriority.missing_reasons?.[0];
+          return reason
+            ? `${unsupportedPriority.label}: ${reason}`
+            : `${unsupportedPriority.label} evidence not validated`;
+        }
+        return null;
+      })();
 
-  // 3. What Supports This Deal — top 2 positive contributors (already evidence-tied).
-  const decisionSupportItems = topPositiveContributors.slice(0, 2);
+  // 2. Key Conflict
+  const keyConflict: string | null = _csDerived
+    ? _csDerived.keyConflict
+    : (() => {
+        if (!contradictions.length) return null;
+        const short = contradictions.find((c) => c.length < 200 && c.length > 10);
+        if (short) return short;
+        const firstSentence = contradictions[0]?.split(/\.\s+/)[0]?.trim();
+        return firstSentence && firstSentence.length > 10 ? firstSentence + '.' : null;
+      })();
 
-  // 4. What Is Missing — prefer market/customer/financial gaps, High sensitivity first.
-  const decisionMissingItems: string[] = (() => {
-    if (!missingEvidenceItems.length) return [];
-    return [...missingEvidenceItems]
-      .sort((a, b) => {
-        const aMatch = PRIORITY_EVIDENCE_RE.test(`${a.evidence_type} ${a.description}`) ? 0 : 1;
-        const bMatch = PRIORITY_EVIDENCE_RE.test(`${b.evidence_type} ${b.description}`) ? 0 : 1;
-        if (aMatch !== bMatch) return aMatch - bMatch;
-        const sensOrder: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
-        return (sensOrder[a.verdict_sensitivity] ?? 2) - (sensOrder[b.verdict_sensitivity] ?? 2);
-      })
-      .slice(0, 2)
-      .map((m) => m.description);
-  })();
+  // 3. What Supports This Deal
+  const decisionSupportItems: ContributorItem[] = _csDerived
+    ? _csDerived.supportItems
+    : topPositiveContributors.slice(0, 2);
 
-  // 5. Upgrade Path — convert the top missing evidence into a "this deal could advance if…" line.
+  // 4. What Is Missing
+  const decisionMissingItems: string[] = _csDerived
+    ? _csDerived.missingItems
+    : (() => {
+        if (!missingEvidenceItems.length) return [];
+        return [...missingEvidenceItems]
+          .sort((a, b) => {
+            const aMatch = PRIORITY_EVIDENCE_RE.test(`${a.evidence_type} ${a.description}`) ? 0 : 1;
+            const bMatch = PRIORITY_EVIDENCE_RE.test(`${b.evidence_type} ${b.description}`) ? 0 : 1;
+            if (aMatch !== bMatch) return aMatch - bMatch;
+            const sensOrder: Record<string, number> = { High: 0, Medium: 1, Low: 2 };
+            return (sensOrder[a.verdict_sensitivity] ?? 2) - (sensOrder[b.verdict_sensitivity] ?? 2);
+          })
+          .slice(0, 2)
+          .map((m) => m.description);
+      })();
+
+  // 5. Upgrade Path — always prefer a challenge_pass diligence_question (action-oriented) over
+  //    a problem-description reason. Returns null when no actionable question is available.
   const upgradePath: string | null = (() => {
-    const first =
-      missingEvidenceItems.find((m) => m.verdict_sensitivity === 'High') ??
-      missingEvidenceItems[0];
-    if (!first?.diligence_question) return null;
-    return `This deal could advance if: ${first.diligence_question}`;
+    const bestDQ =
+      missingEvidenceItems.find((m) => m.verdict_sensitivity === 'High' && m.diligence_question) ??
+      missingEvidenceItems.find((m) => m.diligence_question);
+    if (bestDQ?.diligence_question) return `This deal could advance if: ${bestDQ.diligence_question}`;
+    return null;
   })();
 
   const hasDecisionProof = !!(

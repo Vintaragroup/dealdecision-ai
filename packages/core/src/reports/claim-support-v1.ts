@@ -496,11 +496,26 @@ export function buildClaimSupportV1(report: any): ClaimSupportV1 | null {
       ...(posRefsByCategory.get(cat) ?? []),
     ]);
 
+    // For the financials claim only: if a strong positive-proof note (XLSX/SEC filing) exists in
+    // the reasons array but is not already first, promote it to reasons[0].
+    // This makes the DPB's lead reason trust-building ("XLSX present...") rather than the
+    // completeness warning, while keeping the completeness warning as context at reasons[1].
+    // Status is not changed — this is presentation ordering only, not a logic change.
+    let finalReasons = dedup(reasons).slice(0, 5);
+    if (cat === "financials" && (status === "incomplete" || status === "contradicted")) {
+      const proofNoteSet = new Set(Object.values(POSITIVE_FAMILY_NOTE_TEXT));
+      const proofIdx = finalReasons.findIndex((r) => proofNoteSet.has(r));
+      if (proofIdx > 0) {
+        const proofNote = finalReasons[proofIdx];
+        finalReasons = [proofNote, ...finalReasons.slice(0, proofIdx), ...finalReasons.slice(proofIdx + 1)];
+      }
+    }
+
     items.push({
       claim: CATEGORY_CLAIM_LABELS[cat],
       category: cat,
       status,
-      reasons: dedup(reasons).slice(0, 5),
+      reasons: finalReasons,
       evidence_refs: evidenceRefs.slice(0, 6),
     });
   }

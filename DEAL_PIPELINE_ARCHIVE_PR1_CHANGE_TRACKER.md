@@ -1,3 +1,5 @@
+> **STATUS: ARCHIVED** — Duplicate of `artifacts-archive/system-history/DEAL_PIPELINE_ARCHIVE_PR1_CHANGE_TRACKER.md`. The canonical copy is in `artifacts-archive/`. This root-level copy can be deleted once confirmed safe.
+
 # Deal Pipeline Archive PR1 Change Tracker
 
 Date: 2026-03-27

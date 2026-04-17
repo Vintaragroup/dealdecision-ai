@@ -52,7 +52,7 @@ export interface MissingEvidenceItem {
 
 export interface DiligenceGap {
   gap_id: string;
-  category: "financial" | "team" | "market" | "product" | "legal";
+  category: "financial" | "team" | "market" | "product" | "traction" | "legal";
   description: string;
   severity: "Critical" | "Major" | "Minor";
   source_evidence_type: string;

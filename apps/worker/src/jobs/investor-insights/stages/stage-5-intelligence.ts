@@ -436,6 +436,17 @@ export interface Stage5Inputs {
   // Deck-sourced risk items (optional)
   deck_risk_items?: string[];
 
+  // Non-financial signal scores — derived from limitedScoringResult and insightSlotInputs.
+  // Optional: when absent the non-financial missing-evidence specs are simply skipped.
+  /** 0 when no market evidence detected in DPU text (limitedScoringResult.market_presence_score). */
+  market_presence_score?: number | null;
+  /** 0 when no traction signals detected (limitedScoringResult.traction_signal_score). */
+  traction_signal_score?: number | null;
+  /** true when insightSlotInputs.saasKpis is non-null. */
+  has_saas_kpis?: boolean;
+  /** true when insightSlotInputs.dealTractionFacts is non-empty. */
+  has_traction_facts?: boolean;
+
   // Financial Truth Resolution Layer V2 states
   // Present when FTRL ran; null/undefined when legacy path was used.
   financial_truth_states?: {
@@ -792,6 +803,11 @@ export async function runIntelligenceStage(
       runway_truth_state: inputs.financial_truth_states?.runway_months ?? null,
       cash_truth_state: inputs.financial_truth_states?.cash ?? null,
       revenue_truth_state: inputs.financial_truth_states?.revenue ?? null,
+      // Non-financial signals — only present when wired by the caller
+      market_presence_score: inputs.market_presence_score ?? undefined,
+      traction_signal_score: inputs.traction_signal_score ?? undefined,
+      has_saas_kpis: inputs.has_saas_kpis,
+      has_traction_facts: inputs.has_traction_facts,
     };
 
     const challenge_pass_result = runChallengePass({

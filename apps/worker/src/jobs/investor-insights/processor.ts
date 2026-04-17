@@ -1317,6 +1317,14 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				arr_resolved_source_kind:     ft.arr?.resolved_source_kind ?? null,
 				burn_resolved_source_kind:    ft.burn_rate?.resolved_source_kind ?? null,
 			} : null,
+			// Non-financial signals for category-balanced missing-evidence generation.
+			// market_presence_score and traction_signal_score come from limitedScoringResult
+			// (already computed in Stage 2). has_saas_kpis / has_traction_facts are derived
+			// from insightSlotInputs loaded in Stage 1.
+			market_presence_score: limitedScoringResult.market_presence_score,
+			traction_signal_score: limitedScoringResult.traction_signal_score,
+			has_saas_kpis: insightSlotInputs.saasKpis != null,
+			has_traction_facts: insightSlotInputs.dealTractionFacts.length > 0,
 		});
 
 		// Patch report_payload with Stage 5 challenge pass output so the report

@@ -22,6 +22,16 @@ export interface MissingEvidenceInput {
   runway_truth_state?: string | null;
   cash_truth_state?: string | null;
   revenue_truth_state?: string | null;
+  // Non-financial signal scores for category-balanced gap detection.
+  // Optional — when absent, the corresponding specs are skipped (no false positives).
+  /** 0 when limitedScoringResult.market_presence_score is 0 (no market evidence detected). */
+  market_presence_score?: number | null;
+  /** 0 when limitedScoringResult.traction_signal_score is 0 (no traction evidence detected). */
+  traction_signal_score?: number | null;
+  /** true when insightSlotInputs.saasKpis is non-null (SaaS KPI data present). */
+  has_saas_kpis?: boolean;
+  /** true when insightSlotInputs.dealTractionFacts is non-empty (structured traction facts present). */
+  has_traction_facts?: boolean;
 }
 
 interface EvidenceSpec {
@@ -161,6 +171,81 @@ const EVIDENCE_SPECS: Array<{
       diligence_question: "Additional supporting documents are recommended for higher-confidence analysis.",
       category: "financial",
       gap_severity: "Minor",
+    },
+  },
+  // ── Non-financial gap specs ───────────────────────────────────────────────
+  // These only fire when the relevant optional signal is explicitly provided and
+  // confirms absence. When the field is undefined/null, the spec is skipped.
+  {
+    // Market: no market evidence detected in DPU text (market_presence_score === 0 exactly)
+    missing: (i) => i.market_presence_score === 0,
+    spec: {
+      evidence_type: "market_validation",
+      description: "No market validation evidence detected — ICP, TAM/SAM/SOM, and customer segment data absent",
+      verdict_sensitivity: "High",
+      diligence_question:
+        "Provide ICP definition with TAM/SAM sizing methodology and at least one validated customer segment.",
+      category: "market",
+      gap_severity: "Major",
+    },
+  },
+  {
+    // Market weak-but-present: market sizing figures found but below full market structure
+    // (TAM-only = 45, no SAM/SOM). Fires when score is non-null, non-zero, and below TAM+SAM threshold.
+    // Does NOT fire for null (not_scoreable) or scores >= 75 (TAM+SAM or better).
+    missing: (i) =>
+      i.market_presence_score !== null &&
+      i.market_presence_score !== undefined &&
+      i.market_presence_score > 0 &&
+      i.market_presence_score < 75,
+    spec: {
+      evidence_type: "weak_market_validation",
+      description:
+        "Market sizing figures detected but ICP definition and customer segment validation not evidenced",
+      verdict_sensitivity: "Medium",
+      diligence_question:
+        "Market sizing figures present. Provide ICP definition with target customer segments, competitive differentiation, and evidence of demand validation.",
+      category: "market",
+      gap_severity: "Major",
+    },
+  },
+  {
+    // Customer traction: no traction signals AND no structured traction data
+    missing: (i) =>
+      i.traction_signal_score === 0 &&
+      i.has_saas_kpis === false &&
+      i.has_traction_facts === false,
+    spec: {
+      evidence_type: "customer_traction",
+      description:
+        "No customer traction evidence — MRR/ARR history, cohort retention, and customer contracts absent",
+      verdict_sensitivity: "High",
+      diligence_question:
+        "Provide MRR/ARR schedule with cohort retention data, customer count with growth trajectory, and any signed LOIs or customer contracts.",
+      category: "traction",
+      gap_severity: "Major",
+    },
+  },
+  {
+    // Traction weak-but-present: revenue/growth language detected but only from text (no structured data).
+    // Score > 0 means some signal exists; score <= 40 means text-mention or projected-only (no deal_facts).
+    // has_saas_kpis + has_traction_facts = false confirms no structured traction source.
+    missing: (i) =>
+      i.traction_signal_score !== null &&
+      i.traction_signal_score !== undefined &&
+      i.traction_signal_score > 0 &&
+      i.traction_signal_score <= 40 &&
+      i.has_saas_kpis === false &&
+      i.has_traction_facts === false,
+    spec: {
+      evidence_type: "weak_traction_signal",
+      description:
+        "Revenue or growth language detected but no verified customer metrics, cohort data, or signed agreements",
+      verdict_sensitivity: "Medium",
+      diligence_question:
+        "Revenue or growth signals detected. Provide verified MRR/ARR schedule with cohort retention data, customer count growth trajectory, and any signed LOIs or customer contracts.",
+      category: "traction",
+      gap_severity: "Major",
     },
   },
 ];

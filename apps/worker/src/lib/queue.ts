@@ -125,8 +125,7 @@ connection.on('error', (err) => {
 
 export function createWorker(
   name:
-    | QueueName
-    | "orchestration",
+    | QueueName,
   processor: Processor<any, any, string>,
   options?: {
     concurrency?: number;
@@ -279,7 +278,6 @@ export function createWorker(
 export function getQueue(
   name:
     | QueueName
-    | "orchestration"
 ) {
   const defaultJobOptions = name === "extract_visuals"
     ? { attempts: 5, backoff: { type: "exponential", delay: 10_000 } }

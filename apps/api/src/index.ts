@@ -10,7 +10,6 @@ import { registerDealRoutes } from "./routes/deals";
 import { registerJobRoutes } from "./routes/jobs";
 import { registerEventRoutes } from "./routes/events";
 import { registerDocumentRoutes } from "./routes/documents";
-import { registerOrchestrationRoutes } from "./routes/orchestration";
 import { registerReportRoutes } from "./routes/reports";
 import { registerDashboardRoutes } from "./routes/dashboard";
 import { registerChatRoutes } from "./routes/chat";
@@ -204,7 +203,6 @@ async function bootstrap() {
   await registerJobRoutes(app);
   await registerEventRoutes(app);
   await registerDocumentRoutes(app);
-  await registerOrchestrationRoutes(app, pool);
   await registerReportRoutes(app, pool);
   await registerDashboardRoutes(app);
   await registerChatRoutes(app);

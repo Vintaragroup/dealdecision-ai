@@ -24,7 +24,6 @@ export type EnqueuePersistedJobInput = {
     | "verify_documents"
     | "remediate_extraction"
     | "reextract_documents"
-    | "orchestration"
     | "export_report_pdf";
   deal_id?: string;
   document_id?: string;

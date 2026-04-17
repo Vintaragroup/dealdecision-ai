@@ -1,0 +1,25 @@
+{
+  "deal_id": "2bd8864c-b35d-4982-a9e1-83df13385bb1",
+  "visual_assets": {
+    "total_assets": 40,
+    "missing_slide_title": 0,
+    "missing_effective_segment": 0,
+    "title_from_vision": 3,
+    "segment_from_vision": 0,
+    "has_vu_payload": 32,
+    "vu_label_counts": {
+      "product_photo": 8,
+      "timeline": 14,
+      "org_chart": 5,
+      "logo": 3,
+      "map": 1,
+      "process_diagram": 1
+    }
+  },
+  "lineage_segment_audit": {
+    "total": 40,
+    "unknown": 4,
+    "inherited": 0,
+    "eligible_for_fill": 4
+  }
+}

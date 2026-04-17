@@ -1,0 +1,1030 @@
+{
+  "run_id": "20260409",
+  "generated_at": "2026-04-09T01:07:33.415956+00:00",
+  "overall_status": "PASS",
+  "summary": {
+    "total_cases": 14,
+    "mapped_cases": 11,
+    "unmapped_cases": 3,
+    "total_checks": 75,
+    "pass": 75,
+    "fail": 0,
+    "known_issue": 0,
+    "skip": 0
+  },
+  "cases": [
+    {
+      "gt_name": "3ICE",
+      "deal_id": "61ef36dd-391a-4a4e-b30b-1f5d1f19f91e",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/3ICE.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=61ef36dd-391a-4a4e-b30b-1f5d1f19f91e",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 0,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 0
+      },
+      "checks": [],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "Albuquerque",
+      "deal_id": "267c4979-5779-4a43-8920-a92034732edc",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/Albuquerque.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=267c4979-5779-4a43-8920-a92034732edc",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 12,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 12
+      },
+      "checks": [
+        {
+          "category": "extraction",
+          "label": "extraction:raise_amount",
+          "outcome": "PASS",
+          "actual": 11900000.0,
+          "expected_desc": "raise_amount \u2248 11868000 (\u00b15.0%)",
+          "note": "The $11.9M equity raise is correctly stored in financial_facts_v1 (raise_amount, high confidence, Q1 2026). This tests that the fact storage layer captures the equity figure even though the structured_summary layer picks up the wrong (construction loan) figure.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "Revenue must not be >= $1T (construction budget sales tax noise)",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "BUG-RE-3 guard: 'Gross Receipt Sales Tax $2,352,769' extracted as $2,352,769B ($2.35 quadrillion). Any revenue fact >= $1T for this deal is noise. Revenue in this context is NOI ($4.7M), not a billion-scale figure.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "financial_breakdown revenue must not be >= $1B",
+          "outcome": "PASS",
+          "actual": null,
+          "expected_desc": "financial_breakdown_v1.current_state.revenue.value <= 999999999 (absent \u2014 satisfies guard)",
+          "note": "BUG-RE-3: financial_breakdown_v1.current_state.revenue.value = 2352769000000000 is a known regression. Any value >= $1B for this deal's revenue is noise.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "deal_type context must be fund_spv (known limitation BUG-RE-1)",
+          "outcome": "PASS",
+          "actual": "fund_spv",
+          "expected_desc": "metadata.score_explanation.context.deal_type == 'fund_spv'",
+          "note": "EXPECTED CURRENT BEHAVIOR (BUG-RE-1). The correct value should be 'real_estate_preferred_equity' but is not expressible in the current enum. If this check FAILS, it means someone changed the real-asset routing \u2014 verify whether the new behavior is better or a regression.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "primary_doc_type must be business_plan_im (real-asset routing applied)",
+          "outcome": "PASS",
+          "actual": "business_plan_im",
+          "expected_desc": "metadata.score_explanation.context.primary_doc_type == 'business_plan_im'",
+          "note": "Deterministic real-asset routing in dio-context.ts sets primary_doc_type = 'business_plan_im' for real estate preferred equity deals. This confirms the routing fired.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "stage must be fund_ops (real-asset routing applied)",
+          "outcome": "PASS",
+          "actual": "fund_ops",
+          "expected_desc": "metadata.score_explanation.context.stage == 'fund_ops'",
+          "note": "Real-asset routing sets stage = 'fund_ops'. If this regresses to 'seed' or 'series_a', the deterministic override stopped firing.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "business_archetype_v1 must be real_estate",
+          "outcome": "PASS",
+          "actual": "real_estate",
+          "expected_desc": "phase1.business_archetype_v1.value == 'real_estate'",
+          "note": "CORRECT CLASSIFICATION at the worker layer. The archetype classifier correctly identifies real_estate via re:real_estate (cap rate, preferred equity) and re:noicap (cap rate language) rules. If this regresses to 'unknown', the real_estate archetype rules need to be re-added.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "business_archetype_v1 confidence must be >= 0.5",
+          "outcome": "PASS",
+          "actual": 0.6,
+          "expected_desc": "phase1.business_archetype_v1.confidence >= 0.5",
+          "note": "Confidence was 0.60 at time of GT creation.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "deal_overview_v2 deal_type must be real_estate_preferred_equity",
+          "outcome": "PASS",
+          "actual": "real_estate_preferred_equity",
+          "expected_desc": "phase1.deal_overview_v2.deal_type == 'real_estate_preferred_equity'",
+          "note": "CORRECT CLASSIFICATION at the worker layer. deal_overview_v2 uses the worker's own classifier which correctly identifies CRE preferred equity deals. This is the truth signal that should eventually be promoted to context.deal_type.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "deal_overview_v2 business_model must be Real estate structured investment",
+          "outcome": "PASS",
+          "actual": "Real estate structured investment",
+          "expected_desc": "phase1.deal_overview_v2.business_model contains 'real estate'",
+          "note": "Worker correctly returns 'Real estate structured investment'. Guards against regression to startup-style business model labels.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "evidence",
+          "label": "real_estate archetype evidence must include re:real_estate rule",
+          "outcome": "PASS",
+          "actual": [
+            "re:real_estate",
+            "re:noicap"
+          ],
+          "expected_desc": "evidence contains rule 're:real_estate'",
+          "note": "re:real_estate rule (preferred equity, cap rate signals) is the primary trigger for the real_estate archetype.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "evidence",
+          "label": "real_estate archetype evidence must include re:noicap rule",
+          "outcome": "PASS",
+          "actual": [
+            "re:real_estate",
+            "re:noicap"
+          ],
+          "expected_desc": "evidence contains rule 're:noicap'",
+          "note": "re:noicap rule fires on cap rate / NOI language in the document.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        }
+      ],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "Allurion",
+      "deal_id": "a85b0ac0-19a1-4992-9a21-2d47484b0f8f",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/Allurion.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=a85b0ac0-19a1-4992-9a21-2d47484b0f8f",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 11,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 11
+      },
+      "checks": [
+        {
+          "category": "extraction",
+          "label": "extraction:customer_count",
+          "outcome": "PASS",
+          "actual": 13000.0,
+          "expected_desc": "customer_count \u2248 13000 (\u00b120.0%)",
+          "note": "13,000+ patients KPI from pitch deck \u2014 only reliable operating KPI in the package",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "SPAC proxy must yield zero revenue facts",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "SPAC proxy document (6e251dba) must not promote any revenue facts after SPAC guard fix. PROMOTE_SLIDE_FACTS_ZERO_FACTS must be logged for this document.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "SPAC proxy must yield zero raise_terms facts",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "The $19.5M SPAC pro-forma cash table must not produce a raise_terms fact from the SPAC proxy document.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "No raise amount >= 10M from any document",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "Guards against regression to pre-fix behavior where $19.5M SPAC pro-forma was stored as raise. Allurion has no known raise; the $98.8M net SPAC proceeds are a transaction event, not a fundraise.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "deal_type must be de_spac",
+          "outcome": "PASS",
+          "actual": "de_spac",
+          "expected_desc": "metadata.score_explanation.context.deal_type == 'de_spac'",
+          "note": "Core regression check \u2014 must not regress to startup_raise. Requires both worker-layer and core-layer SPAC rules to fire.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "financial_breakdown_v1 current_state data quality should be missing",
+          "outcome": "PASS",
+          "actual": "missing",
+          "expected_desc": "financial_breakdown_v1.current_state.data_quality == 'missing'",
+          "note": "Allurion has no clean operating financials in the document package. This should remain missing, not be backfilled with SPAC pro-forma numbers.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "business_model must be Wholesale/Retail or B2B2C",
+          "outcome": "PASS",
+          "actual": "Business model: Wholesale/Retail Revenue: $1.5M Customers: 1584",
+          "expected_desc": "deal_summary_v1.tiers.deep contains 'Wholesale'",
+          "note": "Business model should be Wholesale/Retail after the orders?/orders fix. Must not regress to Omnichannel DTC+Wholesale.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "business_archetype_v1 must be de_spac",
+          "outcome": "PASS",
+          "actual": "de_spac",
+          "expected_desc": "phase1.business_archetype_v1.value == 'de_spac'",
+          "note": "de_spac archetype must fire via ARCHETYPES array at threshold 40. Evidence rules: trust_account, business_combination, public_shares must be present.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "business_archetype_v1 confidence must be >= 0.5",
+          "outcome": "PASS",
+          "actual": 0.759493670886076,
+          "expected_desc": "phase1.business_archetype_v1.confidence >= 0.5",
+          "note": "Confidence was 0.76 at time of fix verification.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "evidence",
+          "label": "SPAC archetype evidence must include trust_account rule",
+          "outcome": "PASS",
+          "actual": [
+            "spac:trust_account",
+            "spac:business_combination",
+            "spac:public_shares"
+          ],
+          "expected_desc": "evidence contains rule 'spac:trust_account'",
+          "note": "The trust_account rule (weight 40) is the primary trigger. Must be present in evidence array.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "evidence",
+          "label": "SPAC archetype evidence must include business_combination rule",
+          "outcome": "PASS",
+          "actual": [
+            "spac:trust_account",
+            "spac:business_combination",
+            "spac:public_shares"
+          ],
+          "expected_desc": "evidence contains rule 'spac:business_combination'",
+          "note": "Required to confirm the SPAC merger context.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        }
+      ],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "Cinco",
+      "deal_id": "0fcec035-9aa3-4f6e-88fa-818c323add09",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/Cinco.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=0fcec035-9aa3-4f6e-88fa-818c323add09",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 0,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 0
+      },
+      "checks": [],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "Deal Decision",
+      "deal_id": "517be946-cab9-4bc1-8982-9522ff9dab32",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/Deal Decision.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=517be946-cab9-4bc1-8982-9522ff9dab32",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 5,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 5
+      },
+      "checks": [
+        {
+          "category": "extraction",
+          "label": "extraction:revenue",
+          "outcome": "PASS",
+          "actual": 3337000.0,
+          "expected_desc": "revenue \u2248 3337000 (\u00b110.0%)",
+          "note": "V1 proforma revenue must be extracted (even though it is projection). BUG-DD-1: year label values (2028) are extracted as revenue facts with high confidence from XLSX header rows, overriding the correct $3.337M row.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "extraction",
+          "label": "extraction:burn_rate",
+          "outcome": "PASS",
+          "actual": 251536.0,
+          "expected_desc": "burn_rate \u2248 251536 (\u00b115.0%)",
+          "note": "Implied monthly burn from V1 expenses",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "$250 deck burn stored",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "$250 deck mention is a pricing/subscription value, not burn \u2014 Fix 6 must suppress it",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "current_state.burn_rate should NOT be deck $250",
+          "outcome": "PASS",
+          "actual": "structured_derived",
+          "expected_desc": "financial_breakdown_v1.current_state.burn_rate.source_kind must NOT be 'deck'",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "current_state.revenue should reflect XLSX (proforma flagged)",
+          "outcome": "PASS",
+          "actual": 3337000.0,
+          "expected_desc": "financial_breakdown_v1.current_state.revenue.value \u2248 3337000 (\u00b110%)",
+          "note": "V1 proforma should be selected over deck",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        }
+      ],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "MagarianFund",
+      "deal_id": "0e8fa8ae-94fa-4ab7-ab66-39c07651d089",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/MagarianFund.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=0e8fa8ae-94fa-4ab7-ab66-39c07651d089",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 17,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 17
+      },
+      "checks": [
+        {
+          "category": "noise",
+          "label": "AUM must not appear as raise_amount",
+          "outcome": "PASS",
+          "actual": "Unknown",
+          "expected_desc": "structured_summary.kpis.raise.value == 'Unknown'",
+          "note": "Fund AUM is $222mm. This figure must not be extracted or promoted as a startup raise amount. structured_summary.kpis.raise.value = 'Unknown' is the correct expected state. Any non-Unknown raise value for this deal is noise from AUM/performance data.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "capital_logic raise must be absent (fund, not startup raise)",
+          "outcome": "PASS",
+          "actual": false,
+          "expected_desc": "capital_logic_v1.raise.present == False",
+          "note": "No startup raise exists. Hedge fund LP subscriptions are not equivalent to startup equity rounds. capital_logic_v1.raise.present = false is the correct expected state.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "Revenue value must not exist (no fund operating revenue)",
+          "outcome": "PASS",
+          "actual": "<object object at 0x1044f4e90>",
+          "expected_desc": "financial_breakdown_v1.current_state.revenue == None",
+          "note": "BUG-MFUND-1 noise guard: The fund has no operating revenue. financial_breakdown_v1.current_state.revenue should be null. Revenue extracted from portfolio company case studies (e.g., KGC Kinross Gold) is noise. Checks financial_breakdown, not structured_summary.kpis (which has the noisy $3.6 value from the DPU).",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "Promoted facts count must be <= 2 (fund produces minimal promotable facts)",
+          "outcome": "PASS",
+          "actual": 2,
+          "expected_desc": "len(promoted_facts) <= 2",
+          "note": "Fund pipeline currently promotes 2 facts: business_model_v1 and revenue_v1 (noisy). The revenue_v1 promoted fact is itself a noise artifact (BUG-MFUND-1). If promoted_facts count increases above 2, a new extraction is being promoted that warrants review.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "deal_type must be fund_spv",
+          "outcome": "PASS",
+          "actual": "fund_spv",
+          "expected_desc": "metadata.score_explanation.context.deal_type == 'fund_spv'",
+          "note": "Core classification is correct. Magarian Fund is a hedge fund LP \u2014 fund_spv is the correct deal_type. Must not regress to startup_raise, de_spac, or real_estate.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "stage must be fund_ops",
+          "outcome": "PASS",
+          "actual": "fund_ops",
+          "expected_desc": "metadata.score_explanation.context.stage == 'fund_ops'",
+          "note": "Operational fund since April 2019 with $222mm+ AUM. stage = fund_ops is the correct expected state. Must not regress to seed, series_a, or growth_stage.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "business_model must be Fund / SPV investment vehicle",
+          "outcome": "PASS",
+          "actual": "Fund / SPV investment vehicle",
+          "expected_desc": "structured_summary.kpis.business_model.value == 'Fund / SPV investment vehicle'",
+          "note": "The policy guard 'startup_operating_label_suppressed_for_fund' correctly overrides DTC Ecommerce (the raw label, triggered by email/sms mention in a subscription email footer). The fund_spv policy label assignment produces 'Fund / SPV investment vehicle' as the display. This guard must remain active.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "deal_summary_v1 hero must be Fund / SPV investment vehicle",
+          "outcome": "PASS",
+          "actual": "Fund / SPV investment vehicle",
+          "expected_desc": "deal_summary_v1.tiers.hero == 'Fund / SPV investment vehicle'",
+          "note": "The hero label propagated from business_model classification. Must not show a startup-class hero label (e.g., 'SaaS platform', 'B2B software') for this fund.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "context confidence must be >= 0.70",
+          "outcome": "PASS",
+          "actual": 0.7124999999999999,
+          "expected_desc": "metadata.score_explanation.context.confidence >= 0.7",
+          "note": "Current confidence is 0.7125. The fund_spv classification has moderate confidence \u2014 if this drops below 0.70, the fund signals are weakening and the classification may be at risk of misclassifying into another archetype.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "financial_breakdown data_quality must be missing",
+          "outcome": "PASS",
+          "actual": "missing",
+          "expected_desc": "financial_breakdown_v1.current_state.data_quality == 'missing'",
+          "note": "No XLSX, no structured financial model exists for this fund. data_quality = 'missing' is the correct expected state. If this changes to 'partial' or 'full', a document was incorrectly classified as a financial model.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "financial_breakdown has_xlsx must be false",
+          "outcome": "PASS",
+          "actual": false,
+          "expected_desc": "financial_breakdown_v1.has_xlsx == False",
+          "note": "No XLSX present. Both docs are PDFs (fund presentation + performance summary). has_xlsx = false must be stable.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "dio_context.deal_type must be fund_spv",
+          "outcome": "PASS",
+          "actual": "fund_spv",
+          "expected_desc": "dio_context.deal_type == 'fund_spv'",
+          "note": "Worker-layer DIO context correctly identifies fund_spv. This is the upstream classification that the compiler propagates.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "dio_context.stage must be fund_ops",
+          "outcome": "PASS",
+          "actual": "fund_ops",
+          "expected_desc": "dio_context.stage == 'fund_ops'",
+          "note": "Worker-layer stage classification must be fund_ops. If this changes, the core stage classification will also change.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "investment_analysis_overview_v2 archetype value must be fund_spv",
+          "outcome": "PASS",
+          "actual": "fund_spv",
+          "expected_desc": "investment_analysis_overview_v2.archetype.value == 'fund_spv'",
+          "note": "investment_analysis_overview_v2.archetype.value = 'fund_spv' (confidence 0.57). This is the only archetype signal visible at the report layer (business_archetype_v1 is null at the worker layer per BUG-MFUND-3). Must remain fund_spv.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "business_archetype_v1 from DIO must be fund_spv",
+          "outcome": "PASS",
+          "actual": "fund_spv",
+          "expected_desc": "phase1.business_archetype_v1.value == 'fund_spv'",
+          "note": "BUG-MFUND-3 RESOLVED. Worker now correctly emits business_archetype_v1 = 'fund_spv' for this LP fund deal (confidence 0.57, evidence rules fund:lp_gp and fund:carry_fees). If this regresses to null, the archetype analyzer has stopped producing output for fund deals. If it changes to consumer_product or de_spac, that is a classification regression.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "evidence",
+          "label": "business_model_v1 has_fund_signals must be true",
+          "outcome": "PASS",
+          "actual": true,
+          "expected_desc": "value_json.diagnostics.has_fund_signals == True",
+          "note": "The promoted business_model_v1 fact must have diagnostics.has_fund_signals = true. This is the signal that triggers the fund_spv policy guard and suppresses incorrect startup labels. If has_fund_signals = false, the guard will not fire and the fund may be misclassified as DTC Ecommerce.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "evidence",
+          "label": "business_model_v1 startup guard must be applied",
+          "outcome": "PASS",
+          "actual": [
+            "startup_operating_label_suppressed_for_fund"
+          ],
+          "expected_desc": "value_json.diagnostics.applied_guards contains 'startup_operating_label_suppressed_for_fund'",
+          "note": "The 'startup_operating_label_suppressed_for_fund' guard must appear in the applied_guards array of the business_model_v1 promoted fact. This guard is what converts the raw DTC-Ecommerce label to 'Fund / SPV investment vehicle'. If this guard disappears, fund classification degrades.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        }
+      ],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "Palm",
+      "deal_id": "c4f10092-1c94-4116-b4f0-78874868f92b",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/Palm.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=c4f10092-1c94-4116-b4f0-78874868f92b",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 0,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 0
+      },
+      "checks": [],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "Probility",
+      "deal_id": "42be8b30-2b7d-45e0-ade0-99427a505c59",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/Probility.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=42be8b30-2b7d-45e0-ade0-99427a505c59",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 11,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 11
+      },
+      "checks": [
+        {
+          "category": "extraction",
+          "label": "extraction:arr",
+          "outcome": "PASS",
+          "actual": 1000000.0,
+          "expected_desc": "arr \u2248 1000000 (\u00b120.0%)",
+          "note": "Current ARR = $1M from pitch deck page 6. The financial_facts_v1 table correctly stores both 'arr' and 'revenue' at $1M from the deck (low confidence). This tests that the deck-layer extraction captures the right current figure.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "Revenue projection must not be selected as current revenue",
+          "outcome": "PASS",
+          "actual": 1000000.0,
+          "expected_desc": "<= 2000000",
+          "note": "BUG-PROB-3 guard: '$12.6M revenue after 12 months' from roadmap slide must not be selected as current revenue. If structured_summary.kpis.revenue.value.amount > $2M, the pipeline picked the projection instead of the $1M ARR.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "No revenue fact >= $50M from this deal",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "Guards against the $139M ARR market projection being stored as a revenue fact. No current-state revenue signal should exceed $13M; anything >= $50M is noise from market sizing or long-range projections.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "deal_type must be startup_raise",
+          "outcome": "PASS",
+          "actual": "startup_raise",
+          "expected_desc": "metadata.score_explanation.context.deal_type == 'startup_raise'",
+          "note": "Correct current classification. Probility is a startup raising equity. Must not regress to fund_spv or other types.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "funding_stage_v1 must be pre_seed",
+          "outcome": "PASS",
+          "actual": "pre_seed",
+          "expected_desc": "funding_stage_v1.funding_stage == 'pre_seed'",
+          "note": "funding_stage_v1 correctly resolves to pre_seed (signal: company_phase_label:pre_seed, weight 0.6). $1M ARR + $4M raise fits pre_seed profile.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "financial_breakdown has_xlsx must be false",
+          "outcome": "PASS",
+          "actual": false,
+          "expected_desc": "financial_breakdown_v1.has_xlsx == False",
+          "note": "No XLSX present. If has_xlsx flips to true, a document was misclassified as a financial model.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "capital_logic_v1 raise amount must be $4M",
+          "outcome": "PASS",
+          "actual": 4000000.0,
+          "expected_desc": "capital_logic_v1.raise.amount \u2248 4000000 (\u00b110%)",
+          "note": "capital_logic_v1.raise.amount = $4,000,000. The financial_facts_v1 table does not store raise_amount for this deal \u2014 capital_logic_v1 is the reliable source. Round label = 'Growth'.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "capital_logic_v1 raise present must be true",
+          "outcome": "PASS",
+          "actual": true,
+          "expected_desc": "capital_logic_v1.raise.present == True",
+          "note": "capital_logic_v1.raise.present = true confirms the pipeline detected the $4M raise.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "deal_overview_v2 deal_type must be startup_raise",
+          "outcome": "PASS",
+          "actual": "startup_raise",
+          "expected_desc": "phase1.deal_overview_v2.deal_type == 'startup_raise'",
+          "note": "Worker-layer correctly identifies startup_raise. Core layer also correctly propagates this.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "business_archetype_v1 value fires as consumer_product (known bug BUG-PROB-1)",
+          "outcome": "PASS",
+          "actual": "consumer_product",
+          "expected_desc": "phase1.business_archetype_v1.value == 'consumer_product'",
+          "note": "EXPECTED CURRENT BEHAVIOR (BUG-PROB-1). Archetype misidentifies as 'consumer_product' due to CPG pattern matches on sports betting/retail language. Correct archetype should be b2b_saas or SaaS data platform. If this changes, verify whether the new value is more accurate before updating the GT.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "business_archetype_v1 confidence must be <= 0.55 (weak signal)",
+          "outcome": "PASS",
+          "actual": 0.48484848484848486,
+          "expected_desc": "phase1.business_archetype_v1.confidence <= 0.55",
+          "note": "Confidence was 0.484 \u2014 the consumer_product archetype fired weakly. If confidence jumps above 0.55, the CPG pattern match is becoming stronger (regression risk).",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        }
+      ],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "Qredible",
+      "deal_id": "b21b894e-4020-46bd-b753-93b2d2d5fa8f",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/Qredible.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=b21b894e-4020-46bd-b753-93b2d2d5fa8f",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 6,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 6
+      },
+      "checks": [
+        {
+          "category": "extraction",
+          "label": "extraction:arr",
+          "outcome": "PASS",
+          "actual": 1582164.0,
+          "expected_desc": "arr \u2248 1582164 (\u00b120.0%)",
+          "note": "Traction slide MRR\u00d712 \u2014 OCR quality is the only path; accept wide tolerance",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "extraction",
+          "label": "extraction:mrr",
+          "outcome": "PASS",
+          "actual": 131847.0,
+          "expected_desc": "mrr \u2248 131847 (\u00b120.0%)",
+          "note": "Traction slide '$131,847 Total MRR'",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "$349 stored as burn_rate",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "ISO agent license price must not appear as burn_rate",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "$381K stored as current revenue",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "Network model projection must not appear as current revenue",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "Garbled ARR $5120",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "OCR artifact from traction slide",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "current_state.burn_rate should be null",
+          "outcome": "PASS",
+          "actual": "<object object at 0x1044f4e90>",
+          "expected_desc": "financial_breakdown_v1.current_state.burn_rate == None",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        }
+      ],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "StackFactor",
+      "deal_id": "adb2a1cf-bbb1-4f3b-8735-e2249415124f",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/StackFactor.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=adb2a1cf-bbb1-4f3b-8735-e2249415124f",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 8,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 8
+      },
+      "checks": [
+        {
+          "category": "extraction",
+          "label": "extraction:revenue",
+          "outcome": "PASS",
+          "actual": 23000.0,
+          "expected_desc": "revenue \u2248 23000 (\u00b115.0%)",
+          "note": "KPI tile ARR must be extracted. BUG-SF-1: XLSX Year 11 projection ($20K, high confidence) defeats kpi_tile current ARR ($23K, medium confidence).",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "extraction",
+          "label": "extraction:cash",
+          "outcome": "PASS",
+          "actual": 44000.0,
+          "expected_desc": "cash \u2248 44000 (\u00b115.0%)",
+          "note": "KPI tile cash must be extracted. BUG-SF-1: XLSX Year 12 projection ($7.8M, high confidence) defeats kpi_tile current cash ($44K, medium confidence).",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "col_X revenue noise",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "$000 denomination noise",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "cap_table revenue facts",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "current_state.revenue",
+          "outcome": "PASS",
+          "actual": 23000.0,
+          "expected_desc": "financial_breakdown_v1.current_state.revenue \u2248 23000 (\u00b115%)",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "current_state.burn_rate should be null",
+          "outcome": "PASS",
+          "actual": "<object object at 0x1044f4e90>",
+          "expected_desc": "financial_breakdown_v1.current_state.burn_rate == None",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "current_state.cash",
+          "outcome": "PASS",
+          "actual": 44000.0,
+          "expected_desc": "financial_breakdown_v1.current_state.cash \u2248 44000 (\u00b115%)",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        }
+      ],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "SyntheticActuals",
+      "deal_id": null,
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/SyntheticActuals.json",
+      "mapping_status": "unmapped",
+      "mapping_note": "No deal found in DB for 'SyntheticActuals'",
+      "overall_status": "UNMAPPED",
+      "totals": {
+        "pass": 0,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 0
+      },
+      "checks": [],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "SyntheticKPI",
+      "deal_id": null,
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/SyntheticKPI.json",
+      "mapping_status": "unmapped",
+      "mapping_note": "No deal found in DB for 'SyntheticKPI'",
+      "overall_status": "UNMAPPED",
+      "totals": {
+        "pass": 0,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 0
+      },
+      "checks": [],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "SyntheticQuarterly",
+      "deal_id": null,
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/SyntheticQuarterly.json",
+      "mapping_status": "unmapped",
+      "mapping_note": "No deal found in DB for 'SyntheticQuarterly'",
+      "overall_status": "UNMAPPED",
+      "totals": {
+        "pass": 0,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 0
+      },
+      "checks": [],
+      "fetch_error": null
+    },
+    {
+      "gt_name": "WebMax",
+      "deal_id": "23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/WebMax.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=23b2fa42-e6d1-4aa3-8fbc-f7aa083846e4",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 5,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 0,
+        "total": 5
+      },
+      "checks": [
+        {
+          "category": "extraction",
+          "label": "extraction:revenue",
+          "outcome": "PASS",
+          "actual": 8000.0,
+          "expected_desc": "revenue \u2248 8000 (\u00b115.0%)",
+          "note": "Non-zero XLSX revenue must be extracted",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "extraction",
+          "label": "extraction:burn_rate",
+          "outcome": "PASS",
+          "actual": 32000.0,
+          "expected_desc": "burn_rate \u2248 32000 (\u00b115.0%)",
+          "note": "Monthly burn must be extracted",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "duplicate zero revenue for same period",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "$0 xlsx revenue fact for September should be suppressed in favour of $8K fact",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "current_state.revenue should be $8K not $0",
+          "outcome": "PASS",
+          "actual": 8000.0,
+          "expected_desc": "financial_breakdown_v1.current_state.revenue \u2248 8000 (\u00b115%)",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "structured_summary.revenue",
+          "outcome": "PASS",
+          "actual": 8000.0,
+          "expected_desc": "structured_summary.revenue.value.amount \u2248 8000 (\u00b115%)",
+          "note": "",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        }
+      ],
+      "fetch_error": null
+    }
+  ],
+  "cross_case_patterns": []
+}

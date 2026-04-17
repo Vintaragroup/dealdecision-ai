@@ -1,0 +1,146 @@
+{
+  "run_id": "20260408",
+  "generated_at": "2026-04-08T23:57:46.467116+00:00",
+  "overall_status": "PASS",
+  "summary": {
+    "total_cases": 1,
+    "mapped_cases": 1,
+    "unmapped_cases": 0,
+    "total_checks": 11,
+    "pass": 9,
+    "fail": 0,
+    "known_issue": 0,
+    "skip": 2
+  },
+  "cases": [
+    {
+      "gt_name": "Allurion",
+      "deal_id": "a85b0ac0-19a1-4992-9a21-2d47484b0f8f",
+      "gt_path": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/evaluation/ground_truth/Allurion.json",
+      "mapping_status": "mapped",
+      "mapping_note": "deal_id=a85b0ac0-19a1-4992-9a21-2d47484b0f8f",
+      "overall_status": "PASS",
+      "totals": {
+        "pass": 9,
+        "fail": 0,
+        "known_issue": 0,
+        "skip": 2,
+        "total": 11
+      },
+      "checks": [
+        {
+          "category": "extraction",
+          "label": "extraction:customer_count",
+          "outcome": "PASS",
+          "actual": "13000",
+          "expected_desc": "customer_count \u2248 13000 (\u00b120.0%)",
+          "note": "13,000+ patients KPI from pitch deck \u2014 only reliable operating KPI in the package",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "SPAC proxy must yield zero revenue facts",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "SPAC proxy document (6e251dba) must not promote any revenue facts after SPAC guard fix. PROMOTE_SLIDE_FACTS_ZERO_FACTS must be logged for this document.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "SPAC proxy must yield zero raise_terms facts",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "The $19.5M SPAC pro-forma cash table must not produce a raise_terms fact from the SPAC proxy document.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "noise",
+          "label": "No raise amount >= 10M from any document",
+          "outcome": "PASS",
+          "actual": 0,
+          "expected_desc": "count == 0",
+          "note": "Guards against regression to pre-fix behavior where $19.5M SPAC pro-forma was stored as raise. Allurion has no known raise; the $98.8M net SPAC proceeds are a transaction event, not a fundraise.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "deal_type must be de_spac",
+          "outcome": "PASS",
+          "actual": "de_spac",
+          "expected_desc": "metadata.score_explanation.context.deal_type == 'de_spac'",
+          "note": "Core regression check \u2014 must not regress to startup_raise. Requires both worker-layer and core-layer SPAC rules to fire.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "financial_breakdown_v1 current_state data quality should be missing",
+          "outcome": "PASS",
+          "actual": "missing",
+          "expected_desc": "financial_breakdown_v1.current_state.data_quality == 'missing'",
+          "note": "Allurion has no clean operating financials in the document package. This should remain missing, not be backfilled with SPAC pro-forma numbers.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "report",
+          "label": "business_model must be Wholesale/Retail or B2B2C",
+          "outcome": "PASS",
+          "actual": "Business model: Wholesale/Retail Revenue: $1.5M Customers: 1584",
+          "expected_desc": "deal_summary_v1.tiers.deep contains 'Wholesale'",
+          "note": "Business model should be Wholesale/Retail after the orders?/orders fix. Must not regress to Omnichannel DTC+Wholesale.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "business_archetype_v1 must be de_spac",
+          "outcome": "PASS",
+          "actual": "de_spac",
+          "expected_desc": "phase1.business_archetype_v1.value == 'de_spac'",
+          "note": "de_spac archetype must fire via ARCHETYPES array at threshold 40. Evidence rules: trust_account, business_combination, public_shares must be present.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "dio",
+          "label": "business_archetype_v1 confidence must be >= 0.5",
+          "outcome": "PASS",
+          "actual": 0.759493670886076,
+          "expected_desc": "phase1.business_archetype_v1.confidence >= 0.5",
+          "note": "Confidence was 0.76 at time of fix verification.",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "evidence",
+          "label": "SPAC archetype evidence must include trust_account rule",
+          "outcome": "SKIP",
+          "actual": null,
+          "expected_desc": "error",
+          "note": "'object' object has no attribute 'get'",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        },
+        {
+          "category": "evidence",
+          "label": "SPAC archetype evidence must include business_combination rule",
+          "outcome": "SKIP",
+          "actual": null,
+          "expected_desc": "error",
+          "note": "'object' object has no attribute 'get'",
+          "diff_snippet": "",
+          "known_issue_ref": ""
+        }
+      ],
+      "fetch_error": null
+    }
+  ],
+  "cross_case_patterns": []
+}

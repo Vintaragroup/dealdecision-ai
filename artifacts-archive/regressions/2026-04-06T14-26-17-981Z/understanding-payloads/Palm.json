@@ -1,0 +1,20 @@
+{
+  "fetchedAt": "2026-04-06T14:26:18.167Z",
+  "requestUrl": "http://localhost:9001/api/v1/deals/5c8c7d6e-c992-4be7-8b10-268eac36f663/understanding",
+  "ok": true,
+  "status": 200,
+  "statusText": "OK",
+  "body": {
+    "understanding": {
+      "what_company_does": "We have grown our products to provide apparel and accessories for both the clean-cut, tucked-in country clubber and the high-top, jogger-wearing, muni-hacker.",
+      "business_model": "consumer_product",
+      "revenue_model": "Omnichannel (DTC + Wholesale/Retail)",
+      "go_to_market": "Today, we sell nationwide and most of our business is direct vis our website.",
+      "target_customer": "rsity of Notre Fractional CMO for a few key clients Dame and an MBA from Harvard Business School.",
+      "traction_summary": "Revenue mentioned; Growth mentioned; Customers mentioned; Pilots / partnerships mentioned",
+      "market_positioning": "This deal presents an opportunity for investment in a company that is currently seeking $1. 5 million in Seed Equity at a valuation of $6 million. The business operates under an omnichannel model, combining direct-to-consumer and wholesale/retail strategies. However, there are significant gaps in the provided information, particularly regarding the financial readiness and detailed traction metrics, which are critical for assessing the viability of the investment.",
+      "competitive_differentiation": "We have grown our products to provide apparel and accessories for both the clean-cut, tucked-in country clubber and the high-top, jogger-wearing, muni-hacker.",
+      "investment_signals": "See document: PD - Palm Capital Raise 070425 v2 .pptx; ast. The Financials. The Financials – Full Horizon. Capital Raise. Strategic Hires Strategic Hires Strategic Hires & Wholesale Build Out Omni-Channel Marketing - Branding Licensing Operational Optimization Equipment Equipment Next steps. Thank you. Capital Raise. --- OCR (visual Success depends heavily on distribution execution and brand strength; unit economics, gross margins, and path to profitability should be validated before underwriting growth assumptions."
+    }
+  }
+}

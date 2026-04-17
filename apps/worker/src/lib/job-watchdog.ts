@@ -27,8 +27,6 @@ const QUEUE_TIMEOUTS_MS: Record<string, number> = {
   remediate_extraction: 30 * 60_000,
   reextract_documents: 30 * 60_000,
   orchestration: 60 * 60_000,
-  generate_ingestion_report: 20 * 60_000,
-  reconcile_ingest: 20 * 60_000,
 };
 
 // Stage-specific overrides. Key format: `${queue}:${stage}`.

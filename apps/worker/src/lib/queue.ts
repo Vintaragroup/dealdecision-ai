@@ -126,8 +126,6 @@ connection.on('error', (err) => {
 export function createWorker(
   name:
     | QueueName
-    | "generate_ingestion_report"
-    | "reconcile_ingest"
     | "orchestration",
   processor: Processor<any, any, string>,
   options?: {
@@ -281,8 +279,6 @@ export function createWorker(
 export function getQueue(
   name:
     | QueueName
-    | "generate_ingestion_report"
-    | "reconcile_ingest"
     | "orchestration"
 ) {
   const defaultJobOptions = name === "extract_visuals"

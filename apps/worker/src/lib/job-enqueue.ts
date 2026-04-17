@@ -25,7 +25,6 @@ export type EnqueuePersistedJobInput = {
     | "remediate_extraction"
     | "reextract_documents"
     | "orchestration"
-    | "generate_ingestion_report"
     | "export_report_pdf";
   deal_id?: string;
   document_id?: string;
@@ -52,7 +51,6 @@ export async function enqueuePersistedJob(input: EnqueuePersistedJobInput): Prom
     "verify_documents",
     "remediate_extraction",
     "reextract_documents",
-    "generate_ingestion_report",
   ]);
   if (requiresDocumentId.has(input.type) && !normalizedDocumentId) {
     throw new Error(`Missing document_id for job type ${input.type}`);

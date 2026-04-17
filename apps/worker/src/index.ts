@@ -81,7 +81,6 @@ import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
-import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
 import os from "os";
 import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
 import { assertProductionStorageContract, getDocumentStorageMode, getR2BucketIfEnabled, resolveR2Endpoint } from "./lib/document-storage-mode";
@@ -161,8 +160,6 @@ let isShuttingDown = false;
 let handlersRegistered = false;
 
 import { computeAndPersistVisionRoutingV1 } from "./lib/vision-routing";
-import { persistPdfPageUnderstandingV1Shadow } from "./lib/pdf_v2/page-understanding-v1";
-import { applySlideUnderstandingV1Shadow } from "./lib/pdf_v2/slide-understanding-v1";
 import { parseIngestDocumentsJobData, validateIngestDocumentsPayload } from "./lib/ingest/ingest-payload";
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
 import { computeVisualQualityAuditForDeal } from "./lib/visual-quality-audit";

@@ -1888,6 +1888,7 @@ export interface DealIntelligenceRecord {
   flag_count_warn: number;
   memory_challenge_used: boolean;
   memory_challenge_summary: string | null;
+  contradiction_explanations: unknown[];
   created_at: string;
   updated_at: string;
 }

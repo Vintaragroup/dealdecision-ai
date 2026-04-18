@@ -24,6 +24,7 @@ import type { ConfidencePenalty } from "../confidence-engine/types.js";
 import { buildOpposingCase } from "./opposing-case-builder.js";
 import { detectMissingEvidence } from "./missing-evidence-detector.js";
 import type { MissingEvidenceInput } from "./missing-evidence-detector.js";
+import { buildContradictionExplanations } from "./contradiction-explainer.js";
 
 // ─── Resistance scoring weights ───────────────────────────────────────────────
 //
@@ -506,6 +507,8 @@ export function runChallengePass(input: ChallengePassInput): ChallengePassResult
       ? `${opposing_case_summary}\n\nMemory signal: ${memChallengeSummary}`
       : opposing_case_summary;
 
+  const contradiction_explanations = buildContradictionExplanations(flags, missing_evidence);
+
   return {
     deal_id,
     intelligence_run_id,
@@ -522,6 +525,7 @@ export function runChallengePass(input: ChallengePassInput): ChallengePassResult
     flag_count_warn: flags.filter((f) => f.severity === "WARN").length,
     memory_challenge_used: memChallengeUsed,
     memory_challenge_summary: memChallengeSummary,
+    contradiction_explanations,
   };
 }
 
@@ -537,23 +541,25 @@ export async function persistChallengePassResult(
         opposing_case_summary, overconfident_claims, missing_evidence, diligence_gaps,
         flag_count_critical, flag_count_error, flag_count_warn,
         memory_challenge_used, memory_challenge_summary,
-        primary_challenge_reason, challenge_factors)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+        primary_challenge_reason, challenge_factors,
+        contradiction_explanations)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
      ON CONFLICT (deal_id, intelligence_run_id) DO UPDATE SET
-       verdict_resistance_score  = EXCLUDED.verdict_resistance_score,
-       verdict_resistance_label  = EXCLUDED.verdict_resistance_label,
-       opposing_case_summary     = EXCLUDED.opposing_case_summary,
-       overconfident_claims      = EXCLUDED.overconfident_claims,
-       missing_evidence          = EXCLUDED.missing_evidence,
-       diligence_gaps            = EXCLUDED.diligence_gaps,
-       flag_count_critical       = EXCLUDED.flag_count_critical,
-       flag_count_error          = EXCLUDED.flag_count_error,
-       flag_count_warn           = EXCLUDED.flag_count_warn,
-       memory_challenge_used     = EXCLUDED.memory_challenge_used,
-       memory_challenge_summary  = EXCLUDED.memory_challenge_summary,
-       primary_challenge_reason  = EXCLUDED.primary_challenge_reason,
-       challenge_factors         = EXCLUDED.challenge_factors,
-       updated_at                = now()`,
+       verdict_resistance_score    = EXCLUDED.verdict_resistance_score,
+       verdict_resistance_label    = EXCLUDED.verdict_resistance_label,
+       opposing_case_summary       = EXCLUDED.opposing_case_summary,
+       overconfident_claims        = EXCLUDED.overconfident_claims,
+       missing_evidence            = EXCLUDED.missing_evidence,
+       diligence_gaps              = EXCLUDED.diligence_gaps,
+       flag_count_critical         = EXCLUDED.flag_count_critical,
+       flag_count_error            = EXCLUDED.flag_count_error,
+       flag_count_warn             = EXCLUDED.flag_count_warn,
+       memory_challenge_used       = EXCLUDED.memory_challenge_used,
+       memory_challenge_summary    = EXCLUDED.memory_challenge_summary,
+       primary_challenge_reason    = EXCLUDED.primary_challenge_reason,
+       challenge_factors           = EXCLUDED.challenge_factors,
+       contradiction_explanations  = EXCLUDED.contradiction_explanations,
+       updated_at                  = now()`,
     [
       result.deal_id,
       result.intelligence_run_id,
@@ -570,6 +576,7 @@ export async function persistChallengePassResult(
       result.memory_challenge_summary,
       result.primary_challenge_reason,
       JSON.stringify(result.challenge_factors),
+      JSON.stringify(result.contradiction_explanations),
     ]
   );
 }

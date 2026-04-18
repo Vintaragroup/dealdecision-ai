@@ -57,6 +57,7 @@ export async function registerIntelligenceRoutes(
          flag_count_warn,
          memory_challenge_used,
          memory_challenge_summary,
+         contradiction_explanations,
          created_at,
          updated_at
        FROM deal_challenge_pass_results

@@ -65,6 +65,33 @@ export interface OverconfidentClaim {
   flag_type?: string;
 }
 
+// ─── Contradiction Explanations ───────────────────────────────────────────────
+
+export interface ContradictionSource {
+  document: string;
+  location: string;
+  value: string;
+}
+
+export type ContradictionType =
+  | "revenue_mismatch"
+  | "burn_inconsistency"
+  | "growth_conflict"
+  | "margin_conflict"
+  | "valuation_conflict"
+  | "timeline_inconsistency"
+  | "unresolved_conflict"
+  | "other";
+
+export interface ContradictionExplanation {
+  type: ContradictionType;
+  title: string;
+  explanation: string;
+  sources: ContradictionSource[];
+}
+
+// ─── Challenge Pass Result ────────────────────────────────────────────────────
+
 export interface ChallengePassResult {
   deal_id: string;
   intelligence_run_id: string;
@@ -99,4 +126,10 @@ export interface ChallengePassResult {
    * fragility signal).
    */
   memory_challenge_summary: string | null;
+  /**
+   * Human-readable explanations of detected contradictions, grounded in
+   * specific source documents and values. Top 3, sorted by financial severity.
+   * Empty array when no contradictions detected.
+   */
+  contradiction_explanations: ContradictionExplanation[];
 }

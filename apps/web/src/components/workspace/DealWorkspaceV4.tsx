@@ -1306,8 +1306,8 @@ export function DealWorkspaceV4({
                 <div className="flex items-center gap-3">
                   <Shield className={`w-4 h-4 ${sectionLabel}`} />
                   <div className="text-left">
-                    <div className={`text-sm font-medium ${heading}`}>Intelligence</div>
-                    <div className={`text-xs ${muted}`}>Challenge pass analysis and verdict resistance</div>
+                    <div className={`text-sm font-medium ${heading}`}>Decision Confidence</div>
+                    <div className={`text-xs ${muted}`}>Verdict resistance and challenge case analysis</div>
                   </div>
                 </div>
                 {expandedSections.intelligence ? <ChevronDown className={`w-4 h-4 ${sectionLabel}`} /> : <ChevronRight className={`w-4 h-4 ${sectionLabel}`} />}

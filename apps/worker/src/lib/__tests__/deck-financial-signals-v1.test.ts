@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { extractDeckFinancialSignalsV1, type DeckSignalPage } from "../deck-financial-signals-v1.js";
+import { extractDeckFinancialSignalsV1, detectMentionsInEvidenceText, type DeckSignalPage } from "../deck-financial-signals-v1.js";
 
 // Helper to build a minimal DeckSignalPage
 function page(text: string, page_index = 0, doc_id = "doc_test"): DeckSignalPage {
@@ -171,5 +171,158 @@ describe("extractDeckFinancialSignalsV1 — null/empty guard", () => {
     // (empty pages produce no regex matches → hasAny=false → null)
     const result = extractDeckFinancialSignalsV1([page(""), page("   ")]);
     expect(result).toBeNull();
+  });
+});
+
+// ─── ARR_MRR_RE: space-plus-space format ─────────────────────────────────────
+
+describe("extractDeckFinancialSignalsV1 — ARR_MRR_RE (space-plus-space format)", () => {
+  it('captures "$100K + ARR" (space before and after +)', () => {
+    const result = extractDeckFinancialSignalsV1([page("Strong revenue traction ($100K + ARR)")]);
+    const texts = result!.arr_mrr_mentions.map((m) => m.text);
+    expect(texts.some((t) => t.includes("100K"))).toBe(true);
+    expect(result!.has_arr_mrr).toBe(true);
+  });
+
+  it('captures "$500K + MRR" (space-plus-space with MRR)', () => {
+    const result = extractDeckFinancialSignalsV1([page("Current run rate: $500K + MRR")]);
+    const texts = result!.arr_mrr_mentions.map((m) => m.text);
+    expect(texts.some((t) => t.includes("500K"))).toBe(true);
+  });
+
+  it('still captures "$6M+ ARR" (no space before +)', () => {
+    const result = extractDeckFinancialSignalsV1([page("We are at $6M+ ARR with strong retention.")]);
+    const texts = result!.arr_mrr_mentions.map((m) => m.text);
+    expect(texts.some((t) => t.includes("6M"))).toBe(true);
+  });
+
+  it('still captures "$40K+ MRR" (no space before +)', () => {
+    const result = extractDeckFinancialSignalsV1([page("Traction: $40K+ MRR & Growing")]);
+    const texts = result!.arr_mrr_mentions.map((m) => m.text);
+    expect(texts.some((t) => t.includes("40K"))).toBe(true);
+  });
+
+  it('does not match "ARR potential" without a dollar amount (market opportunity language)', () => {
+    const result = extractDeckFinancialSignalsV1([
+      page("Even a tiny slice translates into tens to hundreds of millions in ARR potential."),
+    ]);
+    // No dollar + ARR colocation → no arr_mrr_mentions
+    expect(result?.arr_mrr_mentions ?? []).toHaveLength(0);
+  });
+});
+
+// ─── detectMentionsInEvidenceText ─────────────────────────────────────────────
+
+describe("detectMentionsInEvidenceText — ARR detection", () => {
+  it("detects dollar + ARR mention (DealDecision format)", () => {
+    const result = detectMentionsInEvidenceText([
+      { claim_text: "Strong revenue traction ($100K + ARR)" },
+    ]);
+    expect(result.has_arr).toBe(true);
+  });
+
+  it("detects '$2M ARR' (plain amount + ARR)", () => {
+    const result = detectMentionsInEvidenceText([{ claim_text: "Currently at $2M ARR" }]);
+    expect(result.has_arr).toBe(true);
+  });
+
+  it("detects 'ARR of $5M' (ARR keyword before amount)", () => {
+    const result = detectMentionsInEvidenceText([{ claim_text: "ARR of $5M last quarter" }]);
+    expect(result.has_arr).toBe(true);
+  });
+
+  it("does NOT fire on market-opportunity language without dollar+ARR colocation", () => {
+    // StackFactor-style: ARR as future target, no adjacent dollar
+    const snippets = [
+      { claim_text: "tens to hundreds of millions in ARR potential" },
+      { claim_text: "Conservative 3-5yr ARR" },
+      { claim_text: "Booked revenue reflects contracted ARR signed in-year" },
+    ];
+    const result = detectMentionsInEvidenceText(snippets);
+    expect(result.has_arr).toBe(false);
+  });
+
+  it("does NOT fire on SEC legal text containing 'ARR' as substring", () => {
+    // Allurion-style: ARRANGEMENT, WARRANTY embedded in legal filings
+    const result = detectMentionsInEvidenceText([
+      { claim_text: "NOTES TO THE UNAUDITED CONDENSED CONSOLIDATED FINANCIAL STATEMENTS" },
+      { claim_text: "Registration Rights — WARRANT holders and arranger obligations" },
+    ]);
+    expect(result.has_arr).toBe(false);
+  });
+
+  it("returns false for null/empty claim_text", () => {
+    const result = detectMentionsInEvidenceText([
+      { claim_text: null },
+      { claim_text: "" },
+    ]);
+    expect(result.has_arr).toBe(false);
+    expect(result.has_burn).toBe(false);
+    expect(result.has_runway).toBe(false);
+  });
+
+  it("returns all false for empty snippets array", () => {
+    const result = detectMentionsInEvidenceText([]);
+    expect(result).toEqual({ has_arr: false, has_burn: false, has_runway: false });
+  });
+});
+
+describe("detectMentionsInEvidenceText — burn detection", () => {
+  it("detects canonical_metric format (StackFactor format)", () => {
+    // The format produced by buildFinancialFactRegistryV1 for derived burn metrics
+    const result = detectMentionsInEvidenceText([
+      { claim_text: "burn_rate: -3224.3975813559555 • type=derived metric=burn_rate derived_from={}" },
+    ]);
+    expect(result.has_burn).toBe(true);
+  });
+
+  it("detects 'burn rate $250K' deck format", () => {
+    const result = detectMentionsInEvidenceText([
+      { claim_text: "Current burn rate $250K per month" },
+    ]);
+    expect(result.has_burn).toBe(true);
+  });
+
+  it("detects 'monthly burn $500K'", () => {
+    const result = detectMentionsInEvidenceText([
+      { claim_text: "monthly burn $500K as of Q4" },
+    ]);
+    expect(result.has_burn).toBe(true);
+  });
+
+  it("does NOT fire on burn without dollar amount (no false positives)", () => {
+    const result = detectMentionsInEvidenceText([
+      { claim_text: "We are managing burn carefully." },
+    ]);
+    expect(result.has_burn).toBe(false);
+  });
+});
+
+describe("detectMentionsInEvidenceText — runway detection", () => {
+  it("detects 'runway 18 months'", () => {
+    const result = detectMentionsInEvidenceText([
+      { claim_text: "Current runway is 18 months at existing burn rate" },
+    ]);
+    expect(result.has_runway).toBe(true);
+  });
+
+  it("detects '24-month runway'", () => {
+    const result = detectMentionsInEvidenceText([
+      { claim_text: "We have a 24-month runway with current funding" },
+    ]);
+    expect(result.has_runway).toBe(true);
+  });
+
+  it("short-circuits after all three signals found", () => {
+    const snippets = [
+      { claim_text: "burn_rate: -1000" },
+      { claim_text: "$200K ARR" },
+      { claim_text: "runway 12 months" },
+      { claim_text: "this should not be scanned" },
+    ];
+    const result = detectMentionsInEvidenceText(snippets);
+    expect(result.has_arr).toBe(true);
+    expect(result.has_burn).toBe(true);
+    expect(result.has_runway).toBe(true);
   });
 });

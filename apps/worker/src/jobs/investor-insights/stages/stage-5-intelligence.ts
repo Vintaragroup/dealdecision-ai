@@ -459,7 +459,14 @@ export interface Stage5Inputs {
     revenue_resolved_source_kind: string | null;
     arr_resolved_source_kind: string | null;
     burn_resolved_source_kind: string | null;
+    cash_resolved_source_kind?: string | null;
   } | null;
+  // Narrative mention presence — true when deck/text signals reference the metric
+  // even if no structured numeric fact was extracted. Enables the challenge pass
+  // to distinguish "mentioned but unverified" from "completely absent".
+  arr_has_narrative_mention?: boolean;
+  burn_has_narrative_mention?: boolean;
+  runway_has_narrative_mention?: boolean;
   /** Full conflict objects from the financial fact detection pass. */
   financial_conflicts?: FinancialConflictSignal[];
 }
@@ -806,6 +813,10 @@ export async function runIntelligenceStage(
       runway_truth_state: inputs.financial_truth_states?.runway_months ?? null,
       cash_truth_state: inputs.financial_truth_states?.cash ?? null,
       revenue_truth_state: inputs.financial_truth_states?.revenue ?? null,
+      // Narrative mention presence — distinguish "mentioned but unverified" from absent
+      arr_has_narrative_mention: inputs.arr_has_narrative_mention,
+      burn_has_narrative_mention: inputs.burn_has_narrative_mention,
+      runway_has_narrative_mention: inputs.runway_has_narrative_mention,
       // Non-financial signals — only present when wired by the caller
       market_presence_score: inputs.market_presence_score ?? undefined,
       traction_signal_score: inputs.traction_signal_score ?? undefined,

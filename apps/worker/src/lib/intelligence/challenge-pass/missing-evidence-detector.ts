@@ -22,6 +22,12 @@ export interface MissingEvidenceInput {
   runway_truth_state?: string | null;
   cash_truth_state?: string | null;
   revenue_truth_state?: string | null;
+  // Narrative mention presence — true when the metric is referenced in deck/text
+  // even though no structured numeric fact was successfully extracted.
+  // Enables context-aware descriptions instead of generic "unavailable" messages.
+  arr_has_narrative_mention?: boolean;
+  burn_has_narrative_mention?: boolean;
+  runway_has_narrative_mention?: boolean;
   // Non-financial signal scores for category-balanced gap detection.
   // Optional — when absent, the corresponding specs are skipped (no false positives).
   /** 0 when limitedScoringResult.market_presence_score is 0 (no market evidence detected). */
@@ -48,8 +54,28 @@ const EVIDENCE_SPECS: Array<{
   spec: EvidenceSpec;
 }> = [
   {
+    // ARR mentioned in deck/text but not verified from structured financial data.
+    // Fires when: arr_structured null + no conflict + narrative mention present.
+    // Lower sensitivity than fully-missing because the data point is at least referenced.
+    missing: (i) =>
+      i.arr_structured == null &&
+      i.arr_truth_state !== "CONFLICT" &&
+      i.arr_has_narrative_mention === true,
+    spec: {
+      evidence_type: "arr_mentioned",
+      description: "ARR is referenced in submitted materials but not verified from structured financial data",
+      verdict_sensitivity: "Medium" as EvidenceSensitivity,
+      diligence_question: "ARR figures were detected in deck language. Provide an audited P&L or XLSX with ARR breakdown by cohort to verify.",
+      category: "financial" as DiligenceGap["category"],
+      gap_severity: "Major" as DiligenceGap["severity"],
+    },
+  },
+  {
     // INSUFFICIENT only — CONFLICT means data exists but is contradictory (handled below)
-    missing: (i) => i.arr_structured == null && i.arr_truth_state !== "CONFLICT",
+    missing: (i) =>
+      i.arr_structured == null &&
+      i.arr_truth_state !== "CONFLICT" &&
+      i.arr_has_narrative_mention !== true,
     spec: {
       evidence_type: "structured_arr",
       description: "No verified ARR figure from structured financial data",
@@ -84,8 +110,26 @@ const EVIDENCE_SPECS: Array<{
     },
   },
   {
+    // Burn mentioned in deck/text but not verified from structured financial data.
+    missing: (i) =>
+      i.burn_rate_monthly == null &&
+      i.burn_truth_state !== "CONFLICT" &&
+      i.burn_has_narrative_mention === true,
+    spec: {
+      evidence_type: "burn_rate_mentioned",
+      description: "Monthly burn rate is referenced in submitted materials but not verified from structured financial data",
+      verdict_sensitivity: "Medium" as EvidenceSensitivity,
+      diligence_question: "Burn rate language was detected in the deck. Provide a 12-month cash flow statement to verify the figure.",
+      category: "financial" as DiligenceGap["category"],
+      gap_severity: "Major" as DiligenceGap["severity"],
+    },
+  },
+  {
     // INSUFFICIENT only — CONFLICT means data exists but is contradictory
-    missing: (i) => i.burn_rate_monthly == null && i.burn_truth_state !== "CONFLICT",
+    missing: (i) =>
+      i.burn_rate_monthly == null &&
+      i.burn_truth_state !== "CONFLICT" &&
+      i.burn_has_narrative_mention !== true,
     spec: {
       evidence_type: "burn_rate",
       description: "Monthly burn rate unavailable",
@@ -108,7 +152,28 @@ const EVIDENCE_SPECS: Array<{
     },
   },
   {
-    missing: (i) => i.runway_months == null && i.runway_truth_state !== "CONFLICT",
+    // Runway calculable from narrative burn/cash signals but not from structured data.
+    // Fires when: runway null + no conflict + burn or cash mentioned in deck.
+    missing: (i) =>
+      i.runway_months == null &&
+      i.runway_truth_state !== "CONFLICT" &&
+      (i.runway_has_narrative_mention === true ||
+        i.burn_has_narrative_mention === true),
+    spec: {
+      evidence_type: "runway_unverified",
+      description: "Runway is not calculable from verified data — burn rate or cash figures are mentioned but unverified",
+      verdict_sensitivity: "Medium" as EvidenceSensitivity,
+      diligence_question: "Burn rate or cash language was detected. Provide verified cash on hand and a 12-month burn schedule to confirm runway.",
+      category: "financial" as DiligenceGap["category"],
+      gap_severity: "Major" as DiligenceGap["severity"],
+    },
+  },
+  {
+    missing: (i) =>
+      i.runway_months == null &&
+      i.runway_truth_state !== "CONFLICT" &&
+      i.runway_has_narrative_mention !== true &&
+      i.burn_has_narrative_mention !== true,
     spec: {
       evidence_type: "runway",
       description: "Runway in months is not calculable from available data",

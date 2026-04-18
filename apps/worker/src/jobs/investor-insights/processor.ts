@@ -54,6 +54,7 @@ import { upsertFinancialFactsV1 } from "../../lib/db/financial-facts-db.js";
 import { buildFinancialCoverageV1 } from "../../lib/financial-facts/build-financial-coverage-v1.js";
 import { detectFinancialFactConflictsV1 } from "../../lib/financial-facts/detect-financial-fact-conflicts-v1.js";
 import { buildFinancialTruthV1, hasXlsxFromTruthMap } from "../../lib/financial-facts/build-financial-truth-v1.js";
+import { detectMentionsInEvidenceText } from "../../lib/deck-financial-signals-v1.js";
 import {
 	computeFinancialCoveragePct,
 	deriveFinancialRiskFlags,
@@ -1254,7 +1255,10 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			ft?.burn_rate?.resolved_value ?? cashFlow?.derived?.monthly_burn_from_ops ?? null;
 		const runwayMonths: number | null =
 			ft?.runway_months?.resolved_value ?? cashFlow?.derived?.runway_months ?? null;
-		const cashOnHand: number | null = balanceSheet?.derived?.cash_latest ?? null;
+		// cashOnHand: prefer FTRL-resolved cash_on_hand (from xlsx/kpi_tile facts) over Pipeline B
+		// balance sheet, which requires a parsed excel_range page with matching structure.
+		const cashOnHand: number | null =
+			ft?.cash_on_hand?.resolved_value ?? balanceSheet?.derived?.cash_latest ?? null;
 		// arr_narrative: extract the first parseable ARR dollar figure from deck signals.
 		// Only ARR-labeled mentions are used — MRR mentions are excluded to prevent
 		// MRR values from being compared against structured ARR and firing false contradictions.
@@ -1273,6 +1277,29 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			}
 			return null;
 		})();
+
+		// ── Narrative mention presence flags ────────────────────────────────────
+		// Indicate whether each metric was mentioned in deck/narrative text even when
+		// no structured numeric fact was successfully extracted. Used to distinguish
+		// "mentioned but unverified" from "completely absent" in the challenge pass.
+		//
+		// Two signal sources are merged:
+		//  1. deckFinancialSignals  — from DPU page text (PDF/PPT decks)
+		//  2. evidenceSnippets scan — from evidence_items content_text (covers deals
+		//                             where DPU pages are xlsx-only and deckSignals is
+		//                             null/empty)
+		const deckSignals = insightSlotInputs.deckFinancialSignals;
+		const evidenceMentions = detectMentionsInEvidenceText(insightSlotInputs.evidenceSnippets);
+		const arrHasNarrativeMention = arrNarrative != null || evidenceMentions.has_arr;
+		const burnHasNarrativeMention = (deckSignals?.has_burn ?? false) ||
+			(deckSignals?.burn_mentions?.length ?? 0) > 0 ||
+			evidenceMentions.has_burn;
+		const runwayHasNarrativeMention = (deckSignals?.has_runway ?? false) ||
+			(deckSignals?.runway_mentions?.length ?? 0) > 0 ||
+			evidenceMentions.has_runway;
+		// Cash: no dedicated cash mentions field in deck signals; rely on FTRL
+		// having produced a non-INSUFFICIENT record (handled via cashOnHand non-null).
+		// If cashOnHand is null but we know burn is mentioned, that's implicit.
 
 		const stage5Result = await runIntelligenceStage(pool, {
 			deal_id: dealId,
@@ -1309,15 +1336,21 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				: (insightSlotInputs.financialStatements?.length ?? 0) > 0,
 			has_cap_table: insightSlotInputs.capTable != null,
 			financial_truth_states: ft ? {
-				revenue:                    ft.revenue?.state ?? null,
-				arr:                        ft.arr?.state ?? null,
-				burn_rate:                  ft.burn_rate?.state ?? null,
-				runway_months:              ft.runway_months?.state ?? null,
-				cash:                       null,
+				revenue:                      ft.revenue?.state ?? null,
+				arr:                          ft.arr?.state ?? null,
+				burn_rate:                    ft.burn_rate?.state ?? null,
+				runway_months:                ft.runway_months?.state ?? null,
+				cash:                         ft.cash_on_hand?.state ?? null,
 				revenue_resolved_source_kind: ft.revenue?.resolved_source_kind ?? null,
 				arr_resolved_source_kind:     ft.arr?.resolved_source_kind ?? null,
 				burn_resolved_source_kind:    ft.burn_rate?.resolved_source_kind ?? null,
+				cash_resolved_source_kind:    ft.cash_on_hand?.resolved_source_kind ?? null,
 			} : null,
+			// Narrative mention presence flags — distinguish "mentioned but unverified"
+			// from "completely absent" in the challenge pass missing-evidence detector.
+			arr_has_narrative_mention: arrHasNarrativeMention,
+			burn_has_narrative_mention: burnHasNarrativeMention,
+			runway_has_narrative_mention: runwayHasNarrativeMention,
 			// Non-financial signals for category-balanced missing-evidence generation.
 			// market_presence_score and traction_signal_score come from limitedScoringResult
 			// (already computed in Stage 2). has_saas_kpis / has_traction_facts are derived

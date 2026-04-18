@@ -113,6 +113,7 @@ const TRACKED_METRICS = [
   "mrr",
   "burn_rate",
   "runway_months",
+  "cash_on_hand",
 ] as const;
 
 type TrackedMetric = (typeof TRACKED_METRICS)[number];
@@ -124,6 +125,7 @@ const METRIC_ALIASES: Record<TrackedMetric, string[]> = {
   mrr:           ["mrr"],
   burn_rate:     ["burn_rate", "monthly_burn"],
   runway_months: ["runway_months", "runway"],
+  cash_on_hand:  ["cash_on_hand", "cash"],
 };
 
 // ─── Debug ────────────────────────────────────────────────────────────────────

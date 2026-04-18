@@ -91,9 +91,10 @@ const REVENUE_RE = new RegExp(
 // Extended to handle:
 //  - "Total ARR / Total MRR" formats: "$1.58M Total ARR"
 //  - amounts with "+" or "~" suffix appended by decks: "$40K+ MRR", "$6M+ ARR"
+//  - space-separated modifiers between amount and keyword: "$100K + ARR", "$100K + MRR"
 //  - explicit traction table header patterns: "Q-Trust FI ARR" is excluded (no amount)
 const ARR_MRR_RE = new RegExp(
-  `(?:${AMT}[+~]?\\s+(?:Total\\s+)?(?:ARR|MRR)|` +
+  `(?:${AMT}(?:\\s*[+~]\\s*|\\s+)(?:Total\\s+)?(?:ARR|MRR)|` +
   `(?:Total\\s+)?(?:ARR|MRR)\\s*(?:of\\s*)?${AMT}|` +
   `\\d+[KMB]?\\s+(?:ARR|MRR)|(?:ARR|MRR)\\s*[=:]\\s*${AMT})`,
   "gi",
@@ -315,4 +316,86 @@ export function extractDeckFinancialSignalsV1(
     has_unit_economics: unit_econ_mentions.length > 0,
     pages_scanned: pages.length,
   };
+}
+
+// ─── Evidence-item mention detection ─────────────────────────────────────────
+
+/**
+ * Presence flags returned by detectMentionsInEvidenceText.
+ */
+export interface EvidenceItemMentions {
+  has_arr:    boolean;
+  has_burn:   boolean;
+  has_runway: boolean;
+}
+
+// ARR/MRR in evidence text: require a dollar amount adjacent to ARR/MRR keyword,
+// OR the canonical_metric evidence format produced by buildFinancialFactRegistryV1
+// ("metric=arr", "metric_key=arr").
+//
+// The strict dollar-adjacency requirement prevents false positives from SEC-filing
+// legal language where "ARR" appears as a substring of words like "ARRANGEMENT"
+// or "WARRANTY" — those docs do not produce dollar+ARR collocations.
+const EVIDENCE_ARR_RE = new RegExp(
+  `(?:${AMT}(?:\\s*[+~]\\s*|\\s+)(?:Total\\s+)?(?:ARR|MRR)\\b|` +
+  `\\b(?:Total\\s+)?(?:ARR|MRR)\\s*(?:of\\s*)?${AMT}|` +
+  `\\bmetric(?:_key)?\\s*[=:]\\s*arr\\b)`,
+  "gi",
+);
+
+// Burn in evidence text: canonical_metric format from buildFinancialFactRegistryV1
+// plus standard deck-style keyword patterns (same as BURN_RE).
+const EVIDENCE_BURN_RE = new RegExp(
+  `(?:burn[-_]rate:\\s*-?[\\d.]+|` +
+  `burn\\s*(?:rate)?(?:[^\\n]{0,20}?)${AMT}|` +
+  `monthly\\s*(?:burn|spend|cost)(?:[^\\n]{0,20}?)${AMT})`,
+  "gi",
+);
+
+// Runway in evidence text: same pattern as RUNWAY_RE, plus compound-adjective
+// form ("24-month runway") which is common in evidence snippets but not in
+// DPU page text (where the deck scanner RUNWAY_RE already runs).
+const EVIDENCE_RUNWAY_RE = /(?:runway|cash\s+(?:runway|position))(?:[^\n]{0,30}?)\d+[-–]?\d*\s*months?|\d+[-–]\d+\s*months?\s+(?:runway|cash)|(?:runway|cash)\s+(?:of\s*)?\d+\s+months?|\d+\s*-\s*months?\s+(?:runway|cash)/gi;
+
+/**
+ * Scan evidence snippet content_text strings for ARR / burn / runway mentions.
+ *
+ * Covers deals where DPU pages are xlsx-only (no narrative text) so
+ * deckFinancialSignals is null or empty, yet the extracted evidence slots
+ * contain recognisable financial references.
+ *
+ * Returns simple boolean presence flags — does NOT attempt to parse dollar
+ * amounts or produce structured mentions. Used exclusively for
+ * "mentioned vs. not mentioned" classification in the challenge-pass
+ * missing-evidence detector.
+ *
+ * @param snippets - Array of objects with a nullable claim_text field.
+ */
+export function detectMentionsInEvidenceText(
+  snippets: ReadonlyArray<{ claim_text: string | null }>,
+): EvidenceItemMentions {
+  let has_arr    = false;
+  let has_burn   = false;
+  let has_runway = false;
+
+  for (const s of snippets) {
+    const text = s.claim_text;
+    if (!text) continue;
+
+    if (!has_arr) {
+      EVIDENCE_ARR_RE.lastIndex = 0;
+      has_arr = EVIDENCE_ARR_RE.test(text);
+    }
+    if (!has_burn) {
+      EVIDENCE_BURN_RE.lastIndex = 0;
+      has_burn = EVIDENCE_BURN_RE.test(text);
+    }
+    if (!has_runway) {
+      EVIDENCE_RUNWAY_RE.lastIndex = 0;
+      has_runway = EVIDENCE_RUNWAY_RE.test(text);
+    }
+    if (has_arr && has_burn && has_runway) break;
+  }
+
+  return { has_arr, has_burn, has_runway };
 }

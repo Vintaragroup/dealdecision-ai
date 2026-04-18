@@ -31,6 +31,7 @@ import { runEvaluatorPass, persistEvaluationFlags } from "../../../lib/intellige
 import { computeConfidence, persistConfidenceReport } from "../../../lib/intelligence/confidence-engine/service.js";
 import { runChallengePass, persistChallengePassResult } from "../../../lib/intelligence/challenge-pass/service.js";
 import { intelligenceMetrics } from "../../../lib/intelligence/metrics.js";
+import type { FinancialConflictSignal } from "../../../lib/intelligence/challenge-pass/types.js";
 
 // ─── Rollout mode ─────────────────────────────────────────────────────────────
 
@@ -459,6 +460,8 @@ export interface Stage5Inputs {
     arr_resolved_source_kind: string | null;
     burn_resolved_source_kind: string | null;
   } | null;
+  /** Full conflict objects from the financial fact detection pass. */
+  financial_conflicts?: FinancialConflictSignal[];
 }
 
 // ─── Main stage entry point ───────────────────────────────────────────────────
@@ -824,6 +827,7 @@ export async function runIntelligenceStage(
       dci_score: inputs.dci_score,
       confidence_penalties: confidence_report.penalties_applied,
       memory_influence: memory_influence_summary,
+      financial_conflicts: inputs.financial_conflicts,
     });
 
     intelligenceMetrics.increment("challenge_pass_runs");

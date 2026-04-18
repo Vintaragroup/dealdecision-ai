@@ -25,6 +25,7 @@ import { buildOpposingCase } from "./opposing-case-builder.js";
 import { detectMissingEvidence } from "./missing-evidence-detector.js";
 import type { MissingEvidenceInput } from "./missing-evidence-detector.js";
 import { buildContradictionExplanations } from "./contradiction-explainer.js";
+import type { FinancialConflictSignal } from "./types.js";
 
 // ─── Resistance scoring weights ───────────────────────────────────────────────
 //
@@ -437,6 +438,11 @@ export interface ChallengePassInput {
    * Memory never rewrites ORS, verdict, or evidence facts.
    */
   memory_influence?: MemoryInfluenceSummary | null;
+  /**
+   * Full conflict objects from the financial fact detection pass.
+   * Used as the primary input to contradiction narrative generation.
+   */
+  financial_conflicts?: FinancialConflictSignal[];
 }
 
 export function runChallengePass(input: ChallengePassInput): ChallengePassResult {
@@ -453,6 +459,7 @@ export function runChallengePass(input: ChallengePassInput): ChallengePassResult
     financial_completeness_pct = 100,
     dci_score = 100,
     confidence_penalties = [],
+    financial_conflicts = [] as FinancialConflictSignal[],
   } = input;
 
   const { missing_evidence, diligence_gaps } = detectMissingEvidence(evidence);
@@ -507,7 +514,7 @@ export function runChallengePass(input: ChallengePassInput): ChallengePassResult
       ? `${opposing_case_summary}\n\nMemory signal: ${memChallengeSummary}`
       : opposing_case_summary;
 
-  const contradiction_explanations = buildContradictionExplanations(flags, missing_evidence);
+  const contradiction_explanations = buildContradictionExplanations(flags, missing_evidence, financial_conflicts);
 
   return {
     deal_id,

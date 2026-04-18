@@ -90,6 +90,21 @@ export interface ContradictionExplanation {
   sources: ContradictionSource[];
 }
 
+/**
+ * Minimal conflict signal shape accepted by the contradiction explainer.
+ * Structurally compatible with FusedConflict from deal-fusion (superset).
+ */
+export interface FinancialConflictSignal {
+  /** Field key, e.g. "arr_value", "revenue_value", "raise_amount". */
+  field: string;
+  /** At least two candidates with conflicting values. */
+  candidates: Array<{
+    /** Raw display string, e.g. "$1.2M", "14%". */
+    value: string;
+    source_document_id: string;
+  }>;
+}
+
 // ─── Challenge Pass Result ────────────────────────────────────────────────────
 
 export interface ChallengePassResult {

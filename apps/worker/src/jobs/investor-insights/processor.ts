@@ -1291,6 +1291,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			}`,
 			evidence_count: upstream.evidenceCount,
 			contradiction_count: fusionResult.conflicts.length,
+			financial_conflicts: fusionResult.conflicts,
 			section_count: sections.length,
 			dpu_provenance_missing: insightSlotInputs.dpuLoadFailed,
 			xlsx_extraction_had_llm_fallback: false,

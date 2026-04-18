@@ -36,6 +36,8 @@ export type DealWorkspaceV4Props = WorkspaceRedesignedShellProps & {
   insightsPanel?: React.ReactNode;
   /** Compact inline summary rendered inside the Evidence Explorer accordion body. */
   evidencePanel?: React.ReactNode;
+  /** Compact inline summary rendered inside the Intelligence (challenge_pass) accordion body. */
+  intelligencePanel?: React.ReactNode;
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -514,6 +516,7 @@ export function DealWorkspaceV4({
   deepDivePanel,
   insightsPanel,
   evidencePanel,
+  intelligencePanel,
   // extra
   keyDrivers,
 }: DealWorkspaceV4Props) {
@@ -525,6 +528,7 @@ export function DealWorkspaceV4({
     deepDive: false,
     insights: false,
     evidence: false,
+    intelligence: false,
   });
 
   const toggleSection = (section: string) => {
@@ -1285,6 +1289,34 @@ export function DealWorkspaceV4({
                 {expandedSections.evidence ? <ChevronDown className={`w-4 h-4 ${sectionLabel}`} /> : <ChevronRight className={`w-4 h-4 ${sectionLabel}`} />}
               </button>
               {expandedSections.evidence && evidencePanel}
+            </div>
+
+            {/* Intelligence Panel */}
+            <div className={`rounded-lg border overflow-hidden ${
+              darkMode ? 'border-white/10' : 'border-gray-200'
+            }`}>
+              <button
+                onClick={() => toggleSection('intelligence')}
+                className={`w-full flex items-center justify-between p-4 transition-colors ${
+                  darkMode
+                    ? 'bg-white/[0.02] hover:bg-white/[0.04]'
+                    : 'bg-white hover:bg-gray-50'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Shield className={`w-4 h-4 ${sectionLabel}`} />
+                  <div className="text-left">
+                    <div className={`text-sm font-medium ${heading}`}>Intelligence</div>
+                    <div className={`text-xs ${muted}`}>Challenge pass analysis and verdict resistance</div>
+                  </div>
+                </div>
+                {expandedSections.intelligence ? <ChevronDown className={`w-4 h-4 ${sectionLabel}`} /> : <ChevronRight className={`w-4 h-4 ${sectionLabel}`} />}
+              </button>
+              {expandedSections.intelligence && (
+                <div className={`p-4 border-t ${darkMode ? 'border-white/10 bg-white/[0.02]' : 'border-gray-200 bg-white'}`}>
+                  {intelligencePanel}
+                </div>
+              )}
             </div>
           </div>
         </div>

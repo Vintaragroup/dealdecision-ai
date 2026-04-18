@@ -1871,6 +1871,35 @@ export async function apiGetDealDeepDive(dealId: string): Promise<DealDeepDiveRe
   return request<DealDeepDiveResponse>(`/api/v1/deals/${dealId}/deep-dive`);
 }
 
+export interface DealIntelligenceRecord {
+  id: string;
+  deal_id: string;
+  intelligence_run_id: string;
+  verdict_resistance_score: number;
+  verdict_resistance_label: string;
+  primary_challenge_reason: string;
+  opposing_case_summary: string;
+  challenge_factors: unknown[];
+  overconfident_claims: unknown[];
+  missing_evidence: unknown[];
+  diligence_gaps: unknown[];
+  flag_count_critical: number;
+  flag_count_error: number;
+  flag_count_warn: number;
+  memory_challenge_used: boolean;
+  memory_challenge_summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function apiGetDealIntelligence(
+  dealId: string
+): Promise<{ data: DealIntelligenceRecord[]; count: number }> {
+  return request<{ data: DealIntelligenceRecord[]; count: number }>(
+    `/api/v1/deals/${dealId}/intelligence`
+  );
+}
+
 const inFlightDealReportRequests = new Map<string, Promise<DealReportEnvelope>>();
 
 async function apiGetDealReportInternal(

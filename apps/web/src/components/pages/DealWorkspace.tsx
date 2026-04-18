@@ -27,6 +27,7 @@ import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceHeader } from '../workspace/DealWorkspaceTopSection';
 import { DealOverviewTab } from '../workspace/DealWorkspace_overviewTab_v3';
 import { DealDeepDiveTab } from '../workspace/DealDeepDiveTab';
+import { IntelligenceTab } from '../workspace/IntelligenceTab';
 import { WorkspaceRedesignedShell } from '../workspace/WorkspaceRedesignedShell';
 import { selectWorkspaceRedesignedShellProps } from '../../lib/selectors/selectWorkspaceRedesignedShellProps';
 import { DealWorkspaceV4 } from '../workspace/DealWorkspaceV4';
@@ -49,7 +50,7 @@ import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthorita
 import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
 import { selectDeterministicOverviewSlotsV1 } from '../../lib/selectors/selectDeterministicOverviewSlotsV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDealDeepDive, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type DealDeepDiveResponse, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDealDeepDive, apiGetDealIntelligence, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type DealDeepDiveResponse, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
 import { useOrchestratorReport } from '../../hooks/useOrchestratorReport';
@@ -234,7 +235,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [deepDiveLoading, setDeepDiveLoading] = useState(false);
   const [deepDiveError, setDeepDiveError] = useState<string | null>(null);
   const deepDiveLoadedDealIdRef = useRef<string | null>(null);
-  const [activePanel, setActivePanel] = useState<'deep-dive' | 'insights' | 'evidence' | null>(null);
+  const [activePanel, setActivePanel] = useState<'deep-dive' | 'insights' | 'evidence' | 'intelligence' | null>(null);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
   const [analystFocusNodeId, setAnalystFocusNodeId] = useState<string | null>(null);
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
@@ -7037,6 +7038,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         onOpenDeepDive={() => setActivePanel('deep-dive')}
         onOpenInsights={() => setActivePanel('insights')}
         onOpenEvidenceExplorer={() => setActivePanel('evidence')}
+        onOpenIntelligence={() => setActivePanel('intelligence')}
         deepDivePanel={
           <WorkbenchDeepDiveSummary
             deepDive={deepDiveResponse?.deep_dive ?? null}
@@ -7076,6 +7078,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             onOpenFull={() => setActivePanel('evidence')}
           />
         }
+        intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} /> : null}
       />
       )}
 
@@ -7108,6 +7111,9 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 darkMode={darkMode}
                 dealName={displayName}
               />
+            )}
+            {activePanel === 'intelligence' && dealId && (
+              <IntelligenceTab dealId={dealId} darkMode={darkMode} />
             )}
             {activePanel === 'evidence' && (
               <EvidencePanel

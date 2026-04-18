@@ -179,6 +179,7 @@ export type WorkspaceRedesignedShellProps = {
   onOpenDeepDive?: () => void;
   onOpenInsights?: () => void;
   onOpenEvidenceExplorer?: () => void;
+  onOpenIntelligence?: () => void;
 };
 
 // ─── §1 Identity Strip ────────────────────────────────────────────────────────

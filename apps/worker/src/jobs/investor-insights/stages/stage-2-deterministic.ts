@@ -89,6 +89,7 @@ import {
 } from "../../../lib/deck-financial-signals-v1.js";
 import type { CrossSourceReconciliationSummary } from "../../../lib/cross-source-reconciliation.js";
 import type { FinancialCoverageV1, FinancialConflictV1 } from "@dealdecision/core";
+import { getFinancialFactsForDeal } from "../../../lib/db/financial-facts-db.js";
 import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "../resolve-raise-amount.js";
 import {
 	ARR_TAINT_WINDOW,
@@ -456,6 +457,17 @@ export interface InsightSlotInputs {
 	 * null/undefined when the FTRL has not run yet (e.g. early gate-fail paths).
 	 */
 	financialTruth?: import("../../../lib/financial-facts/build-financial-truth-v1.js").FinancialTruthMapV1 | null;
+	/**
+	 * Raw financial facts loaded from financial_facts_v1 at the start of each run.
+	 * Written by populateFinancialFactRegistryV1 (analyze-deal job) via
+	 * extract-financial-table-claims.ts — which can surface facts (e.g.
+	 * cash_outflow_operating) that the Stage-2 workbook-intelligence path misses.
+	 *
+	 * Passed to buildFinancialFactRegistryV1 as existingDbFacts so that
+	 * reconcileFinancialFactsV1 Rules 4/4b can derive burn_rate and runway_months.
+	 * Never written back to DB from this merge (runtime-only, FTRL input only).
+	 */
+	existingDbFacts: FinancialFactV1[];
 }
 
 
@@ -1320,6 +1332,8 @@ async function loadInsightSlotInputs(
 	const workbookFacts:    FinancialFactV1[] = [];
 	// deal_facts_v1 traction metrics — loaded non-fatally after main try/catch
 	let dealTractionFacts:  DealTractionFact[] = [];
+	// Existing DB facts (financial_facts_v1) — loaded non-fatally as FTRL secondary input
+	let existingDbFacts:    FinancialFactV1[] = [];
 
 	try {
 		const { rows } = await pool.query<{ document_id: string; page_index: number; payload: unknown }>(
@@ -1544,6 +1558,17 @@ async function loadInsightSlotInputs(
 			// Document titles are supplemental; failure is non-fatal.
 		});
 
+	// Load existing financial_facts_v1 rows as a secondary FTRL input.
+	// These were written by populateFinancialFactRegistryV1 (analyze-deal job) via
+	// extract-financial-table-claims.ts, which surfaces facts (e.g.
+	// cash_outflow_operating) that the Stage-2 workbook path misses.
+	// Used in buildFinancialFactRegistryV1 Section 7b. Non-fatal.
+	await getFinancialFactsForDeal(pool, dealId, { limit: 500 })
+		.then((facts) => { existingDbFacts = facts; })
+		.catch(() => {
+			// Existing DB facts are a supplemental FTRL input; failure is non-fatal.
+		});
+
 	const _bestStmt = pickBestStatement(financialStatements);
 	const _bestUof  = pickBestUseOfFunds(useOfFundsStatements);
 	const _bestBs   = pickBestBalanceSheet(balanceSheets);
@@ -1586,6 +1611,7 @@ async function loadInsightSlotInputs(
 		workbookFacts: deduplicateWorkbookFacts(workbookFacts),
 		dealTractionFacts,
 		documentTitles,
+		existingDbFacts,
 	};
 }
 

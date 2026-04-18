@@ -72,6 +72,22 @@ export interface FinancialFactRegistryInputsV1 {
    * metric_key + period_label already exists in the registry (projection safety).
    */
   workbookFacts?: FinancialFactV1[];
+
+  /**
+   * Existing facts already persisted to financial_facts_v1 (written by
+   * populateFinancialFactRegistryV1 during the analyze-deal job).  These are
+   * merged AFTER workbookFacts as a secondary fallback — they only fill slots
+   * not already covered by the current-run facts (Sections 1–7).
+   *
+   * Purpose: surface facts that extract-financial-table-claims.ts can find
+   * (e.g. cash_outflow_operating) but that the Stage-2 workbook-intelligence
+   * path currently misses, so reconcileFinancialFactsV1 Rules 4/4b can derive
+   * burn_rate and runway_months correctly.
+   *
+   * IMPORTANT: these facts are never written back to DB from this merge — they
+   * are runtime-only inputs for FTRL.  current-run facts always win on conflict.
+   */
+  existingDbFacts?: FinancialFactV1[];
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
@@ -607,6 +623,32 @@ export function buildFinancialFactRegistryV1(
         if (realizedKeys.has(`${wf.metric_key}:${wf.period_label}`)) continue;
       }
       push(wf);
+    }
+  }
+
+  // ── 7b. Existing DB facts (secondary fallback from analyze-deal pipeline) ──
+  // populateFinancialFactRegistryV1 (analyze-deal job) uses
+  // extract-financial-table-claims.ts which can surface facts that the Stage-2
+  // workbook-intelligence path does not (e.g. cash_outflow_operating).
+  // Merge them here so reconcileFinancialFactsV1 Rules 4/4b can derive
+  // burn_rate and runway_months even when those facts are absent from the
+  // current-run workbookFacts.
+  //
+  // Precedence: current-run facts (Sections 1–7) always win — DB facts only
+  // fill slots not already in the map.  We do NOT apply projection safety here
+  // because these facts were already validated and persisted; we trust them.
+  if (inputs.existingDbFacts && inputs.existingDbFacts.length > 0) {
+    for (const dbf of inputs.existingDbFacts) {
+      if (!isFiniteFactValue(dbf.value)) continue;
+      // Skip if a current-run fact already occupies this slot (by fact_id).
+      if (map.has(dbf.fact_id)) continue;
+      // Also skip if a current-run fact covers the same metric+period slot —
+      // we prefer fresh extraction over a potentially stale DB fact.
+      const slotAlreadyCovered = Array.from(map.values()).some(
+        (f) => f.metric_key === dbf.metric_key && f.period_label === dbf.period_label,
+      );
+      if (slotAlreadyCovered) continue;
+      push(dbf);
     }
   }
 

@@ -413,6 +413,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				reconciliation: insightSlotInputs.financialReconciliation ?? null,
 				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
 				workbookFacts: insightSlotInputs.workbookFacts,
+				existingDbFacts: insightSlotInputs.existingDbFacts,
 			});
 			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
@@ -804,6 +805,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				reconciliation: insightSlotInputs.financialReconciliation ?? null,
 				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
 				workbookFacts: insightSlotInputs.workbookFacts,
+				existingDbFacts: insightSlotInputs.existingDbFacts,
 			});
 			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
@@ -1140,6 +1142,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			reconciliation: insightSlotInputs.financialReconciliation ?? null,
 			deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
 			workbookFacts: insightSlotInputs.workbookFacts,
+			existingDbFacts: insightSlotInputs.existingDbFacts,
 		});
 		insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 		const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);

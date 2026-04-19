@@ -545,7 +545,7 @@ export function IntelligenceTab({ dealId, darkMode, financialTiles = [] }: Intel
       <div className={`rounded-lg border p-4 space-y-3 ${darkMode ? cfg.borderDark : cfg.borderLight} ${darkMode ? 'bg-white/[0.02]' : 'bg-white'}`}>
         <div className="flex items-start justify-between gap-3">
           <div className="space-y-2">
-            <p className={`text-xs font-medium uppercase tracking-wide ${muted}`}>Decision confidence</p>
+            <p className={`text-xs font-medium uppercase tracking-wide ${muted}`}>Conclusion Robustness</p>
             {/* Badge-first: interpretation primary, score secondary */}
             {(() => {
               const dcBadge = scoreToBadge(latest.verdict_resistance_score ?? null, 'decision_confidence');
@@ -558,7 +558,7 @@ export function IntelligenceTab({ dealId, darkMode, financialTiles = [] }: Intel
                     </span>
                   </div>
                   <p className={`text-[11px] leading-relaxed ${muted}`}>
-                    This reflects how robustly the current conclusion holds up to challenge and counter-evidence.
+                    This measures whether the current conclusion would survive challenge and alternative interpretations.
                   </p>
                   <div className="flex items-center gap-2">
                     <span className={`text-sm font-medium tabular-nums ${dcColors.text}`}>
@@ -581,6 +581,35 @@ export function IntelligenceTab({ dealId, darkMode, financialTiles = [] }: Intel
         {narrative && (
           <p className={`text-sm ${body} leading-relaxed`}>{narrative}</p>
         )}
+
+        {/* Derived-vs-missing financial context — injected when the challenge pass flagged
+            financial metrics that the Financial Snapshot already shows as derived values.
+            This prevents misleading "X is missing" language when derived data exists. */}
+        {(() => {
+          const derivedTiles = financialTiles.filter((t) => t.trust === 'interim_extraction');
+          if (derivedTiles.length === 0) return null;
+          const derivedLabels = derivedTiles.map((t) => {
+            if (t.label === 'Revenue / ARR') return 'structured ARR';
+            if (t.label === 'Monthly Burn') return 'burn rate';
+            return t.label.toLowerCase();
+          });
+          const burnRunway = derivedLabels.filter((l) => l === 'burn rate' || l === 'runway');
+          const arr = derivedLabels.filter((l) => l === 'structured ARR');
+          const notes: string[] = [];
+          if (burnRunway.length > 0) {
+            notes.push(`${burnRunway.join(' and ')} ${burnRunway.length > 1 ? 'are' : 'is'} derived from projections and require independent verification`);
+          }
+          if (arr.length > 0) {
+            notes.push('structured ARR is not yet verified from underwritable financial evidence');
+          }
+          if (notes.length === 0) return null;
+          return (
+            <p className={`text-xs ${muted} pt-1 border-t ${border}`}>
+              <span className="font-medium">Financial data note:</span>{' '}
+              {notes.join('; ')}.
+            </p>
+          );
+        })()}
       </div>
 
       {/* ─── 2. Why the system believes this ───────────────────────────── */}

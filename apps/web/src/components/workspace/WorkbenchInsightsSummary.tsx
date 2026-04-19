@@ -115,19 +115,19 @@ export function WorkbenchInsightsSummary({
       : darkMode ? 'bg-white/5 text-gray-300 border-white/10' : 'bg-gray-50 text-gray-600 border-gray-200';
 
   // postureLabel is ALWAYS derived from convictionPosture (the governed verdict from
-  // resolveWorkspaceVerdict). convictionBand is conviction_v1.conviction_band — an
-  // explanation field that must NOT override the workspace verdict display.
+  // resolveWorkspaceVerdict). Uses Decision Status vocabulary so it aligns with the
+  // top-level Decision Status block in DealWorkspaceV4.
   const postureLabel =
     convictionPosture === 'INVEST' || convictionPosture === 'YES' || convictionPosture === 'STRONG_YES'
       ? 'Proceed'
       : convictionPosture === 'CONSIDER'
-      ? 'Consider'
+      ? 'Caution'
       : convictionPosture === 'INVESTIGATE'
       ? 'Investigate'
       : convictionPosture === 'PASS'
-      ? 'Pass'
+      ? 'Do Not Proceed'
       : convictionPosture === 'HARD_PASS'
-      ? 'Hard Pass'
+      ? 'Do Not Proceed'
       : null;
 
   // convictionBand is rendered as a separate diagnostic context block only when it disagrees
@@ -303,21 +303,28 @@ export function WorkbenchInsightsSummary({
            workspace verdict. No numeric score is shown here — only the band label and an
            explanatory note, not a second verdict. */}
       {bandVerdictConflict && (() => {
-        // Specific case: workspace says "Consider" or "Investigate" but conviction band is negative
+        // Specific case: workspace says "Investigate" or "Caution" but conviction band is negative.
+        // Rephrase using Decision Status vocabulary so it does not sound like a competing verdict.
         const isConflictVsPass =
-          (postureLabel === 'Investigate' || postureLabel === 'Consider') &&
+          (postureLabel === 'Investigate' || postureLabel === 'Caution') &&
           /pass/i.test(bandLabel ?? '');
-        const conflictAction = postureLabel === 'Investigate' ? 'further investigation' : 'further consideration';
+        const actionLabel = postureLabel === 'Investigate'
+          ? 'Investigate — Not Ready to Commit'
+          : postureLabel === 'Caution'
+          ? 'Caution — Key Conditions Not Met'
+          : null;
         return (
           <div className={`px-4 py-2.5 space-y-1 ${darkMode ? 'bg-white/[0.02]' : 'bg-amber-50/50'}`}>
             <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Diagnostic Context</div>
             {bandLabel && (
-              <div className={`text-xs ${muted}`}>Model signal: {bandLabel}</div>
+              <div className={`text-xs ${muted}`}>Quantitative model signal: {bandLabel}</div>
             )}
             <p className={`text-xs leading-relaxed ${muted} opacity-80`}>
               {isConflictVsPass
-                ? `The quantitative model leans negative (${bandLabel}), but the system-level verdict recommends ${conflictAction}. Mixed signals of this kind typically indicate the deal has potential worth exploring but has not yet cleared the conviction threshold — further diligence can resolve this tension.`
-                : 'Deterministic signals are weaker than the governed workspace verdict.'}
+                ? `The quantitative model leans negative, but the system-level stance is "${
+                    actionLabel ?? postureLabel
+                  }". This tension typically means the deal has potential worth exploring but has not yet cleared the conviction threshold — targeted diligence can resolve the gap.`
+                : 'Quantitative signals are weaker than the governed workspace verdict. Review the supporting evidence before committing.'}
             </p>
           </div>
         );

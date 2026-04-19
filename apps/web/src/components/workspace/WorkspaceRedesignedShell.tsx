@@ -406,8 +406,8 @@ function SnapshotRow({
         <div className={`hidden sm:block w-px self-stretch ${dividerCls}`} />
 
         {/* Snapshot prose */}
-        <div className="flex-1 min-w-0">
-          <div className={`text-xs uppercase tracking-wide font-medium mb-2 ${muted}`}>Investment Snapshot</div>
+          <div className="flex-1 min-w-0">
+          <div className={`text-xs uppercase tracking-wide font-medium mb-2 ${muted}`}>Opportunity Signal</div>
           {hasSnapshot ? (
             <p className={`text-sm leading-relaxed ${body}`}>{investmentSnapshotBody}</p>
           ) : (

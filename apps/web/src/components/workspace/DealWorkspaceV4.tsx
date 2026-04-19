@@ -210,6 +210,120 @@ function formatDiligenceItem(s: string): string {
   return cap;
 }
 
+// ─── Top-level Decision Status ───────────────────────────────────────────────
+
+interface DecisionStatus {
+  /** Rendering tier — drives accent colour and icon choice. */
+  tier: 'go' | 'investigate' | 'caution' | 'pass' | 'unknown';
+  /** Short investor-facing headline. */
+  headline: string;
+  /** Brief readiness label shown as a pill beside the headline. */
+  readiness: string;
+  /** One sentence that gives the primary reason for the stance. */
+  narrative: string;
+}
+
+/**
+ * Derives a single top-level decision stance from existing workspace props.
+ * No new backend calls — all inputs are already present in DealWorkspaceV4Props.
+ *
+ * Priority order: recommendation posture > conviction score > neither.
+ */
+function deriveDecisionStatus({
+  recommendation,
+  convictionScore,
+  verdictResistanceScore,
+}: {
+  recommendation: 'Proceed' | 'Investigate' | 'Caution' | 'Pass' | null;
+  convictionScore: number | null;
+  verdictResistanceScore: number | null;
+}): DecisionStatus {
+  // Pass: negative posture — no other signals matter.
+  if (recommendation === 'Pass') {
+    return {
+      tier: 'pass',
+      headline: 'Do Not Proceed',
+      readiness: 'Not Investment Ready',
+      narrative: 'Current evidence does not support investment at this stage.',
+    };
+  }
+
+  // Proceed: positive posture — check score + confidence to determine depth.
+  if (recommendation === 'Proceed') {
+    const scoreOk = convictionScore !== null && convictionScore >= 65;
+    const confidenceOk = verdictResistanceScore === null || verdictResistanceScore >= 55;
+    if (scoreOk && confidenceOk) {
+      return {
+        tier: 'go',
+        headline: 'Ready to Advance',
+        readiness: 'Decision Ready',
+        narrative: 'Core evidence supports advancing this deal. Key conditions appear met.',
+      };
+    }
+    return {
+      tier: 'investigate',
+      headline: 'Promising — Further Validation Required',
+      readiness: 'Not Yet Ready to Commit',
+      narrative: 'Initial signals are positive, but the evidence base requires strengthening before committing capital.',
+    };
+  }
+
+  // Investigate: explicitly flag for further work.
+  if (recommendation === 'Investigate') {
+    return {
+      tier: 'investigate',
+      headline: 'Investigate — Not Ready to Commit',
+      readiness: 'Not Ready to Commit',
+      narrative: 'This opportunity shows potential, but key evidence gaps or contradictions prevent a confident investment decision.',
+    };
+  }
+
+  // Caution/Consider: promise but conditions not met.
+  if (recommendation === 'Caution') {
+    const score = convictionScore ?? 0;
+    if (score >= 55) {
+      return {
+        tier: 'investigate',
+        headline: 'Promising — Further Validation Required',
+        readiness: 'Validate Before Committing',
+        narrative: 'Initial signals are promising, but key conditions must be validated before committing capital.',
+      };
+    }
+    return {
+      tier: 'caution',
+      headline: 'Caution — Key Conditions Not Met',
+      readiness: 'Not Ready to Commit',
+      narrative: 'Material conditions are unmet. Substantive evidence is required before this deal can advance.',
+    };
+  }
+
+  // Score-only fallback: no posture from conviction model.
+  if (convictionScore !== null) {
+    if (convictionScore >= 65) {
+      return {
+        tier: 'investigate',
+        headline: 'Promising — Further Validation Required',
+        readiness: 'Further Validation Required',
+        narrative: 'Initial analysis shows promise. Full conviction posture is not yet established.',
+      };
+    }
+    return {
+      tier: 'caution',
+      headline: 'Uncertain — Insufficient Signal',
+      readiness: 'Not Ready to Commit',
+      narrative: 'Signal is mixed or below threshold. Additional evidence and analysis are required.',
+    };
+  }
+
+  // No data.
+  return {
+    tier: 'unknown',
+    headline: 'Assessment Pending',
+    readiness: 'Not yet evaluated',
+    narrative: 'Run analysis to generate a decision assessment for this deal.',
+  };
+}
+
 /**
  * Returns true for auto-generated conviction summary strings that are mechanically
  * derived from the score number and contributor labels — redundant given the UI already
@@ -598,6 +712,13 @@ export function DealWorkspaceV4({
     return out;
   })();
 
+  // ── Top-level decision status ────────────────────────────────────────────
+  const decisionStatus = deriveDecisionStatus({
+    recommendation,
+    convictionScore,
+    verdictResistanceScore: verdictResistanceScore ?? null,
+  });
+
   const revenueTile = findTile(financialTiles, 'Revenue / ARR');
   const burnTile = findTile(financialTiles, 'Monthly Burn');
   const runwayTile = findTile(financialTiles, 'Runway');
@@ -747,13 +868,47 @@ export function DealWorkspaceV4({
           </div>
         )}
 
+        {/* ── Decision Status ── primary stance — everything below supports this ── */}
+        {(() => {
+          const ds = decisionStatus;
+          const accentMap: Record<DecisionStatus['tier'], { borderL: string; bg: string; text: string; pillBg: string; pillBorder: string }> = {
+            go:          { borderL: 'border-l-emerald-500',  bg: darkMode ? 'bg-emerald-500/[0.04]'  : 'bg-emerald-50',   text: darkMode ? 'text-emerald-400'  : 'text-emerald-700', pillBg: darkMode ? 'bg-emerald-500/10'  : 'bg-emerald-100',  pillBorder: darkMode ? 'border-emerald-500/30'  : 'border-emerald-300' },
+            investigate: { borderL: 'border-l-amber-500',   bg: darkMode ? 'bg-amber-500/[0.04]'   : 'bg-amber-50',    text: darkMode ? 'text-amber-400'    : 'text-amber-700',  pillBg: darkMode ? 'bg-amber-500/10'   : 'bg-amber-100',   pillBorder: darkMode ? 'border-amber-500/30'   : 'border-amber-300'  },
+            caution:     { borderL: 'border-l-orange-500',  bg: darkMode ? 'bg-orange-500/[0.04]'  : 'bg-orange-50',   text: darkMode ? 'text-orange-400'   : 'text-orange-700', pillBg: darkMode ? 'bg-orange-500/10'  : 'bg-orange-100',  pillBorder: darkMode ? 'border-orange-500/30'  : 'border-orange-300' },
+            pass:        { borderL: 'border-l-red-500',     bg: darkMode ? 'bg-red-500/[0.04]'     : 'bg-red-50',      text: darkMode ? 'text-red-400'      : 'text-red-700',    pillBg: darkMode ? 'bg-red-500/10'     : 'bg-red-100',     pillBorder: darkMode ? 'border-red-500/30'     : 'border-red-300'    },
+            unknown:     { borderL: darkMode ? 'border-l-white/10' : 'border-l-gray-300', bg: darkMode ? 'bg-white/[0.02]' : 'bg-gray-50', text: darkMode ? 'text-gray-500' : 'text-gray-500', pillBg: darkMode ? 'bg-white/5' : 'bg-gray-100', pillBorder: darkMode ? 'border-white/10' : 'border-gray-200' },
+          };
+          const acc = accentMap[ds.tier];
+          return (
+            <div className={`p-5 rounded-lg border-l-4 ${acc.borderL} ${acc.bg} ${darkMode ? 'border border-white/10' : 'border border-gray-200'}`}>
+              <div className={`text-[10px] uppercase tracking-widest font-medium mb-1.5 ${acc.text}`}>
+                Decision Status
+              </div>
+              <div className="flex items-center gap-3 mb-2 flex-wrap">
+                <span className={`text-base font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                  {ds.headline}
+                </span>
+                <span className={`text-[11px] font-medium px-2 py-0.5 rounded border ${acc.pillBg} ${acc.text} ${acc.pillBorder}`}>
+                  {ds.readiness}
+                </span>
+              </div>
+              <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                {ds.narrative}
+              </p>
+            </div>
+          );
+        })()}
+
         {/* Decision Layer (Above the Fold) */}
         <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-6">
 
-          {/* LEFT: Investment Snapshot */}
+          {/* LEFT: Opportunity Signal — why this deal looks interesting or weak */}
           <div className="space-y-4">
-            <h2 className={`text-sm font-medium ${sectionLabel}`}>Investment Snapshot</h2>
-{/* Investment Snapshot — badge-first score signal, recommendation secondary */}
+            <div>
+              <h2 className={`text-sm font-medium ${sectionLabel}`}>Opportunity Signal</h2>
+              <p className={`text-xs mt-0.5 ${muted}`}>Why this deal looks interesting or weak</p>
+            </div>
+{/* Opportunity Signal — badge-first score signal, recommendation secondary */}
             {(recommendation || convictionScore !== null) && (() => {
               const snapBadge = scoreToBadge(convictionScore, 'deal_score');
               const snapColors = getScoreBadgeColors(snapBadge.bucket, darkMode);
@@ -798,13 +953,13 @@ export function DealWorkspaceV4({
             </div>
           </div>
 
-          {/* RIGHT: Conviction + Recommendation + Key Drivers */}
+          {/* RIGHT: Capital Readiness + Key Drivers (supporting lenses for the decision status above) */}
           <div className="space-y-5">
 
-            {/* Conviction Score — badge-first */}
+            {/* Capital Readiness — would I commit capital right now? */}
             <div className={`p-5 rounded-lg border ${card}`}>
               <div className={`text-xs uppercase tracking-wide mb-2.5 ${muted}`}>
-                Conviction Score
+                Capital Readiness
               </div>
               {(() => {
                 const cvBadge = scoreToBadge(convictionScore, 'conviction');
@@ -827,9 +982,9 @@ export function DealWorkspaceV4({
                         </span>
                       )}
                     </div>
-                    {/* One-liner interpretation */}
+                    {/* One-liner interpretation — capital-readiness specific */}
                     <p className={`text-[11px] leading-relaxed ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
-                      This reflects whether the deal currently meets the threshold for investment readiness.
+                      This reflects whether capital would commit to this deal at current evidence levels.
                     </p>
                     {/* Secondary: raw score */}
                     <div className={`text-sm font-medium tabular-nums ${cvColors.text}`}>
@@ -859,13 +1014,13 @@ export function DealWorkspaceV4({
                       <span>—</span>
                       <span>{convictionScore != null ? `${convictionScore}/100 · overall investment signal` : 'not yet evaluated'}</span>
                     </div>
-                    {/* Row 2: Conviction (investment readiness) */}
+                    {/* Row 2: Capital readiness */}
                     <div className="flex items-start gap-1.5">
-                      <span className={`shrink-0 font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Conviction</span>
+                      <span className={`shrink-0 font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Capital readiness</span>
                       <span>—</span>
                       <span>
                         {recommendation != null
-                          ? `${recommendation} · investment readiness verdict`
+                          ? `${recommendation} · would capital commit?`
                           : 'not yet evaluated'}
                         {convictionBand && convictionBand.toLowerCase() !== recommendation?.toLowerCase()
                           ? ` (quantitative model: ${convictionBand})`
@@ -875,12 +1030,12 @@ export function DealWorkspaceV4({
                     {/* Row 3: Decision Confidence */}
                     {verdictResistanceScore != null && (
                       <div className="flex items-start gap-1.5">
-                        <span className={`shrink-0 font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Decision confidence</span>
+                        <span className={`shrink-0 font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Conclusion robustness</span>
                         <span>—</span>
                         <span>
                           <span className={getConvictionColor(verdictResistanceScore)}>{verdictResistanceScore}/100</span>
                           {verdictResistanceLabel ? ` · ${verdictResistanceLabel}` : ''}
-                          {' '}· how robustly this verdict holds up to counter-evidence
+                          {' '}· how stable the conclusion is against challenge
                         </span>
                       </div>
                     )}
@@ -895,18 +1050,6 @@ export function DealWorkspaceV4({
                   </div>
                 </div>
               )}
-            </div>
-
-            {/* Recommendation */}
-            <div className={`p-5 rounded-lg border ${card}`}>
-              <div className={`text-xs uppercase tracking-wide mb-3 ${muted}`}>
-                Recommendation
-              </div>
-              <div
-                className={`px-3 py-1.5 rounded-full border text-xs font-medium uppercase tracking-wide inline-block ${getRecommendationColor(recommendation)}`}
-              >
-                {recommendation ?? 'Not available'}
-              </div>
             </div>
 
             {/* Key Drivers: prefer conviction contributors, fall back to legacy keyDrivers */}

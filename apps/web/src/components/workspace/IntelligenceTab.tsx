@@ -108,43 +108,93 @@ const FALLBACK_CONFIG: LabelConfig = {
 
 // ─── Narrative builder ────────────────────────────────────────────────────────
 
-function buildNarrative(record: DealIntelligenceRecord, highGaps: EvidenceGapItem[]): string {
-  const parts: string[] = [];
+/**
+ * Strip the system-internal intro prefix from opposing_case_summary so only
+ * the analytical content remains. The intro format is:
+ *   "Challenge assessment for <name> (verdict: <V>, ORS: <N>). Primary risk signal: <T>. "
+ */
+function stripOpposingCaseIntro(text: string): string {
+  return text
+    .replace(/^Challenge assessment for[^.]+\.\s*/i, '')
+    .replace(/^Primary risk signal:[^.]+\.\s*/i, '');
+}
+
+/** Extract the first sentence from a multi-sentence explanation for use in a bullet. */
+function firstSentence(text: string): string {
+  const m = text.match(/^[^.!?]*[.!?]/);
+  return m ? m[0].trim() : text.trim();
+}
+
+function buildNarrative(record: DealIntelligenceRecord, _highGaps: EvidenceGapItem[]): string {
   const label = record.verdict_resistance_label ?? '';
   const score = record.verdict_resistance_score;
+  const v = (record.verdict ?? '').toUpperCase();
 
-  if (label === 'Robust') {
-    parts.push(`Confidence is strong (${score}/100) — the current direction holds up well under scrutiny.`);
-  } else if (label === 'Moderate') {
-    parts.push(`Confidence is moderate (${score}/100) — the current direction is reasonably supported but carries identifiable risks.`);
-  } else if (label === 'Fragile') {
-    parts.push(`Confidence is fragile (${score}/100) — the current direction has meaningful gaps that reduce conviction.`);
-  } else if (label === 'Very Fragile') {
-    parts.push(`Confidence is very low (${score}/100) — significant uncertainty exists and additional evidence is needed to sustain the current direction.`);
+  // Opening sentence — uses the real verdict field when available so direction is explicit.
+  let opener: string;
+  if (v === 'NO_GO') {
+    if (label === 'Fragile' || label === 'Very Fragile') {
+      opener = `The system currently leans against this deal (${score}/100) — confidence in that judgment is limited.`;
+    } else if (label === 'Moderate') {
+      opener = `The system currently leans against this deal (${score}/100), though evidence to support this direction is limited.`;
+    } else {
+      opener = `The system currently leans against this deal (${score}/100).`;
+    }
+  } else if (v === 'GO') {
+    if (label === 'Fragile' || label === 'Very Fragile') {
+      opener = `The system currently leans in favor of this deal (${score}/100), but confidence is fragile.`;
+    } else if (label === 'Moderate') {
+      opener = `The system currently leans in favor of this deal (${score}/100), with moderate confidence.`;
+    } else {
+      opener = `The system currently leans in favor of this deal (${score}/100).`;
+    }
+  } else if (v === 'CONSIDER') {
+    if (label === 'Very Fragile') {
+      opener = `The system sees potential here but confidence is very low (${score}/100) — this judgment should not be relied upon without further evidence.`;
+    } else if (label === 'Fragile') {
+      opener = `The system sees potential here, but confidence is limited (${score}/100) — key evidence gaps remain unresolved.`;
+    } else if (label === 'Moderate') {
+      opener = `The system sees this deal as promising (${score}/100), though important questions remain open.`;
+    } else {
+      opener = `The system sees this deal as promising (${score}/100).`;
+    }
   } else {
-    parts.push(`Confidence score: ${score}/100.`);
+    // No verdict (null or pre-migration rows) — fall back to band-only phrasing
+    if (label === 'Robust') {
+      opener = `The assessment holds up well (${score}/100) — no material contradictions or critical gaps were detected.`;
+    } else if (label === 'Moderate') {
+      opener = `Confidence is moderate (${score}/100) — the assessment is partially supported but important evidence gaps remain.`;
+    } else if (label === 'Fragile') {
+      opener = `Confidence is limited (${score}/100) — the decision is tentative pending resolution of the identified gaps.`;
+    } else if (label === 'Very Fragile') {
+      opener = `Confidence is very low (${score}/100) — significant uncertainty exists and additional evidence is required before this assessment can be relied upon.`;
+    } else {
+      opener = `Confidence score: ${score}/100.`;
+    }
   }
 
+  // Body: opposing_case_summary contains deal-specific analytical content.
+  // Strip the system-internal intro prefix, then filter any sentences that still
+  // contain internal labels ("For a CONSIDER deal", "ORS NN") before rendering.
+  if (record.opposing_case_summary) {
+    const stripped = stripOpposingCaseIntro(record.opposing_case_summary).trim();
+    if (stripped.length > 20) {
+      const sentences = stripped.match(/[^.!?]+[.!?]+/g) ?? [];
+      const clean = sentences.filter(
+        (s) => !/for a (go|consider|no.go) deal/i.test(s) && !/\bors\s*\d+/i.test(s),
+      );
+      const body = clean.slice(0, 2).join(' ').trim();
+      if (body) return `${opener} ${body}`;
+    }
+  }
+
+  // Fallback: opener + primary challenge reason
   if (record.primary_challenge_reason) {
     const reason = record.primary_challenge_reason.trim();
-    if (reason) parts.push(reason.endsWith('.') ? reason : `${reason}.`);
+    return `${opener} ${reason.endsWith('.') ? reason : `${reason}.`}`;
   }
 
-  const topGaps = highGaps.slice(0, 2)
-    .map((g) => (g.diligence_question ?? g.description ?? g.evidence_type ?? '').trim())
-    .filter(Boolean);
-  if (topGaps.length === 1) {
-    parts.push(`A key evidence gap: ${topGaps[0]}.`);
-  } else if (topGaps.length > 1) {
-    parts.push(`Key evidence gaps include: ${topGaps.join('; ')}.`);
-  }
-
-  const claims = toStringArray(record.overconfident_claims);
-  if (claims.length > 0) {
-    parts.push(`${claims.length} potentially overstated claim${claims.length !== 1 ? 's' : ''} were flagged.`);
-  }
-
-  return parts.join(' ');
+  return opener;
 }
 
 // ─── "Why the system believes this" bullets (max 4, deduplicated) ─────────────
@@ -170,10 +220,10 @@ function buildReasonBullets(
   };
 
   for (const f of factors) {
-    add((f.title ?? f.explanation ?? '').trim(), f.severity);
-  }
-  for (const claim of overconfidentClaims) {
-    add(claim.trim());
+    // Prefer explanation (deal-specific analytical text) over title (category label).
+    // Use only the first sentence to keep bullets scannable.
+    const raw = (f.explanation ?? f.title ?? '').trim();
+    add(firstSentence(raw), f.severity);
   }
   if (bullets.length === 0 && primaryReason) {
     add(primaryReason.trim());
@@ -204,7 +254,8 @@ function buildConfidenceActions(
 
   for (const item of sorted) {
     if (all.length >= 8) break;
-    const text = (item.diligence_question ?? item.description ?? item.evidence_type ?? '').trim();
+    // Only use diligence_question — description/evidence_type are state labels, not action asks.
+    const text = (item.diligence_question ?? '').trim();
     if (!text) continue;
     const key = normalize(text);
     if (seen.has(key)) continue;

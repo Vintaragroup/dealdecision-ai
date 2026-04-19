@@ -311,9 +311,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		const thesisSection = g3OnlyFail
 			? buildInvestorThesisStubSection(thesisInputsForScoring)
 			: null;
-		const limitedScoringSection = buildLimitedScoringSection(
-			computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs)
-		);
+		const gfLimitedScoringResult = computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs);
+		const limitedScoringSection = buildLimitedScoringSection(gfLimitedScoringResult);
 		const nm = normMetricsFromInputs(insightSlotInputs);
 		const fusionResult = fuseDealCanonicalFacts(
 			insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
@@ -468,11 +467,39 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		// Best-effort: persist canonical decision summary (non-blocking).
 		await applyCanonicalDecisionV1(pool, reportId, dealId, validatedPkg);
 
+		// ── Stage 5: Intelligence Pass (guarantee) ───────────────────────────────
+		// Run Stage 5 even in the gate-fail path so every analyzed deal receives
+		// challenge pass + conviction data regardless of gate outcomes.
+		const gfStage5Status = await runStage5WithContext(pool, {
+			dealId,
+			dealName: gfDealName,
+			engineVersion,
+			reportId,
+			evidenceCount: 0, // upstream snapshot not loaded in gate-fail path
+			sectionCount: sections.length,
+			evidenceGatePassed: false,
+			investorInsightsStatus: persistStatus,
+			overrideLlmMode: null,
+			upstreamFingerprint: fallbackFp,
+			insightSlotInputs,
+			limitedScoringResult: gfLimitedScoringResult,
+			fusionResult,
+		});
+		console.log(JSON.stringify({
+			event: "INVESTOR_INSIGHTS_STAGE5_STATUS",
+			deal_id: dealId,
+			path: "gates_failed",
+			persist_status: persistStatus,
+			stage5_status: gfStage5Status,
+			ts: new Date().toISOString(),
+		}));
+
 		return {
 			ok: true,
 			status: persistStatus,
 			report_id: reportId,
 			failed_gates: failedGates.map((g) => g.gate),
+			stage5_status: gfStage5Status,
 		};
 	}
 
@@ -527,11 +554,21 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 							ts: new Date().toISOString(),
 						})
 					);
+					// Stage 5 not run — prior run assumed complete; dedup skips reprocessing.
+					console.log(JSON.stringify({
+						event: "INVESTOR_INSIGHTS_STAGE5_STATUS",
+						deal_id: dealId,
+						path: "dedup_skip",
+						stage5_status: "skipped",
+						reason: "dedup_hit_prior_run_assumed_complete",
+						ts: new Date().toISOString(),
+					}));
 					return {
 						ok: true,
 						status: "dedup_skip",
 						reason_code: "FP_IDEMPOTENT_HIT_SKIP",
 						report_id: rows[0].id,
+						stage5_status: "skipped",
 					};
 				}
 				// Report predates canonical_identity feature — bypass dedup so this
@@ -660,9 +697,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		const phase2Sections = buildPhase2Sections(insightSlotInputs);
 		const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
 		const thesisSection = buildInvestorThesisStubSection(thesisInputsForScoring);
-		const limitedScoringSection = buildLimitedScoringSection(
-			computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs)
-		);
+		const egLimitedScoringResult = computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs);
+		const limitedScoringSection = buildLimitedScoringSection(egLimitedScoringResult);
 		const fusionResult = fuseDealCanonicalFacts(
 			insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
 		);
@@ -860,6 +896,25 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		// Best-effort: persist canonical decision summary (non-blocking).
 		await applyCanonicalDecisionV1(pool, egReportId, dealId, validatedPkg);
 
+		// ── Stage 5: Intelligence Pass (guarantee) ───────────────────────────────
+		// Run Stage 5 even when the evidence gate blocked LLM stages so every
+		// analyzed deal receives challenge pass + conviction data.
+		const egStage5Status = await runStage5WithContext(pool, {
+			dealId,
+			dealName,
+			engineVersion,
+			reportId: egReportId,
+			evidenceCount: upstream.evidenceCount,
+			sectionCount: sections.length,
+			evidenceGatePassed: false,
+			investorInsightsStatus: "deterministic_only",
+			overrideLlmMode: null,
+			upstreamFingerprint,
+			insightSlotInputs,
+			limitedScoringResult: egLimitedScoringResult,
+			fusionResult,
+		});
+
 		console.log(
 			JSON.stringify({
 				event: "INVESTOR_INSIGHTS_EVIDENCE_GATE_FAIL_COMPLETE",
@@ -868,6 +923,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				upstream_fingerprint: upstreamFingerprint,
 				report_id: egReportId,
 				blocking_reason: evidenceGate.blocking_reason,
+				stage5_status: egStage5Status,
 				ts: new Date().toISOString(),
 			})
 		);
@@ -910,6 +966,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			report_id: egReportId,
 			upstream_fingerprint: upstreamFingerprint,
 			evidence_gate_passed: false,
+			stage5_status: egStage5Status,
 		};
 	}
 
@@ -1211,30 +1268,113 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		})
 	);
 
-	// ── 8. Stage 5: Intelligence Pass (non-blocking, observational) ──────────
+	// ── 8. Stage 5: Intelligence Pass ───────────────────────────────────────
 	//
-	// CONTRACT — Stage 5 is fully observational and must NEVER:
-	//   • throw an unhandled exception that reaches the caller
-	//   • mutate or override any field in the primary return value
-	//   • gate, block, or delay the return of this function
-	//
-	// runIntelligenceStage() has its own outer try/catch and is internally
-	// non-throwing. This outer try/catch is a second safety net for unexpected
-	// import-level or runtime errors not covered by the inner guard.
-	//
+	// Guaranteed to run from all analysis paths via runStage5WithContext.
+	// CONTRACT: non-throwing, non-blocking, observational only.
 	// Gated by DDAI_INTELLIGENCE_LAYER_ENABLED=1.
+	const stage5Status = await runStage5WithContext(pool, {
+		dealId,
+		dealName,
+		engineVersion,
+		reportId,
+		evidenceCount: upstream.evidenceCount,
+		sectionCount: sections.length,
+		evidenceGatePassed: evidenceGate.passed,
+		investorInsightsStatus: overrideLlmMode ? "complete" : "deterministic_only",
+		overrideLlmMode,
+		upstreamFingerprint,
+		insightSlotInputs,
+		limitedScoringResult,
+		fusionResult,
+	});
+	console.log(JSON.stringify({
+		event: "INVESTOR_INSIGHTS_STAGE5_STATUS",
+		deal_id: dealId,
+		path: "full",
+		stage5_status: stage5Status,
+		ts: new Date().toISOString(),
+	}));
+
+	return {
+		ok: true,
+		status: "deterministic_only",
+		report_id: reportId,
+		upstream_fingerprint: upstreamFingerprint,
+		stage5_status: stage5Status,
+	};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Stage 5 shared execution context
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Shared inputs for runStage5WithContext — passed from any analysis exit path.
+ */
+interface Stage5Context {
+	dealId: string;
+	dealName: string | null;
+	engineVersion: string;
+	reportId: string;
+	/** Evidence count for URSS proxy. Use 0 when upstream snapshot was not loaded. */
+	evidenceCount: number;
+	/** Number of sections in the render package (used in evaluator). */
+	sectionCount: number;
+	evidenceGatePassed: boolean;
+	/** Status of the investor_insights run (e.g. "deterministic_only", "complete", "failed"). */
+	investorInsightsStatus: string;
+	overrideLlmMode: string | null | undefined;
+	upstreamFingerprint: string;
+	insightSlotInputs: InsightSlotInputs;
+	limitedScoringResult: ReturnType<typeof computeLimitedScoringV1>;
+	fusionResult: ReturnType<typeof fuseDealCanonicalFacts>;
+}
+
+/**
+ * Run Stage 5 (Intelligence Pass) from any analysis path.
+ *
+ * Extracts all necessary input proxies from context, calls runIntelligenceStage,
+ * and patches the report_payload with challenge pass output.
+ *
+ * CONTRACT — this function must NEVER:
+ *   • throw an unhandled exception
+ *   • mutate or override any field in the caller's return value
+ *   • gate or block the caller's return
+ *
+ * Returns a stage5_status label:
+ *   "completed" — Stage 5 ran successfully and results were persisted
+ *   "skipped"   — Feature flag disabled (DDAI_INTELLIGENCE_LAYER_ENABLED !== "1")
+ *   "failed"    — Stage 5 ran but encountered an error (stage5_error non-null)
+ */
+async function runStage5WithContext(
+	pool: Pool,
+	ctx: Stage5Context,
+): Promise<"completed" | "skipped" | "failed"> {
 	try {
-		// Derive score proxies from limited scoring + pipeline signals.
-		// These are approximations; the intelligence layer treats them as inputs
-		// to pattern detection, not authoritative orchestrator scores.
+		const {
+			dealId,
+			dealName,
+			engineVersion,
+			reportId,
+			evidenceCount,
+			sectionCount,
+			evidenceGatePassed,
+			investorInsightsStatus,
+			upstreamFingerprint,
+			insightSlotInputs,
+			limitedScoringResult,
+			fusionResult,
+		} = ctx;
+
 		const orsProxy = limitedScoringResult.overall_limited_score ?? 50;
 		const dciProxy = limitedScoringResult.completeness_score ?? 50;
 		const fhcProxy = limitedScoringResult.traction_signal_score ?? 50;
 		const urssProxy = Math.min(
 			100,
-			(upstream.evidenceCount < 5 ? 40 : 0) +
+			(evidenceCount < 5 ? 40 : 0) +
 			(insightSlotInputs.dpuLoadFailed ? 30 : 0) +
-			(fusionResult.conflicts.length * 10)
+			(fusionResult.conflicts.length * 10),
 		);
 		const verdictProxy =
 			orsProxy >= 70 && limitedScoringResult.scoring_confidence === "high"
@@ -1242,34 +1382,26 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				: orsProxy >= 45
 				? "CONSIDER"
 				: "NO_GO";
+
 		const financialCoveragePct = insightSlotInputs.financialCoverage
-			? (await import("../../lib/financial-facts/financial-coverage-signals-v1.js"))
-					.computeFinancialCoveragePct(insightSlotInputs.financialCoverage)
+			? computeFinancialCoveragePct(insightSlotInputs.financialCoverage)
 			: 0;
+
 		const ft = insightSlotInputs.financialTruth;
 		const balanceSheet = insightSlotInputs.balanceSheet;
 		const cashFlow = insightSlotInputs.cashFlow;
-		// ── FTRL-backed scalar derivation ───────────────────────────────────────
-		// ARR must come ONLY from explicit ARR sources — never from revenue.
-		// Revenue fallback was removed: revenue != ARR. When ARR is absent,
-		// arr_structured = null and downstream consumers treat it as INSUFFICIENT.
+
 		const arrStructured: number | null = ft?.arr?.resolved_value ?? null;
 		const burnMonthly: number | null =
 			ft?.burn_rate?.resolved_value ?? cashFlow?.derived?.monthly_burn_from_ops ?? null;
 		const runwayMonths: number | null =
 			ft?.runway_months?.resolved_value ?? cashFlow?.derived?.runway_months ?? null;
-		// cashOnHand: prefer FTRL-resolved cash_on_hand (from xlsx/kpi_tile facts) over Pipeline B
-		// balance sheet, which requires a parsed excel_range page with matching structure.
 		const cashOnHand: number | null =
 			ft?.cash_on_hand?.resolved_value ?? balanceSheet?.derived?.cash_latest ?? null;
-		// arr_narrative: extract the first parseable ARR dollar figure from deck signals.
-		// Only ARR-labeled mentions are used — MRR mentions are excluded to prevent
-		// MRR values from being compared against structured ARR and firing false contradictions.
-		// Returns null when the deck has no explicit ARR mention or the figure cannot be parsed.
+
 		const arrNarrative: number | null = (() => {
 			const mentions = insightSlotInputs.deckFinancialSignals?.arr_mrr_mentions ?? [];
 			for (const m of mentions) {
-				// Only consider mentions that explicitly reference ARR or "annual recurring"
 				if (!/\bARR\b|annual\s+recurring/i.test(m.text)) continue;
 				const match = /\$([\d,]+(?:\.\d+)?)\s*([KMBTkmbt]?)/.exec(m.text);
 				if (!match) continue;
@@ -1281,28 +1413,17 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			return null;
 		})();
 
-		// ── Narrative mention presence flags ────────────────────────────────────
-		// Indicate whether each metric was mentioned in deck/narrative text even when
-		// no structured numeric fact was successfully extracted. Used to distinguish
-		// "mentioned but unverified" from "completely absent" in the challenge pass.
-		//
-		// Two signal sources are merged:
-		//  1. deckFinancialSignals  — from DPU page text (PDF/PPT decks)
-		//  2. evidenceSnippets scan — from evidence_items content_text (covers deals
-		//                             where DPU pages are xlsx-only and deckSignals is
-		//                             null/empty)
 		const deckSignals = insightSlotInputs.deckFinancialSignals;
 		const evidenceMentions = detectMentionsInEvidenceText(insightSlotInputs.evidenceSnippets);
 		const arrHasNarrativeMention = arrNarrative != null || evidenceMentions.has_arr;
-		const burnHasNarrativeMention = (deckSignals?.has_burn ?? false) ||
+		const burnHasNarrativeMention =
+			(deckSignals?.has_burn ?? false) ||
 			(deckSignals?.burn_mentions?.length ?? 0) > 0 ||
 			evidenceMentions.has_burn;
-		const runwayHasNarrativeMention = (deckSignals?.has_runway ?? false) ||
+		const runwayHasNarrativeMention =
+			(deckSignals?.has_runway ?? false) ||
 			(deckSignals?.runway_mentions?.length ?? 0) > 0 ||
 			evidenceMentions.has_runway;
-		// Cash: no dedicated cash mentions field in deck signals; rely on FTRL
-		// having produced a non-INSUFFICIENT record (handled via cashOnHand non-null).
-		// If cashOnHand is null but we know burn is mentioned, that's implicit.
 
 		const stage5Result = await runIntelligenceStage(pool, {
 			deal_id: dealId,
@@ -1319,14 +1440,14 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				limitedScoringResult.scoring_confidence === "high" ? "high" :
 				limitedScoringResult.scoring_confidence === "medium" ? "medium" : "low"
 			}`,
-			evidence_count: upstream.evidenceCount,
+			evidence_count: evidenceCount,
 			contradiction_count: fusionResult.conflicts.length,
 			financial_conflicts: fusionResult.conflicts,
-			section_count: sections.length,
+			section_count: sectionCount,
 			dpu_provenance_missing: insightSlotInputs.dpuLoadFailed,
 			xlsx_extraction_had_llm_fallback: false,
-			evidence_gate_passed: evidenceGate.passed,
-			investor_insights_status: overrideLlmMode ? "complete" : "deterministic_only",
+			evidence_gate_passed: evidenceGatePassed,
+			investor_insights_status: investorInsightsStatus,
 			llm_cache_age_days: null,
 			arr_narrative: arrNarrative,
 			arr_structured: arrStructured,
@@ -1349,25 +1470,22 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				burn_resolved_source_kind:    ft.burn_rate?.resolved_source_kind ?? null,
 				cash_resolved_source_kind:    ft.cash_on_hand?.resolved_source_kind ?? null,
 			} : null,
-			// Narrative mention presence flags — distinguish "mentioned but unverified"
-			// from "completely absent" in the challenge pass missing-evidence detector.
 			arr_has_narrative_mention: arrHasNarrativeMention,
 			burn_has_narrative_mention: burnHasNarrativeMention,
 			runway_has_narrative_mention: runwayHasNarrativeMention,
-			// Non-financial signals for category-balanced missing-evidence generation.
-			// market_presence_score and traction_signal_score come from limitedScoringResult
-			// (already computed in Stage 2). has_saas_kpis / has_traction_facts are derived
-			// from insightSlotInputs loaded in Stage 1.
 			market_presence_score: limitedScoringResult.market_presence_score,
 			traction_signal_score: limitedScoringResult.traction_signal_score,
 			has_saas_kpis: insightSlotInputs.saasKpis != null,
 			has_traction_facts: insightSlotInputs.dealTractionFacts.length > 0,
 		});
 
-		// Patch report_payload with Stage 5 challenge pass output so the report
-		// compiler can surface conviction/evidence signal in the API response.
-		// Only patch when Stage 5 ran a real pass (run_id non-empty, no error).
-		if (stage5Result.run_id !== "" && stage5Result.stage5_error === null) {
+		// Feature flag off → run_id is empty string (disabledResult).
+		if (stage5Result.run_id === "") {
+			return "skipped";
+		}
+
+		// Patch report_payload with challenge pass output.
+		if (stage5Result.stage5_error === null) {
 			try {
 				const cp = stage5Result.challenge_pass_result;
 				await pool.query(
@@ -1392,7 +1510,6 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 					],
 				);
 			} catch (patchErr) {
-				// Non-fatal: never block return for a report_payload patch failure.
 				console.error(JSON.stringify({
 					event: "INVESTOR_INSIGHTS_STAGE5_PATCH_FAILED",
 					deal_id: dealId,
@@ -1400,24 +1517,20 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 					ts: new Date().toISOString(),
 				}));
 			}
+			return "completed";
 		}
+
+		// stage5_error was non-null — Stage 5 ran but failed internally.
+		return "failed";
 	} catch (s5Err) {
-		// Stage 5 is fully non-blocking. Any failure here must not affect the
-		// primary return value or report persistence.
 		console.error(JSON.stringify({
 			event: "INVESTOR_INSIGHTS_STAGE5_UNCAUGHT",
-			deal_id: dealId,
+			deal_id: ctx.dealId,
 			error: s5Err instanceof Error ? s5Err.message : String(s5Err),
 			ts: new Date().toISOString(),
 		}));
+		return "failed";
 	}
-
-	return {
-		ok: true,
-		status: "deterministic_only",
-		report_id: reportId,
-		upstream_fingerprint: upstreamFingerprint,
-	};
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

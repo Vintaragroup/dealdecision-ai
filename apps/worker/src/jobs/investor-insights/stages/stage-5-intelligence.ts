@@ -372,6 +372,7 @@ function disabledResult(deal_id: string): IntelligencePassResult {
     challenge_pass_result: {
       deal_id,
       intelligence_run_id: "",
+      verdict: "UNKNOWN",
       verdict_resistance_score: 100,
       verdict_resistance_label: "Robust",
       primary_challenge_reason: "Intelligence layer disabled.",

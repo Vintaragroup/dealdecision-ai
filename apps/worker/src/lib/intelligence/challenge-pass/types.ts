@@ -113,6 +113,11 @@ export interface ChallengePassResult {
   verdict_resistance_score: number;
   verdict_resistance_label: VerdictResistanceLabel;
   /**
+   * The decision verdict at the time this challenge pass ran (GO | CONSIDER | NO_GO).
+   * Stored for display so the UI can say "the system leans against / toward this deal".
+   */
+  verdict: string;
+  /**
    * The single most important reason the current verdict might be wrong.
    * Drawn from the highest-severity challenge factor. Never generic.
    */

@@ -519,6 +519,7 @@ export function runChallengePass(input: ChallengePassInput): ChallengePassResult
   return {
     deal_id,
     intelligence_run_id,
+    verdict,
     verdict_resistance_score: resistance_score,
     verdict_resistance_label: resistance_label,
     primary_challenge_reason,
@@ -544,14 +545,15 @@ export async function persistChallengePassResult(
 ): Promise<void> {
   await pool.query(
     `INSERT INTO deal_challenge_pass_results
-       (deal_id, intelligence_run_id, verdict_resistance_score, verdict_resistance_label,
+       (deal_id, intelligence_run_id, verdict, verdict_resistance_score, verdict_resistance_label,
         opposing_case_summary, overconfident_claims, missing_evidence, diligence_gaps,
         flag_count_critical, flag_count_error, flag_count_warn,
         memory_challenge_used, memory_challenge_summary,
         primary_challenge_reason, challenge_factors,
         contradiction_explanations)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
      ON CONFLICT (deal_id, intelligence_run_id) DO UPDATE SET
+       verdict                     = EXCLUDED.verdict,
        verdict_resistance_score    = EXCLUDED.verdict_resistance_score,
        verdict_resistance_label    = EXCLUDED.verdict_resistance_label,
        opposing_case_summary       = EXCLUDED.opposing_case_summary,
@@ -570,6 +572,7 @@ export async function persistChallengePassResult(
     [
       result.deal_id,
       result.intelligence_run_id,
+      result.verdict,
       result.verdict_resistance_score,
       result.verdict_resistance_label,
       result.opposing_case_summary,

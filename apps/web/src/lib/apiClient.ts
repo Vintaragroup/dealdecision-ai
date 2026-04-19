@@ -1875,6 +1875,7 @@ export interface DealIntelligenceRecord {
   id: string;
   deal_id: string;
   intelligence_run_id: string;
+  verdict: string | null;
   verdict_resistance_score: number;
   verdict_resistance_label: string;
   primary_challenge_reason: string;

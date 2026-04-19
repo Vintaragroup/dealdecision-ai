@@ -33,7 +33,7 @@ describe("reconcileFinancialFactsV1 — runway derivation", () => {
     const runway = result.find((f) => f.metric_key === "runway_months");
     expect(runway).toBeDefined();
     expect(runway!.value).toBeCloseTo(12, 1);  // 1_800_000 / 150_000 = 12
-    expect(runway!.source_kind).toBe("unknown");
+    expect(runway!.source_kind).toBe("structured_derived");
     expect(runway!.confidence).toBe("medium");
     expect(runway!.reconciliation_status).toBe("ok");
   });
@@ -223,7 +223,7 @@ describe("reconcileFinancialFactsV1 — gross_margin derivation", () => {
     // 1_200_000 / 2_000_000 * 100 = 60%
     expect(gm!.value).toBeCloseTo(60, 1);
     expect(gm!.unit).toBe("percent");
-    expect(gm!.source_kind).toBe("unknown");
+    expect(gm!.source_kind).toBe("structured_derived");
     expect(gm!.confidence).toBe("medium");
     expect(gm!.reconciliation_status).toBe("ok");
   });

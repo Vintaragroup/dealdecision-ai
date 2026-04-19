@@ -44,6 +44,7 @@ export async function registerIntelligenceRoutes(
          id,
          deal_id,
          intelligence_run_id,
+         verdict,
          verdict_resistance_score,
          verdict_resistance_label,
          primary_challenge_reason,

@@ -169,6 +169,13 @@ export type WorkspaceRedesignedShellProps = {
   insightsReady: boolean;
   /** Primary challenge reason from Stage 5 challenge_pass (short prose) */
   primaryChallengeReason?: string | null;
+  /**
+   * Decision Confidence score (0–100) from Stage 5 challenge_pass.verdict_resistance_score.
+   * Displayed in the Score Context note to explain divergence from convictionScore.
+   */
+  verdictResistanceScore?: number | null;
+  /** Label for the verdict resistance score (e.g. "Fragile", "Moderate", "Robust"). */
+  verdictResistanceLabel?: string | null;
   /** Missing evidence items from Stage 5 challenge_pass.missing_evidence[] */
   missingEvidenceItems?: Array<{
     evidence_type: string;

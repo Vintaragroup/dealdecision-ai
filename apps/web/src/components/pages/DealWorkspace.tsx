@@ -7078,7 +7078,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             onOpenFull={() => setActivePanel('evidence')}
           />
         }
-        intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} /> : null}
+        intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} financialTiles={shellProps.financialTiles} /> : null}
       />
       )}
 

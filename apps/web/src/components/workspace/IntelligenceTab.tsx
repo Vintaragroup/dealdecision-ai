@@ -11,6 +11,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { apiGetDealIntelligence, type DealIntelligenceRecord } from '../../lib/apiClient';
+import type { FinancialTile } from './WorkspaceRedesignedShell';
 
 // ─── JSONB field shapes ───────────────────────────────────────────────────────
 
@@ -119,6 +120,19 @@ function stripOpposingCaseIntro(text: string): string {
     .replace(/^Primary risk signal:[^.]+\.\s*/i, '');
 }
 
+/**
+ * Global leakage filter for all challenge-pass text fields.
+ * Removes internal system labels that sometimes appear in LLM-generated explanations.
+ */
+function stripLeakage(text: string): string {
+  return text
+    .replace(/\bverdict:\s*(GO|CONSIDER|NO_GO)\b\.?\s*/gi, '')
+    .replace(/\bORS\s*[:=]?\s*\d+\b\.?\s*/gi, '')
+    .replace(/\bfor a (GO|CONSIDER|NO_GO) deal\b[^.]*\.?\s*/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 /** Extract the first sentence from a multi-sentence explanation for use in a bullet. */
 function firstSentence(text: string): string {
   const m = text.match(/^[^.!?]*[.!?]/);
@@ -190,8 +204,8 @@ function buildNarrative(record: DealIntelligenceRecord, _highGaps: EvidenceGapIt
 
   // Fallback: opener + primary challenge reason
   if (record.primary_challenge_reason) {
-    const reason = record.primary_challenge_reason.trim();
-    return `${opener} ${reason.endsWith('.') ? reason : `${reason}.`}`;
+    const reason = stripLeakage(record.primary_challenge_reason.trim());
+    if (reason) return `${opener} ${reason.endsWith('.') ? reason : `${reason}.`}`;
   }
 
   return opener;
@@ -222,7 +236,8 @@ function buildReasonBullets(
   for (const f of factors) {
     // Prefer explanation (deal-specific analytical text) over title (category label).
     // Use only the first sentence to keep bullets scannable.
-    const raw = (f.explanation ?? f.title ?? '').trim();
+    // Strip system-internal labels before rendering.
+    const raw = stripLeakage((f.explanation ?? f.title ?? '').trim());
     add(firstSentence(raw), f.severity);
   }
   if (bullets.length === 0 && primaryReason) {
@@ -234,6 +249,25 @@ function buildReasonBullets(
 
 // ─── "What would increase confidence" actions (max 8, deduplicated, grouped) ──
 
+/**
+ * Maps challenge_pass evidence_type tokens to the corresponding FinancialTile label.
+ * When a tile has a non-absent value, the evidence is "derived/unverified" rather than
+ * truly missing — downgrade from high-sensitivity to medium and skip "obtain" framing.
+ */
+const FINANCIAL_EVIDENCE_TYPE_TO_TILE: Record<string, string> = {
+  burn_rate: 'Monthly Burn',
+  monthly_burn: 'Monthly Burn',
+  runway: 'Runway',
+  runway_months: 'Runway',
+  revenue: 'Revenue / ARR',
+  arr: 'Revenue / ARR',
+  mrr: 'Revenue / ARR',
+  cash: 'Cash',
+  cash_balance: 'Cash',
+  gross_margin: 'Gross Margin',
+  gross_margin_pct: 'Gross Margin',
+};
+
 interface ConfidenceAction {
   text: string;
   sensitivity: 'high' | 'medium';
@@ -242,9 +276,15 @@ interface ConfidenceAction {
 function buildConfidenceActions(
   missingEvidence: EvidenceGapItem[],
   diligenceGaps: EvidenceGapItem[],
+  financialTiles: FinancialTile[],
 ): { high: ConfidenceAction[]; medium: ConfidenceAction[] } {
   const seen = new Set<string>();
   const all: ConfidenceAction[] = [];
+
+  // Build a quick lookup: tile label → trust state for financial evidence reclassification.
+  const tileTrust = new Map<string, string>(
+    financialTiles.map((t) => [t.label, t.trust]),
+  );
 
   const sorted = [...missingEvidence, ...diligenceGaps].sort(
     (a, b) =>
@@ -260,8 +300,18 @@ function buildConfidenceActions(
     const key = normalize(text);
     if (seen.has(key)) continue;
     seen.add(key);
-    const raw = (item.verdict_sensitivity ?? '').toLowerCase();
-    all.push({ text, sensitivity: raw === 'high' ? 'high' : 'medium' });
+    const rawSensitivity = (item.verdict_sensitivity ?? '').toLowerCase();
+
+    // If the challenge pass flagged this evidence_type as missing, but the Financial Snapshot
+    // already shows a derived value for the corresponding metric, downgrade to medium so the
+    // investor knows it needs verification — not that it's completely absent.
+    const tileLabel = FINANCIAL_EVIDENCE_TYPE_TO_TILE[item.evidence_type?.toLowerCase() ?? ''];
+    const tileState = tileLabel ? tileTrust.get(tileLabel) : undefined;
+    const hasDerivedValue = tileState === 'interim_extraction' || tileState === 'structured';
+    const effectiveSensitivity: 'high' | 'medium' =
+      rawSensitivity === 'high' && hasDerivedValue ? 'medium' : rawSensitivity === 'high' ? 'high' : 'medium';
+
+    all.push({ text, sensitivity: effectiveSensitivity });
   }
 
   return {
@@ -377,9 +427,16 @@ function AccordionSection({
 interface IntelligenceTabProps {
   dealId: string;
   darkMode: boolean;
+  /**
+   * Financial tile state from the workspace. Used to distinguish between
+   * "derived" (interim_extraction) and "truly missing" (not_extracted) evidence
+   * so Decision Confidence actions are not marked high-priority when a derived
+   * value already exists in the Financial Snapshot.
+   */
+  financialTiles?: FinancialTile[];
 }
 
-export function IntelligenceTab({ dealId, darkMode }: IntelligenceTabProps) {
+export function IntelligenceTab({ dealId, darkMode, financialTiles = [] }: IntelligenceTabProps) {
   const [records, setRecords] = useState<DealIntelligenceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -463,7 +520,7 @@ export function IntelligenceTab({ dealId, darkMode }: IntelligenceTabProps) {
   // Derived display data
   const narrative = buildNarrative(latest, highGaps);
   const reasonBullets = buildReasonBullets(challengeFactors, overconfidentClaims, latest.primary_challenge_reason);
-  const { high: highActions, medium: mediumActions } = buildConfidenceActions(missingEvidence, diligenceGaps);
+  const { high: highActions, medium: mediumActions } = buildConfidenceActions(missingEvidence, diligenceGaps, financialTiles);
   const hasActions = highActions.length > 0 || mediumActions.length > 0;
 
   return (
@@ -539,11 +596,11 @@ export function IntelligenceTab({ dealId, darkMode }: IntelligenceTabProps) {
                 <div className="flex items-start gap-2">
                   <SeverityDot severity="error" />
                   <p className={`text-sm font-medium leading-snug ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                    {item.title ?? 'Contradiction detected'}
+                    {stripLeakage(item.title ?? 'Contradiction detected')}
                   </p>
                 </div>
                 {item.explanation && (
-                  <p className={`text-sm ${body} leading-relaxed pl-5`}>{item.explanation}</p>
+                  <p className={`text-sm ${body} leading-relaxed pl-5`}>{stripLeakage(item.explanation)}</p>
                 )}
                 {item.sources && item.sources.length > 0 && (
                   <div className="pl-5 space-y-1 pt-0.5">

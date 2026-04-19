@@ -287,6 +287,10 @@ function composeInvestmentNarrative({
       lines.push(`Initial analysis supports proceeding${scorePhrase}.`);
     } else if (recommendation === 'Investigate') {
       lines.push(`Initial analysis warrants further investigation${scorePhrase} — not yet ready to pass or commit.`);
+      // Req 3: when score is below 55, add context that mixed signals drive investigation
+      if (convictionScore !== null && convictionScore < 55) {
+        lines.push('Mixed signals are present — the deal shows potential but has not cleared conviction thresholds. Further diligence can resolve this tension.');
+      }
     } else if (recommendation === 'Caution') {
       lines.push(`Initial analysis warrants caution${scorePhrase} — key conditions must be met before committing capital.`);
     } else if (recommendation === 'Pass') {
@@ -435,19 +439,37 @@ function composeFinancialNarrative({
 
   // Missing data note: only add when we have some context (at least one prose line).
   if (lines.length > 0) {
-    const missingLabels = [
-      revenueTile.value === '—' ? 'revenue' : null,
-      burnTile.value === '—' ? 'burn rate' : null,
-      runwayTile.value === '—' ? 'runway' : null,
+    // Derived: metric exists but sourced from projections — not directly verified.
+    const derivedLabels = [
+      revenueTile.trust === 'interim_extraction' ? 'revenue' : null,
+      burnTile.trust === 'interim_extraction' ? 'burn rate' : null,
+      runwayTile.trust === 'interim_extraction' ? 'runway' : null,
     ].filter((l): l is string => l !== null);
 
+    // Truly absent: extraction made no attempt or came back empty.
+    const missingLabels = [
+      revenueTile.trust === 'not_extracted' ? 'revenue' : null,
+      burnTile.trust === 'not_extracted' ? 'burn rate' : null,
+      runwayTile.trust === 'not_extracted' ? 'runway' : null,
+    ].filter((l): l is string => l !== null);
+
+    const joinLabels = (labels: string[]) =>
+      labels.length === 1
+        ? labels[0]
+        : labels.length === 2
+          ? `${labels[0]} and ${labels[1]}`
+          : `${labels[0]}, ${labels[1]}, and ${labels[2]}`;
+
+    if (derivedLabels.length > 0) {
+      const joined = joinLabels(derivedLabels);
+      const verb = derivedLabels.length === 1 ? 'is' : 'are';
+      lines.push(
+        `${joined.charAt(0).toUpperCase() + joined.slice(1)} ${verb} derived from projections and not directly verified — treat as estimated.`,
+      );
+    }
+
     if (missingLabels.length > 0) {
-      const joined =
-        missingLabels.length === 1
-          ? missingLabels[0]
-          : missingLabels.length === 2
-            ? `${missingLabels[0]} and ${missingLabels[1]}`
-            : `${missingLabels[0]}, ${missingLabels[1]}, and ${missingLabels[2]}`;
+      const joined = joinLabels(missingLabels);
       lines.push(
         `${joined.charAt(0).toUpperCase() + joined.slice(1)} data is not available and should be obtained before proceeding.`,
       );
@@ -470,7 +492,7 @@ export function DealWorkspaceV4({
   lastAnalyzedAt,
   // conviction
   convictionScore,
-  convictionBand: _convictionBand,
+  convictionBand,
   convictionPosture,
   convictionHeadline,
   convictionRationale,
@@ -512,6 +534,9 @@ export function DealWorkspaceV4({
   onOpenDeepDive,
   onOpenInsights,
   onOpenEvidenceExplorer,
+  // workbench scores
+  verdictResistanceScore,
+  verdictResistanceLabel,
   // panel slots
   deepDivePanel,
   insightsPanel,
@@ -794,6 +819,53 @@ export function DealWorkspaceV4({
                 <p className={`text-xs leading-relaxed ${sectionLabel}`}>
                   {convictionRationale}
                 </p>
+              )}
+              {/* Score context: three-dimension explanation */}
+              {(verdictResistanceScore != null || convictionBand != null) && (
+                <div className={`mt-3 pt-3 border-t ${darkMode ? 'border-white/5' : 'border-gray-100'}`}>
+                  <div className={`text-[10px] uppercase tracking-wide mb-1.5 ${muted}`}>Score context</div>
+                  <div className={`space-y-1.5 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                    {/* Row 1: Deal quality */}
+                    <div className="flex items-start gap-1.5">
+                      <span className={`shrink-0 font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Deal quality</span>
+                      <span>—</span>
+                      <span>{convictionScore != null ? `${convictionScore}/100 · overall investment signal` : 'not yet evaluated'}</span>
+                    </div>
+                    {/* Row 2: Conviction (investment readiness) */}
+                    <div className="flex items-start gap-1.5">
+                      <span className={`shrink-0 font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Conviction</span>
+                      <span>—</span>
+                      <span>
+                        {recommendation != null
+                          ? `${recommendation} · investment readiness verdict`
+                          : 'not yet evaluated'}
+                        {convictionBand && convictionBand.toLowerCase() !== recommendation?.toLowerCase()
+                          ? ` (quantitative model: ${convictionBand})`
+                          : null}
+                      </span>
+                    </div>
+                    {/* Row 3: Decision Confidence */}
+                    {verdictResistanceScore != null && (
+                      <div className="flex items-start gap-1.5">
+                        <span className={`shrink-0 font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Decision confidence</span>
+                        <span>—</span>
+                        <span>
+                          <span className={getConvictionColor(verdictResistanceScore)}>{verdictResistanceScore}/100</span>
+                          {verdictResistanceLabel ? ` · ${verdictResistanceLabel}` : ''}
+                          {' '}· how robustly this verdict holds up to counter-evidence
+                        </span>
+                      </div>
+                    )}
+                    {/* Gap explanation */}
+                    {convictionScore != null && verdictResistanceScore != null && Math.abs(convictionScore - verdictResistanceScore) >= 10 && (
+                      <p className={`pt-1 text-[11px] leading-relaxed ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+                        {convictionScore > verdictResistanceScore
+                          ? 'The quality signal is stronger than the evidence base currently supports — verdict confidence lags the score.'
+                          : 'The evidence is more robust than the headline score reflects — the verdict is better supported than the number suggests.'}
+                      </p>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
 

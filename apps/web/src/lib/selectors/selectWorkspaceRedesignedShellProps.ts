@@ -38,6 +38,30 @@ function isNullStateSummary(s: string): boolean {
 }
 
 /**
+ * Post-processes LLM-generated narrative strings before they reach the UI.
+ *
+ * Handles:
+ *   1. Overconfident "sufficient for underwriting" phrasing — replace with qualified language
+ *      (Req 4: financial snapshot tone fix)
+ *   2. System-internal labels that sometimes leak through generated text
+ *      (Req 5: global leakage removal — verdict: X, ORS: N, "For a CONSIDER deal", etc.)
+ */
+function sanitizeFinancialProse(s: string): string {
+  return s
+    // Req 4: overconfident underwriting claim
+    .replace(/\bsufficient for underwriting\b/gi,
+      'provides directional insight but key figures should be independently verified before underwriting')
+    .replace(/\bfinancial package is sufficient\b/gi,
+      'financial package provides directional insight but should be independently verified')
+    // Req 5: strip internal system labels
+    .replace(/\bverdict:\s*(GO|CONSIDER|NO_GO)\b\.?/gi, '')
+    .replace(/\bORS\s*[:=]?\s*\d+\b\.?/gi, '')
+    .replace(/\bfor a (GO|CONSIDER|NO_GO) deal\b[^.]*\.?\s*/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
  * Known internal dimension / field-name tokens that can surface from machine-generated
  * diligence item sources (score_explanation.understanding_v1.diligence_open_items and
  * score_explanation.totals.unadjusted_missing_inputs). These are system labels, not
@@ -375,7 +399,10 @@ export function selectWorkspaceRedesignedShellProps(
   // ── Financial Column ──────────────────────────────────────────────────────
   const fb: any = rpt.financial_breakdown_v1 ?? null;
   // Financial narrative: investor-readable overview from financial_breakdown_v1 (deterministic)
-  const financialNarrative = asNES(fb?.narrative) ?? null;
+  const financialNarrative = (() => {
+    const s = asNES(fb?.narrative);
+    return s ? sanitizeFinancialProse(s) : null;
+  })();
   const cs: any = fb?.current_state ?? null;
   const br: any = fb?.burn_runway ?? null;
   const ur: any = rpt.underwriting_readiness_v1 ?? null;
@@ -385,13 +412,18 @@ export function selectWorkspaceRedesignedShellProps(
   // do not render as insight prose when underlying data is absent.
   const financialCurrentStateSummary = (() => {
     const s = asNES(cs?.summary);
-    return s && !isNullStateSummary(s) ? s : null;
+    if (!s || isNullStateSummary(s)) return null;
+    return sanitizeFinancialProse(s);
   })();
   const financialBurnRunwaySummary = (() => {
     const s = asNES(br?.summary);
-    return s && !isNullStateSummary(s) ? s : null;
+    if (!s || isNullStateSummary(s)) return null;
+    return sanitizeFinancialProse(s);
   })();
-  const underwritingNarrative = asNES(ur?.narrative) ?? null;
+  const underwritingNarrative = (() => {
+    const s = asNES(ur?.narrative);
+    return s ? sanitizeFinancialProse(s) : null;
+  })();
 
   const financialTiles: FinancialTile[] = [];
 
@@ -492,6 +524,8 @@ export function selectWorkspaceRedesignedShellProps(
   // Decision Proof Block inputs — from Stage 5 challenge_pass in report_payload
   const challengePass: any = rpt.challenge_pass ?? null;
   const primaryChallengeReason = asNES(challengePass?.primary_challenge_reason) ?? null;
+  const verdictResistanceScore = asFinite(challengePass?.verdict_resistance_score) ?? null;
+  const verdictResistanceLabel = asNES(challengePass?.verdict_resistance_label) ?? null;
   const missingEvidenceItems: Array<{
     evidence_type: string;
     description: string;
@@ -594,6 +628,8 @@ export function selectWorkspaceRedesignedShellProps(
     deepDiveReady,
     insightsReady,
     primaryChallengeReason,
+    verdictResistanceScore,
+    verdictResistanceLabel,
     missingEvidenceItems,
     claimSupportItems,
   };

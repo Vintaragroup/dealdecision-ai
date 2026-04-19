@@ -302,17 +302,25 @@ export function WorkbenchInsightsSummary({
       {/* Diagnostic context — only shown when conviction_v1 band disagrees with the governed
            workspace verdict. No numeric score is shown here — only the band label and an
            explanatory note, not a second verdict. */}
-      {bandVerdictConflict && (
-        <div className={`px-4 py-2.5 space-y-1 ${darkMode ? 'bg-white/[0.02]' : 'bg-amber-50/50'}`}>
-          <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Diagnostic Context</div>
-          {bandLabel && (
-            <div className={`text-xs ${muted}`}>Band: {bandLabel}</div>
-          )}
-          <p className={`text-xs leading-relaxed ${muted} opacity-80`}>
-            Deterministic signals are weaker than the governed workspace verdict.
-          </p>
-        </div>
-      )}
+      {bandVerdictConflict && (() => {
+        // Specific case: workspace says "Investigate" but conviction band is negative (Pass / Hard Pass)
+        const isInvestigateVsPass =
+          (postureLabel === 'Investigate') &&
+          /pass/i.test(bandLabel ?? '');
+        return (
+          <div className={`px-4 py-2.5 space-y-1 ${darkMode ? 'bg-white/[0.02]' : 'bg-amber-50/50'}`}>
+            <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Diagnostic Context</div>
+            {bandLabel && (
+              <div className={`text-xs ${muted}`}>Model signal: {bandLabel}</div>
+            )}
+            <p className={`text-xs leading-relaxed ${muted} opacity-80`}>
+              {isInvestigateVsPass
+                ? `The quantitative model leans negative (${bandLabel}), but the system-level verdict recommends further investigation. Mixed signals of this kind typically indicate the deal has merit worth exploring but has not yet cleared the conviction threshold — further diligence can resolve this tension.`
+                : 'Deterministic signals are weaker than the governed workspace verdict.'}
+            </p>
+          </div>
+        );
+      })()}
 
       {/* Decision Proof Block — signal-level synthesis from Stage 5 challenge_pass data.
            Shows only when at least one signal is present. No scores are rendered. */}

@@ -303,10 +303,11 @@ export function WorkbenchInsightsSummary({
            workspace verdict. No numeric score is shown here — only the band label and an
            explanatory note, not a second verdict. */}
       {bandVerdictConflict && (() => {
-        // Specific case: workspace says "Investigate" but conviction band is negative (Pass / Hard Pass)
-        const isInvestigateVsPass =
-          (postureLabel === 'Investigate') &&
+        // Specific case: workspace says "Consider" or "Investigate" but conviction band is negative
+        const isConflictVsPass =
+          (postureLabel === 'Investigate' || postureLabel === 'Consider') &&
           /pass/i.test(bandLabel ?? '');
+        const conflictAction = postureLabel === 'Investigate' ? 'further investigation' : 'further consideration';
         return (
           <div className={`px-4 py-2.5 space-y-1 ${darkMode ? 'bg-white/[0.02]' : 'bg-amber-50/50'}`}>
             <div className={`text-xs font-medium uppercase tracking-wider ${muted}`}>Diagnostic Context</div>
@@ -314,8 +315,8 @@ export function WorkbenchInsightsSummary({
               <div className={`text-xs ${muted}`}>Model signal: {bandLabel}</div>
             )}
             <p className={`text-xs leading-relaxed ${muted} opacity-80`}>
-              {isInvestigateVsPass
-                ? `The quantitative model leans negative (${bandLabel}), but the system-level verdict recommends further investigation. Mixed signals of this kind typically indicate the deal has merit worth exploring but has not yet cleared the conviction threshold — further diligence can resolve this tension.`
+              {isConflictVsPass
+                ? `The quantitative model leans negative (${bandLabel}), but the system-level verdict recommends ${conflictAction}. Mixed signals of this kind typically indicate the deal has potential worth exploring but has not yet cleared the conviction threshold — further diligence can resolve this tension.`
                 : 'Deterministic signals are weaker than the governed workspace verdict.'}
             </p>
           </div>

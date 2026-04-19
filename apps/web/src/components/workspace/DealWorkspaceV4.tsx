@@ -287,10 +287,6 @@ function composeInvestmentNarrative({
       lines.push(`Initial analysis supports proceeding${scorePhrase}.`);
     } else if (recommendation === 'Investigate') {
       lines.push(`Initial analysis warrants further investigation${scorePhrase} — not yet ready to pass or commit.`);
-      // Req 3: when score is below 55, add context that mixed signals drive investigation
-      if (convictionScore !== null && convictionScore < 55) {
-        lines.push('Mixed signals are present — the deal shows potential but has not cleared conviction thresholds. Further diligence can resolve this tension.');
-      }
     } else if (recommendation === 'Caution') {
       lines.push(`Initial analysis warrants caution${scorePhrase} — key conditions must be met before committing capital.`);
     } else if (recommendation === 'Pass') {

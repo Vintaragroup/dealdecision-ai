@@ -48,9 +48,16 @@ function isNullStateSummary(s: string): boolean {
  */
 function sanitizeFinancialProse(s: string): string {
   return s
-    // Req 4: overconfident underwriting claim
+    // Req 4: most specific phrase first — avoids "is provides" grammar breakage
+    .replace(/\bfinancial package is sufficient for underwriting\b/gi,
+      'financial package provides directional insight but key figures should be independently verified')
+    // Req 4: "is sufficient for underwriting" without preceding "financial package"
+    .replace(/\bis sufficient for underwriting\b/gi,
+      'provides directional insight — key figures should be independently verified')
+    // Req 4: "sufficient for underwriting" without any preceding verb
     .replace(/\bsufficient for underwriting\b/gi,
-      'provides directional insight but key figures should be independently verified before underwriting')
+      'sufficient to provide directional insight — key figures should be independently verified')
+    // Req 4: "financial package is sufficient" without "for underwriting" trailing
     .replace(/\bfinancial package is sufficient\b/gi,
       'financial package provides directional insight but should be independently verified')
     // Req 5: strip internal system labels

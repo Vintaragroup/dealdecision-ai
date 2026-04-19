@@ -44,6 +44,7 @@ import {
   Users,
 } from 'lucide-react';
 import type { WorkspaceOverviewVM, WorkspaceOverviewFactTrust } from './contracts/workspaceViewModel';
+import { scoreToBadge, getScoreBadgeColors } from '../../lib/scoreBadge';
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -378,19 +379,27 @@ function SnapshotRow({
       {/* On mobile: stacked. On sm+: side by side with vertical divider. */}
       <div className="flex flex-col sm:flex-row sm:items-stretch gap-4 sm:gap-6">
 
-        {/* Conviction score */}
-        <div className="flex sm:flex-col items-center sm:items-start gap-3 sm:gap-0 sm:justify-center sm:min-w-[72px] sm:shrink-0">
-          <div className={`text-4xl font-bold leading-none ${scoreColor}`}>
-            {hasScore ? Math.round(convictionScore!) : '—'}
-          </div>
-          <div className="flex flex-col">
-            <div className={`text-[10px] uppercase tracking-wide ${muted}`}>
-              {convictionBand ?? 'Conviction'}
+        {/* Deal score — badge-first, raw number secondary */}
+        <div className="flex sm:flex-col items-start gap-3 sm:gap-0 sm:justify-center sm:min-w-[96px] sm:shrink-0">
+          {hasScore ? (() => {
+            const badge = scoreToBadge(convictionScore, 'deal_score');
+            const colors = getScoreBadgeColors(badge.bucket, darkMode);
+            return (
+              <div className="space-y-1">
+                <div className={`text-xs font-semibold px-2 py-0.5 rounded border inline-block ${colors.bg} ${colors.text} ${colors.border}`}>
+                  {badge.label}
+                </div>
+                <div className={`text-[11px] leading-tight ${muted}`}>{badge.meaning}</div>
+                <div className={`text-sm font-medium tabular-nums ${colors.text}`}>
+                  {Math.round(convictionScore!)} / 100
+                </div>
+              </div>
+            );
+          })() : (
+            <div className="space-y-1">
+              <div className={`text-xs font-medium ${muted}`}>Not evaluated</div>
             </div>
-            {!hasScore && (
-              <div className={`text-[10px] ${muted} mt-0.5`}>Not evaluated</div>
-            )}
-          </div>
+          )}
         </div>
 
         {/* Vertical divider — hidden on mobile */}

@@ -28,6 +28,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { InvestorInsightsReport } from '../../../lib/apiClient';
+import { scoreToBadge, getScoreBadgeColors } from '../../../lib/scoreBadge';
 import {
   useFinancialAnalysis,
   type FinancialSections,
@@ -96,14 +97,31 @@ function ScorePanel({
       </div>
 
       <div className="min-w-0">
-        <p className={`text-xs font-semibold uppercase tracking-wide mb-0.5 ${
+        <p className={`text-xs font-semibold uppercase tracking-wide mb-1 ${
           darkMode ? 'text-zinc-400' : 'text-slate-500'
         }`}>
           Financial Strength Score
         </p>
-        <p className={`text-base font-semibold ${darkMode ? 'text-zinc-100' : 'text-slate-800'}`}>
-          {pct} / 100
-        </p>
+        {/* Badge-first: interpretation primary, score secondary */}
+        {(() => {
+          const badge = scoreToBadge(pct, 'section_health');
+          const colors = getScoreBadgeColors(badge.bucket, darkMode);
+          return (
+            <div className="space-y-1 mb-1.5">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`text-xs font-semibold px-1.5 py-0.5 rounded border ${colors.bg} ${colors.text} ${colors.border}`}>
+                  {badge.label}
+                </span>
+                <span className={`text-xs ${darkMode ? 'text-zinc-400' : 'text-slate-500'}`}>
+                  {badge.meaning}
+                </span>
+              </div>
+              <p className={`text-sm font-semibold ${darkMode ? 'text-zinc-100' : 'text-slate-800'}`}>
+                {pct} / 100
+              </p>
+            </div>
+          );
+        })()}
         <p className={`text-xs mt-0.5 ${darkMode ? 'text-zinc-400' : 'text-slate-500'}`}>
           {label}
         </p>

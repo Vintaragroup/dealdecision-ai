@@ -12,6 +12,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiGetDealIntelligence, type DealIntelligenceRecord } from '../../lib/apiClient';
 import type { FinancialTile } from './WorkspaceRedesignedShell';
+import { scoreToBadge, getScoreBadgeColors } from '../../lib/scoreBadge';
 
 // ─── JSONB field shapes ───────────────────────────────────────────────────────
 
@@ -543,17 +544,34 @@ export function IntelligenceTab({ dealId, darkMode, financialTiles = [] }: Intel
       {/* ─── 1. Decision summary card ───────────────────────────────────── */}
       <div className={`rounded-lg border p-4 space-y-3 ${darkMode ? cfg.borderDark : cfg.borderLight} ${darkMode ? 'bg-white/[0.02]' : 'bg-white'}`}>
         <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <p className={`text-xs font-medium uppercase tracking-wide ${muted}`}>Decision confidence</p>
-            <div className="flex items-center gap-2.5 flex-wrap">
-              <span className={`inline-flex items-center px-2.5 py-1 rounded text-sm font-semibold ${cfg.badgeBg} ${cfg.badgeText}`}>
-                {latest.verdict_resistance_label}
-              </span>
-              <span className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                {latest.verdict_resistance_score}
-                <span className={`text-xs font-normal ${muted}`}>/100</span>
-              </span>
-            </div>
+            {/* Badge-first: interpretation primary, score secondary */}
+            {(() => {
+              const dcBadge = scoreToBadge(latest.verdict_resistance_score ?? null, 'decision_confidence');
+              const dcColors = getScoreBadgeColors(dcBadge.bucket, darkMode);
+              return (
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2.5 flex-wrap">
+                    <span className={`inline-flex items-center px-2.5 py-1 rounded border text-xs font-semibold ${dcColors.bg} ${dcColors.text} ${dcColors.border}`}>
+                      {dcBadge.label} — {dcBadge.meaning}
+                    </span>
+                  </div>
+                  <p className={`text-[11px] leading-relaxed ${muted}`}>
+                    This reflects how robustly the current conclusion holds up to challenge and counter-evidence.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <span className={`text-sm font-medium tabular-nums ${dcColors.text}`}>
+                      {latest.verdict_resistance_score ?? '—'}
+                      <span className={`text-xs font-normal ${muted}`}>/100</span>
+                    </span>
+                    {latest.verdict_resistance_label && (
+                      <span className={`text-xs ${muted}`}>· {latest.verdict_resistance_label}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
           <span className={`text-xs shrink-0 pt-0.5 ${muted}`}>{fmtDateTime(latest.created_at)}</span>
         </div>

@@ -18,6 +18,7 @@ import {
   Activity,
 } from 'lucide-react';
 import { Button } from '../ui/button';
+import { scoreToBadge, getScoreBadgeColors } from '../../lib/scoreBadge';
 import type {
   WorkspaceRedesignedShellProps,
   FinancialTile,
@@ -752,18 +753,32 @@ export function DealWorkspaceV4({
           {/* LEFT: Investment Snapshot */}
           <div className="space-y-4">
             <h2 className={`text-sm font-medium ${sectionLabel}`}>Investment Snapshot</h2>
-            {(recommendation || convictionScore !== null) && (
-              <div className="flex items-center gap-2 flex-wrap">
-                {recommendation && (
-                  <span className={`px-2.5 py-1 rounded-full border text-xs font-medium uppercase tracking-wide ${getRecommendationColor(recommendation)}`}>
-                    {recommendation}
-                  </span>
-                )}
-                {convictionScore !== null && (
-                  <span className={`text-xs ${muted}`}>Score {convictionScore}/100</span>
-                )}
-              </div>
-            )}
+{/* Investment Snapshot — badge-first score signal, recommendation secondary */}
+            {(recommendation || convictionScore !== null) && (() => {
+              const snapBadge = scoreToBadge(convictionScore, 'deal_score');
+              const snapColors = getScoreBadgeColors(snapBadge.bucket, darkMode);
+              return (
+                <div className="space-y-2">
+                  {convictionScore !== null && (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`px-2.5 py-1 rounded-full border text-xs font-semibold ${snapColors.bg} ${snapColors.text} ${snapColors.border}`}>
+                        {snapBadge.label} — {snapBadge.meaning}
+                      </span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {recommendation && (
+                      <span className={`px-2.5 py-1 rounded-full border text-xs font-medium uppercase tracking-wide ${getRecommendationColor(recommendation)}`}>
+                        {recommendation}
+                      </span>
+                    )}
+                    {convictionScore !== null && (
+                      <span className={`text-xs ${muted}`}>Score: {convictionScore}/100</span>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
             <div className="space-y-3">
               {convictionNarrativeLines.length > 0 ? (
                 convictionNarrativeLines.map((line, idx) => (
@@ -786,26 +801,43 @@ export function DealWorkspaceV4({
           {/* RIGHT: Conviction + Recommendation + Key Drivers */}
           <div className="space-y-5">
 
-            {/* Conviction Score */}
+            {/* Conviction Score — badge-first */}
             <div className={`p-5 rounded-lg border ${card}`}>
-              <div className={`text-xs uppercase tracking-wide mb-2 ${muted}`}>
+              <div className={`text-xs uppercase tracking-wide mb-2.5 ${muted}`}>
                 Conviction Score
               </div>
-              <div className="flex items-end gap-2 mb-1">
-                <div className={`text-4xl font-medium ${getConvictionColor(convictionScore)}`}>
-                  {convictionScore !== null ? convictionScore : '—'}
-                </div>
-                {convictionProvisional && (
-                  <span className={`mb-1 px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide ${
-                    darkMode ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-amber-50 text-amber-600 border border-amber-200'
-                  }`}>
-                    Provisional
-                  </span>
-                )}
-              </div>
-              <div className={`text-xs mb-3 ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
-                {convictionScore !== null ? 'out of 100' : 'Not extracted'}
-              </div>
+              {(() => {
+                const cvBadge = scoreToBadge(convictionScore, 'conviction');
+                const cvColors = getScoreBadgeColors(cvBadge.bucket, darkMode);
+                return (
+                  <div className="space-y-1.5 mb-3">
+                    {/* Primary: badge label + meaning */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`px-2.5 py-1 rounded-md border text-xs font-semibold ${cvColors.bg} ${cvColors.text} ${cvColors.border}`}>
+                        {cvBadge.label}
+                      </span>
+                      <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                        {cvBadge.meaning}
+                      </span>
+                      {convictionProvisional && (
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide ${
+                          darkMode ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-amber-50 text-amber-600 border border-amber-200'
+                        }`}>
+                          Provisional
+                        </span>
+                      )}
+                    </div>
+                    {/* One-liner interpretation */}
+                    <p className={`text-[11px] leading-relaxed ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+                      This reflects whether the deal currently meets the threshold for investment readiness.
+                    </p>
+                    {/* Secondary: raw score */}
+                    <div className={`text-sm font-medium tabular-nums ${cvColors.text}`}>
+                      {convictionScore !== null ? `${convictionScore} / 100` : '—'}
+                    </div>
+                  </div>
+                );
+              })()}
               {convictionHeadline && !isMechanicalConvictionText(convictionHeadline) && (
                 <p className={`text-xs font-medium leading-snug mb-1 ${heading}`}>
                   {convictionHeadline}

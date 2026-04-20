@@ -607,6 +607,19 @@ export function IntelligenceTab({ dealId, darkMode, financialTiles = [], decisio
                 ))}
               </div>
             )}
+            {decisionReadiness.next_actions && decisionReadiness.next_actions.length > 0 && (
+              <div className={`pt-2 mt-1 space-y-1.5 border-t ${darkMode ? 'border-white/[0.06]' : 'border-gray-100'}`}>
+                <p className={`text-[10px] font-medium uppercase tracking-wide opacity-60 ${muted}`}>What to do next</p>
+                <ol className="space-y-1.5 list-none m-0 p-0">
+                  {decisionReadiness.next_actions.map((action, i) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <span className={`shrink-0 text-[10px] font-semibold tabular-nums mt-0.5 ${muted}`}>{i + 1}.</span>
+                      <span className={`text-[11px] leading-snug ${body}`}>{action}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
           </div>
         );
       })()}

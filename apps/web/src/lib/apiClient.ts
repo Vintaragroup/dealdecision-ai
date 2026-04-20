@@ -3880,6 +3880,7 @@ export type DecisionReadinessResult = {
   readiness: DecisionReadiness;
   reason: string;
   signals: string[];
+  next_actions: string[];
 };
 
 export type CrossDealPatternEntry = {

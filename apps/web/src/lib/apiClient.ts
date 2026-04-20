@@ -3905,6 +3905,17 @@ export type CrossDealFragileDeal = {
   readiness: DecisionReadiness | null;
 };
 
+export type CommonNextActionEntry = {
+  action: string;
+  deal_count: number;
+  example_deal_names: string[];
+};
+
+export type CommonNextActionsForBucket = {
+  readiness: DecisionReadiness;
+  actions: CommonNextActionEntry[];
+};
+
 export type CrossDealPatternsPayload = {
   generated_at: string;
   total_deals_in_portfolio: number;
@@ -3923,6 +3934,7 @@ export type CrossDealPatternsPayload = {
   conviction_band_distribution: { band: string; count: number; pct: number }[];
   verdict_distribution: { verdict: string; count: number; pct: number }[];
   readiness_distribution: { readiness: DecisionReadiness; count: number; pct: number }[];
+  common_next_actions_by_bucket: CommonNextActionsForBucket[];
   narrative: {
     most_common_blocker: string;
     most_common_missing: string;

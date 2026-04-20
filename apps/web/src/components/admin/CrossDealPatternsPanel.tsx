@@ -19,12 +19,14 @@ import {
   ChevronRight,
   BarChart2,
   Layers,
+  ListChecks,
 } from 'lucide-react';
 import {
   apiAdminGetCrossDealPatterns,
   type CrossDealPatternsPayload,
   type CrossDealPatternEntry,
   type CrossDealFragileDeal,
+  type CommonNextActionsForBucket,
 } from '../../lib/apiClient';
 
 // ─── Colour helpers ───────────────────────────────────────────────────────────
@@ -279,6 +281,59 @@ function StatBar({ label, count, total, colorClass }: { label: string; count: nu
   );
 }
 
+function CommonNextActionsSection({ buckets }: { buckets: CommonNextActionsForBucket[] }) {
+  const BUCKET_ORDER = ['NOT_INVESTABLE', 'NOT_READY', 'CONDITIONAL', 'INVESTABLE'] as const;
+  const sorted = BUCKET_ORDER.map((r) => buckets.find((b) => b.readiness === r)).filter(Boolean) as CommonNextActionsForBucket[];
+
+  return (
+    <div className="rounded-xl border border-white/[0.07] bg-zinc-900/60 overflow-hidden">
+      <div className="px-4 py-3 border-b border-white/[0.07] flex items-start gap-2.5">
+        <ListChecks className="w-4 h-4 text-zinc-400 mt-0.5 flex-shrink-0" />
+        <div>
+          <div className="text-sm font-semibold text-zinc-200">Portfolio Common Next Actions</div>
+          <div className="text-xs text-zinc-500 mt-0.5">
+            Most frequently requested actions across deals, grouped by readiness bucket
+          </div>
+        </div>
+      </div>
+      <div className="divide-y divide-white/[0.05]">
+        {sorted.map((bucket) => (
+          <div key={bucket.readiness} className="px-4 py-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <span className={`text-[10px] px-2 py-0.5 rounded border font-semibold ${readinessBadge(bucket.readiness)}`}>
+                {bucket.readiness.replace(/_/g, ' ')}
+              </span>
+              <span className="text-[10px] text-zinc-600">{bucket.actions.length} action{bucket.actions.length !== 1 ? 's' : ''}</span>
+            </div>
+            <ol className="space-y-2.5 list-none m-0 p-0">
+              {bucket.actions.map((a, i) => (
+                <li key={i} className="flex items-start gap-3">
+                  <span className="shrink-0 text-[10px] font-semibold text-zinc-600 tabular-nums mt-0.5 w-4">{i + 1}.</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-zinc-200 leading-snug">{a.action}</p>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className="text-[10px] text-zinc-600">{a.deal_count} deal{a.deal_count !== 1 ? 's' : ''}</span>
+                      {a.example_deal_names.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {a.example_deal_names.map((name) => (
+                            <span key={name} className="text-[10px] px-1.5 py-0.5 rounded border border-white/[0.07] bg-white/[0.03] text-zinc-400">
+                              {name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main panel ───────────────────────────────────────────────────────────────
 
 export function CrossDealPatternsPanel() {
@@ -524,6 +579,11 @@ export function CrossDealPatternsPanel() {
             ))}
           </div>
         </div>
+      )}
+
+      {/* Common next actions by readiness bucket */}
+      {data.common_next_actions_by_bucket && data.common_next_actions_by_bucket.length > 0 && (
+        <CommonNextActionsSection buckets={data.common_next_actions_by_bucket} />
       )}
 
       {/* Fragile deals */}

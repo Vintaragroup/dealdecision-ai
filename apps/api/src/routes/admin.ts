@@ -2514,6 +2514,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
 
     const evaluatedDealIds = new Set<string>();
     const readinessByDeal = new Map<string, DecisionReadiness>();
+    const nextActionsByBucket = new Map<DecisionReadiness, Map<string, Set<string>>>();
 
     for (const row of reportsResult.rows) {
       const dealId = row.deal_id;
@@ -2559,7 +2560,20 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       });
       readinessByDeal.set(dealId, drResult.readiness);
 
-      // Fragile signal: very low score (< 30) or fragile resistance label.
+      // Aggregate next_actions by readiness bucket for portfolio-level view.
+      if (drResult.next_actions && drResult.next_actions.length > 0) {
+        if (!nextActionsByBucket.has(drResult.readiness)) {
+          nextActionsByBucket.set(drResult.readiness, new Map<string, Set<string>>());
+        }
+        const bucketMap = nextActionsByBucket.get(drResult.readiness)!;
+        for (const action of drResult.next_actions) {
+          const normalized = normalizeNextAction(action);
+          if (!bucketMap.has(normalized)) bucketMap.set(normalized, new Set<string>());
+          bucketMap.get(normalized)!.add(dealId);
+        }
+      }
+
+      // Fragile = very low score (< 30) or fragile resistance label.
       // Threshold is deliberately conservative — < 30 is meaningfully low, < 40
       // is too broad for a portfolio with mostly hard_pass bands.
       const isFragile =
@@ -2705,7 +2719,22 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         return { readiness, count, pct: evaluatedCount > 0 ? Math.round((count / evaluatedCount) * 100) : 0 };
       });
 
-    // ── 6. Build narrative summary ────────────────────────────────────────────
+    // Common next actions by readiness bucket.
+    const commonNextActionsByBucket = readinessOrder
+      .filter((bucket) => nextActionsByBucket.has(bucket))
+      .map((bucket) => {
+        const bucketMap = nextActionsByBucket.get(bucket)!;
+        const actions = [...bucketMap.entries()]
+          .map(([action, dealIds]) => ({
+            action,
+            deal_count: dealIds.size,
+            example_deal_names: [...dealIds].slice(0, 4).map((id) => dealMap.get(id)?.name ?? id),
+          }))
+          .sort((a, b) => b.deal_count - a.deal_count)
+          .slice(0, 5);
+        return { readiness: bucket, actions };
+      })
+      .filter((b) => b.actions.length > 0);
 
     const topMissing = serializePattern(missingEvidenceByType, 1)[0];
     const topContradiction = serializePattern(contradictionExplByType, 1)[0] ?? serializePattern(contradictionsByCode, 1)[0];
@@ -2746,6 +2775,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       conviction_band_distribution: bandDist,
       verdict_distribution: verdictDist,
       readiness_distribution: readinessDist,
+      common_next_actions_by_bucket: commonNextActionsByBucket,
       narrative,
     });
   });
@@ -2866,5 +2896,50 @@ function buildPortfolioSummary(evaluated: number, total: number, fragile: number
     ? ` The most common conviction band is "${topBand.band.replace(/_/g, ' ')}" (${topBand.pct}% of evaluated deals).`
     : '';
   return `${evaluated} of ${total} deals have been evaluated.${fragile > 0 ? ` ${fragile} deal${fragile !== 1 ? 's are' : ' is'} currently fragile or low-confidence (${fragilePct}%).` : ' No fragile deals detected.'}${bandNote}`;
+}
+
+/**
+ * Deterministically normalizes near-identical next-action strings so they
+ * cluster correctly in portfolio aggregation. Ordered from most-specific to
+ * least-specific so early patterns take priority.
+ */
+const NEXT_ACTION_NORMALIZATION_RULES: Array<[RegExp, string]> = [
+  [/monthly.*(burn|cash burn)|burn.*(monthly|12.month|cash flow)|cash flow.*(statement|burn)/i,
+    'Provide monthly burn rate evidence — bank statements, signed accounts, or 12-month cash flow statement.'],
+  [/runway|cash on hand.*runway|runway.*cash on hand/i,
+    'Provide verified runway data — months remaining, via bank statements or CFO sign-off.'],
+  [/ARR.*breakdown|MRR.*breakdown|audited.*P&L.*ARR|XLSX.*ARR|ARR.*cohort|ARR\/MRR|ARR.*financial model/i,
+    'Provide a structured ARR/MRR breakdown from the accounting system, financial model, or audited P&L.'],
+  [/reconcile.*contradict|contradict.*reconcile|document.*contradict|contradict.*document|deal model.*cannot be relied/i,
+    'Reconcile contradicting claims across submitted documents.'],
+  [/consolidated.*data room|re.submit.*data room|data room.*consistent/i,
+    'Re-submit a consolidated data room with consistent figures across all documents.'],
+  [/primary source.*financial|financial.*deck.derived|deck.derived.*assumption/i,
+    'Obtain primary source financial data to replace deck-derived assumptions.'],
+  [/cap table|ownership structure/i,
+    'Confirm cap table accuracy and current ownership structure before term sheet.'],
+  [/legal.*compliance|compliance.*review|legal.*review/i,
+    'Complete final legal and compliance review.'],
+  [/financial model.*trailing|trailing.*actuals|actuals.*projection/i,
+    'Provide an updated financial model with trailing 12-month actuals.'],
+  [/management presentation|team.*execution capability/i,
+    'Schedule a management presentation to confirm team and execution capability.'],
+  [/verified evidence.*pitch deck|supplement.*data room|data room.*beyond/i,
+    'Supplement the data room with verified evidence beyond the pitch deck.'],
+  [/high.severity.*structural|structural.*high.severity|address.*structural concern/i,
+    'Address the high-severity structural concerns identified before re-evaluating this deal.'],
+  [/investment thesis|supporting evidence.*confirm/i,
+    'Provide supporting evidence to confirm the core investment thesis.'],
+  [/signed.*customer|customer.*contract|recurring revenue.*breakdown/i,
+    'Strengthen revenue quality evidence — provide recurring revenue breakdown and signed customer contracts.'],
+  [/audited.*financial.*statement|signed.*financial.*statement|financial.*statement.*substantiate/i,
+    'Submit audited or signed financial statements to substantiate the current growth narrative.'],
+];
+
+function normalizeNextAction(action: string): string {
+  for (const [pattern, canonical] of NEXT_ACTION_NORMALIZATION_RULES) {
+    if (pattern.test(action)) return canonical;
+  }
+  return action;
 }
 

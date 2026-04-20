@@ -67,13 +67,16 @@ function evidenceToAction(e: {
 
 /** Maps a challenge factor to an investor-facing action sentence, or null if not actionable. */
 function factorToAction(f: { code?: string; title?: string; label?: string }): string | null {
-  if (f.title) { const t = f.title.trim(); return t.endsWith('.') ? t : `${t}.`; }
-  if (f.label) { const l = f.label.trim(); return l.endsWith('.') ? l : `${l}.`; }
+  // Check code-based mapping first — these are investor-facing directives.
+  // Only fall back to title/label when no known mapping exists.
   const code = (f.code ?? '').toLowerCase();
   if (code === 'financial_evidence_weak') return 'Obtain primary source financial data to replace deck-derived assumptions.';
   if (code === 'contradiction_cluster') return 'Reconcile contradicting claims across submitted documents.';
   if (code === 'single_contradiction') return 'Resolve the identified factual contradiction before proceeding.';
   if (code === 'deterministic_only') return 'Supplement the data room with verified evidence beyond the pitch deck.';
+  // Unmapped code: fall back to the human-readable title/label if present.
+  if (f.title) { const t = f.title.trim(); return t.endsWith('.') ? t : `${t}.`; }
+  if (f.label) { const l = f.label.trim(); return l.endsWith('.') ? l : `${l}.`; }
   return null;
 }
 

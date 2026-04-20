@@ -74,9 +74,17 @@ function factorToAction(f: { code?: string; title?: string; label?: string }): s
   if (code === 'contradiction_cluster') return 'Reconcile contradicting claims across submitted documents.';
   if (code === 'single_contradiction') return 'Resolve the identified factual contradiction before proceeding.';
   if (code === 'deterministic_only') return 'Supplement the data room with verified evidence beyond the pitch deck.';
-  // Unmapped code: fall back to the human-readable title/label if present.
-  if (f.title) { const t = f.title.trim(); return t.endsWith('.') ? t : `${t}.`; }
-  if (f.label) { const l = f.label.trim(); return l.endsWith('.') ? l : `${l}.`; }
+  if (code === 'financial_evidence_partial') return 'Supplement partial financial evidence with signed statements or a structured financial model.';
+  if (code === 'document_quality_low') return 'Provide cleaner source documents or higher-quality extracts before relying on the current analysis.';
+  // Internal/system-state codes — not investor-actionable. Suppress entirely.
+  if (code === 'evaluator_error_flag') return null;
+  if (code === 'memory_fragility') return null;
+  // Unmapped code: fall back to the human-readable title/label if present,
+  // but only if the title doesn't look like a system-internal message.
+  const rawTitle = f.title?.trim() ?? f.label?.trim() ?? '';
+  if (rawTitle && !/evaluation error|predominantly no.go|memory|pipeline|stage (was )?skipped/i.test(rawTitle)) {
+    return rawTitle.endsWith('.') ? rawTitle : `${rawTitle}.`;
+  }
   return null;
 }
 

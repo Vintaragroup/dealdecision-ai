@@ -12,6 +12,7 @@ import {
   Plus, 
   Shield,
   ShieldCheck,
+  TrendingUp,
   CheckCircle2,
   XCircle,
   AlertCircle,
@@ -27,12 +28,13 @@ import { RecoveryCenter } from '../admin/RecoveryCenter';
 import { AuditLogsPanel } from '../admin/AuditLogsPanel';
 import { OrgManagementPanel } from '../admin/OrgManagementPanel';
 import { SuperAdminOpsPanel } from '../admin/SuperAdminOpsPanel';
+import { CrossDealPatternsPanel } from '../admin/CrossDealPatternsPanel';
 import { AdminUserAnalyticsDetailView } from '../admin/admin-user-analytics';
 
-type TabType = 'overview' | 'users' | 'invites' | 'orgs' | 'audit' | 'recovery' | 'super_admin_ops';
+type TabType = 'overview' | 'users' | 'invites' | 'orgs' | 'audit' | 'recovery' | 'super_admin_ops' | 'intelligence';
 type AdminStatus = 'loading' | 'allowed' | 'denied';
 
-const TAB_VALUES: TabType[] = ['overview', 'users', 'invites', 'orgs', 'audit', 'recovery', 'super_admin_ops'];
+const TAB_VALUES: TabType[] = ['overview', 'users', 'invites', 'orgs', 'audit', 'recovery', 'super_admin_ops', 'intelligence'];
 
 function normalizeTab(value: string | null): TabType {
   if (value && (TAB_VALUES as string[]).includes(value)) return value as TabType;
@@ -199,6 +201,17 @@ export default function AdminControlPanel() {
               Super Admin Ops
             </button>
           )}
+          <button
+            onClick={() => setTabAndQuery('intelligence')}
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'intelligence'
+                ? 'bg-zinc-700/50 text-white shadow-lg'
+                : 'text-zinc-400 hover:text-zinc-300 hover:bg-zinc-800/30'
+            }`}
+          >
+            <TrendingUp className="w-4 h-4" strokeWidth={1.5} />
+            Portfolio Patterns
+          </button>
         </div>
 
         {/* Tab Content */}
@@ -209,6 +222,7 @@ export default function AdminControlPanel() {
         {activeTab === 'audit' && <AuditLogsPanel />}
         {activeTab === 'recovery' && <RecoveryCenter adminRole={adminRole} />}
         {activeTab === 'super_admin_ops' && adminRole === 'super_admin' && <SuperAdminOpsPanel />}
+        {activeTab === 'intelligence' && <CrossDealPatternsPanel />}
       </div>
     </div>
   );

@@ -3868,5 +3868,59 @@ export async function apiGetIntelligenceDebug(dealId: string): Promise<Intellige
   return request<IntelligenceDebugPayload>(`/api/v1/debug/deals/${dealId}/intelligence`);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin — Cross-Deal Intelligence Patterns
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type CrossDealPatternEntry = {
+  code: string;
+  label: string;
+  deal_count: number;
+  severity: string | null;
+  example_deals: { id: string; name: string; score: number | null }[];
+  why_it_matters: string;
+};
+
+export type CrossDealFragileDeal = {
+  deal_id: string;
+  deal_name: string;
+  score: number | null;
+  conviction_score: number | null;
+  conviction_band: string | null;
+  confidence: number | null;
+  resistance_label: string | null;
+  top_reason: string | null;
+  fragility_signals: string[];
+};
+
+export type CrossDealPatternsPayload = {
+  generated_at: string;
+  total_deals_in_portfolio: number;
+  deals_with_reports: number;
+  deals_with_challenge_data: number;
+  fragile_deal_count: number;
+  patterns: {
+    top_contradictions: CrossDealPatternEntry[];
+    top_contradiction_explanations: CrossDealPatternEntry[];
+    top_missing_evidence: CrossDealPatternEntry[];
+    top_confidence_asks: CrossDealPatternEntry[];
+    top_challenge_factors: CrossDealPatternEntry[];
+    top_unknowns: CrossDealPatternEntry[];
+  };
+  fragile_deals: CrossDealFragileDeal[];
+  conviction_band_distribution: { band: string; count: number; pct: number }[];
+  verdict_distribution: { verdict: string; count: number; pct: number }[];
+  narrative: {
+    most_common_blocker: string;
+    most_common_missing: string;
+    most_common_contradiction: string;
+    portfolio_health_summary: string;
+  };
+};
+
+export async function apiAdminGetCrossDealPatterns(): Promise<CrossDealPatternsPayload> {
+  return request<CrossDealPatternsPayload>('/api/v1/admin/cross-deal/patterns');
+}
+
 
 export type { Deal };

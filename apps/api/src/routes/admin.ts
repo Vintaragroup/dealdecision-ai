@@ -2410,5 +2410,399 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       return reply.send({ ok: true, document_id: documentId, deal_id: rows[0].deal_id });
     }
   );
+
+  // ---------------------------------------------------------------------------
+  // Cross-Deal Intelligence Patterns  (internal admin only)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * GET /api/v1/admin/cross-deal/patterns
+   *
+   * Aggregates recurring weakness patterns across all non-deleted deals.
+   * Uses existing stored outputs — no new extraction or LLM calls.
+   *
+   * Sources:
+   *   ingestion_reports.summary → conviction_v1 (contradictions, unknowns, required_next_checks, bands)
+   *   deal_challenge_pass_results → missing_evidence, contradiction_explanations, challenge_factors
+   *   deals → id, title, overall_score
+   */
+  app.get("/api/v1/admin/cross-deal/patterns", async (_request, reply) => {
+    const pool = getPool();
+
+    // ── 1. Load all non-deleted deals ────────────────────────────────────────
+    const dealsResult = await pool.query<{ id: string; title: string; overall_score: number | null }>(
+      `SELECT id, title, overall_score FROM deals WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 500`
+    );
+    const dealMap = new Map(dealsResult.rows.map((d) => [d.id, d]));
+
+    // ── 2. Latest ingestion_report per deal ───────────────────────────────────
+    // DISTINCT ON picks the most recent row per deal_id.
+    const reportsResult = await pool.query<{ deal_id: string; summary: any }>(
+      `SELECT DISTINCT ON (deal_id)
+         deal_id,
+         summary
+       FROM ingestion_reports
+       WHERE deal_id IS NOT NULL
+       ORDER BY deal_id, created_at DESC`
+    );
+
+    // ── 3. Latest challenge_pass result per deal ──────────────────────────────
+    let challengeRows: Array<{
+      deal_id: string;
+      verdict: string | null;
+      verdict_resistance_score: number;
+      verdict_resistance_label: string;
+      missing_evidence: unknown[];
+      contradiction_explanations: unknown[];
+      challenge_factors: unknown[];
+      primary_challenge_reason: string;
+      flag_count_critical: number;
+    }> = [];
+    try {
+      const cr = await pool.query(
+        `SELECT DISTINCT ON (deal_id)
+           deal_id,
+           verdict,
+           verdict_resistance_score,
+           verdict_resistance_label,
+           missing_evidence,
+           contradiction_explanations,
+           challenge_factors,
+           primary_challenge_reason,
+           flag_count_critical
+         FROM deal_challenge_pass_results
+         ORDER BY deal_id, created_at DESC`
+      );
+      challengeRows = cr.rows;
+    } catch {
+      // Table may not exist in older deployments — degrade gracefully.
+    }
+    const challengeMap = new Map(challengeRows.map((r) => [r.deal_id, r]));
+
+    // ── 4. Aggregate patterns ─────────────────────────────────────────────────
+
+    type PatternAccum = Map<string, { label: string; deal_ids: Set<string>; severity?: string; why: string }>;
+
+    const contradictionsByCode: PatternAccum = new Map();
+    const unknownsByCode: PatternAccum = new Map();
+    const requiredCheckBuckets: PatternAccum = new Map();
+    const missingEvidenceByType: PatternAccum = new Map();
+    const contradictionExplByType: PatternAccum = new Map();
+    const challengeFactorByCode: PatternAccum = new Map();
+    const bandCounts = new Map<string, number>();
+    const verdictCounts = new Map<string, number>();
+    const fragileDeals: Array<{
+      deal_id: string; deal_name: string; score: number | null;
+      conviction_score: number | null; conviction_band: string | null;
+      confidence: number | null; resistance_label: string | null;
+      top_reason: string | null; fragility_signals: string[];
+    }> = [];
+
+    const acc = (map: PatternAccum, code: string, label: string, dealId: string, severity?: string, why?: string) => {
+      if (!map.has(code)) map.set(code, { label, deal_ids: new Set(), severity, why: why ?? '' });
+      const entry = map.get(code)!;
+      entry.deal_ids.add(dealId);
+      // Escalate severity if a higher one appears
+      if (severity && entry.severity) {
+        const rank: Record<string, number> = { Critical: 3, High: 2, Medium: 1, Low: 0 };
+        if ((rank[severity] ?? 0) > (rank[entry.severity] ?? 0)) entry.severity = severity;
+      }
+    };
+
+    const evaluatedDealIds = new Set<string>();
+
+    for (const row of reportsResult.rows) {
+      const dealId = row.deal_id;
+      if (!dealMap.has(dealId)) continue; // skip deals not in the non-deleted set
+      evaluatedDealIds.add(dealId);
+
+      const summary = row.summary as any;
+      const report = summary ?? {};
+      const cv1: any = report?.conviction_v1 ?? report?.structured_summary?.conviction_v1 ?? null;
+
+      // Conviction band distribution
+      const band: string = cv1?.conviction_band ?? 'unknown';
+      bandCounts.set(band, (bandCounts.get(band) ?? 0) + 1);
+
+      if (!cv1) continue;
+
+      const confidence: number | null =
+        typeof cv1.confidence_0_1 === 'number' ? cv1.confidence_0_1 : null;
+      const covRatio: number | null =
+        typeof cv1.coverage_ratio_0_1 === 'number' ? cv1.coverage_ratio_0_1 : null;
+      const cvScore: number | null =
+        typeof cv1.conviction_score_0_100 === 'number' ? cv1.conviction_score_0_100 : null;
+      const deal = dealMap.get(dealId)!;
+
+      // Fragile signal: low confidence or very low score
+      const challengeRow = challengeMap.get(dealId);
+      const isFragile =
+        (confidence !== null && confidence < 0.4) ||
+        (cvScore !== null && cvScore < 40) ||
+        (challengeRow?.verdict_resistance_label === 'Fragile' ||
+          challengeRow?.verdict_resistance_label === 'Very Fragile');
+
+      if (isFragile) {
+        const fragileSignals: string[] = [];
+        if (confidence !== null && confidence < 0.4) fragileSignals.push(`Low confidence (${(confidence * 100).toFixed(0)}%)`);
+        if (cvScore !== null && cvScore < 40) fragileSignals.push(`Weak conviction score (${cvScore})`);
+        if (challengeRow?.verdict_resistance_label === 'Very Fragile') fragileSignals.push('Verdict Very Fragile');
+        else if (challengeRow?.verdict_resistance_label === 'Fragile') fragileSignals.push('Verdict Fragile');
+        if (covRatio !== null && covRatio < 0.3) fragileSignals.push(`Low coverage (${(covRatio * 100).toFixed(0)}%)`);
+
+        fragileDeals.push({
+          deal_id: dealId,
+          deal_name: deal.title,
+          score: deal.overall_score,
+          conviction_score: cvScore,
+          conviction_band: cv1.conviction_band ?? null,
+          confidence,
+          resistance_label: challengeRow?.verdict_resistance_label ?? null,
+          top_reason: challengeRow?.primary_challenge_reason ?? null,
+          fragility_signals: fragileSignals,
+        });
+      }
+
+      // Contradictions from conviction_v1
+      if (Array.isArray(cv1.contradictions)) {
+        for (const c of cv1.contradictions as Array<{ code?: string; text?: string; severity?: string }>) {
+          if (!c.code) continue;
+          acc(contradictionsByCode, c.code,
+            humanContradictionLabel(c.code, c.text),
+            dealId, c.severity,
+            'Conflicts between data sources reduce conviction and block high-confidence verdicts.');
+        }
+      }
+
+      // Unknowns from conviction_v1
+      if (Array.isArray(cv1.unknowns)) {
+        for (const u of cv1.unknowns as Array<{ code?: string; text?: string }>) {
+          if (!u.code) continue;
+          acc(unknownsByCode, u.code,
+            u.text ?? u.code,
+            dealId, undefined,
+            'Unknown inputs cannot be verified, which limits how high conviction can reach.');
+        }
+      }
+
+      // Required next checks (confidence asks)
+      if (Array.isArray(cv1.required_next_checks)) {
+        for (const c of cv1.required_next_checks as Array<{ text?: string }>) {
+          if (!c.text) continue;
+          const bucket = bucketRequiredCheck(c.text);
+          acc(requiredCheckBuckets, bucket.code, bucket.label, dealId, undefined,
+            'Addressing this would directly increase decision confidence and conviction.');
+        }
+      }
+    }
+
+    // Aggregate from challenge_pass results
+    for (const row of challengeRows) {
+      const dealId = row.deal_id;
+      if (!dealMap.has(dealId)) continue;
+
+      // Verdict distribution
+      const v = row.verdict ?? 'unknown';
+      verdictCounts.set(v, (verdictCounts.get(v) ?? 0) + 1);
+
+      // Missing evidence types
+      if (Array.isArray(row.missing_evidence)) {
+        for (const item of row.missing_evidence as Array<{ evidence_type?: string; verdict_sensitivity?: string }>) {
+          if (!item.evidence_type) continue;
+          const label = humanMissingEvidenceLabel(item.evidence_type);
+          acc(missingEvidenceByType, item.evidence_type, label, dealId,
+            item.verdict_sensitivity ?? 'Medium',
+            'Without this evidence, deals cannot advance past the investigation stage.');
+        }
+      }
+
+      // Contradiction explanations
+      if (Array.isArray(row.contradiction_explanations)) {
+        for (const item of row.contradiction_explanations as Array<{ type?: string; title?: string }>) {
+          if (!item.type) continue;
+          const label = humanContradictionTypeLabel(item.type, item.title);
+          acc(contradictionExplByType, item.type, label, dealId, 'Medium',
+            'Contradictions between documents erode trust in key metrics and delay commitment.');
+        }
+      }
+
+      // Challenge factors
+      if (Array.isArray(row.challenge_factors)) {
+        for (const f of row.challenge_factors as Array<{ code?: string; severity?: string; title?: string }>) {
+          if (!f.code || f.code === 'deterministic_only') continue;
+          const label = f.title ?? humanChallengeFactorLabel(f.code);
+          acc(challengeFactorByCode, f.code, label, dealId, f.severity,
+            'This analytical pressure factor is a recurring driver of fragile or blocked verdicts.');
+        }
+      }
+    }
+
+    // ── 5. Serialize accumulator maps → sorted arrays ─────────────────────────
+
+    const totalDeals = dealsResult.rows.length;
+    const evaluatedCount = evaluatedDealIds.size;
+
+    const serializePattern = (map: PatternAccum, limit = 10) =>
+      [...map.entries()]
+        .map(([code, e]) => ({
+          code,
+          label: e.label,
+          deal_count: e.deal_ids.size,
+          severity: e.severity ?? null,
+          example_deals: [...e.deal_ids].slice(0, 5).map((id) => ({
+            id,
+            name: dealMap.get(id)?.title ?? id,
+            score: dealMap.get(id)?.overall_score ?? null,
+          })),
+          why_it_matters: e.why,
+        }))
+        .sort((a, b) => b.deal_count - a.deal_count)
+        .slice(0, limit);
+
+    const bandDist = [...bandCounts.entries()]
+      .map(([band, count]) => ({ band, count, pct: evaluatedCount > 0 ? Math.round((count / evaluatedCount) * 100) : 0 }))
+      .sort((a, b) => b.count - a.count);
+
+    const verdictDist = [...verdictCounts.entries()]
+      .map(([verdict, count]) => ({ verdict, count, pct: challengeRows.length > 0 ? Math.round((count / challengeRows.length) * 100) : 0 }))
+      .sort((a, b) => b.count - a.count);
+
+    // ── 6. Build narrative summary ────────────────────────────────────────────
+
+    const topMissing = serializePattern(missingEvidenceByType, 1)[0];
+    const topContradiction = serializePattern(contradictionExplByType, 1)[0] ?? serializePattern(contradictionsByCode, 1)[0];
+    const topChallengeFactor = serializePattern(challengeFactorByCode, 1)[0];
+    const fragileCount = fragileDeals.length;
+    const topBand = bandDist[0];
+
+    const narrative = {
+      most_common_blocker: topChallengeFactor
+        ? `The most common analytical blocker across the portfolio is "${topChallengeFactor.label}", affecting ${topChallengeFactor.deal_count} of ${evaluatedCount} evaluated deals.`
+        : `No dominant analytical blocker detected across ${evaluatedCount} evaluated deals.`,
+      most_common_missing: topMissing
+        ? `The most frequently missing evidence type is "${topMissing.label}", absent in ${topMissing.deal_count} deal${topMissing.deal_count !== 1 ? 's' : ''}. Without it, deals cannot achieve high-confidence verdicts.`
+        : `No recurring missing evidence pattern detected across evaluated deals.`,
+      most_common_contradiction: topContradiction
+        ? `Contradictions most often occur around "${topContradiction.label}", appearing in ${topContradiction.deal_count} deal${topContradiction.deal_count !== 1 ? 's' : ''}.`
+        : `No dominant contradiction pattern detected.`,
+      portfolio_health_summary: buildPortfolioSummary(evaluatedCount, totalDeals, fragileCount, topBand),
+    };
+
+    return reply.send({
+      generated_at: new Date().toISOString(),
+      total_deals_in_portfolio: totalDeals,
+      deals_with_reports: evaluatedCount,
+      deals_with_challenge_data: challengeRows.filter((r) => dealMap.has(r.deal_id)).length,
+      fragile_deal_count: fragileCount,
+      patterns: {
+        top_contradictions: serializePattern(contradictionsByCode),
+        top_contradiction_explanations: serializePattern(contradictionExplByType),
+        top_missing_evidence: serializePattern(missingEvidenceByType),
+        top_confidence_asks: serializePattern(requiredCheckBuckets),
+        top_challenge_factors: serializePattern(challengeFactorByCode),
+        top_unknowns: serializePattern(unknownsByCode),
+      },
+      fragile_deals: fragileDeals
+        .sort((a, b) => (a.conviction_score ?? 100) - (b.conviction_score ?? 100))
+        .slice(0, 30),
+      conviction_band_distribution: bandDist,
+      verdict_distribution: verdictDist,
+      narrative,
+    });
+  });
+}
+
+// ─── Cross-deal pattern helpers ───────────────────────────────────────────────
+
+function humanContradictionLabel(code: string, text?: string): string {
+  if (text && text.length < 80) return text;
+  const map: Record<string, string> = {
+    red_flag_revenue: 'Revenue red flag',
+    red_flag_team: 'Team red flag',
+    red_flag_market: 'Market size red flag',
+    red_flag_traction: 'Traction red flag',
+    red_flag_burn: 'Burn rate red flag',
+    red_flag_financial: 'Financial data red flag',
+  };
+  return map[code] ?? code.replace(/_/g, ' ');
+}
+
+function humanContradictionTypeLabel(type: string, title?: string): string {
+  if (title && title.length < 80) return title;
+  const map: Record<string, string> = {
+    revenue_mismatch: 'Revenue figure mismatch',
+    burn_inconsistency: 'Burn rate inconsistency',
+    growth_conflict: 'Growth rate conflict',
+    margin_conflict: 'Margin data conflict',
+    valuation_conflict: 'Valuation conflict',
+    timeline_inconsistency: 'Timeline inconsistency',
+    unresolved_conflict: 'Unresolved data conflict',
+    other: 'Unclassified contradiction',
+  };
+  return map[type] ?? type.replace(/_/g, ' ');
+}
+
+function humanMissingEvidenceLabel(evidenceType: string): string {
+  const map: Record<string, string> = {
+    arr_conflict: 'ARR / revenue conflict',
+    revenue_conflict: 'Revenue data conflict',
+    structured_financials: 'Structured financial model',
+    verified_arr: 'Verified ARR',
+    verified_revenue: 'Verified revenue',
+    valuation: 'Pre-money valuation',
+    cap_table: 'Cap table',
+    cash_position: 'Current cash position',
+    burn_rate: 'Monthly burn rate',
+    runway: 'Cash runway',
+    market_size: 'Market size evidence',
+    team_bios: 'Team background',
+    traction: 'Traction / customer data',
+    product_stage: 'Product stage evidence',
+  };
+  return map[evidenceType] ?? evidenceType.replace(/_/g, ' ');
+}
+
+function humanChallengeFactorLabel(code: string): string {
+  const map: Record<string, string> = {
+    contradiction_cluster: 'Multiple contradictions cluster',
+    multi_contradiction: 'Multiple contradictions',
+    single_contradiction: 'Contradiction detected',
+    evaluator_critical_flag: 'Critical evaluation flag',
+    evaluator_error_flag: 'Error evaluation flag',
+    financial_evidence_weak: 'Weak financial evidence',
+    financial_evidence_partial: 'Partial financial evidence',
+    document_quality_low: 'Low document quality',
+    fail_open_condition: 'Missing provenance data',
+    llm_fallback: 'Extraction fallback',
+    reconciliation_conflict: 'Structured vs extracted conflict',
+    score_verdict_misalignment: 'Score/verdict misalignment',
+    memory_fragility: 'Pattern: similar deals weak',
+    evidence_base_thin: 'Thin evidence base',
+    structural_gaps_only: 'Only structural gaps (no analytical pressure)',
+  };
+  return map[code] ?? code.replace(/_/g, ' ');
+}
+
+function bucketRequiredCheck(text: string): { code: string; label: string } {
+  const t = text.toLowerCase();
+  if (t.includes('arr') || t.includes('recurring revenue')) return { code: 'verify_arr', label: 'Verify ARR / recurring revenue' };
+  if (t.includes('revenue') || t.includes('financ')) return { code: 'verify_revenue', label: 'Verify financial data' };
+  if (t.includes('valuation') || t.includes('raise') || t.includes('cap table')) return { code: 'verify_valuation', label: 'Clarify valuation / raise terms' };
+  if (t.includes('market') || t.includes('tam') || t.includes('sam')) return { code: 'verify_market', label: 'Validate market size claims' };
+  if (t.includes('team') || t.includes('founder') || t.includes('cto') || t.includes('ceo')) return { code: 'verify_team', label: 'Verify team background' };
+  if (t.includes('traction') || t.includes('customer') || t.includes('user')) return { code: 'verify_traction', label: 'Confirm traction evidence' };
+  if (t.includes('burn') || t.includes('runway') || t.includes('cash')) return { code: 'verify_runway', label: 'Confirm burn / runway' };
+  if (t.includes('contradiction') || t.includes('conflict') || t.includes('resolve')) return { code: 'resolve_contradiction', label: 'Resolve data contradiction' };
+  if (t.includes('product') || t.includes('technology')) return { code: 'verify_product', label: 'Clarify product / technology stage' };
+  return { code: 'other_check', label: 'Additional diligence required' };
+}
+
+function buildPortfolioSummary(evaluated: number, total: number, fragile: number, topBand?: { band: string; count: number; pct: number }): string {
+  if (evaluated === 0) return `No deals have been evaluated yet. Run analysis on deals to populate patterns.`;
+  const fragilePct = evaluated > 0 ? Math.round((fragile / evaluated) * 100) : 0;
+  const bandNote = topBand
+    ? ` The most common conviction band is "${topBand.band.replace(/_/g, ' ')}" (${topBand.pct}% of evaluated deals).`
+    : '';
+  return `${evaluated} of ${total} deals have been evaluated.${fragile > 0 ? ` ${fragile} deal${fragile !== 1 ? 's are' : ' is'} currently fragile or low-confidence (${fragilePct}%).` : ' No fragile deals detected.'}${bandNote}`;
 }
 

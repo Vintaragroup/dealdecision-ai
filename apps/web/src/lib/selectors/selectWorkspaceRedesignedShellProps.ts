@@ -104,6 +104,33 @@ function asFinite(v: unknown): number | null {
   return v;
 }
 
+/**
+ * Derives a truth-state-aware label for the financial_truth positive contributor.
+ * Based on financial_truth_summary written by Stage 5 processor FTRL wiring pass.
+ * Returns null when summary is absent (e.g. pre-deployment cached reports).
+ */
+function deriveFinancialTruthDriverLabel(fts: unknown): string | null {
+  if (!fts || typeof fts !== 'object') return null;
+  const f = fts as any;
+  const revState  = (f.revenue?.state  ?? f.arr?.state)  as string | null | undefined;
+  const revSource = (f.revenue?.source ?? f.arr?.source) as string | null | undefined;
+  const burnState = f.burn_rate?.state as string | null | undefined;
+
+  if (revState === 'CONFIRMED') {
+    if (revSource === 'xlsx' || revSource === 'kpi_tile')
+      return 'Structured financial evidence is present and verified';
+    if (revSource === 'structured_derived')
+      return 'Structured financial model supports directional analysis';
+    if (revSource === 'deck')
+      return 'Financial figures are present in the materials, but they are not independently verified';
+  }
+  if (revState === 'CONFLICT')
+    return 'Financial data contains conflicting source claims requiring resolution';
+  if (revState === 'INSUFFICIENT' && burnState === 'CONFIRMED')
+    return 'Operational financial data is present and structured';
+  return null;
+}
+
 function formatMetricValue(metric: unknown): string {
   if (!metric || typeof metric !== 'object') return '—';
   const m = metric as any;
@@ -343,7 +370,7 @@ export function selectWorkspaceRedesignedShellProps(
     const v2items = meta?.conviction_v2?.top_positive_contributors;
     const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.top_positive_contributors;
     if (!Array.isArray(items)) return [];
-    return items
+    const rawContributors = items
       .map((c: any) => ({
         key: asNES(c?.key) ?? '',
         label: asNES(c?.label) ?? '',
@@ -351,6 +378,16 @@ export function selectWorkspaceRedesignedShellProps(
       }))
       .filter((c) => c.label.length > 0)
       .slice(0, 5);
+
+    // Override the financial_truth contributor's label with truth-state-aware text.
+    // financial_truth_summary is written by the worker's Stage 5 processor.
+    // For older cached reports (pre-deployment) this will be null — fallback applies.
+    const fts: any = rpt.financial_truth_summary ?? null;
+    return rawContributors.map((c) => {
+      if (c.key !== 'financial_truth') return c;
+      const label = deriveFinancialTruthDriverLabel(fts);
+      return { ...c, label: label ?? 'Financial data supports this analysis' };
+    });
   })();
 
   // Top negative contributors (conviction-backed risk signals)

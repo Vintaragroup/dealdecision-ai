@@ -97,7 +97,8 @@ function mapPosture(posture: string | null): 'Proceed' | 'Investigate' | 'Cautio
  * key is not in the map.
  */
 const CONTRIBUTOR_SIGNAL: Record<string, { positive: string; negative: string }> = {
-  financial_truth:          { positive: 'Verified financial data supports this deal',       negative: 'Financial data quality or completeness is uncertain' },
+  // financial_truth: label is derived at the selector layer from financial_truth_summary
+  // so it is intentionally excluded here to allow the truth-state-aware label to pass through.
   capital_structure:        { positive: 'Capital structure and ownership terms are clear',   negative: 'Capital structure or ownership terms need clarification' },
   traction_validation:      { positive: 'Traction metrics confirmed by primary evidence',   negative: 'Traction claims lack primary-source verification' },
   market_demand:            { positive: 'Market demand is supported by available evidence', negative: 'Market demand lacks sufficient confirming evidence' },

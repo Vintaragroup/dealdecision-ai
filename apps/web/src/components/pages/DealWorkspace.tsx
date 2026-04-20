@@ -7078,7 +7078,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             onOpenFull={() => setActivePanel('evidence')}
           />
         }
-        intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} financialTiles={shellProps.financialTiles} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} /> : null}
+        intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} financialTiles={shellProps.financialTiles} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null} /> : null}
       />
       )}
 
@@ -7113,7 +7113,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               />
             )}
             {activePanel === 'intelligence' && dealId && (
-              <IntelligenceTab dealId={dealId} darkMode={darkMode} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} />
+              <IntelligenceTab dealId={dealId} darkMode={darkMode} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null} />
             )}
             {activePanel === 'evidence' && (
               <EvidencePanel

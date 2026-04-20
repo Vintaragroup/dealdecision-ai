@@ -479,9 +479,15 @@ interface IntelligenceTabProps {
    * Passed down from the parent workspace which already has the report loaded.
    */
   decisionReadiness?: DecisionReadinessResult | null;
+  /**
+   * ISO timestamp of the most recent deal analysis run (from deal_intelligence_objects).
+   * When this is significantly newer than the latest challenge pass result, a stale
+   * indicator is shown to surface that Decision Confidence data is from a prior run.
+   */
+  lastAnalyzedAt?: string | null;
 }
 
-export function IntelligenceTab({ dealId, darkMode, financialTiles = [], decisionReadiness }: IntelligenceTabProps) {
+export function IntelligenceTab({ dealId, darkMode, financialTiles = [], decisionReadiness, lastAnalyzedAt }: IntelligenceTabProps) {
   const [records, setRecords] = useState<DealIntelligenceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -656,7 +662,19 @@ export function IntelligenceTab({ dealId, darkMode, financialTiles = [], decisio
               );
             })()}
           </div>
-          <span className={`text-xs shrink-0 pt-0.5 ${muted}`}>{fmtDateTime(latest.created_at)}</span>
+          <div className="flex flex-col items-end shrink-0 pt-0.5 gap-0.5">
+            <span className={`text-xs ${muted}`}>{fmtDateTime(latest.created_at)}</span>
+            {(() => {
+              if (!lastAnalyzedAt || !latest.created_at) return null;
+              const staleDeltaMs = Date.parse(lastAnalyzedAt) - Date.parse(latest.created_at);
+              if (staleDeltaMs <= 4 * 60 * 60 * 1000) return null;
+              return (
+                <span className={`text-xs ${darkMode ? 'text-amber-400' : 'text-amber-600'}`}>
+                  From a prior analysis run
+                </span>
+              );
+            })()}
+          </div>
         </div>
 
         <ScoreBar score={latest.verdict_resistance_score} barColor={cfg.barColor} darkMode={darkMode} />

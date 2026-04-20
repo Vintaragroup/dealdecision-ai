@@ -2424,14 +2424,14 @@ export async function registerAdminRoutes(app: FastifyInstance) {
    * Sources:
    *   ingestion_reports.summary → conviction_v1 (contradictions, unknowns, required_next_checks, bands)
    *   deal_challenge_pass_results → missing_evidence, contradiction_explanations, challenge_factors
-   *   deals → id, title, overall_score
+   *   deals → id, name, score
    */
   app.get("/api/v1/admin/cross-deal/patterns", async (_request, reply) => {
     const pool = getPool();
 
     // ── 1. Load all non-deleted deals ────────────────────────────────────────
-    const dealsResult = await pool.query<{ id: string; title: string; overall_score: number | null }>(
-      `SELECT id, title, overall_score FROM deals WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 500`
+    const dealsResult = await pool.query<{ id: string; name: string; score: number | null }>(
+      `SELECT id, name, score FROM deals WHERE deleted_at IS NULL ORDER BY created_at DESC LIMIT 500`
     );
     const dealMap = new Map(dealsResult.rows.map((d) => [d.id, d]));
 
@@ -2534,26 +2534,26 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         typeof cv1.conviction_score_0_100 === 'number' ? cv1.conviction_score_0_100 : null;
       const deal = dealMap.get(dealId)!;
 
-      // Fragile signal: low confidence or very low score
+      // Fragile signal: very low score (< 30) or fragile resistance label.
+      // Threshold is deliberately conservative — < 30 is meaningfully low, < 40
+      // is too broad for a portfolio with mostly hard_pass bands.
       const challengeRow = challengeMap.get(dealId);
       const isFragile =
-        (confidence !== null && confidence < 0.4) ||
-        (cvScore !== null && cvScore < 40) ||
+        (cvScore !== null && cvScore < 30) ||
         (challengeRow?.verdict_resistance_label === 'Fragile' ||
           challengeRow?.verdict_resistance_label === 'Very Fragile');
 
       if (isFragile) {
         const fragileSignals: string[] = [];
-        if (confidence !== null && confidence < 0.4) fragileSignals.push(`Low confidence (${(confidence * 100).toFixed(0)}%)`);
-        if (cvScore !== null && cvScore < 40) fragileSignals.push(`Weak conviction score (${cvScore})`);
+        if (cvScore !== null && cvScore < 30) fragileSignals.push(`Very low conviction score (${cvScore})`);
         if (challengeRow?.verdict_resistance_label === 'Very Fragile') fragileSignals.push('Verdict Very Fragile');
         else if (challengeRow?.verdict_resistance_label === 'Fragile') fragileSignals.push('Verdict Fragile');
         if (covRatio !== null && covRatio < 0.3) fragileSignals.push(`Low coverage (${(covRatio * 100).toFixed(0)}%)`);
 
         fragileDeals.push({
           deal_id: dealId,
-          deal_name: deal.title,
-          score: deal.overall_score,
+          deal_name: deal.name,
+          score: deal.score,
           conviction_score: cvScore,
           conviction_band: cv1.conviction_band ?? null,
           confidence,
@@ -2651,8 +2651,8 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           severity: e.severity ?? null,
           example_deals: [...e.deal_ids].slice(0, 5).map((id) => ({
             id,
-            name: dealMap.get(id)?.title ?? id,
-            score: dealMap.get(id)?.overall_score ?? null,
+            name: dealMap.get(id)?.name ?? id,
+            score: dealMap.get(id)?.score ?? null,
           })),
           why_it_matters: e.why,
         }))
@@ -2723,6 +2723,8 @@ function humanContradictionLabel(code: string, text?: string): string {
     red_flag_traction: 'Traction red flag',
     red_flag_burn: 'Burn rate red flag',
     red_flag_financial: 'Financial data red flag',
+    red_flag_risk_assessment: 'Risk assessment red flag',
+    business_model_absent: 'Business model absent or conflicting',
   };
   return map[code] ?? code.replace(/_/g, ' ');
 }
@@ -2752,8 +2754,13 @@ function humanMissingEvidenceLabel(evidenceType: string): string {
     valuation: 'Pre-money valuation',
     cap_table: 'Cap table',
     cash_position: 'Current cash position',
+    cash_on_hand: 'Cash on hand / current balance',
     burn_rate: 'Monthly burn rate',
     runway: 'Cash runway',
+    structured_arr: 'Structured ARR data',
+    xlsx_financial_model: 'Financial model (XLSX / structured)',
+    customer_traction: 'Customer traction evidence',
+    weak_traction_signal: 'Traction signal (weak)',
     market_size: 'Market size evidence',
     team_bios: 'Team background',
     traction: 'Traction / customer data',
@@ -2785,8 +2792,23 @@ function humanChallengeFactorLabel(code: string): string {
 
 function bucketRequiredCheck(text: string): { code: string; label: string } {
   const t = text.toLowerCase();
+  // Handle "Provide deterministic evidence for X" pattern — very common in conviction_v1
+  const deterministicMatch = t.match(/provide deterministic evidence for (\w+)/);
+  if (deterministicMatch) {
+    const family = deterministicMatch[1];
+    if (family === 'market_demand' || family === 'market') return { code: 'verify_market', label: 'Validate market size / demand claims' };
+    if (family === 'financial_truth' || family === 'financials') return { code: 'verify_revenue', label: 'Verify financial data' };
+    if (family === 'capital_structure') return { code: 'verify_capital', label: 'Verify capital structure / raise terms' };
+    if (family === 'traction_validation' || family === 'traction') return { code: 'verify_traction', label: 'Confirm traction / customer evidence' };
+    if (family === 'external_corroboration') return { code: 'verify_corroboration', label: 'Provide external corroboration' };
+    if (family === 'product_or_asset_quality' || family === 'product') return { code: 'verify_product', label: 'Clarify product / technology stage' };
+    if (family === 'team_execution' || family === 'team') return { code: 'verify_team', label: 'Verify team background' };
+    if (family === 'risk_dependencies' || family === 'risk') return { code: 'verify_risk', label: 'Run deliberate risk review' };
+  }
+  if (t.includes('risk review') || t.includes('risk assessment') || t.includes('key risk')) return { code: 'verify_risk', label: 'Run deliberate risk review' };
   if (t.includes('arr') || t.includes('recurring revenue')) return { code: 'verify_arr', label: 'Verify ARR / recurring revenue' };
   if (t.includes('revenue') || t.includes('financ')) return { code: 'verify_revenue', label: 'Verify financial data' };
+  if (t.includes('business model')) return { code: 'verify_business_model', label: 'Clarify business model' };
   if (t.includes('valuation') || t.includes('raise') || t.includes('cap table')) return { code: 'verify_valuation', label: 'Clarify valuation / raise terms' };
   if (t.includes('market') || t.includes('tam') || t.includes('sam')) return { code: 'verify_market', label: 'Validate market size claims' };
   if (t.includes('team') || t.includes('founder') || t.includes('cto') || t.includes('ceo')) return { code: 'verify_team', label: 'Verify team background' };
@@ -2794,6 +2816,7 @@ function bucketRequiredCheck(text: string): { code: string; label: string } {
   if (t.includes('burn') || t.includes('runway') || t.includes('cash')) return { code: 'verify_runway', label: 'Confirm burn / runway' };
   if (t.includes('contradiction') || t.includes('conflict') || t.includes('resolve')) return { code: 'resolve_contradiction', label: 'Resolve data contradiction' };
   if (t.includes('product') || t.includes('technology')) return { code: 'verify_product', label: 'Clarify product / technology stage' };
+  if (t.includes('kpi') || t.includes('benchmark')) return { code: 'verify_kpis', label: 'Provide benchmarkable KPIs' };
   return { code: 'other_check', label: 'Additional diligence required' };
 }
 

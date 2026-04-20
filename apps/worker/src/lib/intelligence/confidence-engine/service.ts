@@ -25,19 +25,78 @@ function buildConclusions(
 ): ConfidenceConclusion[] {
   const band = scoreToConfidenceBand(overallScore);
 
-  // Revenue traction sub-conclusion
-  const revenueScore = input.arr_structured != null
-    ? Math.min(overallScore + 10, 100)
-    : Math.max(overallScore - 15, MIN_SCORE);
-
-  // Burn sustainability sub-conclusion
-  const burnScore = input.burn_rate_monthly != null
-    ? overallScore
-    : Math.max(overallScore - 15, MIN_SCORE);
-
   const uncertaintyNote = weakeners.length > 0
     ? `Confidence weakened by: ${weakeners.slice(0, 3).join("; ")}.`
     : null;
+
+  // ── Revenue traction sub-conclusion ─────────────────────────────────────
+  // Prefer FTRL truth state over raw null-check when available.
+  const arrState = input.arr_truth_state ?? null;
+  const arrSourceKind = input.arr_resolved_source_kind ?? null;
+
+  let revenueScore: number;
+  let revenueWeakeners: string[];
+  let revenueUncertainty: string | null;
+
+  if (arrState === "CONFIRMED") {
+    revenueScore = Math.min(overallScore + 10, 100);
+    revenueWeakeners = [];
+    revenueUncertainty = arrSourceKind === "structured_derived"
+      ? "ARR figure is derived from reliable structured inputs and should be treated as estimated rather than directly reported."
+      : null;
+  } else if (arrState === "CONFLICT") {
+    revenueScore = Math.max(overallScore - 5, MIN_SCORE);
+    revenueWeakeners = ["ARR/revenue figures are contradictory across data sources"];
+    revenueUncertainty =
+      "Financial data is present and usable, though conflicting source claims required resolution. Verify with a single authoritative financial statement.";
+  } else if (arrState === "INSUFFICIENT") {
+    revenueScore = Math.max(overallScore - 15, MIN_SCORE);
+    revenueWeakeners = ["No verified ARR figure from structured financial data"];
+    revenueUncertainty = "ARR figure could not be confirmed from the provided materials.";
+  } else {
+    // arrState is null — FTRL not run; fall back to scalar null-check
+    revenueScore = input.arr_structured != null
+      ? Math.min(overallScore + 10, 100)
+      : Math.max(overallScore - 15, MIN_SCORE);
+    revenueWeakeners = input.arr_structured == null ? ["No structured ARR data available"] : [];
+    revenueUncertainty = input.arr_structured == null
+      ? "ARR figure is unverified — sourced from deck narrative only."
+      : null;
+  }
+
+  // ── Burn sustainability sub-conclusion ────────────────────────────────────
+  const burnState = input.burn_truth_state ?? null;
+  const burnSourceKind = input.burn_resolved_source_kind ?? null;
+
+  let burnScore: number;
+  let burnWeakeners: string[];
+  let burnUncertainty: string | null;
+
+  if (burnState === "CONFIRMED") {
+    burnScore = overallScore;
+    burnWeakeners = [];
+    burnUncertainty = burnSourceKind === "structured_derived"
+      ? "Burn rate is derived from reliable structured inputs and should be treated as estimated rather than directly reported."
+      : null;
+  } else if (burnState === "CONFLICT") {
+    burnScore = Math.max(overallScore - 8, MIN_SCORE);
+    burnWeakeners = ["Burn rate figures are contradictory across data sources"];
+    burnUncertainty =
+      "Contradictory burn rate data detected. Runway calculations should not be relied upon until reconciled.";
+  } else if (burnState === "INSUFFICIENT") {
+    burnScore = Math.max(overallScore - 15, MIN_SCORE);
+    burnWeakeners = ["No structured burn rate data available"];
+    burnUncertainty = "Burn and runway claims cannot be verified without structured financial data.";
+  } else {
+    // burnState is null — FTRL not run; fall back to scalar null-check
+    burnScore = input.burn_rate_monthly != null
+      ? overallScore
+      : Math.max(overallScore - 15, MIN_SCORE);
+    burnWeakeners = input.burn_rate_monthly == null ? ["No structured burn rate data available"] : [];
+    burnUncertainty = input.burn_rate_monthly == null
+      ? "Burn and runway claims cannot be verified without structured financial data."
+      : null;
+  }
 
   return [
     {
@@ -53,20 +112,16 @@ function buildConclusions(
       confidence_score: clamp(revenueScore, MIN_SCORE, 100),
       confidence_band: scoreToConfidenceBand(revenueScore),
       supporting_evidence_count: input.evidence_count,
-      weakening_factors: input.arr_structured == null ? ["No structured ARR data available"] : [],
-      explicit_uncertainty: input.arr_structured == null
-        ? "ARR figure is unverified — sourced from deck narrative only."
-        : null,
+      weakening_factors: revenueWeakeners,
+      explicit_uncertainty: revenueUncertainty,
     },
     {
       conclusion_key: "burn_sustainability",
       confidence_score: clamp(burnScore, MIN_SCORE, 100),
       confidence_band: scoreToConfidenceBand(burnScore),
       supporting_evidence_count: input.evidence_count,
-      weakening_factors: input.burn_rate_monthly == null ? ["No structured burn rate data available"] : [],
-      explicit_uncertainty: input.burn_rate_monthly == null
-        ? "Burn and runway claims cannot be verified without structured financial data."
-        : null,
+      weakening_factors: burnWeakeners,
+      explicit_uncertainty: burnUncertainty,
     },
   ];
 }

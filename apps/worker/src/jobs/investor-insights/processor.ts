@@ -1488,6 +1488,13 @@ async function runStage5WithContext(
 		if (stage5Result.stage5_error === null) {
 			try {
 				const cp = stage5Result.challenge_pass_result;
+				const financialTruthSummary = ft ? {
+					revenue:       { state: ft.revenue?.state       ?? null, source: ft.revenue?.resolved_source_kind       ?? null, disagreement_pct: ft.revenue?.disagreement_pct       ?? null, has_disagreement: ft.revenue?.disagreement       ?? false },
+					arr:           { state: ft.arr?.state           ?? null, source: ft.arr?.resolved_source_kind           ?? null, disagreement_pct: ft.arr?.disagreement_pct           ?? null, has_disagreement: ft.arr?.disagreement           ?? false },
+					burn_rate:     { state: ft.burn_rate?.state     ?? null, source: ft.burn_rate?.resolved_source_kind     ?? null, disagreement_pct: ft.burn_rate?.disagreement_pct     ?? null, has_disagreement: ft.burn_rate?.disagreement     ?? false },
+					runway_months: { state: ft.runway_months?.state ?? null, source: ft.runway_months?.resolved_source_kind ?? null, disagreement_pct: ft.runway_months?.disagreement_pct ?? null, has_disagreement: ft.runway_months?.disagreement ?? false },
+					cash_on_hand:  { state: ft.cash_on_hand?.state  ?? null, source: ft.cash_on_hand?.resolved_source_kind  ?? null, disagreement_pct: ft.cash_on_hand?.disagreement_pct  ?? null, has_disagreement: ft.cash_on_hand?.disagreement  ?? false },
+				} : null;
 				await pool.query(
 					`UPDATE public.investor_insight_reports
 					   SET report_payload = COALESCE(report_payload, '{}'::jsonb) || $2::jsonb
@@ -1506,6 +1513,7 @@ async function runStage5WithContext(
 								missing_evidence:         cp.missing_evidence,
 								diligence_gaps:           cp.diligence_gaps,
 							},
+							financial_truth_summary: financialTruthSummary,
 						}),
 					],
 				);

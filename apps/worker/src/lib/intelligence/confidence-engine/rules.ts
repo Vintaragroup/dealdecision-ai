@@ -87,6 +87,19 @@ export function computePenalties(input: ConfidenceInput): {
     add("LLM stage was skipped (deterministic-only mode)", 20);
   }
 
+  // Financial CONFLICT states — structured sources contradict each other.
+  // Only applied when FTRL truth states are present; no penalty for CONFIRMED / INSUFFICIENT.
+  const financialConflictCount = [
+    input.arr_truth_state,
+    input.revenue_truth_state,
+    input.burn_truth_state,
+  ].filter((s) => s === "CONFLICT").length;
+  if (financialConflictCount >= 2) {
+    add(`${financialConflictCount} financial metrics have contradictory values across sources`, 15);
+  } else if (financialConflictCount === 1) {
+    add("A financial metric has conflicting values across sources", 8);
+  }
+
   const total_penalty = penalties.reduce((sum, p) => sum + p.penalty, 0);
 
   return { penalties, total_penalty };

@@ -749,6 +749,14 @@ export async function runIntelligenceStage(
       arr_structured: inputs.arr_structured,
       burn_rate_monthly: inputs.burn_rate_monthly,
       memory_influence: memory_influence_summary,
+      // FTRL truth states — drive state-aware confidence conclusions over null-check fallback
+      arr_truth_state:          inputs.financial_truth_states?.arr ?? null,
+      revenue_truth_state:      inputs.financial_truth_states?.revenue ?? null,
+      burn_truth_state:         inputs.financial_truth_states?.burn_rate ?? null,
+      runway_truth_state:       inputs.financial_truth_states?.runway_months ?? null,
+      cash_truth_state:         inputs.financial_truth_states?.cash ?? null,
+      arr_resolved_source_kind:  inputs.financial_truth_states?.arr_resolved_source_kind ?? null,
+      burn_resolved_source_kind: inputs.financial_truth_states?.burn_resolved_source_kind ?? null,
     };
 
     const confidence_report = computeConfidence(confidenceInput);

@@ -14,6 +14,8 @@ import {
 import { getPool } from "../lib/db";
 import { writePlatformAuditLog, getAuditActorContext, extractAuditReason } from "../lib/platform-audit-log";
 import { purgeDealCascade, isPurgeDealNotFoundError } from "@dealdecision/core";
+import { classifyDecisionReadiness } from "../lib/intelligence/decision-readiness";
+import type { DecisionReadiness } from "../lib/intelligence/decision-readiness";
 
 // ---------------------------------------------------------------------------
 // DB-backed admin check
@@ -2496,6 +2498,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       conviction_score: number | null; conviction_band: string | null;
       confidence: number | null; resistance_label: string | null;
       top_reason: string | null; fragility_signals: string[];
+      readiness: DecisionReadiness | null;
     }> = [];
 
     const acc = (map: PatternAccum, code: string, label: string, dealId: string, severity?: string, why?: string) => {
@@ -2510,6 +2513,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
     };
 
     const evaluatedDealIds = new Set<string>();
+    const readinessByDeal = new Map<string, DecisionReadiness>();
 
     for (const row of reportsResult.rows) {
       const dealId = row.deal_id;
@@ -2534,10 +2538,30 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         typeof cv1.conviction_score_0_100 === 'number' ? cv1.conviction_score_0_100 : null;
       const deal = dealMap.get(dealId)!;
 
+      // Compute decision readiness for this deal (deterministic).
+      const challengeRow = challengeMap.get(dealId);
+      const challengeFactors: Array<{ code?: string; severity?: string }> = Array.isArray(challengeRow?.challenge_factors)
+        ? (challengeRow!.challenge_factors as Array<{ code?: string; severity?: string }>)
+        : [];
+      const missingEvidence: Array<{ evidence_type?: string; verdict_sensitivity?: string }> = Array.isArray(challengeRow?.missing_evidence)
+        ? (challengeRow!.missing_evidence as Array<{ evidence_type?: string; verdict_sensitivity?: string }>)
+        : [];
+      const cv1ContradictionCount = Array.isArray(cv1.contradictions) ? (cv1.contradictions as unknown[]).length : 0;
+      const cpContradictionCount = Array.isArray(challengeRow?.contradiction_explanations)
+        ? (challengeRow!.contradiction_explanations as unknown[]).length
+        : 0;
+      const drResult = classifyDecisionReadiness({
+        conviction_score: cvScore,
+        challenge_factors: challengeFactors,
+        missing_evidence: missingEvidence,
+        contradiction_count: Math.max(cv1ContradictionCount, cpContradictionCount),
+        flag_count_critical: typeof challengeRow?.flag_count_critical === 'number' ? challengeRow!.flag_count_critical : 0,
+      });
+      readinessByDeal.set(dealId, drResult.readiness);
+
       // Fragile signal: very low score (< 30) or fragile resistance label.
       // Threshold is deliberately conservative — < 30 is meaningfully low, < 40
       // is too broad for a portfolio with mostly hard_pass bands.
-      const challengeRow = challengeMap.get(dealId);
       const isFragile =
         (cvScore !== null && cvScore < 30) ||
         (challengeRow?.verdict_resistance_label === 'Fragile' ||
@@ -2560,6 +2584,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
           resistance_label: challengeRow?.verdict_resistance_label ?? null,
           top_reason: challengeRow?.primary_challenge_reason ?? null,
           fragility_signals: fragileSignals,
+          readiness: drResult.readiness,
         });
       }
 
@@ -2667,6 +2692,19 @@ export async function registerAdminRoutes(app: FastifyInstance) {
       .map(([verdict, count]) => ({ verdict, count, pct: challengeRows.length > 0 ? Math.round((count / challengeRows.length) * 100) : 0 }))
       .sort((a, b) => b.count - a.count);
 
+    // Readiness distribution across all evaluated deals.
+    const readinessCounts = new Map<DecisionReadiness, number>();
+    for (const r of readinessByDeal.values()) {
+      readinessCounts.set(r, (readinessCounts.get(r) ?? 0) + 1);
+    }
+    const readinessOrder: DecisionReadiness[] = ['NOT_INVESTABLE', 'NOT_READY', 'CONDITIONAL', 'INVESTABLE'];
+    const readinessDist = readinessOrder
+      .filter((r) => readinessCounts.has(r))
+      .map((readiness) => {
+        const count = readinessCounts.get(readiness) ?? 0;
+        return { readiness, count, pct: evaluatedCount > 0 ? Math.round((count / evaluatedCount) * 100) : 0 };
+      });
+
     // ── 6. Build narrative summary ────────────────────────────────────────────
 
     const topMissing = serializePattern(missingEvidenceByType, 1)[0];
@@ -2707,6 +2745,7 @@ export async function registerAdminRoutes(app: FastifyInstance) {
         .slice(0, 30),
       conviction_band_distribution: bandDist,
       verdict_distribution: verdictDist,
+      readiness_distribution: readinessDist,
       narrative,
     });
   });

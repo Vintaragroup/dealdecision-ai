@@ -1578,6 +1578,8 @@ export type DealReport = {
   financial_breakdown_v1?: Record<string, unknown> | null;
   /** Underwriting readiness v1: status, score (0-100), gaps, narrative. null when not computed. */
   underwriting_readiness_v1?: Record<string, unknown> | null;
+  /** Decision readiness classification: deterministic investment-readiness bucket. */
+  decision_readiness?: DecisionReadinessResult | null;
 };
 
 export type DealReportEnvelope =
@@ -3872,6 +3874,14 @@ export async function apiGetIntelligenceDebug(dealId: string): Promise<Intellige
 // Admin — Cross-Deal Intelligence Patterns
 // ─────────────────────────────────────────────────────────────────────────────
 
+export type DecisionReadiness = 'NOT_INVESTABLE' | 'NOT_READY' | 'CONDITIONAL' | 'INVESTABLE';
+
+export type DecisionReadinessResult = {
+  readiness: DecisionReadiness;
+  reason: string;
+  signals: string[];
+};
+
 export type CrossDealPatternEntry = {
   code: string;
   label: string;
@@ -3891,6 +3901,7 @@ export type CrossDealFragileDeal = {
   resistance_label: string | null;
   top_reason: string | null;
   fragility_signals: string[];
+  readiness: DecisionReadiness | null;
 };
 
 export type CrossDealPatternsPayload = {
@@ -3910,6 +3921,7 @@ export type CrossDealPatternsPayload = {
   fragile_deals: CrossDealFragileDeal[];
   conviction_band_distribution: { band: string; count: number; pct: number }[];
   verdict_distribution: { verdict: string; count: number; pct: number }[];
+  readiness_distribution: { readiness: DecisionReadiness; count: number; pct: number }[];
   narrative: {
     most_common_blocker: string;
     most_common_missing: string;

@@ -66,6 +66,23 @@ function verdictBadge(verdict: string): string {
   return 'bg-zinc-700/50 text-zinc-300 border-zinc-600/40';
 }
 
+function readinessBadge(readiness: string | null | undefined): string {
+  if (!readiness) return 'bg-zinc-700/50 text-zinc-400 border-zinc-600/40';
+  if (readiness === 'NOT_INVESTABLE') return 'bg-red-500/20 text-red-300 border-red-500/30';
+  if (readiness === 'NOT_READY') return 'bg-amber-500/20 text-amber-300 border-amber-500/30';
+  if (readiness === 'CONDITIONAL') return 'bg-yellow-500/20 text-yellow-300 border-yellow-500/30';
+  if (readiness === 'INVESTABLE') return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30';
+  return 'bg-zinc-700/50 text-zinc-400 border-zinc-600/40';
+}
+
+function readinessBarColor(readiness: string): string {
+  if (readiness === 'NOT_INVESTABLE') return 'bg-red-500/60';
+  if (readiness === 'NOT_READY') return 'bg-amber-500/60';
+  if (readiness === 'CONDITIONAL') return 'bg-yellow-500/60';
+  if (readiness === 'INVESTABLE') return 'bg-emerald-500/60';
+  return 'bg-zinc-500/60';
+}
+
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
 function NarrativeCard({ title, text }: { title: string; text: string }) {
@@ -195,6 +212,11 @@ function FragileDealRow({ deal }: { deal: CrossDealFragileDeal }) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm text-zinc-200 font-medium">{deal.deal_name}</span>
+            {deal.readiness && (
+              <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${readinessBadge(deal.readiness)}`}>
+                {deal.readiness.replace(/_/g, ' ')}
+              </span>
+            )}
             {deal.conviction_band && (
               <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${bandBadge(deal.conviction_band)}`}>
                 {deal.conviction_band.replace(/_/g, ' ')}
@@ -443,6 +465,62 @@ export function CrossDealPatternsPanel() {
                 {v.verdict === 'unknown' ? 'Not set' : v.verdict}
                 <span className="opacity-60">· {v.count}</span>
               </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Decision readiness distribution */}
+      {data.readiness_distribution && data.readiness_distribution.length > 0 && (
+        <div className="rounded-xl border border-white/[0.07] bg-zinc-900/60 p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <BarChart2 className="w-4 h-4 text-zinc-400" />
+            <div>
+              <div className="text-sm font-semibold text-zinc-200">Decision Readiness Distribution</div>
+              <div className="text-xs text-zinc-500">Deterministic investment-readiness classification across evaluated deals</div>
+            </div>
+          </div>
+          <div className="space-y-2.5">
+            {data.readiness_distribution.map((r) => (
+              <div key={r.readiness} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className={`px-2 py-0.5 rounded border font-medium text-[10px] ${readinessBadge(r.readiness)}`}>
+                    {r.readiness.replace(/_/g, ' ')}
+                  </span>
+                  <span className="text-zinc-500">{r.count} deal{r.count !== 1 ? 's' : ''} · {r.pct}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                  <div className={`h-full rounded-full ${readinessBarColor(r.readiness)}`} style={{ width: `${Math.min(r.pct, 100)}%` }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Decision readiness distribution */}
+      {data.readiness_distribution && data.readiness_distribution.length > 0 && (
+        <div className="rounded-xl border border-white/[0.07] bg-zinc-900/60 p-4">
+          <div className="flex items-center gap-2 mb-4">
+            <BarChart2 className="w-4 h-4 text-zinc-400" />
+            <div>
+              <div className="text-sm font-semibold text-zinc-200">Decision Readiness Distribution</div>
+              <div className="text-xs text-zinc-500">Deterministic investment-readiness classification across evaluated deals</div>
+            </div>
+          </div>
+          <div className="space-y-2.5">
+            {data.readiness_distribution.map((r) => (
+              <div key={r.readiness} className="space-y-1">
+                <div className="flex items-center justify-between text-xs">
+                  <span className={`px-2 py-0.5 rounded border font-medium text-[10px] ${readinessBadge(r.readiness)}`}>
+                    {r.readiness.replace(/_/g, ' ')}
+                  </span>
+                  <span className="text-zinc-500">{r.count} deal{r.count !== 1 ? 's' : ''} · {r.pct}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                  <div className={`h-full rounded-full ${readinessBarColor(r.readiness)}`} style={{ width: `${Math.min(r.pct, 100)}%` }} />
+                </div>
+              </div>
             ))}
           </div>
         </div>

@@ -40,6 +40,7 @@ import { computeDeterministicModifierV1, computeDeterministicScorePreviewV1Diagn
 import { StageTimer, nowMs } from '../lib/telemetry/stage-timer';
 import { enqueueJob } from '../services/jobs';
 import { recordLLMMetrics } from '../lib/llm';
+import { classifyDecisionReadiness, buildDecisionReadinessInputFromReport } from '../lib/intelligence/decision-readiness';
 
 const isUuid = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
 
@@ -2976,6 +2977,15 @@ export async function registerReportRoutes(
                 cacheHitReport.report = { ...cacheHitReport.report, investment_analysis_overview_v2: freshIaoV2 };
               }
             } catch { /* fail-open */ }
+            // Inject decision_readiness fresh on cache-hit from cached conviction_v1 + challenge_pass.
+            // Never persisted — always computed live so threshold changes take effect without cache bust.
+            try {
+              const drInput = buildDecisionReadinessInputFromReport(cacheHitReport);
+              cacheHitReport.decision_readiness = classifyDecisionReadiness(drInput);
+              if (cacheHitReport.report && typeof cacheHitReport.report === 'object') {
+                cacheHitReport.report = { ...cacheHitReport.report, decision_readiness: cacheHitReport.decision_readiness };
+              }
+            } catch { /* fail-open */ }
             return reply.status(200).send({ ...cacheHitReport, financial_snapshot_stale });
           }
         }
@@ -3570,6 +3580,19 @@ export async function registerReportRoutes(
           // fail-open
         }
 
+        // Inject decision_readiness: deterministic classification layer.
+        // Runs after challenge_pass + conviction_v1 are both available in report.
+        // Fail-open: never blocks /report.
+        try {
+          if (report && typeof report === 'object') {
+            const drInput = buildDecisionReadinessInputFromReport(report);
+            const drResult = classifyDecisionReadiness(drInput);
+            (report as any).decision_readiness = drResult;
+          }
+        } catch {
+          // fail-open
+        }
+
         // Deterministic deck archetype inference (diagnostics only; no enforcement).
         try {
           if (Array.isArray(segmentedNodes?.nodes) && segmentedNodes!.nodes.length > 0) {
@@ -4060,6 +4083,14 @@ export async function registerReportRoutes(
                 (cached as any).report = { ...(cached as any).report, investment_analysis_overview_v2: freshIaoV2 };
               }
             } catch { /* fail-open */ }
+            // Inject decision_readiness fresh on cache-hit (versioned route) — never persisted.
+            try {
+              const drInput3 = buildDecisionReadinessInputFromReport(cached as any);
+              (cached as any).decision_readiness = classifyDecisionReadiness(drInput3);
+              if ((cached as any).report && typeof (cached as any).report === 'object') {
+                (cached as any).report = { ...(cached as any).report, decision_readiness: (cached as any).decision_readiness };
+              }
+            } catch { /* fail-open */ }
             // Lazy recompile: when financial_facts_v1 are newer than the DIO's updated_at, trigger a
             // fresh analyze_deal job in the background. Idempotent via dedupe — never blocks response.
             if (financial_snapshot_stale) {
@@ -4430,6 +4461,16 @@ export async function registerReportRoutes(
           if (report && typeof report === 'object') {
             const claimSupport2 = buildClaimSupportV1(report);
             if (claimSupport2) (report as any).claim_support_v1 = claimSupport2;
+          }
+        } catch {
+          // fail-open
+        }
+
+        // Inject decision_readiness (versioned route — same contract as main route).
+        try {
+          if (report && typeof report === 'object') {
+            const drInput2 = buildDecisionReadinessInputFromReport(report);
+            (report as any).decision_readiness = classifyDecisionReadiness(drInput2);
           }
         } catch {
           // fail-open

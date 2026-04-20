@@ -10,7 +10,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { apiGetDealIntelligence, type DealIntelligenceRecord } from '../../lib/apiClient';
+import { apiGetDealIntelligence, type DealIntelligenceRecord, type DecisionReadiness, type DecisionReadinessResult } from '../../lib/apiClient';
 import type { FinancialTile } from './WorkspaceRedesignedShell';
 import { scoreToBadge, getScoreBadgeColors } from '../../lib/scoreBadge';
 
@@ -106,6 +106,45 @@ const LABEL_CONFIG: Record<string, LabelConfig> = {
 const FALLBACK_CONFIG: LabelConfig = {
   badgeBg: 'bg-white/10', badgeText: 'text-gray-300', barColor: 'bg-gray-400',
   borderDark: 'border-white/10', borderLight: 'border-gray-200',
+};
+
+// ─── Decision Readiness badge config ─────────────────────────────────────────
+
+const READINESS_CONFIG: Record<DecisionReadiness, {
+  label: string;
+  bg: string;
+  text: string;
+  border: string;
+  description: string;
+}> = {
+  NOT_INVESTABLE: {
+    label: 'Not Investable',
+    bg: 'bg-red-500/20',
+    text: 'text-red-300',
+    border: 'border-red-500/30',
+    description: 'Structural contradictions or critically low conviction block investment consideration.',
+  },
+  NOT_READY: {
+    label: 'Not Ready',
+    bg: 'bg-amber-500/20',
+    text: 'text-amber-300',
+    border: 'border-amber-500/30',
+    description: 'Missing critical financial evidence. Provide runway, burn rate, or ARR data to advance.',
+  },
+  CONDITIONAL: {
+    label: 'Conditional',
+    bg: 'bg-yellow-500/20',
+    text: 'text-yellow-300',
+    border: 'border-yellow-500/30',
+    description: 'Investment possible if identified gaps are resolved — no structural contradictions.',
+  },
+  INVESTABLE: {
+    label: 'Investable',
+    bg: 'bg-emerald-500/20',
+    text: 'text-emerald-300',
+    border: 'border-emerald-500/30',
+    description: 'Strong conviction with critical evidence present and no blocking flags.',
+  },
 };
 
 // ─── Narrative builder ────────────────────────────────────────────────────────
@@ -435,9 +474,14 @@ interface IntelligenceTabProps {
    * value already exists in the Financial Snapshot.
    */
   financialTiles?: FinancialTile[];
+  /**
+   * Deterministic investment-readiness classification from the deal report.
+   * Passed down from the parent workspace which already has the report loaded.
+   */
+  decisionReadiness?: DecisionReadinessResult | null;
 }
 
-export function IntelligenceTab({ dealId, darkMode, financialTiles = [] }: IntelligenceTabProps) {
+export function IntelligenceTab({ dealId, darkMode, financialTiles = [], decisionReadiness }: IntelligenceTabProps) {
   const [records, setRecords] = useState<DealIntelligenceRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -540,6 +584,32 @@ export function IntelligenceTab({ dealId, darkMode, financialTiles = [] }: Intel
           Refresh
         </button>
       </div>
+
+      {/* ─── 0. Decision Readiness badge ────────────────────────────────── */}
+      {decisionReadiness && (() => {
+        const rcfg = READINESS_CONFIG[decisionReadiness.readiness];
+        if (!rcfg) return null;
+        return (
+          <div className={`rounded-lg border p-3.5 space-y-2 ${darkMode ? 'border-white/10 bg-white/[0.02]' : 'border-gray-200 bg-white'}`}>
+            <div className="flex items-center justify-between gap-3">
+              <p className={`text-xs font-medium uppercase tracking-wide ${muted}`}>Decision Readiness</p>
+              <span className={`inline-flex items-center px-2.5 py-1 rounded border text-xs font-semibold ${rcfg.bg} ${rcfg.text} ${rcfg.border}`}>
+                {rcfg.label}
+              </span>
+            </div>
+            <p className={`text-xs leading-relaxed ${muted}`}>{decisionReadiness.reason}</p>
+            {decisionReadiness.signals.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-0.5">
+                {decisionReadiness.signals.map((s, i) => (
+                  <span key={i} className={`text-[10px] px-2 py-0.5 rounded-full border ${darkMode ? 'border-white/10 text-gray-400' : 'border-gray-200 text-gray-500'}`}>
+                    {s}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* ─── 1. Decision summary card ───────────────────────────────────── */}
       <div className={`rounded-lg border p-4 space-y-3 ${darkMode ? cfg.borderDark : cfg.borderLight} ${darkMode ? 'bg-white/[0.02]' : 'bg-white'}`}>

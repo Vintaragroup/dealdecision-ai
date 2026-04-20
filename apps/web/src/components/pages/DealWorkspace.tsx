@@ -50,7 +50,7 @@ import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthorita
 import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
 import { selectDeterministicOverviewSlotsV1 } from '../../lib/selectors/selectDeterministicOverviewSlotsV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDealDeepDive, apiGetDealIntelligence, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type DealDeepDiveResponse, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDealDeepDive, apiGetDealIntelligence, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type DealDeepDiveResponse, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot, type DecisionReadinessResult } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
 import { useOrchestratorReport } from '../../hooks/useOrchestratorReport';
@@ -7078,7 +7078,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             onOpenFull={() => setActivePanel('evidence')}
           />
         }
-        intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} financialTiles={shellProps.financialTiles} /> : null}
+        intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} financialTiles={shellProps.financialTiles} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} /> : null}
       />
       )}
 
@@ -7113,7 +7113,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
               />
             )}
             {activePanel === 'intelligence' && dealId && (
-              <IntelligenceTab dealId={dealId} darkMode={darkMode} />
+              <IntelligenceTab dealId={dealId} darkMode={darkMode} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} />
             )}
             {activePanel === 'evidence' && (
               <EvidencePanel

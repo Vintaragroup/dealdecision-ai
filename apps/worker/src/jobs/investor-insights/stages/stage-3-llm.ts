@@ -67,7 +67,7 @@ export async function buildGovernedSummarySection(
 	governanceVersion: string,
 	dealName?: string,
 	productNarrativeBody?: string,
-	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string },
+	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string; forceRecompute?: boolean },
 	canonicalCompanyName?: string | null
 ): Promise<{ section: RenderPackage["sections"][number]; record: GovernedSummaryRecord } | null> {
 	try {
@@ -140,6 +140,7 @@ export async function buildGovernedSummarySection(
 			canonicalCompanyName: canonicalCompanyName ?? undefined,
 			productNarrativeBody: productNarrativeBody ?? undefined,
 			contradictionMarkersBody,
+			forceRecompute: opts?.forceRecompute ?? false,
 		});
 
 		if (!record || !record.validation_ok) {
@@ -259,7 +260,7 @@ export async function buildGovernedExecutiveSummarySection(
 	governanceVersion: string,
 	dealName?: string,
 	productNarrativeBody?: string,
-	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string },
+	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string; forceRecompute?: boolean },
 	canonicalCompanyName?: string | null
 ): Promise<{
 	section: RenderPackage["sections"][number];
@@ -330,6 +331,7 @@ export async function buildGovernedExecutiveSummarySection(
 			canonicalCompanyName: canonicalCompanyName ?? undefined,
 			productNarrativeBody: productNarrativeBody ?? undefined,
 			contradictionMarkersBody: execContradictionMarkersBody,
+			forceRecompute: opts?.forceRecompute ?? false,
 		});
 
 		if (!record) {

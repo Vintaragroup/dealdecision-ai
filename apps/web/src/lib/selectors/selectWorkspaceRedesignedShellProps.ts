@@ -104,6 +104,37 @@ function asFinite(v: unknown): number | null {
   return v;
 }
 
+export type FinancialTruthBadgeTier = 'verified' | 'directional' | 'unverified' | 'conflicted';
+export interface FinancialTruthBadge { tier: FinancialTruthBadgeTier; text: string; }
+
+/**
+ * Derives a first-class Financial Truth badge from financial_truth_summary.
+ * Used to render the dedicated Financial Truth status block in the UI.
+ * Returns null when summary is absent (pre-deployment cached reports).
+ */
+function deriveFinancialTruthBadge(fts: unknown): FinancialTruthBadge | null {
+  if (!fts || typeof fts !== 'object') return null;
+  const f = fts as any;
+  const revState  = (f.revenue?.state  ?? f.arr?.state)  as string | null | undefined;
+  const revSource = (f.revenue?.source ?? f.arr?.source) as string | null | undefined;
+
+  if (revState === 'CONFIRMED') {
+    if (revSource === 'xlsx' || revSource === 'pdf_table' || revSource === 'kpi_tile')
+      return { tier: 'verified',    text: 'Structured financial evidence is present and decision-grade.' };
+    if (revSource === 'structured_derived')
+      return { tier: 'directional', text: 'Financial model supports directional analysis, but some figures are derived or projected.' };
+    if (revSource === 'deck')
+      return { tier: 'unverified',  text: 'Financial figures are present in the materials, but are not independently verified.' };
+    // CONFIRMED but unknown source — treat as directional
+    return { tier: 'directional', text: 'Financial model supports directional analysis, but some figures are derived or projected.' };
+  }
+  if (revState === 'CONFLICT')
+    return { tier: 'conflicted', text: 'Financial sources disagree materially and require reconciliation before reliance.' };
+  if (revState === 'INSUFFICIENT')
+    return { tier: 'unverified',  text: 'Financial figures are present in the materials, but are not independently verified.' };
+  return null;
+}
+
 /**
  * Derives a truth-state-aware label for the financial_truth positive contributor.
  * Based on financial_truth_summary written by Stage 5 processor FTRL wiring pass.
@@ -657,6 +688,7 @@ export function selectWorkspaceRedesignedShellProps(
     underwritingNarrative,
 
     // financial
+    financialTruthBadge: deriveFinancialTruthBadge(rpt.financial_truth_summary ?? null),
     financialTiles,
     financialCoverage,
     underwritingReadiness,

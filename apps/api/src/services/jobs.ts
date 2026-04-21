@@ -195,7 +195,11 @@ export async function insertJobRow(input: EnqueueJobInput, opts?: EnqueueJobOpti
   }
 
   // Optional dedupe: if a matching job is already active, return it.
-  if (opts?.dedupe?.by && (input.deal_id || input.document_id)) {
+  // EXCEPTION: force_refresh requests must never be absorbed by an existing queued job
+  // that was enqueued without force_refresh — otherwise the user's explicit refresh
+  // intent is silently dropped (the old job won't carry force_refresh downstream).
+  const payloadForceRefresh = (input.payload as Record<string, unknown> | undefined)?.force_refresh === true;
+  if (opts?.dedupe?.by && (input.deal_id || input.document_id) && !payloadForceRefresh) {
     const statuses =
       Array.isArray(opts.dedupe.statuses) && opts.dedupe.statuses.length > 0
         ? opts.dedupe.statuses

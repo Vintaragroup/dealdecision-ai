@@ -148,6 +148,7 @@ export type WorkspaceRedesignedShellProps = {
   raiseTerms: WorkspaceOverviewVM['keyFacts']['raise'];
 
   // ── Financial ─────────────────────────────────────────────────────────────
+  financialTruthBadge?: { tier: 'verified' | 'directional' | 'unverified' | 'conflicted'; text: string } | null;
   financialTiles: FinancialTile[];
   financialCoverage: number | null;
   underwritingReadiness: number | null;
@@ -503,14 +504,25 @@ function KeyFactsGrid({
 
 // ─── §4 Financial Strip ───────────────────────────────────────────────────────
 
+const FINANCIAL_TRUTH_BADGE_STYLES: Record<
+  'verified' | 'directional' | 'unverified' | 'conflicted',
+  { label: string; cls: string }
+> = {
+  verified:    { label: 'Verified',    cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
+  directional: { label: 'Directional', cls: 'text-blue-400   border-blue-500/30   bg-blue-500/10'   },
+  unverified:  { label: 'Unverified',  cls: 'text-amber-400  border-amber-500/30  bg-amber-500/10'  },
+  conflicted:  { label: 'Conflicted',  cls: 'text-rose-400   border-rose-500/30   bg-rose-500/10'   },
+};
+
 function FinancialStrip({
   darkMode,
+  financialTruthBadge,
   financialTiles,
   financialCoverage,
   underwritingReadiness,
   financialIntegrityStatus,
 }: Pick<WorkspaceRedesignedShellProps,
-  'darkMode' | 'financialTiles' | 'financialCoverage' | 'underwritingReadiness' | 'financialIntegrityStatus'
+  'darkMode' | 'financialTruthBadge' | 'financialTiles' | 'financialCoverage' | 'underwritingReadiness' | 'financialIntegrityStatus'
 >) {
   const surface = darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200';
   const chipCard = darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200';
@@ -585,6 +597,19 @@ function FinancialStrip({
           {integrityLabel.label}
         </span>
       </div>
+
+      {/* Financial Truth status block */}
+      {financialTruthBadge && (() => {
+        const { label, cls } = FINANCIAL_TRUTH_BADGE_STYLES[financialTruthBadge.tier];
+        return (
+          <div className={`mt-4 flex items-start gap-3 px-3 py-2.5 rounded-lg border ${darkMode ? 'bg-white/[0.03] border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+            <div className="flex items-center gap-1.5 shrink-0 pt-px">
+              <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${cls}`}>{label}</span>
+            </div>
+            <span className={`text-xs leading-relaxed ${muted}`}>{financialTruthBadge.text}</span>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -938,7 +963,7 @@ export function WorkspaceRedesignedShell(props: WorkspaceRedesignedShellProps) {
     companyName, dealType, stage, raise, raiseNullRule, lastAnalyzedAt, onRunAnalysis,
     investmentSnapshotBody, convictionScore, convictionBand, convictionPosture,
     product, market, businessModel, raiseTerms,
-    financialTiles, financialCoverage, underwritingReadiness, financialIntegrityStatus,
+    financialTruthBadge, financialTiles, financialCoverage, underwritingReadiness, financialIntegrityStatus,
     redFlags, blockerCount, openQuestions, contradictions,
     teamHighlights, useOfFunds, projectPipeline, revenueModel,
     deepDiveReady, insightsReady, onOpenDeepDive, onOpenInsights, onOpenEvidenceExplorer,
@@ -998,6 +1023,7 @@ export function WorkspaceRedesignedShell(props: WorkspaceRedesignedShellProps) {
       {/* 4. Financial strip */}
       <FinancialStrip
         darkMode={darkMode}
+        financialTruthBadge={financialTruthBadge}
         financialTiles={financialTiles}
         financialCoverage={financialCoverage}
         underwritingReadiness={underwritingReadiness}

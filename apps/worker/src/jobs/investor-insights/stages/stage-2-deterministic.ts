@@ -149,6 +149,8 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 
 	for (const page of inputs.dpuPages) {
 		const text = page.text ?? "";
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		// Skip pages that look like financial tables (high density of money tokens)
 		const moneyCount = (text.match(/\$[\d,]/g) ?? []).length;
 		const totalWords = text.split(/\s+/).filter(Boolean).length;
@@ -257,6 +259,8 @@ export function buildProductNarrativeBundle(inputs: InsightSlotInputs): RankedNa
 
 	for (const page of inputs.dpuPages) {
 		const text = page.text ?? "";
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		const moneyCount = (text.match(/\$[\d,]/g) ?? []).length;
 		const totalWords = text.split(/\s+/).filter(Boolean).length;
 		if (totalWords > 0 && moneyCount / totalWords >= 0.12) continue;
@@ -487,6 +491,26 @@ export interface InsightSlotInputs {
  */
 const MARKET_PATTERN =
 	/(?:\bTAM\b|\bSAM\b|\bSOM\b|\btotal\s+addressable\s+market\b|\baddressable\s+market\b)[^$\n]{0,60}?\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]?\+?|\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]\+?[^$\n]{0,60}?(?:\bTAM\b|\bSAM\b|\bSOM\b|\btotal\s+addressable\s+market\b|\baddressable\s+market\b)|\bmarket\s+size[s]?\b[^$\n]{0,80}?\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]?\+?|\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]\+?[^$\n]{0,80}?\bmarket\s+size[s]?\b/i;
+
+/**
+ * SPAC_SHELL_ENTITY_RE — matches pages that are primarily from a SPAC /
+ * blank-check-company financial filing rather than the target operating company.
+ *
+ * These pages describe the shell vehicle's standalone economics:
+ *   • trust-account income ("investments held in the Trust Account")
+ *   • warrant/derivative fair-value changes ("change in fair value of derivative liabilities")
+ *   • SPAC merger accounting ("initial business combination", "blank check company")
+ *
+ * Pages matching this pattern must NOT be surfaced as target-company evidence in
+ * the narrative corpus, regardless of which other keywords they contain.
+ */
+const SPAC_SHELL_ENTITY_RE =
+	/change in fair value of (?:derivative|warrant|earnout|pipe)\s*liabilities|investments held in (?:the )?Trust Account|initial business combination|blank check company/i;
+
+/** Returns true when page text belongs to a SPAC / shell entity filing, not the target company. */
+function isSpacShellEntityPage(text: string): boolean {
+	return SPAC_SHELL_ENTITY_RE.test(text);
+}
 
 /**
  * TRACTION_SIGNAL: matches "MRR $50K", "ARR $600K",
@@ -3800,6 +3824,8 @@ function gatherMarketPositionCandidates(inputs: InsightSlotInputs): NarrativeCan
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!MARKET_PATTERN.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
 		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
@@ -3829,6 +3855,8 @@ function gatherFinancialOutlookCandidates(inputs: InsightSlotInputs): NarrativeC
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!FINANCIAL_OUTLOOK_RE.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
 		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
@@ -3860,6 +3888,8 @@ function gatherCapitalRaiseCandidates(inputs: InsightSlotInputs): NarrativeCandi
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!RAISE_AMOUNT_PATTERN.test(text) && !RAISE_RANGE_PATTERN.test(text)) continue;
 		// Skip pages tainted by volume-metric language (GMV, loan-book, financed, etc.)
 		if (isCandidateTaintedByVolumeMetric(text)) continue;
@@ -3889,6 +3919,8 @@ function gatherTractionCandidates(inputs: InsightSlotInputs): NarrativeCandidate
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!TRACTION_PATTERN.test(text) && !TRACTION_PCT_PATTERN.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
 		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
@@ -3919,6 +3951,8 @@ function gatherBusinessQualityCandidates(inputs: InsightSlotInputs): NarrativeCa
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!BUSINESS_QUALITY_RE.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
 		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });

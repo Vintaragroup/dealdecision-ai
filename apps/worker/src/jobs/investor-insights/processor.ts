@@ -1007,7 +1007,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	// WS-B PR20: mutable array to collect governed-stage skip events from all
 	// three LLM builders.  Passed via opts and populated by recordGovernedSkip.
 	const governedSkips: GovernedSkip[] = [];
-	const llmOpts = { governedSkips, deal_id: dealId };
+	const llmOpts = { governedSkips, deal_id: dealId, forceRecompute };
 
 	const governedResult = await buildGovernedSummarySection(
 		insightSlotInputs,

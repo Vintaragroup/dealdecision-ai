@@ -648,6 +648,10 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 	// multi-stage pipeline only runs once — from the full analyze_deal triggered at finalize.
 	const isFirstPass = (job.data as any)?.reason === "first_pass_pages_ready"
 		|| Boolean((job.data as any)?.prereq?.first_pass);
+	// User-triggered force-refresh: bypass investor_insights dedup so Stage 5 executes and
+	// writes financial_truth_summary + a fresh deal_challenge_pass_results row.
+	// Automated/scheduled runs keep existing dedup behavior (force_recompute stays false).
+	const isForceRefresh = Boolean((job.data as any)?.force_refresh) || Boolean((job.data as any)?.payload?.force_refresh);
 	const minDpuCreatedAtRaw = (job.data as any)?.min_dpu_created_at ?? (job.data as any)?.payload?.min_dpu_created_at;
 	const minDpuCreatedAt =
 		typeof minDpuCreatedAtRaw === "string" && minDpuCreatedAtRaw.trim().length > 0
@@ -667,6 +671,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 				deal_id: dealId,
 				job_id: job.id ? String(job.id) : null,
 				is_first_pass: isFirstPass,
+				is_force_refresh: isForceRefresh,
 				reason: (job.data as any)?.reason ?? null,
 				ts: new Date().toISOString(),
 			})
@@ -2020,7 +2025,12 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 				const insightsJobId = makeJobId("investor_insights", [dealId, "v1", "overlay_complete"]);
 				await insightsQueue.add(
 					"generate_investor_insights",
-					{ deal_id: dealId, engine_version: "v1", triggered_by: "overlay_complete" },
+					{
+						deal_id: dealId,
+						engine_version: "v1",
+						triggered_by: "overlay_complete",
+						...(isForceRefresh ? { force_recompute: true } : {}),
+					},
 					{ jobId: insightsJobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
 				);
 				console.log(
@@ -2029,6 +2039,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						deal_id: dealId,
 						job_id: insightsJobId,
 						triggered_by: "overlay_complete",
+						force_recompute: isForceRefresh,
 						ts: new Date().toISOString(),
 					})
 				);

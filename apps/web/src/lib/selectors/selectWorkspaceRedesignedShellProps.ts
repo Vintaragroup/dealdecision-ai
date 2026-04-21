@@ -21,6 +21,8 @@
 
 import type { WorkspaceOverviewVM } from '../components/workspace/contracts/workspaceViewModel';
 import type { WorkspaceRedesignedShellProps, FinancialTile, RedFlag } from '../components/workspace/WorkspaceRedesignedShell';
+import { deriveSignalTension } from '../deriveSignalTension';
+import type { SignalTensionResult } from '../deriveSignalTension';
 
 function asNES(v: unknown): string | null {
   if (typeof v !== 'string') return null;
@@ -136,9 +138,11 @@ function deriveFinancialTruthBadge(fts: unknown): FinancialTruthBadge | null {
 }
 
 /**
- * Derives a truth-state-aware label for the financial_truth positive contributor.
+ * Derives a short, investor-facing label for the financial_truth positive contributor.
+ * Used in Key Drivers, Opportunity Signal paragraph, and Positive Drivers panels.
+ * Deliberately concise — the Financial Truth badge block carries the full explanation.
  * Based on financial_truth_summary written by Stage 5 processor FTRL wiring pass.
- * Returns null when summary is absent (e.g. pre-deployment cached reports).
+ * Returns null ONLY when summary is truly absent (pre-deployment cached reports).
  */
 function deriveFinancialTruthDriverLabel(fts: unknown): string | null {
   if (!fts || typeof fts !== 'object') return null;
@@ -148,18 +152,41 @@ function deriveFinancialTruthDriverLabel(fts: unknown): string | null {
   const burnState = f.burn_rate?.state as string | null | undefined;
 
   if (revState === 'CONFIRMED') {
-    if (revSource === 'xlsx' || revSource === 'kpi_tile')
-      return 'Structured financial evidence is present and verified';
+    if (revSource === 'xlsx' || revSource === 'pdf_table' || revSource === 'kpi_tile')
+      return 'Verified financial evidence';
     if (revSource === 'structured_derived')
-      return 'Structured financial model supports directional analysis';
+      return 'Directional financial model support';
     if (revSource === 'deck')
-      return 'Financial figures are present in the materials, but they are not independently verified';
+      return 'Unverified financial claims';
+    // CONFIRMED but unknown source
+    return 'Directional financial model support';
   }
   if (revState === 'CONFLICT')
-    return 'Financial data contains conflicting source claims requiring resolution';
-  if (revState === 'INSUFFICIENT' && burnState === 'CONFIRMED')
-    return 'Operational financial data is present and structured';
-  return null;
+    return 'Conflicting financial sources';
+  if (revState === 'INSUFFICIENT') {
+    if (burnState === 'CONFIRMED') return 'Structured operational data';
+    return 'Unverified financial claims';
+  }
+  // fts is present but in an unrecognised state — use a neutral, non-misleading label.
+  return 'Financial evidence present';
+}
+
+/**
+ * Derives a short negative-contributor label for financial_truth.
+ * Used when financial_truth appears in topNegativeContributors.
+ * Returns null when fts is absent (caller preserves backend label as fallback).
+ */
+function deriveFinancialTruthNegativeLabel(fts: unknown): string | null {
+  if (!fts || typeof fts !== 'object') return null;
+  const f = fts as any;
+  const revState = (f.revenue?.state ?? f.arr?.state) as string | null | undefined;
+  const revSource = (f.revenue?.source ?? f.arr?.source) as string | null | undefined;
+
+  if (revState === 'CONFLICT') return 'Conflicting financial sources';
+  if (revState === 'INSUFFICIENT') return 'Insufficient financial evidence';
+  if (revState === 'CONFIRMED' && revSource === 'deck') return 'Unverified financial claims';
+  if (revState === 'CONFIRMED') return 'Financial evidence quality concerns';
+  return 'Financial evidence gap';
 }
 
 function formatMetricValue(metric: unknown): string {
@@ -417,6 +444,9 @@ export function selectWorkspaceRedesignedShellProps(
     return rawContributors.map((c) => {
       if (c.key !== 'financial_truth') return c;
       const label = deriveFinancialTruthDriverLabel(fts);
+      // Only fall back to the generic string when financial_truth_summary is truly absent
+      // (pre-deployment cached reports that pre-date the FTRL wiring pass).
+      // When fts is present, deriveFinancialTruthDriverLabel always returns a non-null label.
       return { ...c, label: label ?? 'Financial data supports this analysis' };
     });
   })();
@@ -427,7 +457,7 @@ export function selectWorkspaceRedesignedShellProps(
     const v2items = meta?.conviction_v2?.top_negative_contributors;
     const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.top_negative_contributors;
     if (!Array.isArray(items)) return [];
-    return items
+    const rawNeg = items
       .map((c: any) => ({
         key: asNES(c?.key) ?? '',
         label: asNES(c?.label) ?? '',
@@ -435,6 +465,15 @@ export function selectWorkspaceRedesignedShellProps(
       }))
       .filter((c) => c.label.length > 0)
       .slice(0, 5);
+
+    // Mirror the positive-contributor truth-aware override for negative contributors.
+    // Negative financial_truth signals need the same short, investor-facing copy.
+    const fts: any = rpt.financial_truth_summary ?? null;
+    return rawNeg.map((c) => {
+      if (c.key !== 'financial_truth') return c;
+      const label = deriveFinancialTruthNegativeLabel(fts);
+      return { ...c, label: label ?? c.label };
+    });
   })();
 
   // Required next checks (diligence checklist from conviction)
@@ -641,6 +680,57 @@ export function selectWorkspaceRedesignedShellProps(
       }));
   })();
 
+  // ── Signal Tension v1 ─────────────────────────────────────────────────────────
+  // All inputs are already resolved above — this is a pure composition step.
+  const _financialTruthBadge = deriveFinancialTruthBadge(rpt.financial_truth_summary ?? null);
+
+  const _conflictDetected = Boolean((meta as any)?.canonical_decision_v2?.conflict_detected);
+
+  const _narrativeContradictionCount = (() => {
+    const bundle = rpt.narrative_contradiction_bundle;
+    if (!bundle || typeof bundle !== 'object') return 0;
+    const TOPIC_KEYS = [
+      'product_differentiation',
+      'go_to_market_strategy',
+      'market_position',
+      'financial_outlook',
+      'capital_and_raise',
+      'traction',
+      'business_quality',
+    ] as const;
+    return TOPIC_KEYS.reduce((count, key) => {
+      const topic = (bundle as any)[key];
+      if (topic && (topic.status === 'conflicting' || topic.status === 'mixed')) return count + 1;
+      return count;
+    }, 0);
+  })();
+
+  const _missingCriticalCount = Array.isArray((integrity as any)?.missing_critical)
+    ? (integrity as any).missing_critical.length
+    : 0;
+
+  const _coverageRatioRaw = asFinite(fc?.coverage_ratio) ?? null;
+
+  const _contradictionIndex = asFinite(convictionV1?.contradiction_index_0_1) ?? null;
+
+  const _postureIsAdvancing = (() => {
+    if (!convictionPosture) return false;
+    const p = convictionPosture.toUpperCase();
+    return p !== 'PASS' && p !== 'HARD_PASS';
+  })();
+
+  const signalTension: SignalTensionResult | null = deriveSignalTension({
+    financialTruthTier:          _financialTruthBadge?.tier ?? null,
+    conflictDetected:            _conflictDetected,
+    verdictResistanceLabel:      verdictResistanceLabel,
+    verdictResistanceScore:      verdictResistanceScore,
+    contradictionIndex:          _contradictionIndex,
+    coverageRatio:               _coverageRatioRaw,
+    missingCriticalCount:        _missingCriticalCount,
+    narrativeContradictionCount: _narrativeContradictionCount,
+    postureIsAdvancing:          _postureIsAdvancing,
+  });
+
   // ── TRACE: final resolved props at selector exit ─────────────────────────────
   if (import.meta.env.DEV) {
     console.group('[TRACE:selectWorkspaceRedesignedShellProps] final resolved props (selector exit)');
@@ -688,7 +778,8 @@ export function selectWorkspaceRedesignedShellProps(
     underwritingNarrative,
 
     // financial
-    financialTruthBadge: deriveFinancialTruthBadge(rpt.financial_truth_summary ?? null),
+    financialTruthBadge: _financialTruthBadge,
+    signalTension,
     financialTiles,
     financialCoverage,
     underwritingReadiness,

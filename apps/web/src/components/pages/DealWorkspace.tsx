@@ -7066,6 +7066,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             contradictions={shellProps.contradictions ?? []}
             scoreBreakdownSections={scoreBreakdownSections}
             claimSupportItems={shellProps.claimSupportItems ?? null}
+            financialTruthBadge={shellProps.financialTruthBadge ?? null}
           />
         }
         evidencePanel={

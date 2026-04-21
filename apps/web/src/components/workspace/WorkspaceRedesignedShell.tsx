@@ -45,6 +45,7 @@ import {
 } from 'lucide-react';
 import type { WorkspaceOverviewVM, WorkspaceOverviewFactTrust } from './contracts/workspaceViewModel';
 import { scoreToBadge, getScoreBadgeColors } from '../../lib/scoreBadge';
+import type { SignalTensionResult } from '../../lib/deriveSignalTension';
 
 // ─── Shared helpers ──────────────────────────────────────────────────────────
 
@@ -85,6 +86,16 @@ const TrustBadge = ({ trust }: { trust: WorkspaceOverviewFactTrust }) => {
       {TRUST_LABELS[trust]}
     </span>
   );
+};
+
+const FINANCIAL_TRUTH_BADGE_STYLES: Record<
+  'verified' | 'directional' | 'unverified' | 'conflicted',
+  { label: string; cls: string }
+> = {
+  verified:    { label: 'Verified',    cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
+  directional: { label: 'Directional', cls: 'text-blue-400   border-blue-500/30   bg-blue-500/10'   },
+  unverified:  { label: 'Unverified',  cls: 'text-amber-400  border-amber-500/30  bg-amber-500/10'  },
+  conflicted:  { label: 'Conflicted',  cls: 'text-rose-400   border-rose-500/30   bg-rose-500/10'   },
 };
 
 // ─── Prop types ──────────────────────────────────────────────────────────────
@@ -189,6 +200,8 @@ export type WorkspaceRedesignedShellProps = {
   onOpenInsights?: () => void;
   onOpenEvidenceExplorer?: () => void;
   onOpenIntelligence?: () => void;
+  /** Signal Tension v1 — deterministic tension tier derived from existing payload signals. */
+  signalTension?: SignalTensionResult | null;
 };
 
 // ─── §1 Identity Strip ────────────────────────────────────────────────────────
@@ -353,6 +366,7 @@ function SnapshotRow({
   convictionScore,
   convictionBand,
   convictionPosture,
+  financialTruthBadge,
   onOpenInsights,
 }: Pick<WorkspaceRedesignedShellProps,
   | 'darkMode'
@@ -360,6 +374,7 @@ function SnapshotRow({
   | 'convictionScore'
   | 'convictionBand'
   | 'convictionPosture'
+  | 'financialTruthBadge'
 > & { onOpenInsights?: () => void }) {
   const surface = darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200';
   const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
@@ -435,6 +450,19 @@ function SnapshotRow({
               <span className={`font-medium ${body}`}>Posture: </span>{convictionPosture}
             </p>
           )}
+          {/* Financial Truth block — hard-surface truth state near top of page */}
+          {financialTruthBadge && (() => {
+            const { label, cls } = FINANCIAL_TRUTH_BADGE_STYLES[financialTruthBadge.tier];
+            return (
+              <div className={`mt-3 flex items-start gap-2.5 px-3 py-2.5 rounded-lg border ${darkMode ? 'bg-white/[0.03] border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                <div className="flex items-center gap-1.5 shrink-0 pt-px">
+                  <span className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Financial Truth</span>
+                  <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${cls}`}>{label}</span>
+                </div>
+                <span className={`text-xs leading-relaxed ${muted}`}>{financialTruthBadge.text}</span>
+              </div>
+            );
+          })()}
         </div>
       </div>
     </div>
@@ -503,16 +531,6 @@ function KeyFactsGrid({
 }
 
 // ─── §4 Financial Strip ───────────────────────────────────────────────────────
-
-const FINANCIAL_TRUTH_BADGE_STYLES: Record<
-  'verified' | 'directional' | 'unverified' | 'conflicted',
-  { label: string; cls: string }
-> = {
-  verified:    { label: 'Verified',    cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
-  directional: { label: 'Directional', cls: 'text-blue-400   border-blue-500/30   bg-blue-500/10'   },
-  unverified:  { label: 'Unverified',  cls: 'text-amber-400  border-amber-500/30  bg-amber-500/10'  },
-  conflicted:  { label: 'Conflicted',  cls: 'text-rose-400   border-rose-500/30   bg-rose-500/10'   },
-};
 
 function FinancialStrip({
   darkMode,
@@ -955,6 +973,53 @@ function WorkbenchRow({
   );
 }
 
+// ─── Signal Tension Block ─────────────────────────────────────────────────────
+
+const SIGNAL_TENSION_STYLES: Record<SignalTensionResult['level'], { badge: string; bar: string }> = {
+  HIGH:     { badge: 'text-rose-400 border-rose-500/30 bg-rose-500/10',     bar: 'border-l-rose-500' },
+  MODERATE: { badge: 'text-amber-400 border-amber-500/30 bg-amber-500/10',  bar: 'border-l-amber-500' },
+  LOW:      { badge: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10', bar: 'border-l-emerald-500' },
+};
+
+function SignalTensionBlock({
+  darkMode,
+  signalTension,
+}: {
+  darkMode: boolean;
+  signalTension: SignalTensionResult;
+}) {
+  const { level, label, summary, reasons } = signalTension;
+  const styles = SIGNAL_TENSION_STYLES[level];
+  const surface = darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200';
+  const muted   = darkMode ? 'text-gray-400' : 'text-gray-500';
+  const body    = darkMode ? 'text-gray-200' : 'text-gray-700';
+
+  return (
+    <div
+      data-testid="signal-tension-block"
+      className={`rounded-xl border p-4 sm:p-5 border-l-2 ${styles.bar} ${surface}`}
+    >
+      <div className="flex items-center gap-2 mb-2">
+        <span className={`text-xs uppercase tracking-wide font-medium ${muted}`}>Signal Tension</span>
+        <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${styles.badge}`}>
+          {label}
+        </span>
+      </div>
+      <p className={`text-sm leading-relaxed ${reasons.length > 0 ? 'mb-3' : ''} ${body}`}>{summary}</p>
+      {reasons.length > 0 && (
+        <ul className="space-y-1">
+          {reasons.map((reason, i) => (
+            <li key={i} className={`text-xs flex gap-1.5 ${muted}`}>
+              <span className="shrink-0 mt-px">•</span>
+              {reason}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // ─── Shell ────────────────────────────────────────────────────────────────────
 
 export function WorkspaceRedesignedShell(props: WorkspaceRedesignedShellProps) {
@@ -967,6 +1032,7 @@ export function WorkspaceRedesignedShell(props: WorkspaceRedesignedShellProps) {
     redFlags, blockerCount, openQuestions, contradictions,
     teamHighlights, useOfFunds, projectPipeline, revenueModel,
     deepDiveReady, insightsReady, onOpenDeepDive, onOpenInsights, onOpenEvidenceExplorer,
+    signalTension,
   } = props;
 
   // Show the CTA banner when the deal has not been analyzed yet.
@@ -1008,8 +1074,14 @@ export function WorkspaceRedesignedShell(props: WorkspaceRedesignedShellProps) {
         convictionScore={convictionScore}
         convictionBand={convictionBand}
         convictionPosture={convictionPosture}
+        financialTruthBadge={financialTruthBadge}
         onOpenInsights={onOpenInsights}
       />
+
+      {/* 2a. Signal Tension — deterministic tension summary between snapshot and key facts */}
+      {signalTension != null && (
+        <SignalTensionBlock darkMode={darkMode} signalTension={signalTension} />
+      )}
 
       {/* 3. Key facts — 2×2 grid, always rendered */}
       <KeyFactsGrid

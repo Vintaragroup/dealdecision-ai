@@ -358,6 +358,29 @@ function cleanCopy(s: string | null): string | null {
   return out || null;
 }
 
+/**
+ * Hard-enforces Financial Truth state over any legacy financial narrative phrase.
+ * Replaces "financial data supports this analysis" (and variants) with the
+ * truth-state-aware label derived from the badge tier.
+ * No-op when badge is absent — preserves text unchanged for pre-FTRL cached reports.
+ */
+type _FinancialTruthBadgeRef = { tier: 'verified' | 'directional' | 'unverified' | 'conflicted'; text: string } | null | undefined;
+
+const FINANCIAL_TRUTH_TIER_LABELS: Record<'verified' | 'directional' | 'unverified' | 'conflicted', string> = {
+  verified:    'verified financial evidence',
+  directional: 'directional financial model support',
+  unverified:  'unverified financial claims',
+  conflicted:  'conflicting financial sources',
+};
+
+function enforceFinancialTruth(text: string, badge: _FinancialTruthBadgeRef): string {
+  if (!badge || !text) return text;
+  return text.replace(
+    /financial data supports this analysis/gi,
+    FINANCIAL_TRUTH_TIER_LABELS[badge.tier],
+  );
+}
+
 /** Ensures a string ends with a period and starts with a capital letter. */
 function normalizeSentence(s: string): string {
   const capped = s.charAt(0).toUpperCase() + s.slice(1);
@@ -376,6 +399,7 @@ function composeInvestmentNarrative({
   topPositiveContributors,
   topNegativeContributors,
   humanizedChecks,
+  financialTruthBadge,
 }: {
   recommendation: 'Proceed' | 'Investigate' | 'Caution' | 'Pass' | null;
   convictionScore: number | null;
@@ -383,6 +407,7 @@ function composeInvestmentNarrative({
   topPositiveContributors: _Contributor[];
   topNegativeContributors: _Contributor[];
   humanizedChecks: string[];
+  financialTruthBadge?: { tier: 'verified' | 'directional' | 'unverified' | 'conflicted'; text: string } | null;
 }): string[] {
   const lines: string[] = [];
   const hasAnySignals =
@@ -394,7 +419,9 @@ function composeInvestmentNarrative({
   if (!hasAnySignals) return lines;
 
   // Opening: non-mechanical conviction rationale, or constructed posture sentence.
-  const rationale = !isMechanicalConvictionText(convictionRationale) ? convictionRationale : null;
+  // enforceFinancialTruth kills legacy LLM-authored financial phrasing before it reaches the UI.
+  const rawRationale = !isMechanicalConvictionText(convictionRationale) ? convictionRationale : null;
+  const rationale = rawRationale ? enforceFinancialTruth(rawRationale, financialTruthBadge) : null;
   if (rationale) {
     lines.push(normalizeSentence(rationale));
   } else if (recommendation || convictionScore !== null) {
@@ -410,29 +437,45 @@ function composeInvestmentNarrative({
     }
   }
 
-  // Strengths sentence: up to 3 positive signals joined as prose.
+  // Hard-enforce Financial Truth: CONFLICT and UNVERIFIED must not appear as positive signals.
+  const ftbTier = financialTruthBadge?.tier;
+  const ftIsWarning = ftbTier === 'conflicted' || ftbTier === 'unverified';
+  const ftConcern: string | null = ftIsWarning
+    ? (ftbTier === 'conflicted' ? 'conflicting financial sources' : 'unverified financial claims')
+    : null;
+
+  // Strengths sentence: strip financial_truth from positives when it is a warning state.
   if (topPositiveContributors.length > 0) {
     const signals = topPositiveContributors
+      .filter((c) => !(c.key === 'financial_truth' && ftIsWarning))
       .slice(0, 3)
       .map((c) => mapContributorToSignal(c.key, c.label, 'positive').toLowerCase());
-    const joined =
-      signals.length === 1
-        ? signals[0]
-        : signals.length === 2
-          ? `${signals[0]} and ${signals[1]}`
-          : `${signals[0]}, ${signals[1]}, and ${signals[2]}`;
-    lines.push(`Supporting evidence indicates ${joined}.`);
+    if (signals.length > 0) {
+      const joined =
+        signals.length === 1
+          ? signals[0]
+          : signals.length === 2
+            ? `${signals[0]} and ${signals[1]}`
+            : `${signals[0]}, ${signals[1]}, and ${signals[2]}`;
+      lines.push(`Supporting evidence indicates ${joined}.`);
+    }
   }
 
-  // Concerns sentence: up to 2 negative signals.
-  if (topNegativeContributors.length > 0) {
-    const concerns = topNegativeContributors
-      .slice(0, 2)
-      .map((c) => mapContributorToSignal(c.key, c.label, 'negative').toLowerCase());
+  // Concerns sentence: deduplicate financial_truth if ftConcern already covers it.
+  const negContributors = topNegativeContributors.filter(
+    (c) => !(c.key === 'financial_truth' && ftConcern),
+  );
+  const allConcerns: string[] = [
+    ...negContributors
+      .slice(0, ftConcern ? 1 : 2)
+      .map((c) => mapContributorToSignal(c.key, c.label, 'negative').toLowerCase()),
+    ...(ftConcern ? [ftConcern] : []),
+  ];
+  if (allConcerns.length > 0) {
     const joined =
-      concerns.length === 1
-        ? concerns[0]
-        : `${concerns[0]}, and ${concerns[1]}`;
+      allConcerns.length === 1
+        ? allConcerns[0]
+        : `${allConcerns[0]}, and ${allConcerns[1]}`;
     lines.push(`Areas requiring further validation: ${joined}.`);
   }
 
@@ -446,7 +489,8 @@ function composeInvestmentNarrative({
     lines.push(sentence);
   }
 
-  return lines;
+  // Final pass: enforce Financial Truth on every line before returning.
+  return lines.map((l) => enforceFinancialTruth(l, financialTruthBadge));
 }
 
 /**
@@ -656,6 +700,8 @@ export function DealWorkspaceV4({
   intelligencePanel,
   // extra
   keyDrivers,
+  financialTruthBadge,
+  signalTension,
 }: DealWorkspaceV4Props) {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     team: false,
@@ -740,6 +786,7 @@ export function DealWorkspaceV4({
     topPositiveContributors,
     topNegativeContributors,
     humanizedChecks,
+    financialTruthBadge,
   });
 
   // Product / Market: primary governed value + optional signal line from contributors.
@@ -900,6 +947,42 @@ export function DealWorkspaceV4({
           );
         })()}
 
+        {/* Signal Tension — deterministic tension summary immediately after Decision Status */}
+        {signalTension != null && (() => {
+          const ST_STYLES = {
+            HIGH:     { badge: 'text-rose-400 border-rose-500/30 bg-rose-500/10',     bar: 'border-l-rose-500' },
+            MODERATE: { badge: 'text-amber-400 border-amber-500/30 bg-amber-500/10',  bar: 'border-l-amber-500' },
+            LOW:      { badge: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10', bar: 'border-l-emerald-500' },
+          } as const;
+          const st = ST_STYLES[signalTension.level];
+          return (
+            <div
+              data-testid="signal-tension-block"
+              className={`p-4 rounded-lg border-l-4 ${st.bar} ${darkMode ? 'bg-white/[0.02] border border-white/10' : 'bg-white border border-gray-200'}`}
+            >
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`text-[10px] uppercase tracking-widest font-medium ${muted}`}>Signal Tension</span>
+                <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${st.badge}`}>
+                  {signalTension.label}
+                </span>
+              </div>
+              <p className={`text-sm leading-relaxed ${signalTension.reasons.length > 0 ? 'mb-2.5' : ''} ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                {signalTension.summary}
+              </p>
+              {signalTension.reasons.length > 0 && (
+                <ul className="space-y-1">
+                  {signalTension.reasons.map((reason, i) => (
+                    <li key={i} className={`text-xs flex gap-1.5 ${muted}`}>
+                      <span className="shrink-0 mt-px">•</span>
+                      {reason}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          );
+        })()}
+
         {/* Decision Layer (Above the Fold) */}
         <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-6">
 
@@ -936,6 +1019,28 @@ export function DealWorkspaceV4({
               );
             })()}
             <div className="space-y-3">
+              {/* Financial Truth — hard surface truth state immediately under Opportunity Signal */}
+              {financialTruthBadge && (() => {
+                const FT_STYLES: Record<
+                  'verified' | 'directional' | 'unverified' | 'conflicted',
+                  { label: string; cls: string }
+                > = {
+                  verified:    { label: 'Verified',    cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
+                  directional: { label: 'Directional', cls: 'text-blue-400   border-blue-500/30   bg-blue-500/10'   },
+                  unverified:  { label: 'Unverified',  cls: 'text-amber-400  border-amber-500/30  bg-amber-500/10'  },
+                  conflicted:  { label: 'Conflicted',  cls: 'text-rose-400   border-rose-500/30   bg-rose-500/10'   },
+                };
+                const { label, cls } = FT_STYLES[financialTruthBadge.tier];
+                return (
+                  <div className={`flex items-start gap-2.5 px-3 py-2.5 rounded-lg border ${darkMode ? 'bg-white/[0.03] border-white/10' : 'bg-gray-50 border-gray-200'}`}>
+                    <div className="flex items-center gap-1.5 shrink-0 pt-px">
+                      <span className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Financial Truth</span>
+                      <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${cls}`}>{label}</span>
+                    </div>
+                    <span className={`text-xs leading-relaxed ${muted}`}>{financialTruthBadge.text}</span>
+                  </div>
+                );
+              })()}
               {convictionNarrativeLines.length > 0 ? (
                 convictionNarrativeLines.map((line, idx) => (
                   <p key={idx} className={`text-sm leading-relaxed ${body}`}>
@@ -945,7 +1050,7 @@ export function DealWorkspaceV4({
               ) : investmentParas.length > 0 ? (
                 investmentParas.map((para, idx) => (
                   <p key={idx} className={`text-sm leading-relaxed ${body}`}>
-                    {para}
+                    {enforceFinancialTruth(para, financialTruthBadge)}
                   </p>
                 ))
               ) : (
@@ -1065,7 +1170,7 @@ export function DealWorkspaceV4({
                           darkMode ? 'bg-emerald-400' : 'bg-emerald-500'
                         }`}
                       />
-                      <span className={`text-xs ${sectionLabel}`}>{mapContributorToSignal(c.key, c.label, 'positive')}</span>
+                      <span className={`text-xs ${sectionLabel}`}>{enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'positive'), financialTruthBadge)}</span>
                     </div>
                   ))}
                   {topNegativeContributors.map((c, idx) => (
@@ -1075,7 +1180,7 @@ export function DealWorkspaceV4({
                           darkMode ? 'bg-red-400' : 'bg-red-500'
                         }`}
                       />
-                      <span className={`text-xs ${sectionLabel}`}>{mapContributorToSignal(c.key, c.label, 'negative')}</span>
+                      <span className={`text-xs ${sectionLabel}`}>{enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'negative'), financialTruthBadge)}</span>
                     </div>
                   ))}
                 </div>

@@ -42,6 +42,8 @@ interface Props {
   }>;
   // Primary source for Decision Proof Block — overrides challenge_pass derivation when present.
   claimSupportItems?: ClaimSupportItemProp[] | null;
+  // Financial Truth badge — used to kill legacy financial phrasing in narrative text.
+  financialTruthBadge?: { tier: 'verified' | 'directional' | 'unverified' | 'conflicted'; text: string } | null;
 }
 
 export function WorkbenchInsightsSummary({
@@ -64,6 +66,7 @@ export function WorkbenchInsightsSummary({
   contradictions = [],
   scoreBreakdownSections = [],
   claimSupportItems = null,
+  financialTruthBadge = null,
 }: Props) {
   const border = darkMode ? 'border-white/10' : 'border-gray-200';
   const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
@@ -144,6 +147,17 @@ export function WorkbenchInsightsSummary({
     ? bandSecondary.toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
     : null;
 
+  const _ftTierLabels: Record<'verified' | 'directional' | 'unverified' | 'conflicted', string> = {
+    verified:    'verified financial evidence',
+    directional: 'directional financial model support',
+    unverified:  'unverified financial claims',
+    conflicted:  'conflicting financial sources',
+  };
+  function _enforceFinancialTruth(text: string): string {
+    if (!financialTruthBadge || !text) return text;
+    return text.replace(/financial data supports this analysis/gi, _ftTierLabels[financialTruthBadge.tier]);
+  }
+
   // Strip mechanical conviction score strings from the rationale before rendering.
   // These are auto-generated phrases that leak the conviction_v1 score into prose —
   // redundant and confusing when the diagnostic context block already shows the score.
@@ -155,7 +169,8 @@ export function WorkbenchInsightsSummary({
     if (/^conviction is constrained by/i.test(r)) return null;
     // Strip inline "Conviction N/100" fragments embedded mid-sentence.
     const stripped = r.replace(/\bconviction\s+\d+\/100\b[^.]*\.?\s*/gi, '').trim();
-    return stripped.length > 15 ? stripped : null;
+    const clean = stripped.length > 15 ? stripped : null;
+    return clean ? _enforceFinancialTruth(clean) : null;
   })();
 
   // ── Decision Proof Block ──────────────────────────────────────────────────
@@ -391,7 +406,7 @@ export function WorkbenchInsightsSummary({
           {topPositiveContributors.slice(0, 3).map((c) => (
             <div key={c.key} className={`flex items-start gap-2 text-xs ${sub}`}>
               <span className="mt-0.5 shrink-0 text-emerald-400">▲</span>
-              <span>{c.label}</span>
+              <span>{_enforceFinancialTruth(c.label)}</span>
             </div>
           ))}
         </div>

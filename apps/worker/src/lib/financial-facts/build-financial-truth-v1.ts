@@ -155,11 +155,23 @@ function parseDeckAmount(text: string): number | null {
 }
 
 /**
- * Returns true when a fact looks like a section-header artifact.
- * Guard: "2026 Revenue Projections" row → metric_key=revenue, value=2026.
+ * Returns true when a fact looks like a section-header artifact or is clearly
+ * corrupted by OCR magnitude inflation.
+ *
+ * Guard 1 — year-value artifacts: "2026 Revenue Projections" row → value=2026.
+ * Guard 2 — magnitude corruption: OCR text like "Sales Tax $2,352,769B" where
+ *   the trailing "B" is not a billions suffix but punctuation or a label
+ *   abbreviation. Any metric value ≥ $1 trillion (1e12) is implausible for
+ *   any entity that would appear in a deck or investment memo and indicates
+ *   a parser multiplier error. This guard maps to CT-4 in the FTRL conflict
+ *   catalog (section-header / label row mislabeled as metric value).
  */
 function isSectionHeaderFact(f: FinancialFactV1): boolean {
-  return Number.isInteger(f.value) && f.value >= 1990 && f.value <= 2040;
+  // Guard 1: year-like integer (e.g. 2026 from "2026 Revenue Projections")
+  if (Number.isInteger(f.value) && f.value >= 1990 && f.value <= 2040) return true;
+  // Guard 2: trillion+ magnitude — clearly OCR billions-suffix inflation
+  if (f.value >= 1e12) return true;
+  return false;
 }
 
 /**
@@ -700,7 +712,11 @@ function _buildFinancialTruthV1(inputs: FinancialTruthInputs): FinancialTruthMap
 
     // ── 3. Deck mention ───────────────────────────────────────────────────────
     const deckValue = getDeckValue(metric, deckFinancialSignals);
-    if (deckValue != null) {
+    // Magnitude guard: values >= $1T indicate OCR billions-suffix inflation
+    // (e.g. "Sales Tax $2,352,769B" parsed as $2.35 quadrillion). Guard mirrors
+    // the same threshold applied to fact-registry sources in isSectionHeaderFact.
+    // CT-4 in FTRL conflict catalog.
+    if (deckValue != null && deckValue < 1e12) {
       sources.push({
         source_kind: "deck",
         document_id: null,
@@ -710,6 +726,8 @@ function _buildFinancialTruthV1(inputs: FinancialTruthInputs): FinancialTruthMap
         origin: "deck_mention",
       });
       dbg(`${metric}: added deck value=${deckValue}`);
+    } else if (deckValue != null) {
+      dbg(`${metric}: deck value=${deckValue} rejected — magnitude >= 1e12 (OCR corruption guard)`);
     }
 
     // ── 4. Resolve ────────────────────────────────────────────────────────────

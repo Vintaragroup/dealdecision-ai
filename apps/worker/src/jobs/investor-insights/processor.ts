@@ -1296,9 +1296,40 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		ts: new Date().toISOString(),
 	}));
 
+	// When override_llm_mode is true and Stage 5 completed successfully, promote
+	// the persisted report status from deterministic_only → complete.
+	if (overrideLlmMode && stage5Status === "completed") {
+		try {
+			await pool.query(
+				`UPDATE public.investor_insight_reports
+				    SET status     = 'complete',
+				        updated_at = NOW()
+				  WHERE id = $1::uuid`,
+				[reportId],
+			);
+			console.log(JSON.stringify({
+				event: "INVESTOR_INSIGHTS_STATUS_PROMOTED",
+				deal_id: dealId,
+				report_id: reportId,
+				from_status: "deterministic_only",
+				to_status: "complete",
+				reason: "override_llm_mode+stage5_completed",
+				ts: new Date().toISOString(),
+			}));
+		} catch (promoteErr) {
+			console.error(JSON.stringify({
+				event: "INVESTOR_INSIGHTS_STATUS_PROMOTE_FAILED",
+				deal_id: dealId,
+				report_id: reportId,
+				error: promoteErr instanceof Error ? promoteErr.message : String(promoteErr),
+				ts: new Date().toISOString(),
+			}));
+		}
+	}
+
 	return {
 		ok: true,
-		status: "deterministic_only",
+		status: overrideLlmMode && stage5Status === "completed" ? "complete" : "deterministic_only",
 		report_id: reportId,
 		upstream_fingerprint: upstreamFingerprint,
 		stage5_status: stage5Status,

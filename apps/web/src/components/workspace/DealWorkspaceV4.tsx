@@ -6,7 +6,6 @@ import {
   Search,
   ChevronDown,
   ChevronRight,
-  AlertTriangle,
   AlertCircle,
   XCircle,
   TrendingUp,
@@ -635,6 +634,291 @@ function composeFinancialNarrative({
   return lines;
 }
 
+function makeListKey(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function dedupeText(items: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of items) {
+    const normalized = item.trim();
+    if (!normalized) continue;
+    const key = makeListKey(normalized);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function metricIsPresent(tile: FinancialTile): boolean {
+  return tile.value !== '—';
+}
+
+function metricIsEstimated(tile: FinancialTile): boolean {
+  return tile.isProjected === true || tile.trust === 'interim_extraction';
+}
+
+function summarizeMissingMetrics(labels: string[]): string[] {
+  if (labels.includes('burn rate') && labels.includes('runway')) {
+    return ['Burn rate and runway'];
+  }
+  return labels.map((label) => label.charAt(0).toUpperCase() + label.slice(1));
+}
+
+function deriveFinancialConfidence({
+  financialTruthBadge,
+  financialCoverage,
+  financialIntegrityStatus,
+}: {
+  financialTruthBadge?: { tier: 'verified' | 'directional' | 'unverified' | 'conflicted'; text: string } | null;
+  financialCoverage: number | null;
+  financialIntegrityStatus: 'validated' | 'unvalidated' | 'partial' | null;
+}): {
+  level: 'High' | 'Moderate' | 'Low';
+  tone: 'emerald' | 'blue' | 'amber' | 'rose';
+  summary: string;
+} {
+  if (financialTruthBadge?.tier === 'conflicted') {
+    return {
+      level: 'Low',
+      tone: 'rose',
+      summary: 'Financial sources conflict and need reconciliation before underwriting.',
+    };
+  }
+
+  if (financialTruthBadge?.tier === 'unverified') {
+    return {
+      level: 'Low',
+      tone: 'amber',
+      summary: 'Key underwriting inputs are still missing or unverified.',
+    };
+  }
+
+  if (financialTruthBadge?.tier === 'directional') {
+    return {
+      level: 'Moderate',
+      tone: 'blue',
+      summary: 'Available figures are directional and still need verification.',
+    };
+  }
+
+  if (financialTruthBadge?.tier === 'verified') {
+    return {
+      level: 'High',
+      tone: 'emerald',
+      summary: 'Core financial inputs are available and better supported.',
+    };
+  }
+
+  if (financialIntegrityStatus === 'validated' && (financialCoverage ?? 0) >= 80) {
+    return {
+      level: 'High',
+      tone: 'emerald',
+      summary: 'Core underwriting inputs appear present and validated.',
+    };
+  }
+
+  if (financialIntegrityStatus === 'partial' || (financialCoverage ?? 0) >= 55) {
+    return {
+      level: 'Moderate',
+      tone: 'blue',
+      summary: 'The financial picture is usable directionally but not fully supported.',
+    };
+  }
+
+  return {
+    level: 'Low',
+    tone: 'amber',
+    summary: 'Key underwriting inputs are still missing.',
+  };
+}
+
+function toneClasses(
+  tone: 'critical' | 'warning' | 'neutral' | 'emerald' | 'blue' | 'amber' | 'rose',
+  darkMode: boolean,
+): { border: string; bg: string; text: string; pill: string } {
+  const map = {
+    critical: darkMode
+      ? { border: 'border-red-500/20', bg: 'bg-red-500/5', text: 'text-red-400', pill: 'bg-red-500/10 border-red-500/20 text-red-400' }
+      : { border: 'border-red-200', bg: 'bg-red-50/70', text: 'text-red-700', pill: 'bg-red-100 border-red-200 text-red-700' },
+    warning: darkMode
+      ? { border: 'border-amber-500/20', bg: 'bg-amber-500/5', text: 'text-amber-400', pill: 'bg-amber-500/10 border-amber-500/20 text-amber-400' }
+      : { border: 'border-amber-200', bg: 'bg-amber-50/70', text: 'text-amber-700', pill: 'bg-amber-100 border-amber-200 text-amber-700' },
+    neutral: darkMode
+      ? { border: 'border-white/10', bg: 'bg-white/[0.02]', text: 'text-gray-400', pill: 'bg-white/5 border-white/10 text-gray-300' }
+      : { border: 'border-gray-200', bg: 'bg-white', text: 'text-gray-700', pill: 'bg-gray-100 border-gray-200 text-gray-700' },
+    emerald: darkMode
+      ? { border: 'border-emerald-500/20', bg: 'bg-emerald-500/5', text: 'text-emerald-400', pill: 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' }
+      : { border: 'border-emerald-200', bg: 'bg-emerald-50/70', text: 'text-emerald-700', pill: 'bg-emerald-100 border-emerald-200 text-emerald-700' },
+    blue: darkMode
+      ? { border: 'border-blue-500/20', bg: 'bg-blue-500/5', text: 'text-blue-400', pill: 'bg-blue-500/10 border-blue-500/20 text-blue-400' }
+      : { border: 'border-blue-200', bg: 'bg-blue-50/70', text: 'text-blue-700', pill: 'bg-blue-100 border-blue-200 text-blue-700' },
+    amber: darkMode
+      ? { border: 'border-amber-500/20', bg: 'bg-amber-500/5', text: 'text-amber-400', pill: 'bg-amber-500/10 border-amber-500/20 text-amber-400' }
+      : { border: 'border-amber-200', bg: 'bg-amber-50/70', text: 'text-amber-700', pill: 'bg-amber-100 border-amber-200 text-amber-700' },
+    rose: darkMode
+      ? { border: 'border-rose-500/20', bg: 'bg-rose-500/5', text: 'text-rose-400', pill: 'bg-rose-500/10 border-rose-500/20 text-rose-400' }
+      : { border: 'border-rose-200', bg: 'bg-rose-50/70', text: 'text-rose-700', pill: 'bg-rose-100 border-rose-200 text-rose-700' },
+  };
+  return map[tone];
+}
+
+function DecisionListGroup({
+  title,
+  items,
+  tone,
+  darkMode,
+  body,
+  muted,
+  emphasis = 'standard',
+}: {
+  title: string;
+  items: Array<{ text: string; severity?: 'high' | 'medium' | 'low' }>;
+  tone: 'critical' | 'warning' | 'neutral';
+  darkMode: boolean;
+  body: string;
+  muted: string;
+  emphasis?: 'strong' | 'standard';
+}) {
+  const tones = toneClasses(tone, darkMode);
+  const dotClass =
+    tone === 'critical'
+      ? 'bg-red-400'
+      : tone === 'warning'
+      ? 'bg-amber-400'
+      : darkMode
+      ? 'bg-gray-500'
+      : 'bg-gray-400';
+
+  return (
+    <div
+      className={`rounded-lg border ${
+        emphasis === 'strong'
+          ? `p-4 border-l-4 ${darkMode ? 'shadow-[0_0_0_1px_rgba(239,68,68,0.06)]' : ''}`
+          : 'p-3'
+      } ${tones.border} ${tones.bg}`}
+    >
+      <div className="flex items-start justify-between gap-3 mb-2.5">
+        <div>
+          <div className={`text-[10px] uppercase tracking-wide font-medium ${tones.text}`}>{title}</div>
+        </div>
+        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${tones.pill}`}>
+          {items.length}
+        </span>
+      </div>
+      {items.length > 0 ? (
+        <ul className={emphasis === 'strong' ? 'space-y-2.5' : 'space-y-2'}>
+          {items.map((item, index) => (
+            <li key={`${title}-${index}`} className="flex items-start gap-2">
+              <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`} />
+              <div className="min-w-0 flex-1">
+                <span className={`${emphasis === 'strong' ? 'text-[13px]' : 'text-xs'} leading-snug ${body}`}>{item.text}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className={`text-xs ${muted}`}>No items surfaced.</p>
+      )}
+    </div>
+  );
+}
+
+function FinancialConfidenceHeader({
+  darkMode,
+  heading,
+  body,
+  sectionLabel,
+  subCard,
+  financialConfidenceTone,
+  level,
+  summary,
+  coverageText,
+  financialTruthText,
+}: {
+  darkMode: boolean;
+  heading: string;
+  body: string;
+  sectionLabel: string;
+  subCard: string;
+  financialConfidenceTone: { border: string; bg: string; text: string; pill: string };
+  level: string;
+  summary: string;
+  coverageText: string;
+  financialTruthText?: string | null;
+}) {
+  return (
+    <div className={`rounded-lg border p-4 ${financialConfidenceTone.border} ${financialConfidenceTone.bg}`}>
+      <div className="grid grid-cols-1 md:grid-cols-[1.35fr_0.95fr] gap-4 items-start">
+        <div className="min-w-0">
+          <div className={`text-[10px] uppercase tracking-wide font-medium ${financialConfidenceTone.text}`}>
+            Financial Confidence
+          </div>
+          <div className="mt-2 flex items-end gap-3 flex-wrap">
+            <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${financialConfidenceTone.pill}`}>
+              {level}
+            </span>
+            <span className={`text-xs ${body}`}>{summary}</span>
+          </div>
+        </div>
+        <div className={`rounded-lg border px-4 py-3 ${subCard}`}>
+          <div className={`text-[10px] uppercase tracking-wide font-medium ${sectionLabel}`}>Coverage</div>
+          <div className={`mt-1 text-2xl font-semibold tracking-tight ${heading}`}>{coverageText}</div>
+          {financialTruthText ? (
+            <div className={`mt-1 text-[11px] leading-snug ${sectionLabel}`}>Financial Truth: {financialTruthText}</div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FinancialMetricCard({
+  label,
+  value,
+  note,
+  status,
+  darkMode,
+  heading,
+  muted,
+  card,
+  priority = false,
+}: {
+  label: string;
+  value: string;
+  note?: string | null;
+  status?: 'present' | 'estimated' | 'missing';
+  darkMode: boolean;
+  heading: string;
+  muted: string;
+  card: string;
+  priority?: boolean;
+}) {
+  const statusTone =
+    status === 'missing'
+      ? darkMode
+        ? 'text-amber-400'
+        : 'text-amber-700'
+      : status === 'estimated'
+      ? darkMode
+        ? 'text-blue-400'
+        : 'text-blue-700'
+      : heading;
+
+  return (
+    <div className={`rounded-lg border ${priority ? 'px-4 py-3' : 'px-3 py-2.5'} ${card}`}>
+      <div className={`text-[11px] uppercase tracking-wide ${muted}`}>{label}</div>
+      <div className={`mt-1.5 ${priority ? 'text-base' : 'text-sm'} font-medium ${statusTone}`}>{value}</div>
+      {note ? <div className={`mt-0.5 text-[11px] leading-snug ${muted}`}>{note}</div> : null}
+    </div>
+  );
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export function DealWorkspaceV4({
@@ -770,11 +1054,6 @@ export function DealWorkspaceV4({
   const burnTile = findTile(financialTiles, 'Monthly Burn');
   const runwayTile = findTile(financialTiles, 'Runway');
 
-  const showIntegrityBadge =
-    financialIntegrityStatus && financialIntegrityStatus !== 'validated';
-  const showCoverageBadge =
-    financialCoverage !== null && financialCoverage < 80;
-
   // ── Section-level composition ────────────────────────────────────────────
 
   // Investment Snapshot: composed from conviction signals. Falls back to investmentParas
@@ -788,6 +1067,14 @@ export function DealWorkspaceV4({
     humanizedChecks,
     financialTruthBadge,
   });
+
+  // One-sentence summary for the Financial Truth context line.
+  const opportunitySummaryLine: string | null =
+    convictionNarrativeLines.length > 0
+      ? convictionNarrativeLines[0]
+      : investmentParas.length > 0
+      ? enforceFinancialTruth(investmentParas[0], financialTruthBadge)
+      : null;
 
   // Product / Market: primary governed value + optional signal line from contributors.
   const { primary: productPrimary, signal: productSignal } = composeProductNarrative({
@@ -823,16 +1110,6 @@ export function DealWorkspaceV4({
 
   // ── Styling helpers ──────────────────────────────────────────────────────
 
-  const getRecommendationColor = (rec: 'Proceed' | 'Investigate' | 'Caution' | 'Pass' | null) => {
-    if (rec === 'Proceed') return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
-    if (rec === 'Investigate') return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
-    if (rec === 'Caution') return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
-    if (rec === 'Pass') return 'bg-red-500/10 text-red-400 border-red-500/20';
-    return darkMode
-      ? 'bg-white/5 text-gray-400 border-white/10'
-      : 'bg-gray-100 text-gray-500 border-gray-200';
-  };
-
   const getConvictionColor = (score: number | null) => {
     if (score === null) return darkMode ? 'text-gray-500' : 'text-gray-400';
     if (score >= 80) return 'text-emerald-400';
@@ -840,17 +1117,73 @@ export function DealWorkspaceV4({
     return 'text-red-400';
   };
 
-  const getSeverityColor = (severity: 'high' | 'medium' | 'low') => {
-    if (severity === 'high') return 'text-red-400 bg-red-400/10 border-red-500/20';
-    if (severity === 'medium') return 'text-amber-400 bg-amber-400/10 border-amber-500/20';
-    return 'text-gray-400 bg-gray-400/10 border-gray-500/20';
-  };
-
   const card = darkMode ? 'bg-white/[0.02] border-white/10' : 'bg-white border-gray-200';
   const muted = darkMode ? 'text-gray-500' : 'text-gray-500';
   const body = darkMode ? 'text-gray-300' : 'text-gray-700';
   const heading = darkMode ? 'text-white' : 'text-gray-900';
   const sectionLabel = darkMode ? 'text-gray-400' : 'text-gray-600';
+  const subCard = darkMode ? 'bg-white/[0.03] border-white/10' : 'bg-gray-50/80 border-gray-200';
+
+  const dealBreakers = redFlags
+    .filter((flag) => flag.severity === 'high')
+    .map((flag) => ({ text: flag.message, severity: flag.severity }));
+
+  const fragilityItems = dedupeText([
+    ...redFlags
+      .filter((flag) => flag.severity !== 'high')
+      .map((flag) => flag.message),
+    ...contradictionItems.map((item) => humanizeContradiction(item.text)),
+    ...(financialCoverage !== null && financialCoverage < 80
+      ? [`Only ${Math.round(financialCoverage)}% of tracked financial inputs are currently covered`]
+      : []),
+    ...(financialIntegrityStatus === 'partial'
+      ? ['Financial figures are only partially validated']
+      : financialIntegrityStatus === 'unvalidated'
+      ? ['Financial figures are not yet validated']
+      : []),
+  ]).map((text) => ({ text, severity: 'medium' as const }));
+
+  const validationItems = dedupeText([
+    ...humanizedChecks,
+    ...openQuestions.map(formatDiligenceItem),
+  ]).map((text) => ({ text, severity: 'low' as const }));
+
+  const riskDiagnostics = dedupeText([
+    ...contradictions.map((item) => humanizeContradiction(item)),
+    ...(financialIntegrityStatus && financialIntegrityStatus !== 'validated'
+      ? [`Financial integrity status: ${financialIntegrityStatus}`]
+      : []),
+  ]);
+
+  const financialConfidence = deriveFinancialConfidence({
+    financialTruthBadge,
+    financialCoverage,
+    financialIntegrityStatus,
+  });
+  const financialConfidenceTone = toneClasses(financialConfidence.tone, darkMode);
+
+  const missingMetricLabels = [
+    !metricIsPresent(revenueTile) ? 'revenue' : null,
+    !metricIsPresent(burnTile) ? 'burn rate' : null,
+    !metricIsPresent(runwayTile) ? 'runway' : null,
+  ].filter((label): label is string => Boolean(label));
+
+  const missingForUnderwriting = dedupeText([
+    ...summarizeMissingMetrics(missingMetricLabels),
+    ...humanizedChecks.filter((item) => /revenue|burn|runway|financial|model|cash/i.test(item)),
+  ]);
+
+  const financialNotes = dedupeText([
+    metricIsEstimated(revenueTile) ? 'Revenue is projection-based' : '',
+    metricIsEstimated(burnTile) ? 'Burn rate is derived rather than directly verified' : '',
+    metricIsEstimated(runwayTile) ? 'Runway is derived from projected inputs' : '',
+    financialIntegrityStatus === 'partial' ? 'Financial figures are only partially validated' : '',
+    financialIntegrityStatus === 'unvalidated' ? 'Financial figures are unaudited or unvalidated' : '',
+    humanizedChecks.some((item) => /financial statements|financial model/i.test(item))
+      ? 'A verified financial model or statements are still needed'
+      : '',
+  ]);
+  const compactFinancialNotes = financialNotes.slice(0, 3);
 
   return (
     <div className={`w-full ${darkMode ? 'bg-[#0a0a0a]' : 'bg-gray-50'}`}>
@@ -947,125 +1280,111 @@ export function DealWorkspaceV4({
           );
         })()}
 
-        {/* Signal Tension — deterministic tension summary immediately after Decision Status */}
-        {signalTension != null && (() => {
-          const ST_STYLES = {
-            HIGH:     { badge: 'text-rose-400 border-rose-500/30 bg-rose-500/10',     bar: 'border-l-rose-500' },
-            MODERATE: { badge: 'text-amber-400 border-amber-500/30 bg-amber-500/10',  bar: 'border-l-amber-500' },
-            LOW:      { badge: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10', bar: 'border-l-emerald-500' },
-          } as const;
-          const st = ST_STYLES[signalTension.level];
-          return (
-            <div
-              data-testid="signal-tension-block"
-              className={`p-4 rounded-lg border-l-4 ${st.bar} ${darkMode ? 'bg-white/[0.02] border border-white/10' : 'bg-white border border-gray-200'}`}
-            >
-              <div className="flex items-center gap-2 mb-2">
-                <span className={`text-[10px] uppercase tracking-widest font-medium ${muted}`}>Signal Tension</span>
-                <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${st.badge}`}>
-                  {signalTension.label}
-                </span>
-              </div>
-              <p className={`text-sm leading-relaxed ${signalTension.reasons.length > 0 ? 'mb-2.5' : ''} ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                {signalTension.summary}
-              </p>
-              {signalTension.reasons.length > 0 && (
-                <ul className="space-y-1">
-                  {signalTension.reasons.map((reason, i) => (
-                    <li key={i} className={`text-xs flex gap-1.5 ${muted}`}>
-                      <span className="shrink-0 mt-px">•</span>
-                      {reason}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          );
-        })()}
-
         {/* Decision Layer (Above the Fold) */}
         <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-6">
 
-          {/* LEFT: Opportunity Signal — why this deal looks interesting or weak */}
+          {/* LEFT: Opportunity Signal — decision surface */}
           <div className="space-y-4">
-            <div>
-              <h2 className={`text-sm font-medium ${sectionLabel}`}>Opportunity Signal</h2>
-              <p className={`text-xs mt-0.5 ${muted}`}>Why this deal looks interesting or weak</p>
-            </div>
-{/* Opportunity Signal — badge-first score signal, recommendation secondary */}
-            {(recommendation || convictionScore !== null) && (() => {
-              const snapBadge = scoreToBadge(convictionScore, 'deal_score');
-              const snapColors = getScoreBadgeColors(snapBadge.bucket, darkMode);
+            {/* Financial Truth context line — shown only when FT tier is available */}
+            {financialTruthBadge && (() => {
+              const FT_INLINE: Record<
+                'verified' | 'directional' | 'unverified' | 'conflicted',
+                { label: string; cls: string }
+              > = {
+                verified:    { label: 'Verified',    cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
+                directional: { label: 'Directional', cls: 'text-blue-400   border-blue-500/30   bg-blue-500/10'   },
+                unverified:  { label: 'Unverified',  cls: 'text-amber-400  border-amber-500/30  bg-amber-500/10'  },
+                conflicted:  { label: 'Conflicted',  cls: 'text-rose-400   border-rose-500/30   bg-rose-500/10'   },
+              };
+              const { label, cls } = FT_INLINE[financialTruthBadge.tier];
               return (
-                <div className="space-y-2">
-                  {convictionScore !== null && (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`px-2.5 py-1 rounded-full border text-xs font-semibold ${snapColors.bg} ${snapColors.text} ${snapColors.border}`}>
-                        {snapBadge.label} — {snapBadge.meaning}
-                      </span>
-                    </div>
+                <div className={`flex items-center gap-2 flex-wrap px-3 py-2 rounded-lg border ${darkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-gray-50 border-gray-200'}`}>
+                  <span className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Financial Truth</span>
+                  <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${cls}`}>{label}</span>
+                  {opportunitySummaryLine && (
+                    <span className={`text-xs leading-relaxed ${muted}`}>{opportunitySummaryLine}</span>
                   )}
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {recommendation && (
-                      <span className={`px-2.5 py-1 rounded-full border text-xs font-medium uppercase tracking-wide ${getRecommendationColor(recommendation)}`}>
-                        {recommendation}
-                      </span>
-                    )}
-                    {convictionScore !== null && (
-                      <span className={`text-xs ${muted}`}>Score: {convictionScore}/100</span>
-                    )}
-                  </div>
                 </div>
               );
             })()}
-            <div className="space-y-3">
-              {/* Financial Truth — hard surface truth state immediately under Opportunity Signal */}
-              {financialTruthBadge && (() => {
-                const FT_STYLES: Record<
-                  'verified' | 'directional' | 'unverified' | 'conflicted',
-                  { label: string; cls: string }
-                > = {
-                  verified:    { label: 'Verified',    cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
-                  directional: { label: 'Directional', cls: 'text-blue-400   border-blue-500/30   bg-blue-500/10'   },
-                  unverified:  { label: 'Unverified',  cls: 'text-amber-400  border-amber-500/30  bg-amber-500/10'  },
-                  conflicted:  { label: 'Conflicted',  cls: 'text-rose-400   border-rose-500/30   bg-rose-500/10'   },
-                };
-                const { label, cls } = FT_STYLES[financialTruthBadge.tier];
-                return (
-                  <div className={`flex items-start gap-2.5 px-3 py-2.5 rounded-lg border ${darkMode ? 'bg-white/[0.03] border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                    <div className="flex items-center gap-1.5 shrink-0 pt-px">
-                      <span className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Financial Truth</span>
-                      <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${cls}`}>{label}</span>
-                    </div>
-                    <span className={`text-xs leading-relaxed ${muted}`}>{financialTruthBadge.text}</span>
+
+            {/* Reasons: Why it looks promising | What blocks commitment */}
+            {(topPositiveContributors.length > 0 || topNegativeContributors.length > 0) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className={`p-3 rounded-lg border ${darkMode ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-emerald-200 bg-emerald-50/50'}`}>
+                  <div className={`text-[10px] uppercase tracking-wide font-medium mb-2 ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>
+                    Why it looks promising
                   </div>
-                );
-              })()}
-              {convictionNarrativeLines.length > 0 ? (
-                convictionNarrativeLines.map((line, idx) => (
-                  <p key={idx} className={`text-sm leading-relaxed ${body}`}>
-                    {line}
-                  </p>
-                ))
-              ) : investmentParas.length > 0 ? (
-                investmentParas.map((para, idx) => (
-                  <p key={idx} className={`text-sm leading-relaxed ${body}`}>
-                    {enforceFinancialTruth(para, financialTruthBadge)}
-                  </p>
-                ))
-              ) : (
-                <p className={`text-sm ${muted} italic`}>Investment thesis not yet available.</p>
-              )}
-            </div>
+                  {topPositiveContributors.length > 0 ? (
+                    <ul className="space-y-1.5">
+                      {topPositiveContributors.map((c, i) => (
+                        <li key={i} className="flex items-start gap-1.5">
+                          <span className={`shrink-0 mt-px text-xs font-bold ${darkMode ? 'text-emerald-400' : 'text-emerald-500'}`}>+</span>
+                          <span className={`text-xs leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            {enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'positive'), financialTruthBadge)}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className={`text-xs italic ${muted}`}>No positive signals found.</p>
+                  )}
+                </div>
+                <div className={`p-3 rounded-lg border ${darkMode ? 'border-red-500/20 bg-red-500/5' : 'border-red-200 bg-red-50/50'}`}>
+                  <div className={`text-[10px] uppercase tracking-wide font-medium mb-2 ${darkMode ? 'text-red-400' : 'text-red-600'}`}>
+                    What blocks commitment
+                  </div>
+                  {(topNegativeContributors.length > 0 || (signalTension != null && signalTension.level !== 'LOW' && signalTension.reasons.length > 0)) ? (
+                    <ul className="space-y-1.5">
+                      {topNegativeContributors.map((c, i) => (
+                        <li key={i} className="flex items-start gap-1.5">
+                          <span className={`shrink-0 mt-px text-xs font-bold ${darkMode ? 'text-red-400' : 'text-red-500'}`}>−</span>
+                          <span className={`text-xs leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            {enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'negative'), financialTruthBadge)}
+                          </span>
+                        </li>
+                      ))}
+                      {signalTension != null && signalTension.level !== 'LOW' && signalTension.reasons.map((reason, i) => (
+                        <li key={`st-${i}`} className="flex items-start gap-1.5">
+                          <span className={`shrink-0 mt-px text-xs font-bold ${signalTension.level === 'HIGH' ? (darkMode ? 'text-rose-400' : 'text-rose-500') : (darkMode ? 'text-amber-400' : 'text-amber-500')}`}>!</span>
+                          <span className={`text-xs leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{reason}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className={`text-xs italic ${muted}`}>No blocking issues identified.</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* 3. Required next checks — numbered action checklist, visually distinct */}
+            {humanizedChecks.length > 0 && (
+              <div className={`p-3 rounded-lg border-l-4 border-l-amber-500 border ${darkMode ? 'bg-amber-500/5 border-amber-500/20' : 'bg-amber-50 border-amber-200'}`}>
+                <div className={`text-[10px] uppercase tracking-wide font-medium mb-2 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`}>
+                  Required next checks
+                </div>
+                <ul className="space-y-1.5">
+                  {humanizedChecks.slice(0, 4).map((check, i) => (
+                    <li key={i} className="flex items-start gap-2">
+                      <span className={`shrink-0 w-4 h-4 mt-px rounded border flex items-center justify-center text-[10px] font-medium ${darkMode ? 'border-amber-500/40 text-amber-400' : 'border-amber-400 text-amber-600'}`}>
+                        {i + 1}
+                      </span>
+                      <span className={`text-xs leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{check}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
 
-          {/* RIGHT: Capital Readiness + Key Drivers (supporting lenses for the decision status above) */}
+          {/* RIGHT: Decision Confidence — scores, model diagnostics, robustness */}
           <div className="space-y-5">
 
-            {/* Capital Readiness — would I commit capital right now? */}
+            {/* Decision Confidence — scores, model output, robustness indicators */}
             <div className={`p-5 rounded-lg border ${card}`}>
               <div className={`text-xs uppercase tracking-wide mb-2.5 ${muted}`}>
-                Capital Readiness
+                Decision Confidence
               </div>
               {(() => {
                 const cvBadge = scoreToBadge(convictionScore, 'conviction');
@@ -1157,70 +1476,6 @@ export function DealWorkspaceV4({
                 </div>
               )}
             </div>
-
-            {/* Key Drivers: prefer conviction contributors, fall back to legacy keyDrivers */}
-            {(topPositiveContributors.length > 0 || topNegativeContributors.length > 0) ? (
-              <div>
-                <div className={`text-xs uppercase tracking-wide mb-3 ${muted}`}>Key Drivers</div>
-                <div className="space-y-2">
-                  {topPositiveContributors.map((c, idx) => (
-                    <div key={`pos-${idx}`} className="flex items-start gap-2">
-                      <div
-                        className={`w-1 h-1 rounded-full mt-1.5 flex-shrink-0 ${
-                          darkMode ? 'bg-emerald-400' : 'bg-emerald-500'
-                        }`}
-                      />
-                      <span className={`text-xs ${sectionLabel}`}>{enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'positive'), financialTruthBadge)}</span>
-                    </div>
-                  ))}
-                  {topNegativeContributors.map((c, idx) => (
-                    <div key={`neg-${idx}`} className="flex items-start gap-2">
-                      <div
-                        className={`w-1 h-1 rounded-full mt-1.5 flex-shrink-0 ${
-                          darkMode ? 'bg-red-400' : 'bg-red-500'
-                        }`}
-                      />
-                      <span className={`text-xs ${sectionLabel}`}>{enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'negative'), financialTruthBadge)}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : activeKeyDrivers.length > 0 && (
-              <div>
-                <div className={`text-xs uppercase tracking-wide mb-3 ${muted}`}>Key Drivers</div>
-                <div className="space-y-2">
-                  {activeKeyDrivers.slice(0, 5).map((driver, idx) => (
-                    <div key={idx} className="flex items-start gap-2">
-                      <div
-                        className={`w-1 h-1 rounded-full mt-1.5 flex-shrink-0 ${
-                          darkMode ? 'bg-emerald-400' : 'bg-emerald-500'
-                        }`}
-                      />
-                      <span className={`text-xs ${sectionLabel}`}>{driver}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Required Next Checks (diligence checklist from conviction) */}
-            {humanizedChecks.length > 0 && (
-              <div>
-                <div className={`text-xs uppercase tracking-wide mb-3 ${muted}`}>Required Checks</div>
-                <div className="space-y-2">
-                  {humanizedChecks.map((check, idx) => (
-                    <div key={idx} className="flex items-start gap-2">
-                      <div
-                        className={`w-1 h-1 rounded-full mt-1.5 flex-shrink-0 ${
-                          darkMode ? 'bg-amber-400' : 'bg-amber-500'
-                        }`}
-                      />
-                      <span className={`text-xs ${sectionLabel}`}>{check}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
         </div>
 
@@ -1286,65 +1541,53 @@ export function DealWorkspaceV4({
         </div>
 
         {/* Risk Assessment (only rendered when there is risk content) */}
-        {(redFlags.length > 0 || contradictionItems.length > 0 || openQuestions.length > 0) && (
+        {(dealBreakers.length > 0 || fragilityItems.length > 0 || validationItems.length > 0) && (
           <div>
             <h2 className={`text-sm font-medium mb-4 ${sectionLabel}`}>Risk Assessment</h2>
-            <div className={`p-5 rounded-lg border ${card}`}>
-              <div className="space-y-4">
+            <div className={`rounded-xl border p-4 sm:p-5 ${card}`}>
+              <div className="space-y-3">
+                <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_1fr_1fr] gap-3">
+                  <DecisionListGroup
+                    title="Deal Breakers"
+                    items={dealBreakers}
+                    tone="critical"
+                    darkMode={darkMode}
+                    body={body}
+                    muted={muted}
+                    emphasis="strong"
+                  />
+                  <DecisionListGroup
+                    title="Why The Decision Is Fragile"
+                    items={fragilityItems}
+                    tone="warning"
+                    darkMode={darkMode}
+                    body={body}
+                    muted={muted}
+                  />
+                  <DecisionListGroup
+                    title="What Must Be Validated"
+                    items={validationItems}
+                    tone="neutral"
+                    darkMode={darkMode}
+                    body={body}
+                    muted={muted}
+                  />
+                </div>
 
-                {redFlags.length > 0 && (
-                  <div>
-                    <div className="flex items-center gap-2 mb-3">
-                      <AlertTriangle className="w-4 h-4 text-red-400" />
-                      <h3 className={`text-sm font-medium ${heading}`}>Red Flags</h3>
-                    </div>
-                    <div className="space-y-2">
-                      {redFlags.map((flag, idx) => (
+                {riskDiagnostics.length > 0 && (
+                  <details className={`rounded-lg border px-3 py-2.5 ${subCard}`}>
+                    <summary className={`cursor-pointer list-none text-[11px] font-medium ${sectionLabel}`}>
+                      Supporting diagnostics
+                    </summary>
+                    <div className="mt-2.5 space-y-1.5">
+                      {riskDiagnostics.map((item, idx) => (
                         <div key={idx} className="flex items-start gap-2">
-                          <div className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase shrink-0 ${getSeverityColor(flag.severity)}`}>
-                            {flag.severity}
-                          </div>
-                          <span className={`text-sm flex-1 ${body}`}>{flag.message}</span>
+                          <XCircle className={`mt-0.5 h-3.5 w-3.5 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`} />
+                          <span className={`text-[11px] leading-snug ${sectionLabel}`}>{item}</span>
                         </div>
                       ))}
                     </div>
-                  </div>
-                )}
-
-                {contradictionItems.length > 0 && (
-                  <div>
-                    <div className="flex items-center gap-2 mb-3">
-                      <XCircle className="w-4 h-4 text-amber-400" />
-                      <h3 className={`text-sm font-medium ${heading}`}>Contradictions</h3>
-                    </div>
-                    <div className="space-y-2">
-                      {contradictionItems.map((item, idx) => (
-                        <div key={idx} className="flex items-start gap-2">
-                          <div className={`px-2 py-0.5 rounded text-[10px] font-medium uppercase shrink-0 ${getSeverityColor(item.severity)}`}>
-                            {item.severity}
-                          </div>
-                          <span className={`text-sm flex-1 ${body}`}>{humanizeContradiction(item.text)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {openQuestions.length > 0 && (
-                  <div>
-                    <div className="flex items-center gap-2 mb-3">
-                      <AlertCircle className="w-4 h-4 text-gray-400" />
-                      <h3 className={`text-sm font-medium ${heading}`}>Open Questions</h3>
-                    </div>
-                    <div className="space-y-1.5">
-                      {openQuestions.map((item, idx) => (
-                        <div key={idx} className="flex items-start gap-2">
-                          <div className={`w-1 h-1 rounded-full mt-2 shrink-0 ${darkMode ? 'bg-gray-600' : 'bg-gray-400'}`} />
-                          <span className={`text-sm ${sectionLabel}`}>{formatDiligenceItem(item)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  </details>
                 )}
               </div>
             </div>
@@ -1354,65 +1597,119 @@ export function DealWorkspaceV4({
         {/* Financial Snapshot (Horizontal Strip) */}
         <div>
           <h2 className={`text-sm font-medium mb-4 ${sectionLabel}`}>Financial Snapshot</h2>
-          {financialProseLines.length > 0 && (
-            <div className="space-y-2 mb-4">
-              {financialProseLines.map((line, idx) => (
-                <p key={idx} className={`text-sm leading-relaxed ${body}`}>{line}</p>
-              ))}
-            </div>
-          )}
-          <div className="flex items-center gap-3 flex-wrap">
+          <div className={`rounded-xl border p-4 sm:p-5 ${card}`}>
+            <FinancialConfidenceHeader
+              darkMode={darkMode}
+              heading={heading}
+              body={body}
+              sectionLabel={sectionLabel}
+              subCard={subCard}
+              financialConfidenceTone={financialConfidenceTone}
+              level={financialConfidence.level}
+              summary={financialConfidence.summary}
+              coverageText={financialCoverage !== null ? `${Math.round(financialCoverage)}%` : 'Missing'}
+              financialTruthText={financialTruthBadge?.text ?? null}
+            />
 
-            <div className={`flex-1 min-w-[120px] px-4 py-3 rounded-lg border ${card}`}>
-              <div className={`text-xs mb-1 ${muted}`}>Revenue / ARR</div>
-              <div className="flex items-center gap-2">
-                <span className={`text-sm font-medium ${revenueTile.value !== '—' ? heading : muted}`}>
-                  {revenueTile.value}
-                </span>
-                {revenueTile.value !== '—' && <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />}
-              </div>
+            <div className="mt-4 grid grid-cols-2 xl:grid-cols-4 gap-3">
+              <FinancialMetricCard
+                label="Revenue"
+                value={metricIsPresent(revenueTile) ? revenueTile.value : 'Missing'}
+                note={metricIsPresent(revenueTile) ? (metricIsEstimated(revenueTile) ? 'Projected' : 'Available') : null}
+                status={!metricIsPresent(revenueTile) ? 'missing' : metricIsEstimated(revenueTile) ? 'estimated' : 'present'}
+                darkMode={darkMode}
+                heading={heading}
+                muted={muted}
+                card={subCard}
+                priority
+              />
+              <FinancialMetricCard
+                label="Burn Rate"
+                value={metricIsPresent(burnTile) ? burnTile.value : 'Missing'}
+                note={metricIsPresent(burnTile) ? (metricIsEstimated(burnTile) ? 'Derived' : 'Available') : null}
+                status={!metricIsPresent(burnTile) ? 'missing' : metricIsEstimated(burnTile) ? 'estimated' : 'present'}
+                darkMode={darkMode}
+                heading={heading}
+                muted={muted}
+                card={subCard}
+              />
+              <FinancialMetricCard
+                label="Runway"
+                value={metricIsPresent(runwayTile) ? runwayTile.value : 'Missing'}
+                note={metricIsPresent(runwayTile) ? (metricIsEstimated(runwayTile) ? 'Projected' : 'Available') : null}
+                status={!metricIsPresent(runwayTile) ? 'missing' : metricIsEstimated(runwayTile) ? 'estimated' : 'present'}
+                darkMode={darkMode}
+                heading={heading}
+                muted={muted}
+                card={subCard}
+              />
+              <FinancialMetricCard
+                label="Coverage"
+                value={financialCoverage !== null ? `${Math.round(financialCoverage)}%` : 'Missing'}
+                note={financialCoverage !== null ? 'Tracked inputs covered' : null}
+                status={financialCoverage === null ? 'missing' : financialCoverage < 55 ? 'missing' : financialCoverage < 80 ? 'estimated' : 'present'}
+                darkMode={darkMode}
+                heading={heading}
+                muted={muted}
+                card={subCard}
+                priority
+              />
             </div>
 
-            <div className={`flex-1 min-w-[120px] px-4 py-3 rounded-lg border ${card}`}>
-              <div className={`text-xs mb-1 ${muted}`}>Burn Rate</div>
-              <span className={`text-sm font-medium ${burnTile.value !== '—' ? heading : muted}`}>
-                {burnTile.value}
-              </span>
-            </div>
-
-            <div className={`flex-1 min-w-[120px] px-4 py-3 rounded-lg border ${card}`}>
-              <div className={`text-xs mb-1 ${muted}`}>Runway</div>
-              <span className={`text-sm font-medium ${runwayTile.value !== '—' ? heading : muted}`}>
-                {runwayTile.value}
-                {runwayTile.isProjected && runwayTile.value !== '—' && (
-                  <span className={`ml-1 text-[10px] font-normal ${muted}`}>proj.</span>
-                )}
-              </span>
-            </div>
-
-            {showIntegrityBadge && (
-              <div className={`px-4 py-3 rounded-lg border border-amber-500/20 ${darkMode ? 'bg-amber-500/10' : 'bg-amber-50'}`}>
-                <div className="flex items-center gap-2">
-                  <Shield className="w-4 h-4 text-amber-400" />
-                  <span className={`text-xs font-medium ${darkMode ? 'text-amber-400' : 'text-amber-600'}`}>
-                    {financialIntegrityStatus === 'partial' ? 'Partial Data' : 'Unvalidated'}
-                  </span>
+            <div className="mt-4 grid grid-cols-1 xl:grid-cols-[1.1fr_1.2fr] gap-3">
+              <div className={`rounded-lg border p-3 ${subCard}`}>
+                <div className={`text-[10px] uppercase tracking-wide font-medium mb-1.5 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`}>
+                  Missing For Underwriting
                 </div>
+                {missingForUnderwriting.length > 0 ? (
+                  <ul className="space-y-1.5">
+                    {missingForUnderwriting.map((item, idx) => (
+                      <li key={idx} className="flex items-start gap-2">
+                        <AlertCircle className={`mt-0.5 h-3.5 w-3.5 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`} />
+                        <span className={`text-xs leading-snug ${body}`}>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className={`text-xs ${muted}`}>No additional underwriting gaps surfaced.</p>
+                )}
               </div>
-            )}
 
-            {showCoverageBadge && (
-              <div className={`px-4 py-3 rounded-lg border ${card}`}>
-                <div className={`text-xs mb-1 ${muted}`}>Coverage</div>
-                <span className="text-sm font-medium text-amber-400">
-                  {Math.round(financialCoverage!)}%
-                </span>
+              <div className={`rounded-lg border p-3 ${subCard}`}>
+                <div className={`text-[10px] uppercase tracking-wide font-medium mb-1.5 ${sectionLabel}`}>
+                  Compact Notes
+                </div>
+                {compactFinancialNotes.length > 0 ? (
+                  <ul className="space-y-1.5">
+                    {compactFinancialNotes.map((item, idx) => (
+                      <li key={idx} className="flex items-start gap-2">
+                        <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${darkMode ? 'bg-gray-500' : 'bg-gray-400'}`} />
+                        <span className={`text-xs leading-snug ${body}`}>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className={`text-xs ${muted}`}>No additional financial caveats surfaced.</p>
+                )}
               </div>
+            </div>
+
+            {(financialProseLines.length > 0 || underwritingNarrative) && (
+              <details className={`mt-4 rounded-lg border px-3 py-2.5 ${subCard}`}>
+                <summary className={`cursor-pointer list-none text-[11px] font-medium ${sectionLabel}`}>
+                  Source notes and diagnostics
+                </summary>
+                <div className="mt-2.5 space-y-1.5">
+                  {financialProseLines.map((line, idx) => (
+                    <p key={idx} className={`text-[11px] leading-snug ${sectionLabel}`}>{line}</p>
+                  ))}
+                  {underwritingNarrative && (
+                    <p className={`text-[11px] leading-snug ${sectionLabel}`}>{underwritingNarrative}</p>
+                  )}
+                </div>
+              </details>
             )}
           </div>
-          {underwritingNarrative && (
-            <p className={`text-xs leading-relaxed mt-3 ${muted}`}>{underwritingNarrative}</p>
-          )}
         </div>
 
         {/* Team Highlights (collapsible, only when data present) */}

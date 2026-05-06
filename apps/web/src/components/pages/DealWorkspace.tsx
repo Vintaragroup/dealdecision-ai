@@ -30,7 +30,7 @@ import { DealDeepDiveTab } from '../workspace/DealDeepDiveTab';
 import { IntelligenceTab } from '../workspace/IntelligenceTab';
 import { WorkspaceRedesignedShell } from '../workspace/WorkspaceRedesignedShell';
 import { selectWorkspaceRedesignedShellProps } from '../../lib/selectors/selectWorkspaceRedesignedShellProps';
-import { DealWorkspaceV4 } from '../workspace/DealWorkspaceV4';
+import { DealWorkspaceV4, type RerunAnalysisProgress } from '../workspace/DealWorkspaceV4';
 import { WorkbenchDeepDiveSummary } from '../workspace/WorkbenchDeepDiveSummary';
 import { WorkbenchInsightsSummary } from '../workspace/WorkbenchInsightsSummary';
 import { WorkbenchEvidenceSummary } from '../workspace/WorkbenchEvidenceSummary';
@@ -190,6 +190,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     lastError: string | null;
   }>({ status: 'connected', consecutiveFailures: 0, lastError: null });
   const [jobPollNonce, setJobPollNonce] = useState(0);
+  const [rerunTrackedJobId, setRerunTrackedJobId] = useState<string | null>(null);
+  const [rerunStartedAtMs, setRerunStartedAtMs] = useState<number | null>(null);
+  const [rerunElapsedSeconds, setRerunElapsedSeconds] = useState(0);
+  const [rerunNotice, setRerunNotice] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+    jobId: string | null;
+    atMs: number;
+  } | null>(null);
   const [dealJobs, setDealJobs] = useState<DealJobRowV2[]>([]);
   const [dealJobsError, setDealJobsError] = useState<string | null>(null);
   type FullProcessStepKey = 'reextract_documents' | 'extract_visuals' | 'analyze_deal';
@@ -258,6 +267,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const lastEventIdRef = useRef<string | undefined>(undefined);
   const handledTerminalJobKeysRef = useRef<Set<string>>(new Set());
   const fullProcessInFlightRef = useRef(false);
+  const rerunStartInFlightRef = useRef(false);
+  const rerunNoticeTimerRef = useRef<number | null>(null);
   const fullProcessRequestIdRef = useRef<string | null>(null);
   const lastDiagnosticsAttemptAtRef = useRef<number>(0);
 
@@ -511,6 +522,64 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [dealJobs, derivedAnalyzeForRun.job, fullProcessRunExtractJobId, isFullProcessActive, jobId, pinnedIsAnalyze, pinnedJobRow]);
 
   const activeJobId = pinnedIsAnalyze ? (selectedAnalyzeJobForPinned?.job_id ?? jobId) : jobId;
+
+  useEffect(() => {
+    return () => {
+      if (rerunNoticeTimerRef.current != null) {
+        window.clearTimeout(rerunNoticeTimerRef.current);
+        rerunNoticeTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!rerunStartedAtMs || !analyzing) {
+      setRerunElapsedSeconds(0);
+      return;
+    }
+
+    const updateElapsed = () => {
+      setRerunElapsedSeconds(Math.max(0, Math.floor((Date.now() - rerunStartedAtMs) / 1000)));
+    };
+    updateElapsed();
+    const id = window.setInterval(updateElapsed, 1000);
+
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [analyzing, rerunStartedAtMs]);
+
+  useEffect(() => {
+    if (!rerunTrackedJobId || !activeJobId) return;
+    if (activeJobId !== rerunTrackedJobId && jobId !== rerunTrackedJobId) return;
+
+    const status = normalizeJobStatus(jobStatus);
+    if (status !== 'succeeded' && status !== 'succeeded_with_warnings' && status !== 'failed' && status !== 'cancelled') return;
+
+    if (rerunNoticeTimerRef.current != null) {
+      window.clearTimeout(rerunNoticeTimerRef.current);
+      rerunNoticeTimerRef.current = null;
+    }
+
+    const failed = status === 'failed' || status === 'cancelled';
+    setRerunNotice({
+      kind: failed ? 'error' : 'success',
+      message: failed
+        ? 'Analysis rerun failed. Your previous analysis is still visible. Try again.'
+        : 'Analysis rerun complete. Workspace results have been refreshed.',
+      jobId: activeJobId,
+      atMs: Date.now(),
+    });
+    setRerunTrackedJobId(null);
+    setRerunStartedAtMs(null);
+
+    if (!failed) {
+      rerunNoticeTimerRef.current = window.setTimeout(() => {
+        setRerunNotice(null);
+        rerunNoticeTimerRef.current = null;
+      }, 8000);
+    }
+  }, [activeJobId, jobId, jobStatus, rerunTrackedJobId]);
 
   useEffect(() => {
     if (!pinnedIsAnalyze) return;
@@ -6052,6 +6121,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           lastPolledAtMs: Date.now(),
           error: 'Still preparing — check worker logs',
         }));
+        setAnalyzing(false);
+        setRerunStartedAtMs(null);
+        setRerunNotice({
+          kind: 'error',
+          message: 'Analysis rerun timed out while preparing documents. Your previous analysis is still visible. Try again.',
+          jobId: null,
+          atMs: Date.now(),
+        });
         return;
       }
 
@@ -6067,6 +6144,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           error: msg,
           lastPolledAtMs: Date.now(),
         }));
+        setAnalyzing(false);
+        setRerunStartedAtMs(null);
+        setRerunNotice({
+          kind: 'error',
+          message: 'Analysis rerun failed before the job started. Your previous analysis is still visible. Try again.',
+          jobId: null,
+          atMs: Date.now(),
+        });
         return;
       }
 
@@ -6098,11 +6183,21 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             setPageUnderstandingGate((prev) => ({ ...prev, status: 'idle', readiness: null, error: null, minDpuCreatedAt: null }));
             setJobId(job.job_id);
             setJobStatus(job.status);
+            setRerunTrackedJobId(job.job_id);
+            setRerunNotice(null);
             addToast('info', 'Job queued', `Job ${job.job_id}`);
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           setPageUnderstandingGate((prev) => ({ ...prev, status: 'ready', error: msg }));
+          setAnalyzing(false);
+          setRerunStartedAtMs(null);
+          setRerunNotice({
+            kind: 'error',
+            message: 'Analysis rerun failed before the job started. Your previous analysis is still visible. Try again.',
+            jobId: null,
+            atMs: Date.now(),
+          });
           addToast('error', 'Analysis failed to start', msg);
         }
         return;
@@ -6136,6 +6231,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (job) {
       setJobId(job.job_id);
       setJobStatus(job.status);
+      setRerunTrackedJobId(job.job_id);
+      setRerunNotice(null);
       addToast('info', 'Job queued', `Job ${job.job_id}`);
       return;
     }
@@ -6148,8 +6245,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const runAIAnalysis = async () => {
     if (!dealId) return;
+    const normalizedStatus = normalizeJobStatus(jobStatus);
+    const activeAnalyzeJob =
+      (jobType === 'analyze_deal' || !!rerunTrackedJobId) &&
+      (normalizedStatus === 'queued' || normalizedStatus === 'running' || normalizedStatus === 'retrying' || normalizedStatus === 'blocked');
+
+    if (rerunStartInFlightRef.current || analyzing || activeAnalyzeJob || pageUnderstandingGate.status === 'preparing') {
+      addToast('info', 'Analysis already running', 'Previous analysis remains visible while the current run completes.', `deal-analysis-active:${dealId}`);
+      return;
+    }
+
+    rerunStartInFlightRef.current = true;
+    const startedAtMs = Date.now();
     setAnalyzing(true);
+    setRerunStartedAtMs(startedAtMs);
+    setRerunElapsedSeconds(0);
+    setRerunTrackedJobId(null);
+    setRerunNotice(null);
     setJobProgress(null);
+    setJobProgressSnapshot(null);
     setJobMessage(null);
     setJobUpdatedAt(null);
     setJobCreatedAt(null);
@@ -6164,7 +6278,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     } catch (err) {
       addToast('error', 'Analysis failed to start', err instanceof Error ? err.message : 'Unknown error');
       setAnalyzing(false);
+      setRerunStartedAtMs(null);
+      setRerunNotice({
+        kind: 'error',
+        message: 'Analysis rerun failed. Your previous analysis is still visible. Try again.',
+        jobId: null,
+        atMs: Date.now(),
+      });
+      rerunStartInFlightRef.current = false;
       return;
+    } finally {
+      rerunStartInFlightRef.current = false;
     }
   };
 
@@ -7026,6 +7150,67 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     workspaceVerdict: _workspaceVerdict,
   });
 
+  const normalizedAnalysisJobStatus = normalizeJobStatus(jobStatus);
+  const trackedRerunMatchesActiveJob = Boolean(
+    rerunTrackedJobId &&
+    (activeJobId === rerunTrackedJobId || jobId === rerunTrackedJobId)
+  );
+  const activeRerunStatus =
+    normalizedAnalysisJobStatus === 'queued' ||
+    normalizedAnalysisJobStatus === 'running' ||
+    normalizedAnalysisJobStatus === 'retrying' ||
+    normalizedAnalysisJobStatus === 'blocked';
+  const pageUnderstandingIsActive = pageUnderstandingGate.status === 'preparing';
+  const rerunLifecycleActive = Boolean(rerunStartedAtMs && analyzing);
+  const rerunActive = Boolean(
+    rerunLifecycleActive ||
+    pageUnderstandingIsActive ||
+    (trackedRerunMatchesActiveJob && activeRerunStatus)
+  );
+  const pageUnderstandingMissingTotal =
+    typeof pageUnderstandingGate.readiness?.missing_pages_total === 'number'
+      ? pageUnderstandingGate.readiness.missing_pages_total
+      : null;
+  const pageUnderstandingMessage = pageUnderstandingIsActive
+    ? pageUnderstandingMissingTotal !== null
+      ? `Preparing documents for analysis. Missing ${pageUnderstandingMissingTotal} page${pageUnderstandingMissingTotal === 1 ? '' : 's'} of page understanding.`
+      : 'Preparing documents for analysis.'
+    : null;
+  const rerunWarning =
+    jobPollConnection.status === 'disconnected'
+      ? 'Job polling disconnected. Previous analysis remains visible; retry polling from the Jobs view if needed.'
+      : rerunElapsedSeconds >= 15 * 60 && rerunActive
+        ? 'Analysis is taking longer than usual. Previous analysis remains visible while the job continues.'
+        : null;
+  const analysisProgress: RerunAnalysisProgress | null =
+    rerunActive || rerunNotice
+      ? {
+          active: rerunActive,
+          terminal: rerunNotice?.kind === 'success' ? 'success' : rerunNotice?.kind === 'error' ? 'error' : null,
+          jobId: trackedRerunMatchesActiveJob ? activeJobId : rerunNotice?.jobId ?? rerunTrackedJobId,
+          type: trackedRerunMatchesActiveJob ? jobType : 'analyze_deal',
+          status: rerunNotice?.kind === 'success'
+            ? 'succeeded'
+            : rerunNotice?.kind === 'error'
+              ? 'failed'
+              : pageUnderstandingIsActive
+                ? 'queued'
+                : normalizedAnalysisJobStatus,
+          stage: pageUnderstandingIsActive ? 'preparing_documents' : jobProgressSnapshot?.stage ?? normalizedAnalysisJobStatus,
+          progressPct: pageUnderstandingIsActive ? null : (typeof jobProgressSnapshot?.percent === 'number' ? jobProgressSnapshot.percent : jobProgress),
+          message: rerunNotice?.message ?? pageUnderstandingMessage ?? jobProgressSnapshot?.message ?? jobMessage,
+          error: rerunNotice?.kind === 'error' ? rerunNotice.message : pageUnderstandingGate.status === 'error' || pageUnderstandingGate.status === 'timeout' ? pageUnderstandingGate.error : null,
+          warning: rerunWarning,
+          updatedAt: jobProgressSnapshot?.at ?? jobUpdatedAt,
+          startedAt: jobStartedAt,
+          createdAt: jobCreatedAt,
+          queuedSeconds: jobQueuedSeconds,
+          elapsedSeconds: rerunElapsedSeconds,
+          previousAnalysisVisible: Boolean(reportFromApi || shellProps.convictionScore != null || _workspaceVerdict),
+          pollConnection: jobPollConnection,
+        }
+      : null;
+
   return (
     <>
       {activePanel === null && (
@@ -7035,6 +7220,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         keyDrivers={filteredStrengths}
         onBack={handleBack}
         onRunAnalysis={runAIAnalysis}
+        analysisProgress={analysisProgress}
         onOpenDeepDive={() => setActivePanel('deep-dive')}
         onOpenInsights={() => setActivePanel('insights')}
         onOpenEvidenceExplorer={() => setActivePanel('evidence')}
@@ -7080,6 +7266,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           />
         }
         intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} financialTiles={shellProps.financialTiles} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null} /> : null}
+        scoreBreakdownSections={scoreBreakdownSections}
       />
       )}
 

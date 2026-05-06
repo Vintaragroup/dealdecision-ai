@@ -7,6 +7,9 @@ import {
   ChevronDown,
   ChevronRight,
   AlertCircle,
+  CheckCircle2,
+  Circle,
+  Loader2,
   XCircle,
   TrendingUp,
   DollarSign,
@@ -17,13 +20,52 @@ import {
   Activity,
 } from 'lucide-react';
 import { Button } from '../ui/button';
-import { scoreToBadge, getScoreBadgeColors } from '../../lib/scoreBadge';
+import { SystemProgressCard } from '../ui/SystemProgressCard';
+import type { SystemProgressStatus } from '../ui/SystemProgressCard';
 import type {
   WorkspaceRedesignedShellProps,
   FinancialTile,
 } from './WorkspaceRedesignedShell';
+import type { WorkspaceOverviewFactTrust } from './contracts/workspaceViewModel';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
+
+export type RerunAnalysisProgress = {
+  active: boolean;
+  terminal?: 'success' | 'error' | null;
+  jobId?: string | null;
+  type?: string | null;
+  status?: string | null;
+  stage?: string | null;
+  progressPct?: number | null;
+  message?: string | null;
+  error?: string | null;
+  warning?: string | null;
+  updatedAt?: string | null;
+  startedAt?: string | null;
+  createdAt?: string | null;
+  queuedSeconds?: number | null;
+  elapsedSeconds?: number | null;
+  previousAnalysisVisible?: boolean;
+  pollConnection?: {
+    status: 'connected' | 'disconnected';
+    consecutiveFailures: number;
+    lastError: string | null;
+  } | null;
+};
+
+/**
+ * Compact section coverage row sourced from score_breakdown_v1.sections.
+ * Threaded from DealWorkspace.tsx → DealWorkspaceV4 for Phase 4A evidence coverage panel.
+ */
+export type SectionCoverageItem = {
+  key: string;
+  support_status: 'supported' | 'weak' | 'missing' | 'unknown';
+  evidence_count: number;
+  trace_coverage_pct?: number | null;
+  coverage_pct?: number | null;
+  hint?: string | null;
+};
 
 export type DealWorkspaceV4Props = WorkspaceRedesignedShellProps & {
   /** Strength strings used as "Key Drivers" fallback (from filteredStrengths in buildWorkspaceViewModel). */
@@ -38,6 +80,13 @@ export type DealWorkspaceV4Props = WorkspaceRedesignedShellProps & {
   evidencePanel?: React.ReactNode;
   /** Compact inline summary rendered inside the Intelligence (challenge_pass) accordion body. */
   intelligencePanel?: React.ReactNode;
+  /** Real rerun job state from the parent workspace, with lifecycle fallback while the job is being accepted. */
+  analysisProgress?: RerunAnalysisProgress | null;
+  /**
+   * Score breakdown sections from score_breakdown_v1, threaded from DealWorkspace.tsx.
+   * Used for Phase 4A section evidence coverage panel. Optional — gracefully absent.
+   */
+  scoreBreakdownSections?: SectionCoverageItem[];
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -164,6 +213,16 @@ function applyLabelRemap(text: string): string {
   }
   return out;
 }
+
+const FINANCIAL_TRUTH_BADGE_STYLES: Record<
+  'verified' | 'directional' | 'unverified' | 'conflicted',
+  { label: string; cls: string }
+> = {
+  verified:    { label: 'Verified',    cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
+  directional: { label: 'Directional', cls: 'text-blue-400 border-blue-500/30 bg-blue-500/10' },
+  unverified:  { label: 'Unverified',  cls: 'text-amber-400 border-amber-500/30 bg-amber-500/10' },
+  conflicted:  { label: 'Conflicted',  cls: 'text-rose-400 border-rose-500/30 bg-rose-500/10' },
+};
 
 function humanizeRequiredCheck(raw: string): string {
   // Pattern A: "Provide deterministic evidence for {code}."
@@ -679,13 +738,13 @@ function deriveFinancialConfidence({
   financialCoverage: number | null;
   financialIntegrityStatus: 'validated' | 'unvalidated' | 'partial' | null;
 }): {
-  level: 'High' | 'Moderate' | 'Low';
+  level: 'Strong' | 'Moderate' | 'Weak' | 'Fragile' | 'Unknown';
   tone: 'emerald' | 'blue' | 'amber' | 'rose';
   summary: string;
 } {
   if (financialTruthBadge?.tier === 'conflicted') {
     return {
-      level: 'Low',
+      level: 'Fragile',
       tone: 'rose',
       summary: 'Financial sources conflict and need reconciliation before underwriting.',
     };
@@ -693,7 +752,7 @@ function deriveFinancialConfidence({
 
   if (financialTruthBadge?.tier === 'unverified') {
     return {
-      level: 'Low',
+      level: 'Weak',
       tone: 'amber',
       summary: 'Key underwriting inputs are still missing or unverified.',
     };
@@ -709,7 +768,7 @@ function deriveFinancialConfidence({
 
   if (financialTruthBadge?.tier === 'verified') {
     return {
-      level: 'High',
+      level: 'Strong',
       tone: 'emerald',
       summary: 'Core financial inputs are available and better supported.',
     };
@@ -717,7 +776,7 @@ function deriveFinancialConfidence({
 
   if (financialIntegrityStatus === 'validated' && (financialCoverage ?? 0) >= 80) {
     return {
-      level: 'High',
+      level: 'Strong',
       tone: 'emerald',
       summary: 'Core underwriting inputs appear present and validated.',
     };
@@ -732,7 +791,7 @@ function deriveFinancialConfidence({
   }
 
   return {
-    level: 'Low',
+    level: financialCoverage === null && financialIntegrityStatus === null ? 'Unknown' : 'Weak',
     tone: 'amber',
     summary: 'Key underwriting inputs are still missing.',
   };
@@ -857,7 +916,7 @@ function FinancialConfidenceHeader({
       <div className="grid grid-cols-1 md:grid-cols-[1.35fr_0.95fr] gap-4 items-start">
         <div className="min-w-0">
           <div className={`text-[10px] uppercase tracking-wide font-medium ${financialConfidenceTone.text}`}>
-            Financial Confidence
+            Evidence Confidence
           </div>
           <div className="mt-2 flex items-end gap-3 flex-wrap">
             <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${financialConfidenceTone.pill}`}>
@@ -888,6 +947,8 @@ function FinancialMetricCard({
   muted,
   card,
   priority = false,
+  trust,
+  isProjected,
 }: {
   label: string;
   value: string;
@@ -898,6 +959,8 @@ function FinancialMetricCard({
   muted: string;
   card: string;
   priority?: boolean;
+  trust?: WorkspaceOverviewFactTrust | null;
+  isProjected?: boolean | null;
 }) {
   const statusTone =
     status === 'missing'
@@ -910,11 +973,617 @@ function FinancialMetricCard({
         : 'text-blue-700'
       : heading;
 
+  // Map trust level → compact source badge label
+  const sourceBadge: string | null = (() => {
+    if (!trust || trust === 'not_extracted') return null;
+    if (trust === 'structured') return 'XLSX';
+    if (trust === 'governed') return 'Verified';
+    if (trust === 'interim_extraction') return 'Partial';
+    if (trust === 'conflicted') return 'Conflict';
+    return null;
+  })();
+
   return (
     <div className={`rounded-lg border ${priority ? 'px-4 py-3' : 'px-3 py-2.5'} ${card}`}>
       <div className={`text-[11px] uppercase tracking-wide ${muted}`}>{label}</div>
       <div className={`mt-1.5 ${priority ? 'text-base' : 'text-sm'} font-medium ${statusTone}`}>{value}</div>
       {note ? <div className={`mt-0.5 text-[11px] leading-snug ${muted}`}>{note}</div> : null}
+      {(sourceBadge || isProjected) && (
+        <div className="mt-1.5 flex items-center gap-1 flex-wrap">
+          {sourceBadge && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${
+              trust === 'conflicted'
+                ? darkMode ? 'text-rose-400 border-rose-500/30 bg-rose-500/10' : 'text-rose-700 border-rose-200 bg-rose-50'
+                : trust === 'structured'
+                ? darkMode ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : 'text-emerald-700 border-emerald-200 bg-emerald-50'
+                : darkMode ? 'text-gray-500 border-white/10 bg-white/5' : 'text-gray-500 border-gray-200 bg-gray-50'
+            }`}>
+              {sourceBadge}
+            </span>
+          )}
+          {isProjected && (
+            <span className={`text-[10px] px-1.5 py-0.5 rounded border font-medium ${
+              darkMode ? 'text-blue-400 border-blue-500/30 bg-blue-500/10' : 'text-blue-700 border-blue-200 bg-blue-50'
+            }`}>
+              Projected
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ConfidenceLevel = 'Strong' | 'Moderate' | 'Weak' | 'Fragile' | 'Unknown';
+type SeverityLevel = 'Critical' | 'Major' | 'Validation' | 'Diagnostic' | 'Unknown';
+
+function normalizeConfidenceLevel(label: string | null | undefined, score: number | null | undefined): ConfidenceLevel {
+  const raw = label?.trim().toLowerCase() ?? '';
+  if (/very\s+fragile|fragile/.test(raw)) return 'Fragile';
+  if (/robust|strong|high/.test(raw)) return 'Strong';
+  if (/moderate|medium|partial|promising/.test(raw)) return 'Moderate';
+  if (/weak|low|limited|uncertain|broken/.test(raw)) return 'Weak';
+
+  if (score == null || !Number.isFinite(score)) return 'Unknown';
+  if (score >= 70) return 'Strong';
+  if (score >= 55) return 'Moderate';
+  if (score >= 40) return 'Fragile';
+  return 'Weak';
+}
+
+function confidenceTone(level: ConfidenceLevel, darkMode: boolean): string {
+  const tones: Record<ConfidenceLevel, string> = {
+    Strong: darkMode ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : 'text-emerald-700 border-emerald-200 bg-emerald-50',
+    Moderate: darkMode ? 'text-blue-400 border-blue-500/30 bg-blue-500/10' : 'text-blue-700 border-blue-200 bg-blue-50',
+    Weak: darkMode ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' : 'text-amber-700 border-amber-200 bg-amber-50',
+    Fragile: darkMode ? 'text-rose-400 border-rose-500/30 bg-rose-500/10' : 'text-rose-700 border-rose-200 bg-rose-50',
+    Unknown: darkMode ? 'text-gray-400 border-white/10 bg-white/5' : 'text-gray-600 border-gray-200 bg-gray-50',
+  };
+  return tones[level];
+}
+
+function severityTone(level: SeverityLevel, darkMode: boolean): string {
+  const tones: Record<SeverityLevel, string> = {
+    Critical: darkMode ? 'text-rose-400 border-rose-500/30 bg-rose-500/10' : 'text-rose-700 border-rose-200 bg-rose-50',
+    Major: darkMode ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' : 'text-amber-700 border-amber-200 bg-amber-50',
+    Validation: darkMode ? 'text-blue-400 border-blue-500/30 bg-blue-500/10' : 'text-blue-700 border-blue-200 bg-blue-50',
+    Diagnostic: darkMode ? 'text-gray-400 border-white/10 bg-white/5' : 'text-gray-600 border-gray-200 bg-gray-50',
+    Unknown: darkMode ? 'text-gray-500 border-white/10 bg-white/5' : 'text-gray-500 border-gray-200 bg-gray-50',
+  };
+  return tones[level];
+}
+
+function compactList(items: string[], count = 2): string[] {
+  return items.filter(Boolean).slice(0, count);
+}
+
+function formatPercent(value: number | null): string {
+  return value === null || !Number.isFinite(value) ? 'Unknown' : `${Math.round(value)}%`;
+}
+
+type AnalysisProgressStep = {
+  key: string;
+  label: string;
+  waitingLabel: string;
+  estimatedPct: number;
+};
+
+const ANALYSIS_PROGRESS_STEPS: AnalysisProgressStep[] = [
+  { key: 'accepted', label: 'Accepted', waitingLabel: 'Starting analysis', estimatedPct: 8 },
+  { key: 'queued', label: 'Queued', waitingLabel: 'Waiting for analysis job', estimatedPct: 15 },
+  { key: 'processing_documents', label: 'Processing documents', waitingLabel: 'Processing documents', estimatedPct: 35 },
+  { key: 'extracting_evidence', label: 'Extracting evidence', waitingLabel: 'Extracting evidence', estimatedPct: 50 },
+  { key: 'reconciling_signals', label: 'Reconciling signals', waitingLabel: 'Reconciling signals', estimatedPct: 65 },
+  { key: 'updating_recommendation', label: 'Updating recommendation', waitingLabel: 'Updating recommendation', estimatedPct: 80 },
+  { key: 'refreshing_results', label: 'Refreshing results', waitingLabel: 'Refreshing workspace', estimatedPct: 92 },
+];
+
+function normalizeProgressToken(value: string | null | undefined): string {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function deriveAnalysisProgressIndex(progress: RerunAnalysisProgress): number {
+  const status = normalizeProgressToken(progress.status);
+  const stage = normalizeProgressToken(progress.stage);
+
+  if (progress.terminal === 'success' || status === 'succeeded' || status === 'succeeded_with_warnings') {
+    return ANALYSIS_PROGRESS_STEPS.length;
+  }
+  if (progress.terminal === 'error' || status === 'failed' || status === 'cancelled') {
+    return Math.max(0, ANALYSIS_PROGRESS_STEPS.findIndex((step) => step.key === 'processing_documents'));
+  }
+  if (!progress.jobId) return 0;
+  if (status === 'queued' || status === 'blocked') return 1;
+
+  if (stage.includes('refresh')) return 6;
+  if (stage.includes('final') || stage.includes('recommendation') || stage.includes('scor')) return 5;
+  if (stage.includes('reconcil') || stage.includes('signal') || stage.includes('risk')) return 4;
+  if (stage.includes('evidence') || stage.includes('extract')) return 3;
+  if (stage.includes('document') || stage.includes('render') || stage.includes('ocr') || stage.includes('prepar')) return 2;
+
+  const pct = typeof progress.progressPct === 'number' ? progress.progressPct : null;
+  if (pct !== null) {
+    if (pct >= 90) return 6;
+    if (pct >= 75) return 5;
+    if (pct >= 60) return 4;
+    if (pct >= 45) return 3;
+    if (pct >= 20) return 2;
+  }
+
+  return status === 'running' || status === 'retrying' ? 2 : 1;
+}
+
+function formatAnalysisProgressTimestamp(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const ts = Date.parse(value);
+  if (!Number.isFinite(ts)) return null;
+  return new Date(ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+}
+
+function isMeaningfulBackendAnalysisStage(stage: string): boolean {
+  if (!stage) return false;
+  return !['queued', 'running', 'blocked', 'preparing_documents'].includes(stage);
+}
+
+function getTimeSmoothedAnalysisProgress(elapsedSeconds: number, status: string, hasJob: boolean): number {
+  if (!hasJob) return 8;
+  if (status === 'queued' || status === 'blocked') return Math.min(24, 15 + Math.floor(elapsedSeconds / 10));
+  if (elapsedSeconds < 2) return 10;
+  if (elapsedSeconds < 5) return 22;
+  if (elapsedSeconds < 10) return 35;
+  if (elapsedSeconds < 20) return 50;
+  if (elapsedSeconds < 35) return 65;
+  if (elapsedSeconds < 60) return 78;
+  return 88;
+}
+
+function getTimeSmoothedAnalysisStage(elapsedSeconds: number, status: string, hasJob: boolean): string {
+  if (!hasJob) return 'Starting analysis';
+  if (status === 'queued' || status === 'blocked') return 'Waiting for analysis job';
+  if (elapsedSeconds < 2) return 'Starting analysis';
+  if (elapsedSeconds < 5) return 'Processing documents';
+  if (elapsedSeconds < 10) return 'Extracting evidence';
+  if (elapsedSeconds < 20) return 'Reconciling signals';
+  if (elapsedSeconds < 35) return 'Updating recommendation';
+  return 'Refreshing workspace';
+}
+
+function humanizeAnalysisStage(stage: string | null | undefined): string | null {
+  const normalized = normalizeProgressToken(stage);
+  if (!normalized) return null;
+  if (normalized.includes('prepar') || normalized.includes('document') || normalized.includes('render') || normalized.includes('ocr')) return 'Processing documents';
+  if (normalized.includes('evidence') || normalized.includes('extract')) return 'Extracting evidence';
+  if (normalized.includes('reconcil') || normalized.includes('signal') || normalized.includes('risk')) return 'Reconciling signals';
+  if (normalized.includes('recommendation') || normalized.includes('scor') || normalized.includes('final')) return 'Updating recommendation';
+  if (normalized.includes('refresh')) return 'Refreshing workspace';
+  if (normalized === 'queued') return 'Waiting for analysis job';
+  if (normalized === 'running') return null;
+  return normalized.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function getCompactAnalysisProgress(progress: RerunAnalysisProgress): {
+  percent: number;
+  stageLabel: string;
+  source: 'backend' | 'estimated';
+} {
+  const status = normalizeProgressToken(progress.status);
+  const stage = normalizeProgressToken(progress.stage);
+  const isSuccess = progress.terminal === 'success' || status === 'succeeded' || status === 'succeeded_with_warnings';
+  const isFailure = progress.terminal === 'error' || status === 'failed' || status === 'cancelled';
+  if (isSuccess) return { percent: 100, stageLabel: 'Complete', source: 'backend' };
+  if (isFailure) return { percent: 100, stageLabel: 'Failed', source: 'backend' };
+
+  const backendPct = typeof progress.progressPct === 'number' && Number.isFinite(progress.progressPct)
+    ? Math.max(0, Math.min(99, Math.round(progress.progressPct)))
+    : null;
+  const hasMeaningfulStage = isMeaningfulBackendAnalysisStage(stage);
+  if (backendPct !== null && hasMeaningfulStage) {
+    return {
+      percent: backendPct,
+      stageLabel: humanizeAnalysisStage(stage) ?? 'Running analysis',
+      source: 'backend',
+    };
+  }
+
+  const elapsed = typeof progress.elapsedSeconds === 'number' ? progress.elapsedSeconds : 0;
+  const currentIndex = deriveAnalysisProgressIndex(progress);
+  const stagedPct = ANALYSIS_PROGRESS_STEPS[Math.max(0, Math.min(currentIndex, ANALYSIS_PROGRESS_STEPS.length - 1))]?.estimatedPct ?? 25;
+  const smoothedPct = getTimeSmoothedAnalysisProgress(elapsed, status, Boolean(progress.jobId));
+  return {
+    percent: Math.max(stagedPct, smoothedPct),
+    stageLabel: humanizeAnalysisStage(stage) ?? getTimeSmoothedAnalysisStage(elapsed, status, Boolean(progress.jobId)),
+    source: 'estimated',
+  };
+}
+
+function RerunStatusStrip({
+  darkMode,
+  progress,
+}: {
+  darkMode: boolean;
+  progress: RerunAnalysisProgress;
+}) {
+  const [showDetails, setShowDetails] = useState(false);
+  const status = normalizeProgressToken(progress.status);
+  const isFailure = progress.terminal === 'error' || status === 'failed' || status === 'cancelled';
+  const isSuccess = progress.terminal === 'success' || status === 'succeeded' || status === 'succeeded_with_warnings';
+  const currentIndex = deriveAnalysisProgressIndex(progress);
+  const compact = getCompactAnalysisProgress(progress);
+  const timestamp = formatAnalysisProgressTimestamp(progress.updatedAt ?? progress.startedAt ?? progress.createdAt);
+  const showLongRunning = typeof progress.elapsedSeconds === 'number' && progress.elapsedSeconds >= 15 * 60;
+  const connectionWarning = progress.pollConnection?.status === 'disconnected'
+    ? 'Job polling disconnected. Previous analysis remains visible; retry polling from the Jobs view if needed.'
+    : null;
+  const message = isFailure
+    ? (progress.error || 'Analysis rerun failed. Your previous analysis is still visible. Try again.')
+    : isSuccess
+      ? 'Analysis updated'
+      : (progress.message || 'Previous analysis remains visible until the new run completes.');
+
+  const wrapper = darkMode
+    ? 'border-white/10 bg-white/[0.035]'
+    : 'border-gray-200 bg-gray-50';
+  const heading = darkMode ? 'text-gray-100' : 'text-gray-900';
+  const body = darkMode ? 'text-gray-400' : 'text-gray-600';
+  const muted = darkMode ? 'text-gray-500' : 'text-gray-500';
+  const activeTone = isFailure
+    ? darkMode ? 'text-rose-300' : 'text-rose-700'
+    : isSuccess
+      ? darkMode ? 'text-emerald-300' : 'text-emerald-700'
+      : darkMode ? 'text-blue-300' : 'text-blue-700';
+
+  return (
+    <div className={`mt-3 rounded-lg border px-3 py-2 ${wrapper}`} data-testid="rerun-status-strip" aria-live="polite">
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1">
+        <div className="min-w-0">
+          <div className="flex min-w-0 items-center gap-1.5">
+            {isSuccess ? (
+              <CheckCircle2 className={`w-3.5 h-3.5 shrink-0 ${activeTone}`} />
+            ) : isFailure ? (
+              <AlertCircle className={`w-3.5 h-3.5 shrink-0 ${activeTone}`} />
+            ) : (
+              <Loader2 className={`w-3.5 h-3.5 shrink-0 animate-spin ${activeTone}`} />
+            )}
+            <span className={`shrink-0 text-xs font-semibold ${heading}`}>
+              {isSuccess ? 'Analysis updated' : isFailure ? 'Analysis rerun failed' : 'Re-running analysis'}
+            </span>
+            {!isSuccess && !isFailure ? <span className={`shrink-0 text-xs ${muted}`}>·</span> : null}
+            {!isSuccess && !isFailure ? <span className={`min-w-0 truncate text-xs ${muted}`}>{compact.stageLabel}</span> : null}
+          </div>
+        </div>
+        <span className={`justify-self-end text-xs tabular-nums ${activeTone}`}>{compact.percent}%</span>
+        <div className={`col-span-2 h-1.5 overflow-hidden rounded-full ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
+          <div
+            className={`h-full rounded-full transition-all duration-700 ${isFailure ? 'bg-rose-400' : isSuccess ? 'bg-emerald-400' : 'bg-blue-400'}`}
+            style={{ width: `${compact.percent}%` }}
+          />
+        </div>
+        <div className={`col-span-2 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] leading-snug ${isFailure ? activeTone : body}`}>
+          <span>
+            {isFailure ? message : progress.previousAnalysisVisible ? 'Previous analysis remains visible' : message}
+          </span>
+          <span className={`text-[10px] uppercase tracking-wide ${muted}`}>
+            {compact.source === 'estimated' && !isSuccess && !isFailure ? 'Staged estimate' : timestamp ? `Updated ${timestamp}` : ''}
+          </span>
+          <button
+            type="button"
+            onClick={() => setShowDetails((value) => !value)}
+            className={`text-[11px] underline-offset-2 hover:underline ${muted}`}
+          >
+            {showDetails ? 'Hide run details' : 'View run details'}
+          </button>
+        </div>
+      </div>
+
+      {showDetails && (
+        <div className={`mt-2 rounded-md border px-2.5 py-2 ${darkMode ? 'border-white/10 bg-black/15' : 'border-gray-200 bg-white'}`}>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
+            {progress.jobId && <span className={`tabular-nums ${muted}`}>Job {progress.jobId}</span>}
+            {progress.status && <span className={muted}>Status {progress.status.replace(/_/g, ' ')}</span>}
+            {typeof progress.queuedSeconds === 'number' && progress.queuedSeconds > 0 && <span className={muted}>Queued {progress.queuedSeconds}s</span>}
+            {timestamp && <span className={muted}>Updated {timestamp}</span>}
+          </div>
+          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
+            {ANALYSIS_PROGRESS_STEPS.map((step, index) => {
+              const complete = isSuccess || index < currentIndex;
+              const active = !isSuccess && !isFailure && index === currentIndex;
+              const failed = isFailure && index === currentIndex;
+              const tone = failed
+                ? darkMode ? 'text-rose-300' : 'text-rose-700'
+                : complete
+                  ? darkMode ? 'text-emerald-300' : 'text-emerald-700'
+                  : active
+                    ? darkMode ? 'text-blue-300' : 'text-blue-700'
+                    : muted;
+              return (
+                <div key={step.key} className={`flex items-center gap-1.5 text-[11px] ${tone}`}>
+                  {complete ? (
+                    <CheckCircle2 className="w-3 h-3 shrink-0" />
+                  ) : active ? (
+                    <Loader2 className="w-3 h-3 shrink-0 animate-spin" />
+                  ) : failed ? (
+                    <AlertCircle className="w-3 h-3 shrink-0" />
+                  ) : (
+                    <Circle className="w-3 h-3 shrink-0" />
+                  )}
+                  <span className="truncate">{step.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          {(progress.warning || connectionWarning || showLongRunning) && (
+            <p className={`mt-2 text-[11px] ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
+              {progress.warning || connectionWarning || 'Analysis is taking longer than usual. Previous analysis remains visible while the job continues.'}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Floating card that anchors below the sticky header Re-run button.
+// Rendered with absolute positioning inside a relative wrapper — does NOT push content down.
+// Map smooth progress value (0–100) to a human-readable stage label.
+// Smooth elapsed-time based progress target (never reaches 100 on its own).
+function getSmoothEstimatedProgress(elapsedMs: number): number {
+  if (elapsedMs < 1000) return 8;
+  if (elapsedMs < 3000) return 15;
+  if (elapsedMs < 6000) return 25;
+  if (elapsedMs < 10000) return 38;
+  if (elapsedMs < 16000) return 52;
+  if (elapsedMs < 24000) return 68;
+  if (elapsedMs < 35000) return 82;
+  return 90;
+}
+
+function ExecutiveDecisionHero({
+  darkMode,
+  decisionStatus,
+  recommendation,
+  primaryReason,
+  confidenceLevel,
+  confidenceScore,
+  convictionScore,
+  evidenceCoverage,
+  mainBlocker,
+  nextAction,
+  lastAnalyzed,
+  onRunAnalysis,
+  analysisRunning,
+}: {
+  darkMode: boolean;
+  decisionStatus: DecisionStatus;
+  recommendation: 'Proceed' | 'Investigate' | 'Caution' | 'Pass' | null;
+  primaryReason: string;
+  confidenceLevel: ConfidenceLevel;
+  confidenceScore: number | null;
+  convictionScore: number | null;
+  evidenceCoverage: number | null;
+  mainBlocker: string;
+  nextAction: string;
+  lastAnalyzed: string | null;
+  onRunAnalysis?: () => void;
+  analysisRunning?: boolean;
+}) {
+  const accentMap: Record<DecisionStatus['tier'], { border: string; bg: string; text: string }> = {
+    go: darkMode
+      ? { border: 'border-emerald-500/30', bg: 'bg-emerald-500/[0.04]', text: 'text-emerald-400' }
+      : { border: 'border-emerald-200', bg: 'bg-emerald-50/80', text: 'text-emerald-700' },
+    investigate: darkMode
+      ? { border: 'border-amber-500/30', bg: 'bg-amber-500/[0.04]', text: 'text-amber-400' }
+      : { border: 'border-amber-200', bg: 'bg-amber-50/80', text: 'text-amber-700' },
+    caution: darkMode
+      ? { border: 'border-orange-500/30', bg: 'bg-orange-500/[0.04]', text: 'text-orange-400' }
+      : { border: 'border-orange-200', bg: 'bg-orange-50/80', text: 'text-orange-700' },
+    pass: darkMode
+      ? { border: 'border-red-500/30', bg: 'bg-red-500/[0.04]', text: 'text-red-400' }
+      : { border: 'border-red-200', bg: 'bg-red-50/80', text: 'text-red-700' },
+    unknown: darkMode
+      ? { border: 'border-white/10', bg: 'bg-white/[0.02]', text: 'text-gray-400' }
+      : { border: 'border-gray-200', bg: 'bg-white', text: 'text-gray-600' },
+  };
+  const accent = accentMap[decisionStatus.tier];
+  const heading = darkMode ? 'text-white' : 'text-gray-900';
+  const muted = darkMode ? 'text-gray-400' : 'text-gray-500';
+  const body = darkMode ? 'text-gray-300' : 'text-gray-700';
+  const subCard = darkMode ? 'bg-black/20 border-white/10' : 'bg-white/80 border-gray-200';
+  const recommendationLabel = recommendation ? recommendation.toUpperCase() : 'PENDING';
+  const scoreLabel = convictionScore === null ? 'Unknown' : `${convictionScore} / 100`;
+  const confidenceScoreLabel = confidenceScore === null ? 'Unknown' : `${confidenceScore} / 100`;
+
+  return (
+    <section className={`rounded-xl border p-4 sm:p-5 ${accent.border} ${accent.bg}`} data-testid="executive-decision-hero">
+      <div className="grid grid-cols-1 xl:grid-cols-[1.35fr_0.95fr] gap-4">
+        <div className="min-w-0">
+          <div className={`text-[10px] uppercase tracking-widest font-semibold ${accent.text}`}>Executive Decision</div>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <h2 className={`text-xl sm:text-2xl font-semibold tracking-tight ${heading}`}>
+              {recommendationLabel}
+            </h2>
+            <span className={`rounded-full border px-2.5 py-0.5 text-xs font-semibold ${accent.border} ${accent.text}`}>
+              {decisionStatus.readiness}
+            </span>
+          </div>
+          <p className={`mt-1.5 text-sm font-medium ${heading}`}>{decisionStatus.headline}</p>
+          <div className="mt-3">
+            <div className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Primary reason</div>
+            <p className={`mt-1 text-sm leading-relaxed ${body}`}>{primaryReason}</p>
+          </div>
+          <div className="mt-3">
+            <div className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Main blocker</div>
+            <p className={`mt-1 text-sm font-medium leading-snug pl-2.5 border-l-2 ${accent.border} ${decisionStatus.tier === 'go' ? body : accent.text}`}>{mainBlocker}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 content-start">
+          <div className={`rounded-lg border p-3 sm:p-4 ${subCard}`}>
+            <div className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Confidence</div>
+            <span className={`mt-2 inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${confidenceTone(confidenceLevel, darkMode)}`}>
+              {confidenceLevel}
+            </span>
+            <div className={`mt-1.5 text-xs ${muted}`}>{confidenceScoreLabel}</div>
+          </div>
+          <div className={`rounded-lg border p-3 sm:p-4 ${subCard}`}>
+            <div className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Decision Score</div>
+            <div className={`mt-2 text-xl font-semibold tabular-nums ${heading}`}>{scoreLabel}</div>
+          </div>
+          <div className={`rounded-lg border p-3 sm:p-4 ${subCard}`}>
+            <div className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Evidence Coverage</div>
+            <div className={`mt-2 text-xl font-semibold tabular-nums ${heading}`}>{formatPercent(evidenceCoverage)}</div>
+          </div>
+          <div className={`rounded-lg border p-3 sm:p-4 ${subCard}`}>
+            <div className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Last Analyzed</div>
+            <div className={`mt-2 text-sm font-medium ${heading}`}>{lastAnalyzed ?? 'Not analyzed'}</div>
+          </div>
+          <div className={`col-span-2 rounded-lg border p-3 sm:p-4 ${subCard}`}>
+            <div className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Next required action</div>
+            <div className={`mt-2 text-sm leading-snug ${body}`}>{nextAction}</div>
+            {onRunAnalysis && (
+              <button
+                type="button"
+                onClick={onRunAnalysis}
+                disabled={analysisRunning}
+                aria-busy={analysisRunning || undefined}
+                className={`mt-2 shrink-0 flex items-center gap-1 text-[11px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${darkMode ? 'text-gray-600 hover:text-gray-400' : 'text-gray-400 hover:text-gray-600'}`}
+              >
+                {analysisRunning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+                {analysisRunning ? 'Re-running...' : 'Re-run analysis'}
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DecisionSignalsSummary({
+  darkMode,
+  positives,
+  blockers,
+  validation,
+}: {
+  darkMode: boolean;
+  positives: string[];
+  blockers: string[];
+  validation: string[];
+}) {
+  const card = darkMode ? 'bg-white/[0.02] border-white/10' : 'bg-white border-gray-200';
+  const heading = darkMode ? 'text-white' : 'text-gray-900';
+  const muted = darkMode ? 'text-gray-500' : 'text-gray-500';
+  const body = darkMode ? 'text-gray-300' : 'text-gray-700';
+
+  const groups = [
+    { label: 'Primary Blockers', items: blockers, severity: 'Critical' as SeverityLevel },
+    { label: 'Required Validation', items: validation, severity: 'Validation' as SeverityLevel },
+    { label: 'Supporting Positives', items: positives, severity: 'Diagnostic' as SeverityLevel },
+  ];
+
+  return (
+    <div className={`rounded-xl border p-4 sm:p-5 ${card}`}>
+      <div className="flex items-center justify-between gap-3 mb-4">
+        <h2 className={`text-sm font-medium ${heading}`}>Decision Signals</h2>
+        <span className={`text-[10px] uppercase tracking-wide ${muted}`}>Compact summary</span>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        {groups.map((group) => {
+          const isCritical = group.severity === 'Critical';
+          const isValidation = group.severity === 'Validation';
+          const groupCardCls = isCritical
+            ? darkMode
+              ? 'border-rose-500/35 bg-rose-500/[0.07]'
+              : 'border-rose-200 bg-rose-50/80'
+            : isValidation
+            ? darkMode
+              ? 'border-amber-500/25 bg-amber-500/[0.05]'
+              : 'border-amber-200/80 bg-amber-50/50'
+            : darkMode
+            ? 'border-white/[0.06] bg-white/[0.02]'
+            : 'border-gray-200 bg-gray-50/60';
+          const groupLabelCls = isCritical
+            ? darkMode ? 'text-rose-400' : 'text-rose-600'
+            : isValidation
+            ? darkMode ? 'text-amber-400' : 'text-amber-600'
+            : muted;
+          const itemCls = isCritical
+            ? darkMode ? 'text-[12.5px] leading-snug font-medium text-gray-200' : 'text-[12.5px] leading-snug font-medium text-gray-800'
+            : isValidation
+            ? `text-xs leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`
+            : `text-xs leading-snug ${muted}`;
+          return (
+            <div key={group.label} className={`rounded-lg border p-3 ${groupCardCls}`}>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <span className={`text-[10px] uppercase tracking-wide font-medium ${groupLabelCls}`}>{group.label}</span>
+                <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold ${severityTone(group.severity, darkMode)}`}>
+                  {group.items.length}
+                </span>
+              </div>
+              {group.items.length > 0 ? (
+                <ul className={isCritical ? 'space-y-2' : 'space-y-1.5'}>
+                  {compactList(group.items).map((item, index) => (
+                    <li key={`${group.label}-${index}`} className={itemCls}>
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className={`text-xs italic ${muted}`}>No items surfaced.</p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CollapsiblePreviewSection({
+  id,
+  title,
+  icon,
+  preview,
+  count,
+  expanded,
+  onToggle,
+  darkMode,
+  children,
+}: {
+  id: string;
+  title: string;
+  icon: React.ReactNode;
+  preview: string;
+  count?: number;
+  expanded: boolean;
+  onToggle: (id: string) => void;
+  darkMode: boolean;
+  children: React.ReactNode;
+}) {
+  const card = darkMode ? 'bg-white/[0.02] border-white/10' : 'bg-white border-gray-200';
+  const heading = darkMode ? 'text-white' : 'text-gray-900';
+  const muted = darkMode ? 'text-gray-500' : 'text-gray-500';
+  const row = darkMode ? 'hover:bg-white/[0.04]' : 'hover:bg-gray-50';
+
+  return (
+    <div className={`rounded-lg border overflow-hidden ${card}`}>
+      <button
+        type="button"
+        onClick={() => onToggle(id)}
+        className={`w-full flex items-center justify-between gap-4 p-4 text-left transition-colors ${row}`}
+      >
+        <div className="flex items-center gap-3 min-w-0">
+          <span className={muted}>{icon}</span>
+          <div className="min-w-0">
+            <div className={`text-sm font-medium ${heading}`}>{title}</div>
+            <div className={`text-xs leading-snug truncate ${muted}`}>
+              {preview}
+              {typeof count === 'number' ? ` · ${count} item${count === 1 ? '' : 's'}` : ''}
+            </div>
+          </div>
+        </div>
+        {expanded ? <ChevronDown className={`w-4 h-4 shrink-0 ${muted}`} /> : <ChevronRight className={`w-4 h-4 shrink-0 ${muted}`} />}
+      </button>
+      {expanded && <div className={`border-t p-4 ${darkMode ? 'border-white/10 bg-white/[0.02]' : 'border-gray-200 bg-white'}`}>{children}</div>}
     </div>
   );
 }
@@ -982,10 +1651,12 @@ export function DealWorkspaceV4({
   insightsPanel,
   evidencePanel,
   intelligencePanel,
+  analysisProgress,
   // extra
   keyDrivers,
   financialTruthBadge,
   signalTension,
+  scoreBreakdownSections,
 }: DealWorkspaceV4Props) {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     team: false,
@@ -1184,198 +1855,221 @@ export function DealWorkspaceV4({
       : '',
   ]);
   const compactFinancialNotes = financialNotes.slice(0, 3);
+  const confidenceLevel = normalizeConfidenceLevel(verdictResistanceLabel, verdictResistanceScore ?? convictionScore);
+  const primaryReason = opportunitySummaryLine ?? decisionStatus.narrative;
+  const blockerTexts = dedupeText([
+    ...dealBreakers.map((item) => item.text),
+    ...topNegativeContributors.map((c) => enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'negative'), financialTruthBadge)),
+    ...fragilityItems.map((item) => item.text),
+  ]);
+  const positiveTexts = dedupeText(
+    topPositiveContributors.map((c) => enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'positive'), financialTruthBadge)),
+  );
+  const validationTexts = validationItems.map((item) => item.text);
+  const mainBlocker =
+    blockerTexts[0] ??
+    missingForUnderwriting[0] ??
+    validationTexts[0] ??
+    (decisionStatus.tier === 'go' ? 'No primary blocker surfaced.' : 'Primary blocker not identified.');
+  const nextRequiredAction =
+    validationTexts[0] ??
+    missingForUnderwriting[0] ??
+    (onRunAnalysis ? 'Re-run analysis with the latest documents.' : 'No required action surfaced.');
+  const analysisRunning = Boolean(analysisProgress?.active);
+
+  // Smooth frontend-simulated progress — bar never jumps from coarse backend status.
+  const [displayProgress, setDisplayProgress] = useState(0);
+  useEffect(() => {
+    if (!analysisRunning) {
+      const isSuccess =
+        analysisProgress?.terminal === 'success' ||
+        normalizeProgressToken(analysisProgress?.status) === 'succeeded' ||
+        normalizeProgressToken(analysisProgress?.status) === 'succeeded_with_warnings';
+      if (isSuccess) setDisplayProgress(100);
+      return;
+    }
+    setDisplayProgress(8);
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      const elapsedMs = Date.now() - startedAt;
+      const smoothTarget = getSmoothEstimatedProgress(elapsedMs);
+      // Only trust backend progressPct when it looks granular (not a coarse fallback like 10/20/40).
+      const rawPct = analysisProgress?.progressPct;
+      const backendLooksGranular =
+        typeof rawPct === 'number' && rawPct > 0 && rawPct < 100 && ![10, 20, 40].includes(rawPct);
+      const target = backendLooksGranular
+        ? Math.max(rawPct, smoothTarget)
+        : smoothTarget;
+      setDisplayProgress((prev) => Math.min(target, prev + 2));
+    }, 750);
+    return () => window.clearInterval(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisRunning]);
+
+  const miniAccentText = {
+    go: darkMode ? 'text-emerald-400' : 'text-emerald-700',
+    investigate: darkMode ? 'text-amber-400' : 'text-amber-700',
+    caution: darkMode ? 'text-orange-400' : 'text-orange-700',
+    pass: darkMode ? 'text-red-400' : 'text-red-700',
+    unknown: darkMode ? 'text-gray-400' : 'text-gray-600',
+  }[decisionStatus.tier];
 
   return (
     <div className={`w-full ${darkMode ? 'bg-[#0a0a0a]' : 'bg-gray-50'}`}>
 
       {/* Sticky Identity Strip */}
       <div
-        className={`sticky top-0 z-10 px-6 py-3 border-b backdrop-blur-xl ${
+        className={`sticky top-0 z-20 backdrop-blur-xl border-b ${
           darkMode
             ? 'bg-[#0a0a0a]/95 border-white/10'
             : 'bg-gray-50/95 border-gray-200'
         }`}
       >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
+        {/* Row 1 — fixed height identity row */}
+        <div className="flex h-12 items-center justify-between px-4 sm:px-6">
+          <div className="flex items-center gap-3 min-w-0">
             {onBack && (
               <button
                 onClick={onBack}
-                className={`p-1.5 rounded-lg transition-colors ${
+                className={`shrink-0 p-1.5 rounded-lg transition-colors ${
                   darkMode ? 'hover:bg-white/5' : 'hover:bg-gray-100'
                 }`}
               >
                 <ArrowLeft className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
               </button>
             )}
-
-            <div className="flex items-center gap-3 flex-wrap">
-              <h1 className={`text-base font-medium ${heading}`}>{displayCompany}</h1>
-              <span className={darkMode ? 'text-gray-600' : 'text-gray-400'}>•</span>
-              <span className={`text-sm ${muted}`}>{displayDealType}</span>
-              <span className={darkMode ? 'text-gray-600' : 'text-gray-400'}>•</span>
-              <span className={`text-sm ${muted}`}>{displayStage}</span>
-              <span className={darkMode ? 'text-gray-600' : 'text-gray-400'}>•</span>
-              <span className={`text-sm ${muted}`}>{displayRaise}</span>
+            <div className="flex items-center gap-x-2.5 gap-y-0 min-w-0 overflow-hidden">
+              <h1 className={`shrink-0 text-sm font-semibold ${heading}`}>{displayCompany}</h1>
+              <span className={`shrink-0 ${darkMode ? 'text-gray-700' : 'text-gray-300'}`}>·</span>
+              <span className={`shrink-0 text-sm ${muted}`}>{displayDealType}</span>
+              <span className={`shrink-0 ${darkMode ? 'text-gray-700' : 'text-gray-300'}`}>·</span>
+              <span className={`shrink-0 text-sm ${muted}`}>{displayStage}</span>
+              <span className={`shrink-0 ${darkMode ? 'text-gray-700' : 'text-gray-300'}`}>·</span>
+              <span className={`shrink-0 text-sm ${muted}`}>{displayRaise}</span>
               {displayLastAnalyzed && (
                 <>
-                  <span className={darkMode ? 'text-gray-600' : 'text-gray-400'}>•</span>
-                  <span className={`text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
-                    Analyzed {displayLastAnalyzed}
+                  <span className={`shrink-0 hidden lg:inline ${darkMode ? 'text-gray-700' : 'text-gray-300'}`}>·</span>
+                  <span className={`shrink-0 hidden lg:inline text-xs ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+                    {displayLastAnalyzed}
                   </span>
                 </>
               )}
             </div>
           </div>
-
-
+          {onRunAnalysis && (
+            <div className="relative shrink-0 hidden sm:block ml-4">
+              <Button
+                variant="outline"
+                size="sm"
+                darkMode={darkMode}
+                className="whitespace-nowrap gap-1.5"
+                onClick={onRunAnalysis}
+                disabled={analysisRunning}
+                loading={analysisRunning}
+              >
+                {analysisRunning ? 'Re-running...' : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5" />
+                    Re-run Analysis
+                  </>
+                )}
+              </Button>
+              {analysisProgress && (analysisProgress.active || analysisProgress.terminal || analysisProgress.error) && (() => {
+                const s = normalizeProgressToken(analysisProgress.status);
+                const cardStatus: SystemProgressStatus =
+                  analysisProgress.terminal === 'success' || s === 'succeeded' || s === 'succeeded_with_warnings'
+                    ? 'success'
+                    : analysisProgress.terminal === 'error' || s === 'failed' || s === 'cancelled'
+                      ? 'failed'
+                      : 'running';
+                return (
+                  <SystemProgressCard
+                    darkMode={darkMode}
+                    status={cardStatus}
+                    progress={displayProgress}
+                    title="Re-running"
+                    successTitle="Analysis updated"
+                    errorMessage={analysisProgress.error ?? undefined}
+                    anchor="header"
+                  />
+                );
+              })()}
+            </div>
+          )}
         </div>
+
+        {/* Row 2 — mini decision summary (only when analysis has run) */}
+        {(recommendation !== null || convictionScore !== null) && (
+          <div className={`flex items-center gap-x-2 px-4 sm:px-6 py-1.5 border-t ${
+            darkMode ? 'border-white/[0.08] bg-white/[0.01]' : 'border-gray-200/80 bg-gray-50/60'
+          }`}>
+            {recommendation && (
+              <span className={`text-[10.5px] font-semibold uppercase tracking-widest shrink-0 ${miniAccentText}`}>{recommendation}</span>
+            )}
+            {convictionScore !== null && (
+              <>
+                <span className={`shrink-0 text-[11px] ${darkMode ? 'text-gray-700' : 'text-gray-300'}`}>·</span>
+                <span className={`shrink-0 text-[11px] tabular-nums ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>{convictionScore}/100</span>
+              </>
+            )}
+            {financialCoverage !== null && (
+              <>
+                <span className={`shrink-0 text-[11px] ${darkMode ? 'text-gray-700' : 'text-gray-300'}`}>·</span>
+                <span className={`shrink-0 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>Coverage {Math.round(financialCoverage)}%</span>
+              </>
+            )}
+            {mainBlocker && mainBlocker !== 'No primary blocker surfaced.' && mainBlocker !== 'Primary blocker not identified.' && (
+              <>
+                <span className={`shrink-0 text-[11px] ${darkMode ? 'text-gray-700' : 'text-gray-300'}`}>·</span>
+                <span className={`text-[11px] truncate min-w-0 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  <span className={`hidden sm:inline ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>Blocker: </span>{mainBlocker}
+                </span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Content */}
-      <div className="max-w-6xl mx-auto px-6 py-8 space-y-8">
-        {onRunAnalysis && (
-          <div className="flex items-center justify-end">
-            <Button
-              variant="outline"
-              size="sm"
-              darkMode={darkMode}
-              className="gap-1.5"
-              onClick={onRunAnalysis}
-            >
-              <Sparkles className="w-4 h-4" />
-              Re-run Analysis
-            </Button>
-          </div>
-        )}
-
-        {/* ── Decision Status ── primary stance — everything below supports this ── */}
-        {(() => {
-          const ds = decisionStatus;
-          const accentMap: Record<DecisionStatus['tier'], { borderL: string; bg: string; text: string; pillBg: string; pillBorder: string }> = {
-            go:          { borderL: 'border-l-emerald-500',  bg: darkMode ? 'bg-emerald-500/[0.04]'  : 'bg-emerald-50',   text: darkMode ? 'text-emerald-400'  : 'text-emerald-700', pillBg: darkMode ? 'bg-emerald-500/10'  : 'bg-emerald-100',  pillBorder: darkMode ? 'border-emerald-500/30'  : 'border-emerald-300' },
-            investigate: { borderL: 'border-l-amber-500',   bg: darkMode ? 'bg-amber-500/[0.04]'   : 'bg-amber-50',    text: darkMode ? 'text-amber-400'    : 'text-amber-700',  pillBg: darkMode ? 'bg-amber-500/10'   : 'bg-amber-100',   pillBorder: darkMode ? 'border-amber-500/30'   : 'border-amber-300'  },
-            caution:     { borderL: 'border-l-orange-500',  bg: darkMode ? 'bg-orange-500/[0.04]'  : 'bg-orange-50',   text: darkMode ? 'text-orange-400'   : 'text-orange-700', pillBg: darkMode ? 'bg-orange-500/10'  : 'bg-orange-100',  pillBorder: darkMode ? 'border-orange-500/30'  : 'border-orange-300' },
-            pass:        { borderL: 'border-l-red-500',     bg: darkMode ? 'bg-red-500/[0.04]'     : 'bg-red-50',      text: darkMode ? 'text-red-400'      : 'text-red-700',    pillBg: darkMode ? 'bg-red-500/10'     : 'bg-red-100',     pillBorder: darkMode ? 'border-red-500/30'     : 'border-red-300'    },
-            unknown:     { borderL: darkMode ? 'border-l-white/10' : 'border-l-gray-300', bg: darkMode ? 'bg-white/[0.02]' : 'bg-gray-50', text: darkMode ? 'text-gray-500' : 'text-gray-500', pillBg: darkMode ? 'bg-white/5' : 'bg-gray-100', pillBorder: darkMode ? 'border-white/10' : 'border-gray-200' },
-          };
-          const acc = accentMap[ds.tier];
-          return (
-            <div className={`p-5 rounded-lg border-l-4 ${acc.borderL} ${acc.bg} ${darkMode ? 'border border-white/10' : 'border border-gray-200'}`}>
-              <div className={`text-[10px] uppercase tracking-widest font-medium mb-1.5 ${acc.text}`}>
-                Decision Status
-              </div>
-              <div className="flex items-center gap-3 mb-2 flex-wrap">
-                <span className={`text-base font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                  {ds.headline}
-                </span>
-                <span className={`text-[11px] font-medium px-2 py-0.5 rounded border ${acc.pillBg} ${acc.text} ${acc.pillBorder}`}>
-                  {ds.readiness}
-                </span>
-              </div>
-              <p className={`text-sm leading-relaxed ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                {ds.narrative}
-              </p>
-            </div>
-          );
-        })()}
+      <div className="max-w-6xl mx-auto px-6 pt-5 pb-8 space-y-6">
+        <ExecutiveDecisionHero
+          darkMode={darkMode}
+          decisionStatus={decisionStatus}
+          recommendation={recommendation}
+          primaryReason={primaryReason}
+          confidenceLevel={confidenceLevel}
+          confidenceScore={verdictResistanceScore ?? convictionScore}
+          convictionScore={convictionScore}
+          evidenceCoverage={financialCoverage}
+          mainBlocker={mainBlocker}
+          nextAction={nextRequiredAction}
+          lastAnalyzed={displayLastAnalyzed}
+          onRunAnalysis={onRunAnalysis}
+          analysisRunning={analysisRunning}
+        />
 
         {/* Decision Layer (Above the Fold) */}
         <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-6">
 
           {/* LEFT: Opportunity Signal — decision surface */}
           <div className="space-y-4">
-            {/* Financial Truth context line — shown only when FT tier is available */}
+            <DecisionSignalsSummary
+              darkMode={darkMode}
+              positives={positiveTexts}
+              blockers={blockerTexts}
+              validation={validationTexts}
+            />
+
             {financialTruthBadge && (() => {
-              const FT_INLINE: Record<
-                'verified' | 'directional' | 'unverified' | 'conflicted',
-                { label: string; cls: string }
-              > = {
-                verified:    { label: 'Verified',    cls: 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' },
-                directional: { label: 'Directional', cls: 'text-blue-400   border-blue-500/30   bg-blue-500/10'   },
-                unverified:  { label: 'Unverified',  cls: 'text-amber-400  border-amber-500/30  bg-amber-500/10'  },
-                conflicted:  { label: 'Conflicted',  cls: 'text-rose-400   border-rose-500/30   bg-rose-500/10'   },
-              };
-              const { label, cls } = FT_INLINE[financialTruthBadge.tier];
+              const { label, cls } = FINANCIAL_TRUTH_BADGE_STYLES[financialTruthBadge.tier];
               return (
                 <div className={`flex items-center gap-2 flex-wrap px-3 py-2 rounded-lg border ${darkMode ? 'bg-white/[0.02] border-white/[0.06]' : 'bg-gray-50 border-gray-200'}`}>
                   <span className={`text-[10px] uppercase tracking-wide font-medium ${muted}`}>Financial Truth</span>
                   <span className={`text-[11px] px-2 py-0.5 rounded-full border font-semibold ${cls}`}>{label}</span>
-                  {opportunitySummaryLine && (
-                    <span className={`text-xs leading-relaxed ${muted}`}>{opportunitySummaryLine}</span>
-                  )}
+                  <span className={`text-xs leading-relaxed ${muted}`}>{financialTruthBadge.text}</span>
                 </div>
               );
             })()}
-
-            {/* Reasons: Why it looks promising | What blocks commitment */}
-            {(topPositiveContributors.length > 0 || topNegativeContributors.length > 0) && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className={`p-3 rounded-lg border ${darkMode ? 'border-emerald-500/20 bg-emerald-500/5' : 'border-emerald-200 bg-emerald-50/50'}`}>
-                  <div className={`text-[10px] uppercase tracking-wide font-medium mb-2 ${darkMode ? 'text-emerald-400' : 'text-emerald-600'}`}>
-                    Why it looks promising
-                  </div>
-                  {topPositiveContributors.length > 0 ? (
-                    <ul className="space-y-1.5">
-                      {topPositiveContributors.map((c, i) => (
-                        <li key={i} className="flex items-start gap-1.5">
-                          <span className={`shrink-0 mt-px text-xs font-bold ${darkMode ? 'text-emerald-400' : 'text-emerald-500'}`}>+</span>
-                          <span className={`text-xs leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                            {enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'positive'), financialTruthBadge)}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className={`text-xs italic ${muted}`}>No positive signals found.</p>
-                  )}
-                </div>
-                <div className={`p-3 rounded-lg border ${darkMode ? 'border-red-500/20 bg-red-500/5' : 'border-red-200 bg-red-50/50'}`}>
-                  <div className={`text-[10px] uppercase tracking-wide font-medium mb-2 ${darkMode ? 'text-red-400' : 'text-red-600'}`}>
-                    What blocks commitment
-                  </div>
-                  {(topNegativeContributors.length > 0 || (signalTension != null && signalTension.level !== 'LOW' && signalTension.reasons.length > 0)) ? (
-                    <ul className="space-y-1.5">
-                      {topNegativeContributors.map((c, i) => (
-                        <li key={i} className="flex items-start gap-1.5">
-                          <span className={`shrink-0 mt-px text-xs font-bold ${darkMode ? 'text-red-400' : 'text-red-500'}`}>−</span>
-                          <span className={`text-xs leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                            {enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'negative'), financialTruthBadge)}
-                          </span>
-                        </li>
-                      ))}
-                      {signalTension != null && signalTension.level !== 'LOW' && signalTension.reasons.map((reason, i) => (
-                        <li key={`st-${i}`} className="flex items-start gap-1.5">
-                          <span className={`shrink-0 mt-px text-xs font-bold ${signalTension.level === 'HIGH' ? (darkMode ? 'text-rose-400' : 'text-rose-500') : (darkMode ? 'text-amber-400' : 'text-amber-500')}`}>!</span>
-                          <span className={`text-xs leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{reason}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className={`text-xs italic ${muted}`}>No blocking issues identified.</p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* 3. Required next checks — numbered action checklist, visually distinct */}
-            {humanizedChecks.length > 0 && (
-              <div className={`p-3 rounded-lg border-l-4 border-l-amber-500 border ${darkMode ? 'bg-amber-500/5 border-amber-500/20' : 'bg-amber-50 border-amber-200'}`}>
-                <div className={`text-[10px] uppercase tracking-wide font-medium mb-2 ${darkMode ? 'text-amber-400' : 'text-amber-600'}`}>
-                  Required next checks
-                </div>
-                <ul className="space-y-1.5">
-                  {humanizedChecks.slice(0, 4).map((check, i) => (
-                    <li key={i} className="flex items-start gap-2">
-                      <span className={`shrink-0 w-4 h-4 mt-px rounded border flex items-center justify-center text-[10px] font-medium ${darkMode ? 'border-amber-500/40 text-amber-400' : 'border-amber-400 text-amber-600'}`}>
-                        {i + 1}
-                      </span>
-                      <span className={`text-xs leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{check}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </div>
 
           {/* RIGHT: Decision Confidence — scores, model diagnostics, robustness */}
@@ -1387,17 +2081,21 @@ export function DealWorkspaceV4({
                 Decision Confidence
               </div>
               {(() => {
-                const cvBadge = scoreToBadge(convictionScore, 'conviction');
-                const cvColors = getScoreBadgeColors(cvBadge.bucket, darkMode);
+                const confidenceCopy: Record<ConfidenceLevel, string> = {
+                  Strong: 'Decision-ready',
+                  Moderate: 'Conclusion mostly stable',
+                  Weak: 'Evidence support is weak',
+                  Fragile: 'Conclusion can change with validation',
+                  Unknown: 'Not evaluated',
+                };
                 return (
                   <div className="space-y-1.5 mb-3">
-                    {/* Primary: badge label + meaning */}
                     <div className="flex items-center gap-2 flex-wrap">
-                      <span className={`px-2.5 py-1 rounded-md border text-xs font-semibold ${cvColors.bg} ${cvColors.text} ${cvColors.border}`}>
-                        {cvBadge.label}
+                      <span className={`px-2.5 py-1 rounded-md border text-xs font-semibold ${confidenceTone(confidenceLevel, darkMode)}`}>
+                        {confidenceLevel}
                       </span>
                       <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                        {cvBadge.meaning}
+                        {confidenceCopy[confidenceLevel]}
                       </span>
                       {convictionProvisional && (
                         <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wide ${
@@ -1411,9 +2109,12 @@ export function DealWorkspaceV4({
                     <p className={`text-[11px] leading-relaxed ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
                       This reflects whether capital would commit to this deal at current evidence levels.
                     </p>
-                    {/* Secondary: raw score */}
-                    <div className={`text-sm font-medium tabular-nums ${cvColors.text}`}>
-                      {convictionScore !== null ? `${convictionScore} / 100` : '—'}
+                    <div className={`text-sm font-medium tabular-nums ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                      {verdictResistanceScore !== null && verdictResistanceScore !== undefined
+                        ? `${verdictResistanceScore} / 100`
+                        : convictionScore !== null
+                        ? `${convictionScore} / 100`
+                        : '—'}
                     </div>
                   </div>
                 );
@@ -1474,6 +2175,57 @@ export function DealWorkspaceV4({
                     )}
                   </div>
                 </div>
+              )}
+
+              {/* Phase 4A: Conviction Factor Breakdown — "Why the Decision Scored This Way" */}
+              {(topPositiveContributors.length > 0 || topNegativeContributors.length > 0) && (
+                <details className={`mt-3 pt-3 border-t ${darkMode ? 'border-white/5' : 'border-gray-100'}`}>
+                  <summary className={`cursor-pointer list-none text-[11px] font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    Why the Decision Scored This Way
+                  </summary>
+                  <div className="mt-2.5 space-y-2.5">
+                    {topPositiveContributors.length > 0 && (
+                      <div>
+                        <div className={`text-[10px] uppercase tracking-wide mb-1.5 ${darkMode ? 'text-emerald-400' : 'text-emerald-700'}`}>Positive drivers</div>
+                        <ul className="space-y-1.5">
+                          {topPositiveContributors.map((c) => (
+                            <li key={c.key} className="flex items-start gap-2">
+                              <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${darkMode ? 'bg-emerald-400' : 'bg-emerald-500'}`} />
+                              <span className={`text-[11px] leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                {c.label}
+                                {c.scoreDelta != null && Math.abs(c.scoreDelta) >= 1 && (
+                                  <span className={`ml-1.5 tabular-nums text-[10px] ${darkMode ? 'text-emerald-400' : 'text-emerald-700'}`}>
+                                    +{Math.round(c.scoreDelta)}
+                                  </span>
+                                )}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {topNegativeContributors.length > 0 && (
+                      <div>
+                        <div className={`text-[10px] uppercase tracking-wide mb-1.5 ${darkMode ? 'text-rose-400' : 'text-rose-700'}`}>Negative drivers</div>
+                        <ul className="space-y-1.5">
+                          {topNegativeContributors.map((c) => (
+                            <li key={c.key} className="flex items-start gap-2">
+                              <span className={`mt-1 h-1.5 w-1.5 shrink-0 rounded-full ${darkMode ? 'bg-rose-400' : 'bg-rose-500'}`} />
+                              <span className={`text-[11px] leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                {c.label}
+                                {c.scoreDelta != null && Math.abs(c.scoreDelta) >= 1 && (
+                                  <span className={`ml-1.5 tabular-nums text-[10px] ${darkMode ? 'text-rose-400' : 'text-rose-700'}`}>
+                                    {Math.round(c.scoreDelta)}
+                                  </span>
+                                )}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                </details>
               )}
             </div>
           </div>
@@ -1542,42 +2294,84 @@ export function DealWorkspaceV4({
 
         {/* Risk Assessment (only rendered when there is risk content) */}
         {(dealBreakers.length > 0 || fragilityItems.length > 0 || validationItems.length > 0) && (
-          <div>
+          <div className={`pt-2 border-t ${darkMode ? 'border-white/[0.04]' : 'border-gray-100/80'}`}>
             <h2 className={`text-sm font-medium mb-4 ${sectionLabel}`}>Risk Assessment</h2>
             <div className={`rounded-xl border p-4 sm:p-5 ${card}`}>
               <div className="space-y-3">
-                <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_1fr_1fr] gap-3">
-                  <DecisionListGroup
-                    title="Deal Breakers"
-                    items={dealBreakers}
-                    tone="critical"
-                    darkMode={darkMode}
-                    body={body}
-                    muted={muted}
-                    emphasis="strong"
-                  />
-                  <DecisionListGroup
-                    title="Why The Decision Is Fragile"
-                    items={fragilityItems}
-                    tone="warning"
-                    darkMode={darkMode}
-                    body={body}
-                    muted={muted}
-                  />
-                  <DecisionListGroup
-                    title="What Must Be Validated"
-                    items={validationItems}
-                    tone="neutral"
-                    darkMode={darkMode}
-                    body={body}
-                    muted={muted}
-                  />
+                <DecisionListGroup
+                  title="Critical Issues"
+                  items={dealBreakers.length > 0 ? dealBreakers : fragilityItems.slice(0, 1)}
+                  tone={dealBreakers.length > 0 ? 'critical' : 'warning'}
+                  darkMode={darkMode}
+                  body={body}
+                  muted={muted}
+                  emphasis="strong"
+                />
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <details className={`rounded-lg border px-3 py-2.5 ${subCard}`}>
+                    <summary className={`cursor-pointer list-none text-[11px] font-medium ${sectionLabel}`}>
+                      Major Concerns · {fragilityItems.length}
+                    </summary>
+                    <div className="mt-2.5">
+                      <DecisionListGroup
+                        title="Major Concerns"
+                        items={fragilityItems}
+                        tone="warning"
+                        darkMode={darkMode}
+                        body={body}
+                        muted={muted}
+                      />
+                    </div>
+                  </details>
+                  <details className={`rounded-lg border px-3 py-2.5 ${subCard}`}>
+                    <summary className={`cursor-pointer list-none text-[11px] font-medium ${sectionLabel}`}>
+                      Required Validation · {validationItems.length}
+                    </summary>
+                    <div className="mt-2.5">
+                      <DecisionListGroup
+                        title="Required Validation"
+                        items={validationItems}
+                        tone="neutral"
+                        darkMode={darkMode}
+                        body={body}
+                        muted={muted}
+                      />
+                    </div>
+                  </details>
                 </div>
+
+                {/* Phase 4A: Contradiction Callouts — explicit panel when contradictions exist */}
+                {contradictionItems.length > 0 && (
+                  <details className={`rounded-lg border px-3 py-2.5 ${subCard}`}>
+                    <summary className={`cursor-pointer list-none text-[11px] font-medium ${
+                      darkMode ? 'text-rose-400' : 'text-rose-700'
+                    }`}>
+                      Contradictions Detected · {contradictionItems.length}
+                    </summary>
+                    <div className="mt-2.5 space-y-2">
+                      {contradictionItems.map((item, idx) => (
+                        <div key={idx} className="flex items-start gap-2">
+                          <AlertCircle className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
+                            (item.severity as string) === 'high'
+                              ? darkMode ? 'text-rose-400' : 'text-rose-600'
+                              : (item.severity as string) === 'medium'
+                              ? darkMode ? 'text-amber-400' : 'text-amber-600'
+                              : darkMode ? 'text-gray-500' : 'text-gray-400'
+                          }`} />
+                          <span className={`text-[11px] leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            {humanizeContradiction(item.text)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
 
                 {riskDiagnostics.length > 0 && (
                   <details className={`rounded-lg border px-3 py-2.5 ${subCard}`}>
                     <summary className={`cursor-pointer list-none text-[11px] font-medium ${sectionLabel}`}>
-                      Supporting diagnostics
+                      Supporting Diagnostics · {riskDiagnostics.length}
                     </summary>
                     <div className="mt-2.5 space-y-1.5">
                       {riskDiagnostics.map((item, idx) => (
@@ -1595,7 +2389,7 @@ export function DealWorkspaceV4({
         )}
 
         {/* Financial Snapshot (Horizontal Strip) */}
-        <div>
+        <div className={`pt-2 border-t ${darkMode ? 'border-white/[0.04]' : 'border-gray-100/80'}`}>
           <h2 className={`text-sm font-medium mb-4 ${sectionLabel}`}>Financial Snapshot</h2>
           <div className={`rounded-xl border p-4 sm:p-5 ${card}`}>
             <FinancialConfidenceHeader
@@ -1607,7 +2401,7 @@ export function DealWorkspaceV4({
               financialConfidenceTone={financialConfidenceTone}
               level={financialConfidence.level}
               summary={financialConfidence.summary}
-              coverageText={financialCoverage !== null ? `${Math.round(financialCoverage)}%` : 'Missing'}
+              coverageText={financialCoverage !== null ? `${Math.round(financialCoverage)}%` : 'Unknown'}
               financialTruthText={financialTruthBadge?.text ?? null}
             />
 
@@ -1622,6 +2416,8 @@ export function DealWorkspaceV4({
                 muted={muted}
                 card={subCard}
                 priority
+                trust={revenueTile.trust}
+                isProjected={revenueTile.isProjected}
               />
               <FinancialMetricCard
                 label="Burn Rate"
@@ -1632,6 +2428,8 @@ export function DealWorkspaceV4({
                 heading={heading}
                 muted={muted}
                 card={subCard}
+                trust={burnTile.trust}
+                isProjected={burnTile.isProjected}
               />
               <FinancialMetricCard
                 label="Runway"
@@ -1642,6 +2440,8 @@ export function DealWorkspaceV4({
                 heading={heading}
                 muted={muted}
                 card={subCard}
+                trust={runwayTile.trust}
+                isProjected={runwayTile.isProjected}
               />
               <FinancialMetricCard
                 label="Coverage"
@@ -1712,148 +2512,197 @@ export function DealWorkspaceV4({
           </div>
         </div>
 
+        {/* Phase 4A: Section Evidence Coverage — sourced from score_breakdown_v1.sections */}
+        {scoreBreakdownSections && scoreBreakdownSections.length > 0 && (() => {
+          const SECTION_LABELS: Record<string, string> = {
+            market: 'Market', product: 'Product', business_model: 'Business Model',
+            traction: 'Traction', financials: 'Financials', team: 'Team',
+            risks: 'Risks', terms: 'Terms', icp: 'ICP',
+          };
+          // Only show sections that have some coverage data
+          const visibleSections = scoreBreakdownSections.filter(
+            (s) => s.trace_coverage_pct != null || s.coverage_pct != null || s.support_status !== 'unknown',
+          );
+          if (visibleSections.length === 0) return null;
+          return (
+            <div className={`pt-2 border-t ${darkMode ? 'border-white/[0.04]' : 'border-gray-100/80'}`}>
+              <details>
+                <summary className={`cursor-pointer list-none text-sm font-medium mb-4 ${sectionLabel}`}>
+                  Evidence Coverage · {visibleSections.length} sections
+                </summary>
+                <div className={`mt-3 rounded-xl border p-4 ${card}`}>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
+                    {visibleSections.map((section) => {
+                      const pct = section.trace_coverage_pct ?? section.coverage_pct ?? null;
+                      const pctInt = pct != null ? Math.round(pct * 100) : null;
+                      const label = SECTION_LABELS[section.key] ?? section.key;
+                      const statusColor =
+                        section.support_status === 'supported'
+                          ? darkMode ? 'text-emerald-400' : 'text-emerald-700'
+                          : section.support_status === 'weak'
+                          ? darkMode ? 'text-amber-400' : 'text-amber-700'
+                          : section.support_status === 'missing'
+                          ? darkMode ? 'text-rose-400' : 'text-rose-700'
+                          : darkMode ? 'text-gray-500' : 'text-gray-400';
+                      const barFill =
+                        pctInt == null ? 0 : pctInt;
+                      const barColor =
+                        barFill >= 70
+                          ? darkMode ? 'bg-emerald-500' : 'bg-emerald-500'
+                          : barFill >= 40
+                          ? darkMode ? 'bg-amber-500' : 'bg-amber-500'
+                          : darkMode ? 'bg-rose-500' : 'bg-rose-500';
+                      return (
+                        <div key={section.key} className={`rounded-lg border px-3 py-2.5 ${subCard}`}>
+                          <div className="flex items-center justify-between gap-2 mb-1.5">
+                            <span className={`text-[11px] font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{label}</span>
+                            <span className={`text-[10px] font-semibold ${statusColor}`}>
+                              {pctInt != null ? `${pctInt}%` : section.support_status}
+                            </span>
+                          </div>
+                          <div className={`h-1 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
+                            <div
+                              className={`h-full rounded-full transition-all ${barColor}`}
+                              style={{ width: `${Math.min(barFill, 100)}%` }}
+                            />
+                          </div>
+                          {section.hint && (
+                            <p className={`mt-1 text-[10px] leading-snug ${muted}`}>{section.hint}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className={`mt-3 text-[10px] leading-relaxed ${muted}`}>
+                    Coverage reflects the proportion of analysis claims linked to extracted evidence for each section.
+                  </p>
+                </div>
+              </details>
+            </div>
+          );
+        })()}
+
         {/* Team Highlights (collapsible, only when data present) */}
         {hasTeam && (
-          <div>
-            <button
-              onClick={() => toggleSection('team')}
-              className={`w-full flex items-center justify-between py-3 ${sectionLabel} hover:opacity-80 transition-opacity`}
-            >
-              <div className="flex items-center gap-2">
-                <Users className="w-4 h-4" />
-                <h2 className="text-sm font-medium">Team Highlights</h2>
-              </div>
-              {expandedSections.team ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            </button>
-            {expandedSections.team && (
-              <div className={`mt-3 p-4 rounded-lg border ${card}`}>
-                <div className="space-y-3">
-                  {teamHighlights.map((member, idx) => (
-                    <div key={idx}>
-                      <div className={`text-xs font-medium mb-1 ${sectionLabel}`}>{member.role}</div>
-                      <div className={`text-sm ${body}`}>
-                        <span className="font-medium">{member.name}</span>
-                        {member.credential && (
-                          <span className={`block text-xs mt-0.5 ${muted}`}>{member.credential}</span>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+          <CollapsiblePreviewSection
+            id="team"
+            title="Team Highlights"
+            icon={<Users className="w-4 h-4" />}
+            preview={teamHighlights[0]?.credential || `${teamHighlights[0]?.name ?? 'Team'} · ${teamHighlights[0]?.role ?? 'role extracted'}`}
+            count={teamHighlights.length}
+            expanded={expandedSections.team}
+            onToggle={toggleSection}
+            darkMode={darkMode}
+          >
+            <div className="space-y-3">
+              {teamHighlights.map((member, idx) => (
+                <div key={idx}>
+                  <div className={`text-xs font-medium mb-1 ${sectionLabel}`}>{member.role}</div>
+                  <div className={`text-sm ${body}`}>
+                    <span className="font-medium">{member.name}</span>
+                    {member.credential && (
+                      <span className={`block text-xs mt-0.5 ${muted}`}>{member.credential}</span>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
+          </CollapsiblePreviewSection>
         )}
 
         {/* Use of Funds (collapsible, only when data present) */}
         {hasUoF && (
-          <div>
-            <button
-              onClick={() => toggleSection('funds')}
-              className={`w-full flex items-center justify-between py-3 ${sectionLabel} hover:opacity-80 transition-opacity`}
-            >
-              <div className="flex items-center gap-2">
-                <DollarSign className="w-4 h-4" />
-                <h2 className="text-sm font-medium">Use of Funds</h2>
-              </div>
-              {expandedSections.funds ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            </button>
-            {expandedSections.funds && (
-              <div className={`mt-3 p-4 rounded-lg border ${card}`}>
-                <div className="space-y-2">
-                  {useOfFunds.map((item, idx) => (
-                    <div key={idx} className="flex items-center justify-between">
-                      <span className={`text-sm ${body}`}>{item.category}</span>
-                      {item.amountLabel && (
-                        <span className={`text-xs font-medium ${heading}`}>{item.amountLabel}</span>
-                      )}
-                    </div>
-                  ))}
+          <CollapsiblePreviewSection
+            id="funds"
+            title="Use of Funds"
+            icon={<DollarSign className="w-4 h-4" />}
+            preview={`${useOfFunds[0]?.category ?? 'Allocation'}${useOfFunds[0]?.amountLabel ? ` · ${useOfFunds[0].amountLabel}` : ''}`}
+            count={useOfFunds.length}
+            expanded={expandedSections.funds}
+            onToggle={toggleSection}
+            darkMode={darkMode}
+          >
+            <div className="space-y-2">
+              {useOfFunds.map((item, idx) => (
+                <div key={idx} className="flex items-center justify-between">
+                  <span className={`text-sm ${body}`}>{item.category}</span>
+                  {item.amountLabel && (
+                    <span className={`text-xs font-medium ${heading}`}>{item.amountLabel}</span>
+                  )}
                 </div>
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
+          </CollapsiblePreviewSection>
         )}
 
         {/* Project Pipeline (collapsible, only when data present) */}
         {hasPipeline && (
-          <div>
-            <button
-              onClick={() => toggleSection('pipeline')}
-              className={`w-full flex items-center justify-between py-3 ${sectionLabel} hover:opacity-80 transition-opacity`}
-            >
-              <div className="flex items-center gap-2">
-                <Calendar className="w-4 h-4" />
-                <h2 className="text-sm font-medium">Project Pipeline</h2>
-              </div>
-              {expandedSections.pipeline ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            </button>
-            {expandedSections.pipeline && (
-              <div className={`mt-3 p-4 rounded-lg border ${card}`}>
-                <div className="space-y-2">
-                  {projectPipeline.map((item, idx) => (
-                    <div key={idx} className={`pb-2 border-b last:border-0 last:pb-0 ${darkMode ? 'border-white/5' : 'border-gray-100'}`}>
-                      <span className={`text-sm font-medium ${body}`}>{item.name}</span>
-                      <div className={`flex flex-wrap gap-3 text-xs mt-0.5 ${muted}`}>
-                        {item.startDate && <span>Start: {item.startDate}</span>}
-                        {item.capitalLabel && <span>Capital: {item.capitalLabel}</span>}
-                        {item.revenueLabel && <span>Revenue: {item.revenueLabel}</span>}
-                        {item.returnPct && <span>Return: {item.returnPct}</span>}
-                      </div>
-                    </div>
-                  ))}
+          <CollapsiblePreviewSection
+            id="pipeline"
+            title="Project Pipeline"
+            icon={<Calendar className="w-4 h-4" />}
+            preview={`${projectPipeline[0]?.name ?? 'Pipeline item'}${projectPipeline[0]?.capitalLabel ? ` · Capital: ${projectPipeline[0].capitalLabel}` : ''}`}
+            count={projectPipeline.length}
+            expanded={expandedSections.pipeline}
+            onToggle={toggleSection}
+            darkMode={darkMode}
+          >
+            <div className="space-y-2">
+              {projectPipeline.map((item, idx) => (
+                <div key={idx} className={`pb-2 border-b last:border-0 last:pb-0 ${darkMode ? 'border-white/5' : 'border-gray-100'}`}>
+                  <span className={`text-sm font-medium ${body}`}>{item.name}</span>
+                  <div className={`flex flex-wrap gap-3 text-xs mt-0.5 ${muted}`}>
+                    {item.startDate && <span>Start: {item.startDate}</span>}
+                    {item.capitalLabel && <span>Capital: {item.capitalLabel}</span>}
+                    {item.revenueLabel && <span>Revenue: {item.revenueLabel}</span>}
+                    {item.returnPct && <span>Return: {item.returnPct}</span>}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              ))}
+            </div>
+          </CollapsiblePreviewSection>
         )}
 
         {/* Revenue Model (collapsible, only when data present) */}
         {hasRevenueModel && (
-          <div>
-            <button
-              onClick={() => toggleSection('revenue')}
-              className={`w-full flex items-center justify-between py-3 ${sectionLabel} hover:opacity-80 transition-opacity`}
-            >
-              <div className="flex items-center gap-2">
-                <Activity className="w-4 h-4" />
-                <h2 className="text-sm font-medium">Revenue Model</h2>
-              </div>
-              {expandedSections.revenue ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            </button>
-            {expandedSections.revenue && (
-              <div className={`mt-3 p-4 rounded-lg border ${card}`}>
-                <div className="space-y-3">
-                  {revenueModel.type && (
-                    <div>
-                      <div className={`text-xs mb-1 ${muted}`}>Model Type</div>
-                      <div className={`text-sm font-medium ${heading}`}>{revenueModel.type}</div>
-                    </div>
-                  )}
-                  {revenueModel.unitEconomics && (
-                    <div>
-                      <div className={`text-xs mb-1 ${muted}`}>Unit Economics</div>
-                      <div className={`text-sm ${body}`}>{revenueModel.unitEconomics}</div>
-                    </div>
-                  )}
-                  {revenueModel.detail && (
-                    <div>
-                      <div className={`text-xs mb-1 ${muted}`}>Detail</div>
-                      <div className={`text-sm ${body}`}>{revenueModel.detail}</div>
-                    </div>
-                  )}
-                  {revenueModel.recurring !== null && (
-                    <div>
-                      <div className={`text-xs mb-1 ${muted}`}>Recurring</div>
-                      <div className={`text-sm font-medium ${heading}`}>
-                        {revenueModel.recurring ? 'Yes' : 'No'}
-                      </div>
-                    </div>
-                  )}
+          <CollapsiblePreviewSection
+            id="revenue"
+            title="Revenue Model"
+            icon={<Activity className="w-4 h-4" />}
+            preview={revenueModel.unitEconomics || revenueModel.type || revenueModel.detail || 'Revenue model extracted'}
+            expanded={expandedSections.revenue}
+            onToggle={toggleSection}
+            darkMode={darkMode}
+          >
+            <div className="space-y-3">
+              {revenueModel.type && (
+                <div>
+                  <div className={`text-xs mb-1 ${muted}`}>Model Type</div>
+                  <div className={`text-sm font-medium ${heading}`}>{revenueModel.type}</div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+              {revenueModel.unitEconomics && (
+                <div>
+                  <div className={`text-xs mb-1 ${muted}`}>Unit Economics</div>
+                  <div className={`text-sm ${body}`}>{revenueModel.unitEconomics}</div>
+                </div>
+              )}
+              {revenueModel.detail && (
+                <div>
+                  <div className={`text-xs mb-1 ${muted}`}>Detail</div>
+                  <div className={`text-sm ${body}`}>{revenueModel.detail}</div>
+                </div>
+              )}
+              {revenueModel.recurring !== null && (
+                <div>
+                  <div className={`text-xs mb-1 ${muted}`}>Recurring</div>
+                  <div className={`text-sm font-medium ${heading}`}>
+                    {revenueModel.recurring ? 'Yes' : 'No'}
+                  </div>
+                </div>
+              )}
+            </div>
+          </CollapsiblePreviewSection>
         )}
 
         {/* Workbench Section */}

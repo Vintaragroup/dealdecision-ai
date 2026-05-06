@@ -58,3 +58,44 @@
     display: none;
   }
 }
+
+/* =============================================================================
+   CAPTURE MODE
+   Applied by withCaptureMode() (src/lib/captureMode.ts) before taking full-page
+   screenshots.  Never active during normal user sessions.
+
+   The root cause: the app shell uses `h-screen overflow-hidden` + an inner
+   `<main class="flex-1 overflow-auto">` for all page scrolling.  Playwright's
+   `fullPage: true` walks the *document* scroll height, which is clipped to the
+   viewport by these constraints.  capture-mode lifts those constraints so the
+   document body expands to its natural content height.
+   ============================================================================= */
+html.capture-mode,
+html.capture-mode body {
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* Outer app-shell wrapper: flex h-screen overflow-hidden */
+html.capture-mode .app-shell-root {
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* Inner content column: flex-1 flex flex-col min-w-0 relative */
+html.capture-mode .app-shell-content {
+  height: auto !important;
+  overflow: visible !important;
+}
+
+/* Main scrollable area: flex-1 overflow-auto */
+html.capture-mode .app-shell-main {
+  height: auto !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+/* Hide fixed/sticky chrome that would overlap or duplicate in a tall screenshot */
+html.capture-mode .capture-mode-hidden {
+  display: none !important;
+}

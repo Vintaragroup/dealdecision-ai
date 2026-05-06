@@ -86,6 +86,7 @@
     "test:ui": "playwright test",
     "test:ui:debug": "playwright test tests/ui/debug.spec.ts",
     "test:ui:login": "playwright test tests/ui/auth.setup.ts --project=setup",
+    "screenshot": "node scripts/screenshot-workspace.mjs",
     "trace:open": "playwright show-trace"
   },
   "devDependencies": {

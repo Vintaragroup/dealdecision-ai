@@ -2342,6 +2342,10 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   documentFullTexts?: string[] | null;
   /** RC-S6-009: Pre-extracted company name from documents.full_text (API layer). */
   companyName?: string | null;
+  /** Authoritative evidence item count from the evidence_items DB table.
+   *  When provided, this overrides dio.inputs.evidence.length which may be
+   *  under-populated (in-memory DIO array vs. persisted rows). */
+  evidenceItemCount?: number | null;
 }): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
@@ -2915,6 +2919,11 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 
 		metadata: {
 			...(base as any).metadata,
+			// Prefer the authoritative DB count (evidence_items table) when provided.
+			// dio.inputs.evidence is under-populated for large/multi-run deals.
+			...(typeof opts?.evidenceItemCount === 'number' && opts.evidenceItemCount >= 0
+				? { evidenceCount: opts.evidenceItemCount }
+				: {}),
 			score_explanation: scoreExplanationAugmented,
       revenue_convergence: revenueConvergenceDiagnostic,
       field_authority_guard: guardResult.guardLog.length > 0 ? {

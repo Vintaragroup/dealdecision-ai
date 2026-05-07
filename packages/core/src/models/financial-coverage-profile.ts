@@ -64,6 +64,23 @@ const isMarketSizingText = (text: string): boolean => {
   return /\b(tam|sam|som|market\s*(size|sizing)|total\s+addressable\s+market|serviceable\s+available\s+market|serviceable\s+obtainable\s+market)\b/i.test(text);
 };
 
+/**
+ * Returns true when the candidate text describes capital deployment, a program
+ * financing total, or per-site capex — NOT an operating revenue figure.
+ *
+ * Common false-positive patterns in infrastructure / project-finance deals:
+ *   "Use of Proceeds" slides that summarise total deployment ($155M)
+ *   "Total Program" capex estimates
+ *   "Per-site deployment cost" figures
+ *   "Capital deployed across X sites"
+ *
+ * These must NOT be classified as historical_revenue_present.
+ */
+const isDeploymentCapitalText = (text: string): boolean => {
+  if (!text.trim()) return false;
+  return /\b(use\s+of\s+(proceeds|funds)|capital\s+deploy(ment|ed|ing)|deploy(ed|ment|ing)\s+(of\s+)?capital|total\s+(program|deployment|capex)|program\s+(finance|total|cost)|infrastructure\s+deploy(ment|ed)|per[-\s]site\s+(cost|deploy|capex)|per[-\s]unit\s+deploy|project\s+finance|estimated\s+deploy(ment|ed)|deployment\s+target|capex\s+(estimate|budget|plan|per\s+site))\b/i.test(text);
+};
+
 const looksLikeFutureYear = (year: number, currentYear: number): boolean => year > currentYear;
 const looksLikeHistoricalYear = (year: number, currentYear: number): boolean => year <= currentYear;
 
@@ -183,6 +200,9 @@ export function inferFinancialCoverageProfileV1(input: {
     const isForecast = subtype === 'forecast' || /\b(forecast|projection|projected|plan)\b/i.test(raw);
     const isMarketSizing = raw ? isMarketSizingText(raw) : false;
     if (isMarketSizing) continue;
+    // Deployment / capex totals (e.g. "Use of Proceeds" $155M) must not be
+    // treated as historical operating revenue.
+    if (raw && isDeploymentCapitalText(raw)) continue;
     const ev = Array.isArray(c?.sources) ? firstEvidenceFromSources(c.sources) : null;
 
     if (year != null) {
@@ -215,9 +235,10 @@ export function inferFinancialCoverageProfileV1(input: {
     const subtype = asNonEmptyString((cj as any)?.value_json?.subtype ?? null);
     const year = typeof (cj as any)?.value_json?.year === 'number' ? (cj as any).value_json.year : null;
 
-    // Revenue facts (exclude market sizing)
+    // Revenue facts (exclude market sizing and deployment capital)
     if (ft === 'revenue_v1') {
       if (text && isMarketSizingText(text)) continue;
+      if (text && isDeploymentCapitalText(text)) continue;
       if (scope && scope.toLowerCase().includes('market')) continue;
       const isForecast = (subtype && subtype.toLowerCase() === 'forecast') || /\b(forecast|projection|projected|plan)\b/i.test(text);
       const ev = firstEvidenceFromPromotedFact(pf, text);
@@ -234,8 +255,8 @@ export function inferFinancialCoverageProfileV1(input: {
 
     // Forecast signals via deterministic text/fact types
     if (ft.includes('forecast') || ft.includes('projection') || /\b(forecast|projection|projected|plan)\b/i.test(text)) {
-      // Still block market sizing from being treated as revenue.
-      if (text && !isMarketSizingText(text)) {
+      // Still block market sizing and deployment capital from being treated as revenue.
+      if (text && !isMarketSizingText(text) && !isDeploymentCapitalText(text)) {
         flag(out, 'forecast_revenue_present', firstEvidenceFromPromotedFact(pf, text));
       }
     }

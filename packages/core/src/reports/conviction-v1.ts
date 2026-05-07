@@ -213,10 +213,28 @@ const buildContradictions = (scoreExplanation: any): ConvictionContradictionV1[]
 
   const deduped = new Map<string, ConvictionContradictionV1>();
   for (const c of out) {
-    const id = `${c.code}|${c.text}`;
+    // Normalise case before deduplication so "equity vs Equity" doesn't produce
+    // two separate contradiction entries.
+    const id = `${c.code}|${c.text.toLowerCase()}`;
     if (!deduped.has(id)) deduped.set(id, c);
   }
-  return Array.from(deduped.values()).slice(0, 8);
+
+  // Filter out false-positive contradictions produced by infrastructure/project-finance
+  // deals that naturally contain multiple dollar figures at different scales
+  // (e.g. total program $3.7B vs current raise $20M vs per-site $2M).
+  // These are distinct financial categories, not true conflicts.
+  const deploymentAmountConflictPattern =
+    /\b(use\s+of\s+(proceeds|funds)|total\s+program|total\s+deploy|capex\s+(estimate|plan|budget)|per[-\s]?site|infrastructure\s+deploy|project\s+financ)\b/i;
+  const filtered = Array.from(deduped.values()).filter((c) => {
+    const lower = c.text.toLowerCase();
+    // Only suppress "conflict" / "mismatch" / "inconsistent" flags that also
+    // reference deployment-capital language — leave genuine contradictions intact.
+    const isConflictText = /\b(conflict|mismatch|inconsistent|discrepanc)\b/i.test(lower);
+    if (isConflictText && deploymentAmountConflictPattern.test(c.text)) return false;
+    return true;
+  });
+
+  return filtered.slice(0, 8);
 };
 
 export function buildConvictionV1(args: {

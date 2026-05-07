@@ -1819,6 +1819,18 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 					}
 				} catch { /* fail-open */ }
 
+				// Query authoritative evidence count from DB so compiler.evidenceCount
+				// reflects actual evidence_items rows, not the in-memory DIO array.
+				let evidenceItemCount: number | null = null;
+				try {
+					const evidenceCountResult = await pool.query<{ count: string }>(
+						`SELECT COUNT(*)::text AS count FROM evidence_items WHERE deal_id = $1::uuid`,
+						[dealId]
+					);
+					const raw = evidenceCountResult.rows?.[0]?.count;
+					if (raw != null) evidenceItemCount = parseInt(raw, 10);
+				} catch { /* fail-open — compiler will fall back to dio.inputs.evidence.length */ }
+
 				const compiledReport = (() => {
 					// Always use the WithPromotedFacts variant so financialFacts and documents
 					// can be supplied for consistent has_xlsx / has_cap_table / has_facts output
@@ -1828,6 +1840,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						financialFacts: financialFactsForOrchestrator,
 						documents: documentsForCompile,
 						companyName: companyName ?? undefined,
+						evidenceItemCount: evidenceItemCount ?? undefined,
 					});
 				})();
 

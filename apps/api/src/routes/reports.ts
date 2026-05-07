@@ -3207,7 +3207,16 @@ export async function registerReportRoutes(
                 ? dealRows[0].name.trim()
                 : null;
               const companyName = dealName ?? heuristicCompanyName;
-              return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName });
+              let evidenceItemCount: number | undefined;
+              try {
+                const evRes = await (pool as any).query<{ count: string }>(
+                  `SELECT COUNT(*)::text AS count FROM evidence_items WHERE deal_id = $1::uuid`,
+                  [deal_id]
+                );
+                const raw = evRes.rows?.[0]?.count;
+                if (raw != null) evidenceItemCount = parseInt(raw, 10);
+              } catch { /* fail-open */ }
+              return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName, evidenceItemCount });
             });
             logStage('compile.report', compiled.ms, true);
             report = compiled.value;
@@ -4209,7 +4218,16 @@ export async function registerReportRoutes(
             ? dealRows[0].name.trim()
             : null;
           const companyName = dealName ?? heuristicCompanyName;
-          report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName });
+          let evidenceItemCount: number | undefined;
+          try {
+            const evRes = await (pool as any).query<{ count: string }>(
+              `SELECT COUNT(*)::text AS count FROM evidence_items WHERE deal_id = $1::uuid`,
+              [deal_id]
+            );
+            const raw = evRes.rows?.[0]?.count;
+            if (raw != null) evidenceItemCount = parseInt(raw, 10);
+          } catch { /* fail-open */ }
+          report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName, evidenceItemCount });
         }
 
         // Backward compatibility: normalize structured KPI shape (order matters).

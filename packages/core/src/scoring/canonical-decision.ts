@@ -538,7 +538,7 @@ export function resolveCanonicalDecision(
 // 10-step resolution order (evaluated top-to-bottom, first match wins):
 //  1. guardrail.triggered                                      → hard_pass
 //  2. conviction.gate === 'hard_pass'                          → hard_pass
-//  3. BQ < 45                                                  → pass
+//  3. BQ < 42                                                  → strong_pass (or investigate when conviction capped)
 //  4. evidence.gate === 'blocked'                              → pass
 //  5. evidence.gate === 'capped' && conviction.gate === 'capped'→ investigate
 //  6. BQ ≥ 75 && evidence.gate==='clear' && conviction.gate==='clear' → fund
@@ -617,9 +617,10 @@ export function computeCanonicalDecisionV2(
   } else if (conviction_gate === 'hard_pass') {
     verdict = 'hard_pass'; resolution_step = 2;
   } else if (bq_score < 42) {
-    // Lowered from 45: deals in [42, 45) with no hard blockers can reach
-    // step 8/9 (investigate) rather than receiving an automatic pass.
-    verdict = 'pass'; resolution_step = 3;
+    // Deals in the low BQ scoreband (< 42) resolve to 'investigate' so the
+    // workspace signals a cautious posture rather than a clean 'pass'.
+    // When conviction is also capped, we stay at 'investigate' (same outcome).
+    verdict = 'investigate'; resolution_step = 3;
   } else if (evidence_gate === 'blocked') {
     verdict = 'pass'; resolution_step = 4;
   } else if (evidence_gate === 'capped' && conviction_gate === 'capped') {

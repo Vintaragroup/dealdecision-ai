@@ -5,6 +5,7 @@ export type BusinessArchetypeValueV1 =
 	| 'services'
 	| 'fund_spv'
 	| 'real_estate'
+	| 'infrastructure_energy'
 	| 'de_spac'
 	| 'other'
 	| 'unknown';
@@ -132,6 +133,27 @@ const ARCHETYPES: ArchetypeSpec[] = [
 			{ id: 'fund:lp_gp', re: /\b(limited\s+partners?|\blp\b|\bgp\b|general\s+partner)\b/i, weight: 26 },
 			{ id: 'fund:carry_fees', re: /\b(carried\s+interest|carry|management\s+fee|capital\s+call)\b/i, weight: 22 },
 			{ id: 'fund:fund', re: /\b(fund\s+I|fund\s+ii|fund\s+iii|fundraise|fundraising\s+for\s+the\s+fund)\b/i, weight: 18 },
+		],
+	},
+	{
+		// Infrastructure / energy / climate-tech project finance.
+		// Placed before consumer_product to prevent energy deployment language
+		// (distribution networks, retail tariffs, project vehicles) from being
+		// mis-classified as a CPG consumer brand.
+		value: 'infrastructure_energy',
+		threshold: 28,
+		rules: [
+			// Hard domain identifiers — single match sufficient to exceed threshold
+			{ id: 'infra:iegs', re: /\biegs\b/i, weight: 40 },
+			{ id: 'infra:green_ammonia', re: /\bgreen\s+ammonia\b/i, weight: 36 },
+			{ id: 'infra:ppa_offtake', re: /\b(ppa|power\s+purchase\s+agreement|offtake\s+agreement)\b/i, weight: 34 },
+			{ id: 'infra:project_finance', re: /\bproject\s+financ(e|ing)\b/i, weight: 32 },
+			// Deployment / capex signals
+			{ id: 'infra:deployment_infra', re: /\b(infrastructure\s+deploy(ment|ed?)|deploy[a-z]*\s+infrastructure)\b/i, weight: 28 },
+			{ id: 'infra:capex', re: /\b(capex|capital\s+expenditure|megawatt[s]?|gigawatt[s]?|(?<!\w)mw\b|(?<!\w)gw\b)\b/i, weight: 22 },
+			{ id: 'infra:climate_tech', re: /\b(climate\s+(infrastructure|tech)|green\s+hydrogen|carbon\s+(reduction|capture)|net[\s-]?zero)\b/i, weight: 22 },
+			{ id: 'infra:energy_systems', re: /\b(energy\s+(system[s]?|storage|assets?)|solar\s+booster|renewable\s+energy|clean\s+energy)\b/i, weight: 18 },
+			{ id: 'infra:project_vehicle', re: /\b(project\s+vehicle|spv\s+per\s+site|per[-\s]?site\s+(cost|deployment))\b/i, weight: 18 },
 		],
 	},
 	{

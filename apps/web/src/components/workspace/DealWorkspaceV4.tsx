@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Sparkles,
   FileText,
+  FolderOpen,
   Search,
   ChevronDown,
   ChevronRight,
@@ -10,6 +11,7 @@ import {
   CheckCircle2,
   Circle,
   Loader2,
+  X,
   XCircle,
   TrendingUp,
   DollarSign,
@@ -27,6 +29,9 @@ import type {
   FinancialTile,
 } from './WorkspaceRedesignedShell';
 import type { WorkspaceOverviewFactTrust } from './contracts/workspaceViewModel';
+import { EvidenceChipRow } from './EvidenceChip';
+import { EvidenceTraceDrawer } from './EvidenceTraceDrawer';
+import { DocumentsTab } from '../documents/DocumentsTab';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -87,6 +92,10 @@ export type DealWorkspaceV4Props = WorkspaceRedesignedShellProps & {
    * Used for Phase 4A section evidence coverage panel. Optional — gracefully absent.
    */
   scoreBreakdownSections?: SectionCoverageItem[];
+  /** The deal's UUID — used to scope the Documents modal to this deal. */
+  dealId?: string;
+  /** Increment to force-refresh the Documents modal document list (e.g. after re-extraction). */
+  documentsReloadKey?: number;
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -401,7 +410,7 @@ function isMechanicalConvictionText(text: string | null): boolean {
 // already in scope. No content is invented. Every sentence traces back to a
 // deterministic field or a conviction signal.
 
-type _Contributor = { key: string; label: string; scoreDelta: number | null };
+type _Contributor = { key: string; label: string; scoreDelta: number | null; evidence_refs?: string[] };
 
 /**
  * Strips known internal system artifacts from governed copy strings.
@@ -1657,7 +1666,12 @@ export function DealWorkspaceV4({
   financialTruthBadge,
   signalTension,
   scoreBreakdownSections,
+  structuredContradictions,
+  dealId,
+  documentsReloadKey = 0,
 }: DealWorkspaceV4Props) {
+  const [showDocsModal, setShowDocsModal] = useState(false);
+
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({
     team: false,
     funds: false,
@@ -1668,6 +1682,8 @@ export function DealWorkspaceV4({
     evidence: false,
     intelligence: false,
   });
+
+  const [evidenceDrawer, setEvidenceDrawer] = useState<{ refs: string[]; context?: string } | null>(null);
 
   const toggleSection = (section: string) => {
     setExpandedSections((prev) => ({ ...prev, [section]: !prev[section] }));
@@ -1777,7 +1793,11 @@ export function DealWorkspaceV4({
     Boolean(revenueModel.type) || Boolean(revenueModel.unitEconomics) || Boolean(revenueModel.detail);
 
   // Adapt contradictions (string[]) → structured items for V4 rendering
-  const contradictionItems = contradictions.map((text) => ({ severity: 'low' as const, text }));
+  // Prefer structuredContradictions (with evidence_refs) over plain strings when present.
+  const contradictionItems =
+    structuredContradictions && structuredContradictions.length > 0
+      ? structuredContradictions
+      : contradictions.map((text) => ({ severity: 'low' as const, text, evidence_refs: [] as string[] }));
 
   // ── Styling helpers ──────────────────────────────────────────────────────
 
@@ -1915,6 +1935,7 @@ export function DealWorkspaceV4({
   }[decisionStatus.tier];
 
   return (
+    <>
     <div className={`w-full ${darkMode ? 'bg-[#0a0a0a]' : 'bg-gray-50'}`}>
 
       {/* Sticky Identity Strip */}
@@ -1956,8 +1977,21 @@ export function DealWorkspaceV4({
               )}
             </div>
           </div>
+          <div className="shrink-0 hidden sm:flex items-center gap-2 ml-4">
+          {dealId && (
+              <Button
+                variant="outline"
+                size="sm"
+                darkMode={darkMode}
+                className="whitespace-nowrap gap-1.5"
+                onClick={() => setShowDocsModal(true)}
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+                Documents
+              </Button>
+          )}
           {onRunAnalysis && (
-            <div className="relative shrink-0 hidden sm:block ml-4">
+            <div className="relative shrink-0">
               <Button
                 variant="outline"
                 size="sm"
@@ -1996,6 +2030,7 @@ export function DealWorkspaceV4({
               })()}
             </div>
           )}
+          </div>
         </div>
 
         {/* Row 2 — mini decision summary (only when analysis has run) */}
@@ -2198,6 +2233,12 @@ export function DealWorkspaceV4({
                                     +{Math.round(c.scoreDelta)}
                                   </span>
                                 )}
+                                <EvidenceChipRow
+                                  evidenceRefs={c.evidence_refs ?? []}
+                                  context={c.label}
+                                  darkMode={darkMode}
+                                  onOpen={(refs, ctx) => setEvidenceDrawer({ refs, context: ctx })}
+                                />
                               </span>
                             </li>
                           ))}
@@ -2218,6 +2259,12 @@ export function DealWorkspaceV4({
                                     {Math.round(c.scoreDelta)}
                                   </span>
                                 )}
+                                <EvidenceChipRow
+                                  evidenceRefs={c.evidence_refs ?? []}
+                                  context={c.label}
+                                  darkMode={darkMode}
+                                  onOpen={(refs, ctx) => setEvidenceDrawer({ refs, context: ctx })}
+                                />
                               </span>
                             </li>
                           ))}
@@ -2350,20 +2397,33 @@ export function DealWorkspaceV4({
                       Contradictions Detected · {contradictionItems.length}
                     </summary>
                     <div className="mt-2.5 space-y-2">
-                      {contradictionItems.map((item, idx) => (
-                        <div key={idx} className="flex items-start gap-2">
-                          <AlertCircle className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
-                            (item.severity as string) === 'high'
-                              ? darkMode ? 'text-rose-400' : 'text-rose-600'
-                              : (item.severity as string) === 'medium'
-                              ? darkMode ? 'text-amber-400' : 'text-amber-600'
-                              : darkMode ? 'text-gray-500' : 'text-gray-400'
-                          }`} />
-                          <span className={`text-[11px] leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                            {humanizeContradiction(item.text)}
-                          </span>
-                        </div>
-                      ))}
+                      {contradictionItems.map((item, idx) => {
+                        // Humanize the text, then truncate to first sentence (≤140 chars) to
+                        // prevent long narrative blobs from duplicating the Major Concerns panel.
+                        const humanized = humanizeContradiction(item.text);
+                        const firstSentence = humanized.match(/^[^.!?]+[.!?]/)?.[0] ?? humanized;
+                        const display = firstSentence.length <= 140 ? firstSentence : firstSentence.slice(0, 137) + '…';
+                        return (
+                          <div key={idx} className="flex items-start gap-2">
+                            <AlertCircle className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
+                              (item.severity as string) === 'high'
+                                ? darkMode ? 'text-rose-400' : 'text-rose-600'
+                                : (item.severity as string) === 'medium'
+                                ? darkMode ? 'text-amber-400' : 'text-amber-600'
+                                : darkMode ? 'text-gray-500' : 'text-gray-400'
+                            }`} />
+                            <span className={`text-[11px] leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                              {display}
+                            </span>
+                            <EvidenceChipRow
+                              evidenceRefs={item.evidence_refs ?? []}
+                              context={display}
+                              darkMode={darkMode}
+                              onOpen={(refs, ctx) => setEvidenceDrawer({ refs, context: ctx })}
+                            />
+                          </div>
+                        );
+                      })}
                     </div>
                   </details>
                 )}
@@ -2818,5 +2878,61 @@ export function DealWorkspaceV4({
 
       </div>
     </div>
+
+    {/* Phase 4B.1: Evidence Trace Drawer */}
+    <EvidenceTraceDrawer
+      open={evidenceDrawer !== null}
+      onClose={() => setEvidenceDrawer(null)}
+      evidenceRefs={evidenceDrawer?.refs ?? []}
+      context={evidenceDrawer?.context}
+      darkMode={darkMode}
+    />
+
+    {/* Documents Modal */}
+    {showDocsModal && dealId && (
+      <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 sm:p-6">
+        {/* Backdrop */}
+        <div
+          className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+          onClick={() => setShowDocsModal(false)}
+        />
+        {/* Card */}
+        <div className={`relative w-full max-w-3xl max-h-[85vh] flex flex-col rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.5)] border overflow-hidden ${
+          darkMode
+            ? 'bg-zinc-900 border-white/10'
+            : 'bg-white border-gray-200'
+        }`}>
+          {/* Modal header */}
+          <div className={`flex items-center justify-between px-5 py-4 border-b shrink-0 ${
+            darkMode ? 'border-white/10' : 'border-gray-200'
+          }`}>
+            <div className="flex items-center gap-2">
+              <FolderOpen className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+              <span className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                Documents
+              </span>
+            </div>
+            <button
+              onClick={() => setShowDocsModal(false)}
+              className={`p-1.5 rounded-lg transition-colors ${
+                darkMode ? 'text-gray-400 hover:text-white hover:bg-white/10' : 'text-gray-500 hover:text-gray-900 hover:bg-gray-100'
+              }`}
+              aria-label="Close documents"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          {/* Modal body */}
+          <div className="flex-1 overflow-y-auto p-5">
+            <DocumentsTab
+              dealId={dealId}
+              darkMode={darkMode}
+              reloadKey={documentsReloadKey}
+            />
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

@@ -424,7 +424,7 @@ export function selectWorkspaceRedesignedShellProps(
   // Top positive contributors (conviction-backed strength signals)
   // key is the internal snake_case dimension used for presentation-layer mapping
   // V2: prefer conviction_v2.top_positive_contributors when present
-  const topPositiveContributors: { key: string; label: string; scoreDelta: number | null }[] = (() => {
+  const topPositiveContributors: { key: string; label: string; scoreDelta: number | null; evidence_refs: string[] }[] = (() => {
     const v2items = meta?.conviction_v2?.top_positive_contributors;
     const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.top_positive_contributors;
     if (!Array.isArray(items)) return [];
@@ -433,6 +433,7 @@ export function selectWorkspaceRedesignedShellProps(
         key: asNES(c?.key) ?? '',
         label: asNES(c?.label) ?? '',
         scoreDelta: asFinite(c?.score_delta_0_100),
+        evidence_refs: Array.isArray(c?.evidence_refs) ? c.evidence_refs.filter((r: any) => typeof r === 'string') : [],
       }))
       .filter((c) => c.label.length > 0)
       .slice(0, 5);
@@ -453,7 +454,7 @@ export function selectWorkspaceRedesignedShellProps(
 
   // Top negative contributors (conviction-backed risk signals)
   // V2: prefer conviction_v2.top_negative_contributors when present
-  const topNegativeContributors: { key: string; label: string; scoreDelta: number | null }[] = (() => {
+  const topNegativeContributors: { key: string; label: string; scoreDelta: number | null; evidence_refs: string[] }[] = (() => {
     const v2items = meta?.conviction_v2?.top_negative_contributors;
     const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.top_negative_contributors;
     if (!Array.isArray(items)) return [];
@@ -462,6 +463,7 @@ export function selectWorkspaceRedesignedShellProps(
         key: asNES(c?.key) ?? '',
         label: asNES(c?.label) ?? '',
         scoreDelta: asFinite(c?.score_delta_0_100),
+        evidence_refs: Array.isArray(c?.evidence_refs) ? c.evidence_refs.filter((r: any) => typeof r === 'string') : [],
       }))
       .filter((c) => c.label.length > 0)
       .slice(0, 5);
@@ -635,6 +637,27 @@ export function selectWorkspaceRedesignedShellProps(
       .slice(0, 5);
   })();
 
+  // Structured contradictions — preserve severity + evidence_refs for Phase 4B evidence tracing.
+  // Falls back gracefully: v2opposing_case text items have no refs/severity.
+  const structuredContradictions: Array<{ text: string; severity: string; evidence_refs: string[] }> = (() => {
+    const v2opposing = asNES(meta?.conviction_v2?.opposing_case);
+    const items = convictionV1?.contradictions ?? [];
+    const base: unknown[] = Array.isArray(items) ? items : [];
+    const all: unknown[] = v2opposing ? [v2opposing, ...base] : base;
+    return all
+      .map((c: any) => {
+        const text = asNES(typeof c === 'string' ? c : c?.description ?? c?.text);
+        if (!text) return null;
+        return {
+          text,
+          severity: asNES(c?.severity) ?? 'low',
+          evidence_refs: Array.isArray(c?.evidence_refs) ? c.evidence_refs.filter((r: any) => typeof r === 'string') : [],
+        };
+      })
+      .filter((c): c is { text: string; severity: string; evidence_refs: string[] } => c !== null)
+      .slice(0, 5);
+  })();
+
   // Decision Proof Block inputs — from Stage 5 challenge_pass in report_payload
   const challengePass: any = rpt.challenge_pass ?? null;
   const primaryChallengeReason = asNES(challengePass?.primary_challenge_reason) ?? null;
@@ -790,6 +813,7 @@ export function selectWorkspaceRedesignedShellProps(
     blockerCount,
     openQuestions: diligenceItems,
     contradictions: contradictionsRaw,
+    structuredContradictions,
 
     // workbench
     deepDiveReady,

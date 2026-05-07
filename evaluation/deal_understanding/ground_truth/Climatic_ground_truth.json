@@ -1,0 +1,412 @@
+{
+  "deal_name": "Climatic",
+  "deal_id": "8ef117de-d6e8-458c-b2fc-a32fad06ee66",
+  "_synthetic": false,
+  "mode": "real_document",
+  "source_type": "pdf_zip",
+  "_schema": "deal_understanding_ground_truth_v1",
+  "ground_truth": {
+    "what_company_does": "Climatic Global is a climate-infrastructure deployment and financing company that structures, funds, deploys, owns or controls, and manages scalable climate-tech infrastructure assets, including green ammonia, independent energy generation systems, storage, solar booster, data-centre power, and related infrastructure projects.",
+    "problem": "Climate technologies and infrastructure assets exist, but large corporates and governments often cannot deploy them quickly because capex budgets are constrained, traditional finance avoids hands-on infrastructure deployment, and projects stall without a structure that combines capital, technology selection, project management, and operating oversight.",
+    "solution": "Climatic packages climate infrastructure as an Infrastructure-as-a-Service style model: it creates investment and project vehicles, works with technology suppliers and local partners, finances or arranges asset deployment, manages rollout and operation, and targets both investor returns and measurable climate-mitigation benefits.",
+    "why_now": "The expansion data shows Climatic moving from a general capital-raise narrative into named deployment opportunities and structured expansion evidence, including a March 2026 India green-ammonia MoU, country deployment proposals, use-of-funds schedules, risk-wrap materials, and claimed debt/pipeline progress. This supports a diligence-qualified pass because the opportunity is more substantiated than a generic early-stage concept, while still depending on execution of future conditions.",
+    "business_model": "Climate infrastructure deployment and asset-financing business monetized through ownership, control, financing, deployment, and operation of infrastructure assets that generate annuity-like or recurring project cash flows. The model is infrastructure/project-finance oriented rather than a pure software or SaaS model.",
+    "revenue_model": "Revenues are expected to come from deployed climate-infrastructure assets, project-level operating cash flows, equipment or technology-enabled deployment economics, energy/ammonia/offtake arrangements, financing spreads or investor returns, and management or operating participation in project vehicles. The documents support projected and pipeline revenue logic, but they do not prove closed ARR, booked revenue, or fully executed offtake revenue.",
+    "traction_summary": "The strongest expansion evidence is a dated March 24, 2026 MoU between Climatic Global Pty Ltd and Leverage Capital Partners for a proposed green-ammonia facility in Andhra Pradesh, India, with phased capacity targets, project commitment funding due, capex/equity schedules, and required next steps. The broader vault also includes country proposals for Egypt, Ecuador, and Alderney, an intro deck claiming $850M+ pipeline and $375M+ debt in process, commercial progress materials, use-of-funds documents, team/org materials, and risk-mitigation documents. This is credible expansion-pipeline evidence, not proof of closed revenue or fully de-risked financing.",
+    "risks": "Key risks include non-binding or conditional commercial documents, lack of independent proof of received project commitment funds, no confirmed closed debt financing in the extracted package, no binding offtake contracts shown as completed, technology performance and certification needing third-party validation, large capex execution risk, country-specific permitting and counterparty risk, and dependence on management projections for pipeline and returns.",
+    "target_customer": "Primary customers and counterparties include large corporates, governments, municipalities, industrial energy users, fertilizer and chemical buyers, data centres, infrastructure investors, family offices, institutional investors, project lenders, and local deployment partners seeking climate infrastructure without large upfront capex.",
+    "go_to_market": "Climatic goes to market through capital raising, project vehicles, local strategic partners, country deployment proposals, MoUs and LOIs, debt and equity structuring, supplier relationships, and targeted infrastructure deployments in markets with energy, ammonia, storage, data-centre power, or climate-mitigation demand.",
+    "market_positioning": "Climatic positions itself as a climate-infrastructure deployment platform that bridges the gap between climate technology, investor capital, and real-world project execution. It emphasizes faster deployment, capex removal for customers, infrastructure-like returns, climate impact, and hands-on management rather than conventional venture software growth.",
+    "competitive_differentiation": "Climatic's differentiation is its integrated structure combining project finance, asset ownership/control, technology supplier relationships, local deployment partners, infrastructure operations, risk-wrap mechanisms, and a portfolio of climate infrastructure use cases rather than selling a single technology product or software subscription.",
+    "investor_relevance_notes": [
+      "This is an infrastructure/project deployment and financing business, not a SaaS company.",
+      "The expansion package justifies stronger evidence coverage because it contains named commercial opportunities, financial plans, deployment sequences, team materials, and risk-mitigation documents.",
+      "The India LCP MoU should be treated as the strongest commercial traction evidence, but it should not be over-scored as binding revenue or closed financing because many next steps remain conditions.",
+      "The $850M+ pipeline and $375M+ debt-in-process figures are management claims from company materials and should be validated before being treated as externally confirmed.",
+      "A correct evaluation should calibrate the score as a diligence-qualified pass or proceed-to-diligence outcome, not a clean investment-grade approval.",
+      "Critical diligence requests include proof of PCF receipt, signed offtake agreements, debt approval letters, land/control documents, independent technical validation, and the raw financial model."
+    ]
+  },
+  "validation": {
+    "_schema": "deal_understanding_validation_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-CLIMATIC-001",
+        "label": "correctly identifies Climatic as climate infrastructure deployment and financing",
+        "check_type": "contains_any",
+        "field": "what_company_does",
+        "expected_terms": [
+          "climate-infrastructure",
+          "infrastructure",
+          "deployment",
+          "financing",
+          "green ammonia",
+          "energy generation",
+          "assets"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-002",
+        "label": "captures the problem as stalled climate infrastructure deployment",
+        "check_type": "contains_any",
+        "field": "problem",
+        "expected_terms": [
+          "capex",
+          "traditional finance",
+          "deployment",
+          "projects stall",
+          "climate technologies",
+          "infrastructure"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-003",
+        "label": "frames the solution as Infrastructure-as-a-Service style deployment",
+        "check_type": "contains_any",
+        "field": "solution",
+        "expected_terms": [
+          "Infrastructure-as-a-Service",
+          "investment vehicles",
+          "project vehicles",
+          "deploy",
+          "manage",
+          "climate-mitigation"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-004",
+        "label": "business model is infrastructure/project-finance oriented",
+        "check_type": "contains_any",
+        "field": "business_model",
+        "expected_terms": [
+          "infrastructure",
+          "asset",
+          "project-finance",
+          "ownership",
+          "operation",
+          "annuity",
+          "recurring"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-005",
+        "label": "revenue model does not rely on software subscriptions",
+        "check_type": "contains_any",
+        "field": "revenue_model",
+        "expected_terms": [
+          "project-level",
+          "operating cash flows",
+          "offtake",
+          "financing",
+          "infrastructure assets",
+          "not prove closed ARR"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-006",
+        "label": "traction references India LCP MoU and expansion pipeline",
+        "check_type": "contains_any",
+        "field": "traction_summary",
+        "expected_terms": [
+          "MoU",
+          "Leverage Capital Partners",
+          "Andhra Pradesh",
+          "India",
+          "$850M",
+          "$375M",
+          "pipeline"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-007",
+        "label": "traction distinguishes pipeline evidence from closed revenue",
+        "check_type": "contains_any",
+        "field": "traction_summary",
+        "expected_terms": [
+          "not proof",
+          "closed revenue",
+          "fully de-risked",
+          "pipeline evidence",
+          "project commitment"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-008",
+        "label": "why now captures expansion data and dated 2026 MoU",
+        "check_type": "contains_any",
+        "field": "why_now",
+        "expected_terms": [
+          "March 2026",
+          "India",
+          "MoU",
+          "expansion",
+          "use-of-funds",
+          "risk-wrap"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-009",
+        "label": "go to market includes partners, project vehicles, MoUs, and financing",
+        "check_type": "contains_any",
+        "field": "go_to_market",
+        "expected_terms": [
+          "capital raising",
+          "project vehicles",
+          "local strategic partners",
+          "MoUs",
+          "debt",
+          "equity",
+          "deployment proposals"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-010",
+        "label": "target customer includes infrastructure buyers and capital providers",
+        "check_type": "contains_any",
+        "field": "target_customer",
+        "expected_terms": [
+          "corporates",
+          "governments",
+          "industrial",
+          "investors",
+          "lenders",
+          "local deployment partners",
+          "data centres"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-011",
+        "label": "market positioning reflects climate infrastructure platform",
+        "check_type": "contains_any",
+        "field": "market_positioning",
+        "expected_terms": [
+          "climate-infrastructure",
+          "deployment platform",
+          "investor capital",
+          "project execution",
+          "infrastructure-like returns"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-012",
+        "label": "risks include conditional documents and unproven financing/offtake",
+        "check_type": "contains_any",
+        "field": "risks",
+        "expected_terms": [
+          "non-binding",
+          "conditional",
+          "debt financing",
+          "offtake",
+          "technology performance",
+          "capex",
+          "permitting"
+        ]
+      },
+      {
+        "id": "L1-CLIMATIC-013",
+        "label": "competitive differentiation includes integrated finance, technology, and operations",
+        "check_type": "contains_any",
+        "field": "competitive_differentiation",
+        "expected_terms": [
+          "project finance",
+          "asset ownership",
+          "technology supplier",
+          "local deployment partners",
+          "risk-wrap",
+          "portfolio"
+        ]
+      }
+    ],
+    "consistency_checks": [
+      {
+        "id": "L2-CLIMATIC-014",
+        "label": "business model and revenue model share infrastructure/project economics terms",
+        "check_type": "term_alignment",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "expected_shared_terms": [
+          "infrastructure",
+          "asset",
+          "project",
+          "operation",
+          "cash flows",
+          "financing",
+          "ownership"
+        ],
+        "min_shared": 1
+      },
+      {
+        "id": "L2-CLIMATIC-015",
+        "label": "what company does and solution stay aligned on deployment and management of climate assets",
+        "check_type": "term_alignment",
+        "field_a": "what_company_does",
+        "field_b": "solution",
+        "expected_shared_terms": [
+          "climate",
+          "infrastructure",
+          "deployment",
+          "assets",
+          "manage",
+          "technology"
+        ],
+        "min_shared": 1
+      },
+      {
+        "id": "L2-CLIMATIC-016",
+        "label": "traction and risks distinguish pipeline evidence from confirmed revenue",
+        "check_type": "term_alignment",
+        "field_a": "traction_summary",
+        "field_b": "risks",
+        "expected_shared_terms": [
+          "not proof",
+          "closed revenue",
+          "financing",
+          "offtake",
+          "conditional",
+          "MoU"
+        ],
+        "min_shared": 1
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "id": "L4-CLIMATIC-017",
+        "label": "does not misclassify Climatic as SaaS or pure software",
+        "check_type": "must_not_contain",
+        "field": "business_model",
+        "prohibited_patterns": [
+          "saas",
+          "pure software",
+          "workflow automation",
+          "crm",
+          "seat-based pricing",
+          "enterprise software"
+        ]
+      },
+      {
+        "id": "L4-CLIMATIC-018",
+        "label": "does not treat the MoU as closed revenue",
+        "check_type": "must_not_contain",
+        "field": "traction_summary",
+        "prohibited_patterns": [
+          "closed revenue",
+          "booked revenue from the mou",
+          "binding customer contract",
+          "signed offtake revenue",
+          "revenue already received"
+        ]
+      },
+      {
+        "id": "L4-CLIMATIC-019",
+        "label": "does not treat debt-in-process as fully closed debt",
+        "check_type": "must_not_contain",
+        "field": "traction_summary",
+        "prohibited_patterns": [
+          "debt fully closed",
+          "committed debt facility is complete",
+          "credit agreement executed",
+          "bank financing closed"
+        ]
+      },
+      {
+        "id": "L4-CLIMATIC-020",
+        "label": "does not invent ARR or subscription metrics",
+        "check_type": "must_not_contain",
+        "field": "revenue_model",
+        "prohibited_patterns": [
+          "mrr",
+          "arr",
+          "monthly subscription software",
+          "seat-based",
+          "subscription seats"
+        ]
+      },
+      {
+        "id": "L4-CLIMATIC-021",
+        "label": "does not overstate technology validation",
+        "check_type": "must_not_contain",
+        "field": "traction_summary",
+        "prohibited_patterns": [
+          "independently certified performance proven",
+          "audited technical validation complete",
+          "all permits secured",
+          "all offtake agreements signed"
+        ]
+      }
+    ],
+    "completeness_checks": [
+      {
+        "id": "L5-CLIMATIC-022",
+        "label": "what_company_does is not empty",
+        "check_type": "not_empty",
+        "field": "what_company_does"
+      },
+      {
+        "id": "L5-CLIMATIC-023",
+        "label": "problem is not empty",
+        "check_type": "not_empty",
+        "field": "problem"
+      },
+      {
+        "id": "L5-CLIMATIC-024",
+        "label": "solution is not empty",
+        "check_type": "not_empty",
+        "field": "solution"
+      },
+      {
+        "id": "L5-CLIMATIC-025",
+        "label": "why_now is not empty",
+        "check_type": "not_empty",
+        "field": "why_now"
+      },
+      {
+        "id": "L5-CLIMATIC-026",
+        "label": "business_model is not empty",
+        "check_type": "not_empty",
+        "field": "business_model"
+      },
+      {
+        "id": "L5-CLIMATIC-027",
+        "label": "revenue_model is not empty",
+        "check_type": "not_empty",
+        "field": "revenue_model"
+      },
+      {
+        "id": "L5-CLIMATIC-028",
+        "label": "traction_summary is not empty",
+        "check_type": "not_empty",
+        "field": "traction_summary"
+      },
+      {
+        "id": "L5-CLIMATIC-029",
+        "label": "risks is not empty",
+        "check_type": "not_empty",
+        "field": "risks"
+      },
+      {
+        "id": "L5-CLIMATIC-030",
+        "label": "target_customer is not empty",
+        "check_type": "not_empty",
+        "field": "target_customer"
+      },
+      {
+        "id": "L5-CLIMATIC-031",
+        "label": "go_to_market is not empty",
+        "check_type": "not_empty",
+        "field": "go_to_market"
+      },
+      {
+        "id": "L5-CLIMATIC-032",
+        "label": "market_positioning is not empty",
+        "check_type": "not_empty",
+        "field": "market_positioning"
+      },
+      {
+        "id": "L5-CLIMATIC-033",
+        "label": "competitive_differentiation is not empty",
+        "check_type": "not_empty",
+        "field": "competitive_differentiation"
+      }
+    ]
+  }
+}

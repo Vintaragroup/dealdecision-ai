@@ -1634,6 +1634,36 @@ export async function apiGetDealReportNarrated(
   return apiGetDealReportInternal(dealId, { narrate: true, version: opts?.version ?? null });
 }
 
+export type EvidenceResolveResult = {
+  id: string;
+  ok: boolean;
+  resolvable?: boolean;
+  document_id?: string;
+  document_title?: string;
+  page?: number;
+  snippet?: string;
+};
+
+/**
+ * Resolve evidence IDs to citations (document, page, snippet) via the backend.
+ * Calls GET /api/v1/evidence/resolve?ids=...
+ * Silently returns empty results on error so the drawer degrades gracefully.
+ */
+export async function apiResolveEvidenceIds(
+  ids: string[]
+): Promise<EvidenceResolveResult[]> {
+  if (!ids || ids.length === 0) return [];
+  const unique = Array.from(new Set(ids)).slice(0, 100);
+  try {
+    const result = await request<{ results: EvidenceResolveResult[] }>(
+      `/api/v1/evidence/resolve?ids=${encodeURIComponent(unique.join(','))}`
+    );
+    return Array.isArray(result?.results) ? result.results : [];
+  } catch {
+    return [];
+  }
+}
+
 export type PersistedGovernedOverlayOverview = {
   schema_version: string;
   deal_id: string;

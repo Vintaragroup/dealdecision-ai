@@ -135,9 +135,9 @@ export type WorkspaceRedesignedShellProps = {
   /** Whether the conviction score is provisional (unverified signals present) */
   convictionProvisional: boolean;
   /** Conviction-backed positive contributors (strength signals with score impact) */
-  topPositiveContributors: { key: string; label: string; scoreDelta: number | null }[];
+  topPositiveContributors: { key: string; label: string; scoreDelta: number | null; evidence_refs?: string[] }[];
   /** Conviction-backed negative contributors (risk signals with score impact) */
-  topNegativeContributors: { key: string; label: string; scoreDelta: number | null }[];
+  topNegativeContributors: { key: string; label: string; scoreDelta: number | null; evidence_refs?: string[] }[];
   /** Required next checks from conviction_v1.required_next_checks */
   requiredNextChecks: string[];
   /**
@@ -170,6 +170,8 @@ export type WorkspaceRedesignedShellProps = {
   blockerCount: number;
   openQuestions: string[];
   contradictions: string[];
+  /** Structured contradictions with severity + evidence_refs (Phase 4B). Optional — gracefully absent. */
+  structuredContradictions?: Array<{ text: string; severity: string; evidence_refs: string[] }>;
 
   // ── Detail rows (shown only when data present) ─────────────────────────────
   teamHighlights: WorkspaceOverviewVM['rcS6']['teamHighlights'];

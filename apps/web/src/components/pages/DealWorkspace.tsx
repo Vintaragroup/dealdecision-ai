@@ -7221,6 +7221,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         onBack={handleBack}
         onRunAnalysis={runAIAnalysis}
         analysisProgress={analysisProgress}
+        dealId={dealId ?? undefined}
+        documentsReloadKey={documentsReloadKey}
         onOpenDeepDive={() => setActivePanel('deep-dive')}
         onOpenInsights={() => setActivePanel('insights')}
         onOpenEvidenceExplorer={() => setActivePanel('evidence')}

@@ -28,6 +28,8 @@ import {
   type DeterministicValidatorInput,
   type DeterministicValidatorOutput,
 } from './deterministic-correction-validator-v1.js';
+import { runLLMRationaleSynthesizer, type LLMRationaleSynthesizerInput } from './llm-rationale-synthesizer.js';
+import { runLLMRationaleValidator, type LLMRationaleValidatorInput } from './llm-rationale-validator.js';
 import type { LLMValidationSummaryV1 } from '@dealdecision/core/dist/models/llm-validation-summary-v1';
 
 // ─── Phase 2: Field Audit Input ───────────────────────────────────────────────
@@ -134,32 +136,108 @@ export async function runLLMSchemaGapShadow(_args: {
 
 // ─── Decision Rationale Hook ─────────────────────────────────────────────────
 
-/**
- * Phase 1 noop. Phase 2 will call the Decision Rationale Synthesizer and
- * return a populated LLMDecisionRationaleV1.
- *
- * canonical_verdict MUST be the deterministic conviction_v1.recommendation_key.
- * The LLM synthesizes an explanation — it does NOT compute the verdict.
- */
-export async function runLLMDecisionRationaleShadow(_args: {
+export type RationaleShadowArgs = {
   deal_id: string;
-  canonical_verdict: string;
   run_id?: string | null;
-}): Promise<LLMDecisionRationaleV1 | null> {
-  return null;
+  /** Copied verbatim from deterministic pipeline — LLM explains, does NOT compute */
+  canonical_verdict: string;
+  company_name?: string | null;
+  archetype?: string | null;
+  conviction_summary?: string | null;
+  financial_coverage_summary?: string | null;
+  evidence_count?: number;
+  has_xlsx?: boolean;
+  has_cap_table?: boolean;
+  strongest_evidence_items?: Array<{
+    evidence_id: string;
+    fact_type: string;
+    summary: string;
+    is_projection: boolean;
+    source_kind: string;
+    confidence: number;
+  }>;
+  financial_facts_summary?: Array<{
+    metric: string;
+    value: number | null;
+    raw_value: string | null;
+    period: string | null;
+    is_projection: boolean | null;
+    source_kind: string | null;
+  }>;
+  contradiction_summaries?: string[];
+  missing_evidence_signals?: string[];
+  accepted_corrections_summary?: string[];
+  decision_readiness_score?: number | null;
+  financial_completeness_pct?: number | null;
+  underwriting_readiness_notes?: string[];
+  section_health_summary?: Record<string, string> | null;
+};
+
+/**
+ * Phase 4: Calls the LLM Decision Rationale Synthesizer in shadow mode.
+ * Returns shadow_only rationale. Never throws. Fail-open.
+ *
+ * INVARIANT: canonical_verdict must be from the deterministic pipeline.
+ * The LLM explains the verdict — it does NOT override or compute it.
+ */
+export async function runLLMDecisionRationaleShadow(
+  args: RationaleShadowArgs,
+): Promise<LLMDecisionRationaleV1 | null> {
+  const input: LLMRationaleSynthesizerInput = {
+    deal_id: args.deal_id,
+    run_id: args.run_id ?? null,
+    company_name: args.company_name ?? null,
+    archetype: args.archetype ?? null,
+    canonical_verdict: args.canonical_verdict,
+    conviction_summary: args.conviction_summary ?? null,
+    financial_coverage_summary: args.financial_coverage_summary ?? null,
+    evidence_count: args.evidence_count ?? 0,
+    has_xlsx: args.has_xlsx ?? false,
+    has_cap_table: args.has_cap_table ?? false,
+    strongest_evidence_items: args.strongest_evidence_items ?? [],
+    financial_facts_summary: args.financial_facts_summary ?? [],
+    contradiction_summaries: args.contradiction_summaries ?? [],
+    missing_evidence_signals: args.missing_evidence_signals ?? [],
+    accepted_corrections_summary: args.accepted_corrections_summary ?? [],
+    decision_readiness_score: args.decision_readiness_score ?? null,
+    financial_completeness_pct: args.financial_completeness_pct ?? null,
+    underwriting_readiness_notes: args.underwriting_readiness_notes ?? [],
+    section_health_summary: args.section_health_summary ?? null,
+  };
+  return runLLMRationaleSynthesizer(input);
 }
 
 // ─── Rationale Validation Hook ────────────────────────────────────────────────
 
-/**
- * Phase 1 noop. Phase 2 will call the Rationale Validator and return
- * a populated LLMRationaleValidationV1.
- */
-export async function runLLMRationaleValidationShadow(_args: {
+export type RationaleValidationShadowArgs = {
   deal_id: string;
   run_id?: string | null;
-}): Promise<LLMRationaleValidationV1 | null> {
-  return null;
+  rationale: LLMDecisionRationaleV1;
+  financial_facts_summary?: Array<{
+    metric: string;
+    raw_value: string | null;
+    is_projection: boolean | null;
+  }>;
+};
+
+/**
+ * Phase 4: Calls the LLM Rationale Validator.
+ * Validates that synthesized rationale is verdict-aligned, evidence-grounded,
+ * jargon-free, and projection-safe before UI display.
+ *
+ * Returns 'validated' status on overall_status = 'passed'.
+ * Returns null on error (fail-open).
+ */
+export async function runLLMRationaleValidationShadow(
+  args: RationaleValidationShadowArgs,
+): Promise<LLMRationaleValidationV1 | null> {
+  const input: LLMRationaleValidatorInput = {
+    deal_id: args.deal_id,
+    run_id: args.run_id ?? null,
+    rationale: args.rationale,
+    financial_facts_summary: args.financial_facts_summary ?? [],
+  };
+  return runLLMRationaleValidator(input);
 }
 
 // ─── Correction Lineage Hook ──────────────────────────────────────────────────

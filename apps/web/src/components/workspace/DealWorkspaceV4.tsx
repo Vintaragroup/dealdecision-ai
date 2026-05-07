@@ -32,6 +32,7 @@ import type { WorkspaceOverviewFactTrust } from './contracts/workspaceViewModel'
 import { EvidenceChipRow } from './EvidenceChip';
 import { EvidenceTraceDrawer } from './EvidenceTraceDrawer';
 import { DocumentsTab } from '../documents/DocumentsTab';
+import { DecisionRationaleSection, type DecisionRationaleV1 } from './analysis/DecisionRationaleSection';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -96,6 +97,11 @@ export type DealWorkspaceV4Props = WorkspaceRedesignedShellProps & {
   dealId?: string;
   /** Increment to force-refresh the Documents modal document list (e.g. after re-extraction). */
   documentsReloadKey?: number;
+  /**
+   * Validated LLM decision rationale from Phase 4.
+   * Only rendered when rationale.status === 'validated'. Absent = hidden, no error.
+   */
+  decisionRationale?: DecisionRationaleV1 | null;
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -1690,6 +1696,7 @@ export function DealWorkspaceV4({
   financialCoverageBreakdown = [],
   dealId,
   documentsReloadKey = 0,
+  decisionRationale,
 }: DealWorkspaceV4Props) {
   const [showDocsModal, setShowDocsModal] = useState(false);
 
@@ -2220,6 +2227,14 @@ export function DealWorkspaceV4({
               </div>
             </div>
           </div>
+        )}
+
+        {/* Phase 5: Decision Rationale — validated LLM IC-memo narrative */}
+        {decisionRationale?.status === 'validated' && (
+          <DecisionRationaleSection
+            rationale={decisionRationale}
+            darkMode={darkMode}
+          />
         )}
 
         {/* Decision Layer (Above the Fold) */}

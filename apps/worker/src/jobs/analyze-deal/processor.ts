@@ -58,6 +58,8 @@ import {
 	runLLMFieldAuditShadow,
 	runLLMFinancialVerificationShadow,
 	runDeterministicValidatorShadow,
+	runLLMDecisionRationaleShadow,
+	runLLMRationaleValidationShadow,
 } from "../../lib/intelligence/llm-auditor-hooks";
 
 // -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
@@ -1937,6 +1939,122 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 					}
 				} catch {
 					// Fail-open: shadow audit errors must never block the analysis job
+				}
+
+				// ── Phase 4: Decision Rationale Synthesizer + Validator ─────────────────────
+				// INVARIANTS:
+				// - canonical_verdict is ALWAYS from the deterministic pipeline
+				// - LLM explains the verdict; it does NOT compute or override it
+				// - No scoring, conviction, or verdict fields are mutated
+				// - Rationale only reaches compiledReport if validator passes
+				try {
+					const canonicalVerdict: string =
+						(compiledReport as any)?.canonical_decision_v2?.verdict ??
+						(compiledReport as any)?.recommendation ??
+						null;
+
+					if (canonicalVerdict) {
+						// Re-derive context vars (Phase 4 is outside Phase 2/3 try scope)
+						const p4RunId = String((result.storage_result as any)?.version ?? '') || null;
+						const p4HasXlsx = Boolean((compiledReport as any)?.has_xlsx);
+						const p4HasCapTable = Boolean((compiledReport as any)?.has_cap_table);
+						const p4Archetype = (compiledReport as any)?.archetype ?? null;
+
+						// Build accepted corrections summary for synthesizer context
+						const lineageItems: Array<Record<string, unknown>> =
+							(compiledReport as any)?.correction_lineage_v1?.[0]?.corrections ?? [];
+						const acceptedCorrectionsSummary = lineageItems
+							.filter((c: any) => c.validator_status === 'accepted')
+							.slice(0, 5)
+							.map((c: any) => `${c.original_field} → ${c.proposed_field}: ${c.correction_type}`);
+
+						// Build financial facts summary for validator
+						const financialFactsForValidator = (financialFactsForOrchestrator ?? []).slice(0, 12).map((ff: any) => ({
+							metric: String(ff.metric ?? ''),
+							raw_value: ff.raw_value ?? null,
+							is_projection: ff.is_projection ?? null,
+						}));
+
+						// Evidence items for synthesizer
+						const strongestEvidenceForSynthesizer = (promotedFacts ?? []).slice(0, 12).map((f: any) => ({
+							evidence_id: String(f.evidence_id ?? ''),
+							fact_type: String(f.content_json?.fact_type ?? f.source_type ?? ''),
+							summary: String(f.content_json?.summary ?? f.content_json?.text ?? f.content_json?.value ?? '').slice(0, 200),
+							is_projection: Boolean(f.is_projection),
+							source_kind: String(f.source_kind ?? 'unknown'),
+							confidence: typeof f.confidence === 'number' ? f.confidence : 0,
+						}));
+
+						// Conviction summary (plain text only — never pass raw scoring object)
+						const convictionRec: string | null =
+							(compiledReport as any)?.recommendation ?? null;
+						const convictionOneLiner: string | null =
+							(compiledReport as any)?.one_liner ?? null;
+						const convictionSummary = [convictionRec, convictionOneLiner]
+							.filter(Boolean)
+							.join(' — ') || null;
+
+						// Financial coverage summary string
+						const financialCovPct: number | null =
+							(compiledReport as any)?.financial_coverage_v1?.completeness_pct ?? null;
+						const financialCoverageSummary = financialCovPct != null
+							? `Financial completeness: ${financialCovPct}%`
+							: null;
+
+						// Synthesize rationale
+						const rationale = await runLLMDecisionRationaleShadow({
+							deal_id: dealId,
+							run_id: p4RunId,
+							canonical_verdict: canonicalVerdict,
+							company_name: companyName ?? null,
+							archetype: p4Archetype ?? null,
+							conviction_summary: convictionSummary,
+							financial_coverage_summary: financialCoverageSummary,
+							evidence_count: evidenceItemCount ?? 0,
+							has_xlsx: p4HasXlsx,
+							has_cap_table: p4HasCapTable,
+							strongest_evidence_items: strongestEvidenceForSynthesizer,
+							financial_facts_summary: (financialFactsForOrchestrator ?? []).slice(0, 12).map((ff: any) => ({
+								metric: String(ff.metric ?? ''),
+								value: typeof ff.value === 'number' ? ff.value : null,
+								raw_value: ff.raw_value ?? null,
+								period: ff.period ?? null,
+								is_projection: ff.is_projection ?? null,
+								source_kind: ff.source_kind ?? null,
+							})),
+							contradiction_summaries: [],
+							missing_evidence_signals: [],
+							accepted_corrections_summary: acceptedCorrectionsSummary,
+							decision_readiness_score: (compiledReport as any)?.decision_readiness?.score ?? null,
+							financial_completeness_pct: financialCovPct,
+							underwriting_readiness_notes: [],
+							section_health_summary: null,
+						});
+
+						if (rationale) {
+							// Validate before attaching
+							const validation = await runLLMRationaleValidationShadow({
+								deal_id: dealId,
+								run_id: p4RunId,
+								rationale,
+								financial_facts_summary: financialFactsForValidator,
+							});
+
+							// Promote rationale to 'validated' if validator passes
+							if (validation?.overall_status === 'passed') {
+								(rationale as any).status = 'validated';
+								(rationale as any).validation_run_id = validation.run_id;
+							}
+
+							// Always attach rationale (shadow_only or validated)
+							(compiledReport as any).llm_decision_rationale_v1 = rationale;
+							if (validation) {
+								(compiledReport as any).llm_rationale_validation_v1 = validation;
+							}
+						}
+					}
+				} catch {
+					// Fail-open: rationale synthesis errors must never block the analysis job
 				}
 
 				// Explicitly stamp updated_at so the staleness detector can use DIO.updated_at

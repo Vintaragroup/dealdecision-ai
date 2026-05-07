@@ -579,9 +579,20 @@ export function selectWorkspaceRedesignedShellProps(
   pushTile('Cash', br?.cash ?? cs?.cash);
   pushTile('Gross Margin', cs?.gross_margin_pct);
 
-  // Coverage: prefer coverage_ratio from financial_coverage_v1
-  const financialCoverage = asFinite(fc?.coverage_ratio != null ? fc.coverage_ratio * 100 : null)
-    ?? asFinite(meta?.score_explanation?.totals?.overall_score); // fallback
+  // Coverage: prefer coverage_ratio from financial_coverage_v1, then compute from boolean coverage fields.
+  // Do NOT fall back to overall_score — it is the deal quality score, not financial data coverage.
+  const financialCoverage = (() => {
+    if (fc?.coverage_ratio != null) return asFinite(fc.coverage_ratio * 100);
+    const cov = fc?.coverage as Record<string, boolean> | null | undefined;
+    if (cov && typeof cov === 'object') {
+      const keys = Object.keys(cov);
+      if (keys.length > 0) {
+        const present = keys.filter((k) => cov[k] === true).length;
+        return Math.round((present / keys.length) * 100);
+      }
+    }
+    return null;
+  })();
 
   // Underwriting readiness: score_0_100 field
   const underwritingReadiness = asFinite(ur?.score_0_100);
@@ -623,39 +634,65 @@ export function selectWorkspaceRedesignedShellProps(
       .slice(0, 5);
   })();
 
-  // Contradictions from conviction or investor_insights
-  // V2: prepend conviction_v2.opposing_case when present
+  // Contradictions from conviction_v1 only.
+  // conviction_v2.opposing_case is a challenge diagnostic (system text with verdict/ORS labels),
+  // not a user-facing contradiction — it must NOT appear in the contradiction renderer.
   const contradictionsRaw: string[] = (() => {
-    const v2opposing = asNES(meta?.conviction_v2?.opposing_case);
     const items = convictionV1?.contradictions ?? [];
-    if (!Array.isArray(items) && !v2opposing) return [];
-    const base: unknown[] = Array.isArray(items) ? items : [];
-    const all = v2opposing ? [v2opposing, ...base] : base;
-    return all
+    if (!Array.isArray(items)) return [];
+    return items
       .map((c: any) => asNES(typeof c === 'string' ? c : c?.description ?? c?.text))
       .filter((s): s is string => s !== null)
       .slice(0, 5);
   })();
 
   // Structured contradictions — preserve severity + evidence_refs for Phase 4B evidence tracing.
-  // Falls back gracefully: v2opposing_case text items have no refs/severity.
-  const structuredContradictions: Array<{ text: string; severity: string; evidence_refs: string[] }> = (() => {
-    const v2opposing = asNES(meta?.conviction_v2?.opposing_case);
+  // diagnostic_type classifies each item as a 'risk' (execution/regulatory uncertainty) or
+  // 'contradiction' (two incompatible claims). Items with red_flag_* codes or risk keywords
+  // are risks — they must not be labelled as contradictions in the UI.
+  const structuredContradictions: Array<{ text: string; severity: string; evidence_refs: string[]; diagnostic_type: 'risk' | 'contradiction' }> = (() => {
     const items = convictionV1?.contradictions ?? [];
     const base: unknown[] = Array.isArray(items) ? items : [];
-    const all: unknown[] = v2opposing ? [v2opposing, ...base] : base;
-    return all
+    return base
       .map((c: any) => {
         const text = asNES(typeof c === 'string' ? c : c?.description ?? c?.text);
         if (!text) return null;
+        const code = asNES(c?.code) ?? '';
+        const isRisk =
+          code.startsWith('red_flag') ||
+          /risk|regulatory|approval|timeline|uncertain|compliance|permit/i.test(code) ||
+          /risk|regulatory|approval|timeline|uncertain|compliance|permit/i.test(text);
         return {
           text,
           severity: asNES(c?.severity) ?? 'low',
           evidence_refs: Array.isArray(c?.evidence_refs) ? c.evidence_refs.filter((r: any) => typeof r === 'string') : [],
+          diagnostic_type: isRisk ? 'risk' : 'contradiction' as const,
         };
       })
-      .filter((c): c is { text: string; severity: string; evidence_refs: string[] } => c !== null)
+      .filter((c): c is { text: string; severity: string; evidence_refs: string[]; diagnostic_type: 'risk' | 'contradiction' } => c !== null)
       .slice(0, 5);
+  })();
+
+  // Financial coverage field breakdown — investor-facing label + present/missing status.
+  // Derived from financial_coverage_v1.coverage boolean map.
+  const financialCoverageBreakdown: Array<{ field: string; label: string; present: boolean }> = (() => {
+    const cov = fc?.coverage as Record<string, boolean> | null | undefined;
+    if (!cov || typeof cov !== 'object') return [];
+    const FIELD_LABELS: Record<string, string> = {
+      historical_revenue_present:  'Historical Revenue',
+      burn_rate_present:           'Burn Rate',
+      runway_present:              'Runway',
+      cap_table_present:           'Cap Table',
+      cash_balance_present:        'Cash Balance',
+      audited_financials_present:  'Audited Financials',
+      customer_contracts_present:  'Customer Contracts',
+      cohort_retention_present:    'Cohort / Retention Data',
+    };
+    return Object.entries(cov).map(([field, present]) => ({
+      field,
+      label: FIELD_LABELS[field] ?? field.replace(/_present$/i, '').replace(/_/g, ' '),
+      present: present === true,
+    }));
   })();
 
   // Decision Proof Block inputs — from Stage 5 challenge_pass in report_payload
@@ -814,6 +851,7 @@ export function selectWorkspaceRedesignedShellProps(
     openQuestions: diligenceItems,
     contradictions: contradictionsRaw,
     structuredContradictions,
+    financialCoverageBreakdown,
 
     // workbench
     deepDiveReady,

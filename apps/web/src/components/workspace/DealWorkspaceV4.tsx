@@ -341,7 +341,7 @@ function deriveDecisionStatus({
     return {
       tier: 'investigate',
       headline: 'Investigate — Not Ready to Commit',
-      readiness: 'Not Ready to Commit',
+      readiness: 'Under Investigation',
       narrative: 'This opportunity shows potential, but key evidence gaps or contradictions prevent a confident investment decision.',
     };
   }
@@ -423,6 +423,20 @@ function cleanCopy(s: string | null): string | null {
   out = out.replace(/\bdeterministic\s+(?=evidence|signal|support|data|model|score)/gi, '');
   out = out.replace(/[ \t]{2,}/g, ' ').trim();
   return out || null;
+}
+
+/**
+ * Infers a human-readable category label for a contradiction item.
+ * Used to show a small badge prefix so users understand the type of conflict.
+ */
+function inferContradictionCategory(text: string): string {
+  const t = text.toLowerCase();
+  if (/regulatory|approval|timeline|permit|license|compliance/i.test(t)) return 'Regulatory Risk';
+  if (/revenue|arr|mrr|income|sales|recurring/i.test(t)) return 'Revenue Signal';
+  if (/burn|runway|cash|spend|capex/i.test(t)) return 'Financial Signal';
+  if (/market|tam|addressable|demand/i.test(t)) return 'Market Claim';
+  if (/team|founder|executive|management/i.test(t)) return 'Team Signal';
+  return 'Signal Conflict';
 }
 
 /**
@@ -982,12 +996,17 @@ function FinancialMetricCard({
         : 'text-blue-700'
       : heading;
 
-  // Map trust level → compact source badge label
+  // Map trust level → compact investor-facing source badge label
   const sourceBadge: string | null = (() => {
     if (!trust || trust === 'not_extracted') return null;
-    if (trust === 'structured') return 'XLSX';
+    if (trust === 'structured') return null; // confirmed structured data — no badge needed
     if (trust === 'governed') return 'Verified';
-    if (trust === 'interim_extraction') return 'Partial';
+    if (trust === 'interim_extraction') {
+      // Deck-sourced projection — investor-facing: 'Management Claim'
+      if (isProjected) return 'Management Claim';
+      // Otherwise: computed/derived from raw extraction
+      return 'Derived';
+    }
     if (trust === 'conflicted') return 'Conflict';
     return null;
   })();
@@ -1667,6 +1686,8 @@ export function DealWorkspaceV4({
   signalTension,
   scoreBreakdownSections,
   structuredContradictions,
+  missingEvidenceItems = [],
+  financialCoverageBreakdown = [],
   dealId,
   documentsReloadKey = 0,
 }: DealWorkspaceV4Props) {
@@ -1793,11 +1814,11 @@ export function DealWorkspaceV4({
     Boolean(revenueModel.type) || Boolean(revenueModel.unitEconomics) || Boolean(revenueModel.detail);
 
   // Adapt contradictions (string[]) → structured items for V4 rendering
-  // Prefer structuredContradictions (with evidence_refs) over plain strings when present.
-  const contradictionItems =
+  // Prefer structuredContradictions (with evidence_refs + diagnostic_type) over plain strings.
+  const contradictionItems: Array<{ text: string; severity: string; evidence_refs: string[]; diagnostic_type?: 'risk' | 'contradiction' }> =
     structuredContradictions && structuredContradictions.length > 0
       ? structuredContradictions
-      : contradictions.map((text) => ({ severity: 'low' as const, text, evidence_refs: [] as string[] }));
+      : contradictions.map((text) => ({ severity: 'low' as const, text, evidence_refs: [] as string[], diagnostic_type: 'contradiction' as const }));
 
   // ── Styling helpers ──────────────────────────────────────────────────────
 
@@ -1823,9 +1844,8 @@ export function DealWorkspaceV4({
     ...redFlags
       .filter((flag) => flag.severity !== 'high')
       .map((flag) => flag.message),
-    ...contradictionItems.map((item) => humanizeContradiction(item.text)),
     ...(financialCoverage !== null && financialCoverage < 80
-      ? [`Only ${Math.round(financialCoverage)}% of tracked financial inputs are currently covered`]
+      ? ['Most underwriting-grade financial evidence is still missing']
       : []),
     ...(financialIntegrityStatus === 'partial'
       ? ['Financial figures are only partially validated']
@@ -1840,7 +1860,6 @@ export function DealWorkspaceV4({
   ]).map((text) => ({ text, severity: 'low' as const }));
 
   const riskDiagnostics = dedupeText([
-    ...contradictions.map((item) => humanizeContradiction(item)),
     ...(financialIntegrityStatus && financialIntegrityStatus !== 'validated'
       ? [`Financial integrity status: ${financialIntegrityStatus}`]
       : []),
@@ -2050,7 +2069,7 @@ export function DealWorkspaceV4({
             {financialCoverage !== null && (
               <>
                 <span className={`shrink-0 text-[11px] ${darkMode ? 'text-gray-700' : 'text-gray-300'}`}>·</span>
-                <span className={`shrink-0 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>Coverage {Math.round(financialCoverage)}%</span>
+                <span className={`shrink-0 text-[11px] ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>Financial Data {Math.round(financialCoverage)}%</span>
               </>
             )}
             {mainBlocker && mainBlocker !== 'No primary blocker surfaced.' && mainBlocker !== 'Primary blocker not identified.' && (
@@ -2082,6 +2101,126 @@ export function DealWorkspaceV4({
           onRunAnalysis={onRunAnalysis}
           analysisRunning={analysisRunning}
         />
+
+        {/* Investment Readiness Summary — institutional IC memo takeaway panel */}
+        {recommendation !== null && (
+          <div className={`rounded-xl border p-5 ${card}`}>
+            <div className="flex items-start justify-between gap-4 mb-5">
+              <div>
+                <div className={`text-[10px] uppercase tracking-widest font-semibold mb-1 ${muted}`}>
+                  Investment Readiness
+                </div>
+                <div className={`text-sm font-semibold ${heading}`}>{decisionStatus.headline}</div>
+              </div>
+              <div className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold border ${
+                decisionStatus.tier === 'go'
+                  ? darkMode ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10' : 'text-emerald-700 border-emerald-200 bg-emerald-50'
+                  : decisionStatus.tier === 'investigate'
+                  ? darkMode ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' : 'text-amber-700 border-amber-200 bg-amber-50'
+                  : decisionStatus.tier === 'pass'
+                  ? darkMode ? 'text-rose-400 border-rose-500/30 bg-rose-500/10' : 'text-rose-700 border-rose-200 bg-rose-50'
+                  : darkMode ? 'text-orange-400 border-orange-500/30 bg-orange-500/10' : 'text-orange-700 border-orange-200 bg-orange-50'
+              }`}>
+                {decisionStatus.readiness}
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+              {/* Why Not Ready — hidden when recommendation is Proceed */}
+              {recommendation !== 'Proceed' && (
+                <div>
+                  <div className={`text-[10px] uppercase tracking-wide font-semibold mb-2 ${
+                    darkMode ? 'text-rose-400' : 'text-rose-600'
+                  }`}>
+                    Why Not Ready
+                  </div>
+                  <ul className="space-y-1.5">
+                    {dedupeText([...blockerTexts.slice(0, 2), ...missingForUnderwriting.slice(0, 1)])
+                      .slice(0, 3)
+                      .map((t, i) => (
+                        <li key={i} className="flex items-start gap-1.5">
+                          <span className={`mt-1.5 h-1 w-1 shrink-0 rounded-full ${darkMode ? 'bg-rose-500' : 'bg-rose-400'}`} />
+                          <span className={`text-[11px] leading-snug ${body}`}>{t}</span>
+                        </li>
+                      ))}
+                    {dedupeText([...blockerTexts.slice(0, 2), ...missingForUnderwriting.slice(0, 1)]).length === 0 && (
+                      <li className={`text-[11px] ${muted}`}>No specific blockers identified</li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
+              {/* Strongest Signals */}
+              <div>
+                <div className={`text-[10px] uppercase tracking-wide font-semibold mb-2 ${
+                  darkMode ? 'text-emerald-400' : 'text-emerald-600'
+                }`}>
+                  Strongest Signals
+                </div>
+                <ul className="space-y-1.5">
+                  {positiveTexts.slice(0, 3).map((t, i) => (
+                    <li key={i} className="flex items-start gap-1.5">
+                      <span className={`mt-1.5 h-1 w-1 shrink-0 rounded-full ${darkMode ? 'bg-emerald-500' : 'bg-emerald-500'}`} />
+                      <span className={`text-[11px] leading-snug ${body}`}>{t}</span>
+                    </li>
+                  ))}
+                  {positiveTexts.length === 0 && (
+                    <li className={`text-[11px] ${muted}`}>No confirmed positive signals</li>
+                  )}
+                </ul>
+              </div>
+
+              {/* Critical Evidence Gaps */}
+              <div>
+                <div className={`text-[10px] uppercase tracking-wide font-semibold mb-2 ${
+                  darkMode ? 'text-amber-400' : 'text-amber-600'
+                }`}>
+                  Critical Gaps
+                </div>
+                <ul className="space-y-1.5">
+                  {missingEvidenceItems.slice(0, 3).map((m, i) => (
+                    <li key={i} className="flex items-start gap-1.5">
+                      <span className={`mt-1.5 h-1 w-1 shrink-0 rounded-full ${darkMode ? 'bg-amber-500' : 'bg-amber-500'}`} />
+                      <span className={`text-[11px] leading-snug ${body}`}>{m.description}</span>
+                    </li>
+                  ))}
+                  {missingEvidenceItems.length === 0 && missingForUnderwriting.slice(0, 3).map((t, i) => (
+                    <li key={i} className="flex items-start gap-1.5">
+                      <span className={`mt-1.5 h-1 w-1 shrink-0 rounded-full ${darkMode ? 'bg-amber-500' : 'bg-amber-500'}`} />
+                      <span className={`text-[11px] leading-snug ${body}`}>{t}</span>
+                    </li>
+                  ))}
+                  {missingEvidenceItems.length === 0 && missingForUnderwriting.length === 0 && (
+                    <li className={`text-[11px] ${muted}`}>No critical gaps identified</li>
+                  )}
+                </ul>
+              </div>
+
+              {/* Financial Readiness */}
+              <div>
+                <div className={`text-[10px] uppercase tracking-wide font-semibold mb-2 ${
+                  darkMode ? 'text-blue-400' : 'text-blue-600'
+                }`}>
+                  Financial Readiness
+                </div>
+                <div className={`text-2xl font-semibold tabular-nums ${
+                  financialCoverage === null
+                    ? darkMode ? 'text-gray-500' : 'text-gray-400'
+                    : financialCoverage < 30
+                    ? darkMode ? 'text-rose-400' : 'text-rose-600'
+                    : financialCoverage < 60
+                    ? darkMode ? 'text-amber-400' : 'text-amber-600'
+                    : darkMode ? 'text-emerald-400' : 'text-emerald-600'
+                }`}>
+                  {financialCoverage !== null ? `${Math.round(financialCoverage)}%` : '\u2014'}
+                </div>
+                <div className={`text-[10px] mt-0.5 ${muted}`}>
+                  {financialCoverage !== null ? 'of required underwriting fields' : 'Not assessed'}
+                </div>
+                <div className={`mt-2 text-[10px] leading-snug ${muted}`}>{financialConfidence.summary}</div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Decision Layer (Above the Fold) */}
         <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-6">
@@ -2394,7 +2533,15 @@ export function DealWorkspaceV4({
                     <summary className={`cursor-pointer list-none text-[11px] font-medium ${
                       darkMode ? 'text-rose-400' : 'text-rose-700'
                     }`}>
-                      Contradictions Detected · {contradictionItems.length}
+                      {/* If every item is a risk signal (not a genuine factual conflict), label the panel
+                          accordingly so it doesn't mislead reviewers into thinking claims contradict. */}
+                      {(() => {
+                        const allRisks = contradictionItems.every(item => item.diagnostic_type === 'risk');
+                        const allConflicts = contradictionItems.every(item => item.diagnostic_type !== 'risk');
+                        if (allRisks) return `Risk Signals Detected \u00b7 ${contradictionItems.length}`;
+                        if (allConflicts) return `Contradictions Detected \u00b7 ${contradictionItems.length}`;
+                        return `Signal Diagnostics \u00b7 ${contradictionItems.length}`;
+                      })()}
                     </summary>
                     <div className="mt-2.5 space-y-2">
                       {contradictionItems.map((item, idx) => {
@@ -2403,6 +2550,7 @@ export function DealWorkspaceV4({
                         const humanized = humanizeContradiction(item.text);
                         const firstSentence = humanized.match(/^[^.!?]+[.!?]/)?.[0] ?? humanized;
                         const display = firstSentence.length <= 140 ? firstSentence : firstSentence.slice(0, 137) + '…';
+                        const category = inferContradictionCategory(item.text);
                         return (
                           <div key={idx} className="flex items-start gap-2">
                             <AlertCircle className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${
@@ -2412,9 +2560,16 @@ export function DealWorkspaceV4({
                                 ? darkMode ? 'text-amber-400' : 'text-amber-600'
                                 : darkMode ? 'text-gray-500' : 'text-gray-400'
                             }`} />
-                            <span className={`text-[11px] leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                              {display}
-                            </span>
+                            <div className="flex-1 min-w-0">
+                              <span className={`inline-block text-[9px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded mr-1.5 mb-0.5 ${
+                                darkMode ? 'bg-white/10 text-gray-400' : 'bg-gray-100 text-gray-500'
+                              }`}>
+                                {category}
+                              </span>
+                              <span className={`text-[11px] leading-snug ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                {display}
+                              </span>
+                            </div>
                             <EvidenceChipRow
                               evidenceRefs={item.evidence_refs ?? []}
                               context={display}
@@ -2431,7 +2586,7 @@ export function DealWorkspaceV4({
                 {riskDiagnostics.length > 0 && (
                   <details className={`rounded-lg border px-3 py-2.5 ${subCard}`}>
                     <summary className={`cursor-pointer list-none text-[11px] font-medium ${sectionLabel}`}>
-                      Supporting Diagnostics · {riskDiagnostics.length}
+                      Signal Notes · {riskDiagnostics.length}
                     </summary>
                     <div className="mt-2.5 space-y-1.5">
                       {riskDiagnostics.map((item, idx) => (
@@ -2467,9 +2622,9 @@ export function DealWorkspaceV4({
 
             <div className="mt-4 grid grid-cols-2 xl:grid-cols-4 gap-3">
               <FinancialMetricCard
-                label="Revenue"
+                label={revenueTile.isProjected ? 'Projected Revenue' : 'Revenue / ARR'}
                 value={metricIsPresent(revenueTile) ? revenueTile.value : 'Missing'}
-                note={metricIsPresent(revenueTile) ? (metricIsEstimated(revenueTile) ? 'Projected' : 'Available') : null}
+                note={metricIsPresent(revenueTile) ? (metricIsEstimated(revenueTile) ? 'Modeled — not confirmed revenue' : 'Available') : null}
                 status={!metricIsPresent(revenueTile) ? 'missing' : metricIsEstimated(revenueTile) ? 'estimated' : 'present'}
                 darkMode={darkMode}
                 heading={heading}
@@ -2504,9 +2659,9 @@ export function DealWorkspaceV4({
                 isProjected={runwayTile.isProjected}
               />
               <FinancialMetricCard
-                label="Coverage"
-                value={financialCoverage !== null ? `${Math.round(financialCoverage)}%` : 'Missing'}
-                note={financialCoverage !== null ? 'Tracked inputs covered' : null}
+                label="Financial Data Coverage"
+                value={financialCoverage !== null ? `${Math.round(financialCoverage)}%` : 'Unknown'}
+                note={financialCoverage !== null ? 'of required underwriting fields present' : null}
                 status={financialCoverage === null ? 'missing' : financialCoverage < 55 ? 'missing' : financialCoverage < 80 ? 'estimated' : 'present'}
                 darkMode={darkMode}
                 heading={heading}
@@ -2588,28 +2743,38 @@ export function DealWorkspaceV4({
             <div className={`pt-2 border-t ${darkMode ? 'border-white/[0.04]' : 'border-gray-100/80'}`}>
               <details>
                 <summary className={`cursor-pointer list-none text-sm font-medium mb-4 ${sectionLabel}`}>
-                  Evidence Coverage · {visibleSections.length} sections
+                  Evidence Support · {visibleSections.length} sections
                 </summary>
                 <div className={`mt-3 rounded-xl border p-4 ${card}`}>
                   <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2.5">
                     {visibleSections.map((section) => {
-                      const pct = section.trace_coverage_pct ?? section.coverage_pct ?? null;
-                      const pctInt = pct != null ? Math.round(pct * 100) : null;
                       const label = SECTION_LABELS[section.key] ?? section.key;
+                      // Status label: 'supported' maps to 'Partial' (evidence found but underwriting
+                      // completeness is not guaranteed). 'Strong' would require verified + corroborated
+                      // evidence that the backend does not currently signal via this field.
+                      const statusLabel =
+                        section.support_status === 'supported' ? 'Partial'
+                        : section.support_status === 'weak' ? 'Weak'
+                        : section.support_status === 'missing' ? 'Missing'
+                        : 'Unknown';
                       const statusColor =
                         section.support_status === 'supported'
-                          ? darkMode ? 'text-emerald-400' : 'text-emerald-700'
+                          ? darkMode ? 'text-blue-400' : 'text-blue-700'
                           : section.support_status === 'weak'
                           ? darkMode ? 'text-amber-400' : 'text-amber-700'
                           : section.support_status === 'missing'
                           ? darkMode ? 'text-rose-400' : 'text-rose-700'
                           : darkMode ? 'text-gray-500' : 'text-gray-400';
+                      // Bar fill by status: Partial=65%, Weak=25%, Missing=0%, Unknown=10%
                       const barFill =
-                        pctInt == null ? 0 : pctInt;
+                        section.support_status === 'supported' ? 65
+                        : section.support_status === 'weak' ? 25
+                        : section.support_status === 'missing' ? 0
+                        : 10;
                       const barColor =
-                        barFill >= 70
-                          ? darkMode ? 'bg-emerald-500' : 'bg-emerald-500'
-                          : barFill >= 40
+                        barFill >= 60
+                          ? darkMode ? 'bg-blue-500' : 'bg-blue-500'
+                          : barFill >= 20
                           ? darkMode ? 'bg-amber-500' : 'bg-amber-500'
                           : darkMode ? 'bg-rose-500' : 'bg-rose-500';
                       return (
@@ -2617,7 +2782,7 @@ export function DealWorkspaceV4({
                           <div className="flex items-center justify-between gap-2 mb-1.5">
                             <span className={`text-[11px] font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{label}</span>
                             <span className={`text-[10px] font-semibold ${statusColor}`}>
-                              {pctInt != null ? `${pctInt}%` : section.support_status}
+                              {statusLabel}
                             </span>
                           </div>
                           <div className={`h-1 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
@@ -2634,7 +2799,7 @@ export function DealWorkspaceV4({
                     })}
                   </div>
                   <p className={`mt-3 text-[10px] leading-relaxed ${muted}`}>
-                    Coverage reflects the proportion of analysis claims linked to extracted evidence for each section.
+                    Evidence support reflects the extraction quality per section. “Partial” means evidence was found but completeness is not guaranteed — claims may be management-sourced. “Weak” means sparse or low-confidence extraction only. “Strong” would require verified, corroborated evidence.
                   </p>
                 </div>
               </details>

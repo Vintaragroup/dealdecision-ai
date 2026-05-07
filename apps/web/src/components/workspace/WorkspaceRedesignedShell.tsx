@@ -171,7 +171,9 @@ export type WorkspaceRedesignedShellProps = {
   openQuestions: string[];
   contradictions: string[];
   /** Structured contradictions with severity + evidence_refs (Phase 4B). Optional — gracefully absent. */
-  structuredContradictions?: Array<{ text: string; severity: string; evidence_refs: string[] }>;
+  structuredContradictions?: Array<{ text: string; severity: string; evidence_refs: string[]; diagnostic_type?: 'risk' | 'contradiction' }>;
+  /** Investor-facing field-level breakdown of financial_coverage_v1.coverage booleans. */
+  financialCoverageBreakdown?: Array<{ field: string; label: string; present: boolean }>;
 
   // ── Detail rows (shown only when data present) ─────────────────────────────
   teamHighlights: WorkspaceOverviewVM['rcS6']['teamHighlights'];

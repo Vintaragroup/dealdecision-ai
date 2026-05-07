@@ -112,6 +112,25 @@ try {
     await page.waitForTimeout(4000);
   }
 
+  // Expand all accordion / collapsible sections
+  const ACCORDION_TEXTS = [
+    'Major Concerns',
+    'Contradictions Detected',
+    'Source notes and diagnostics',
+  ];
+  for (const label of ACCORDION_TEXTS) {
+    try {
+      const el = page.locator(`text=${label}`).first();
+      if (await el.count() > 0) {
+        await el.click({ timeout: 3000 });
+        console.log(`[screenshot] Expanded: "${label}"`);
+        await page.waitForTimeout(300);
+      }
+    } catch (_) {
+      // section not present on this page — skip
+    }
+  }
+
   // Measure full content height from the inner scroll container
   const metrics = await page.evaluate(() => {
     const candidates = [

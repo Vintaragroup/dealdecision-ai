@@ -47,6 +47,16 @@ import { selectBestCandidatesPerField } from './field-candidate-selector.js';
 import { applyFinalPublishGuard } from './final-publish-guard.js';
 import { logGuardrailBlock } from './kpi-guard.js';
 
+// LLM Deal Understanding Auditor — Phase 1 type imports
+// All slots are optional and null by default. No scoring behavior is changed.
+import type { LLMFieldAuditV1 } from '../models/llm-field-audit-v1.js';
+import type { LLMFinancialVerificationV1 } from '../models/llm-financial-verification-v1.js';
+import type { LLMSchemaGapV1 } from '../models/llm-schema-gap-v1.js';
+import type { LLMDecisionRationaleV1 } from '../models/llm-decision-rationale-v1.js';
+import type { LLMRationaleValidationV1 } from '../models/llm-rationale-validation-v1.js';
+import type { CorrectionLineageV1 } from '../models/correction-lineage-v1.js';
+import type { LLMValidationSummaryV1 } from '../models/llm-validation-summary-v1.js';
+
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
   dealId: string;
@@ -181,6 +191,24 @@ type ReportDTO = {
   sections: ReportSection[];
   completeness: number;
   metadata?: Record<string, any>;
+
+  // ── LLM Deal Understanding Auditor — Phase 1 slots ────────────────────────
+  // All null by default. Populated only after Phase 2 auditor modules are wired.
+  // These fields do NOT affect scoring, verdicts, coverage, financials, or UI.
+  /** LLM field audit: proposals for misplaced or semantically incorrect fields */
+  llm_field_audit_v1?: LLMFieldAuditV1 | null;
+  /** LLM financial verification: entity-level and type classification of extracted values */
+  llm_financial_verification_v1?: LLMFinancialVerificationV1 | null;
+  /** LLM schema gap detector: categories present in documents but missing from the schema */
+  llm_schema_gap_v1?: LLMSchemaGapV1 | null;
+  /** LLM decision rationale: explanation of why the deterministic verdict was produced */
+  llm_decision_rationale_v1?: LLMDecisionRationaleV1 | null;
+  /** LLM rationale validation: consistency and jargon checks on the generated rationale */
+  llm_rationale_validation_v1?: LLMRationaleValidationV1 | null;
+  /** Correction lineage: immutable audit trail of all LLM-proposed corrections */
+  correction_lineage_v1?: CorrectionLineageV1[] | null;
+  /** Validator summary: aggregate statistics from DeterministicCorrectionValidatorV1 */
+  llm_validation_summary_v1?: LLMValidationSummaryV1 | null;
 };
 
 type ReportSection = {
@@ -2062,7 +2090,15 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       scoreAvailable,
       scoreConfidence: scoreExplanation?.totals?.confidence_score,
       score_explanation: scoreExplanationAugmented,
-    }
+    },
+    // LLM Deal Understanding Auditor — Phase 1 slots (always null; Phase 2+ populates)
+    llm_field_audit_v1: null,
+    llm_financial_verification_v1: null,
+    llm_schema_gap_v1: null,
+    llm_decision_rationale_v1: null,
+    llm_rationale_validation_v1: null,
+    correction_lineage_v1: null,
+    llm_validation_summary_v1: null,
   };
 }
 

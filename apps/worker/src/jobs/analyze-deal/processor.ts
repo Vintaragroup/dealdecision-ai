@@ -54,6 +54,11 @@ import { getFinancialFactsForDeal, getDocumentsForReport, FINANCIAL_FACTS_ANALYS
 import { populatePageRegistryV1 } from "../../lib/page-registry/populate-page-registry-v1";
 import { populateDealFactRegistryV1 } from "../../lib/deal-facts/populate-deal-fact-registry-v1";
 import { populateFinancialFactRegistryV1 } from "../../lib/financial-facts/populate-financial-fact-registry-v1";
+import {
+	runLLMFieldAuditShadow,
+	runLLMFinancialVerificationShadow,
+	runDeterministicValidatorShadow,
+} from "../../lib/intelligence/llm-auditor-hooks";
 
 // -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
 function safeJsonParseObject(raw: string): Record<string, unknown> | null {
@@ -1843,6 +1848,96 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						evidenceItemCount: evidenceItemCount ?? undefined,
 					});
 				})();
+
+				// ── Phase 2: LLM Shadow Auditors ────────────────────────────────────────
+				// Run the LLM Field Auditor and Financial Verifier in parallel (shadow mode).
+				// Best-effort, non-blocking — never throws, never alters scoring or verdicts.
+				// Results are attached as optional slots on compiledReport before persisting.
+				try {
+					const structuredSummary = (compiledReport as any)?.structured_summary ?? null;
+					const financialBreakdown = (compiledReport as any)?.financial_breakdown_v1 ?? null;
+					const hasXlsx = Boolean((compiledReport as any)?.has_xlsx);
+					const hasCapTable = Boolean((compiledReport as any)?.has_cap_table);
+					const archetype = (compiledReport as any)?.archetype ?? null;
+
+					const promotedFactsSample = (promotedFacts ?? []).slice(0, 20).map((f: any) => ({
+						evidence_id: String(f.evidence_id ?? ''),
+						fact_type: String(f.content_json?.fact_type ?? f.source_type ?? ''),
+						content: (typeof f.content_json === 'object' && f.content_json) ? f.content_json : {},
+						confidence: typeof f.confidence === 'number' ? f.confidence : 0,
+					}));
+
+					const financialFactsForAudit = (financialFactsForOrchestrator ?? []).map((ff: any) => ({
+						fact_id: ff.fact_id ?? null,
+						metric: String(ff.metric ?? ''),
+						value: typeof ff.value === 'number' ? ff.value : null,
+						raw_value: ff.raw_value ?? null,
+						period: ff.period ?? null,
+						source_kind: ff.source_kind ?? null,
+						confidence: typeof ff.confidence === 'number' ? ff.confidence : null,
+						is_projection: ff.is_projection ?? null,
+					}));
+
+					const runId = String((result.storage_result as any)?.version ?? '') || null;
+
+					const [fieldAuditResult, financialVerifResult] = await Promise.allSettled([
+						runLLMFieldAuditShadow({
+							deal_id: dealId,
+							run_id: runId,
+							company_name: companyName ?? null,
+							archetype,
+							structured_summary: structuredSummary,
+							financial_breakdown: financialBreakdown,
+							promoted_facts_sample: promotedFactsSample,
+							evidence_count: evidenceItemCount ?? 0,
+							has_xlsx: hasXlsx,
+							has_cap_table: hasCapTable,
+						}),
+						runLLMFinancialVerificationShadow({
+							deal_id: dealId,
+							run_id: runId,
+							company_name: companyName ?? null,
+							has_xlsx: hasXlsx,
+							has_cap_table: hasCapTable,
+							financial_breakdown: financialBreakdown,
+							financial_facts: financialFactsForAudit,
+							deck_financial_signals: (compiledReport as any)?.deck_financial_signals ?? null,
+						}),
+					]);
+
+					if (fieldAuditResult.status === 'fulfilled' && fieldAuditResult.value) {
+						(compiledReport as any).llm_field_audit_v1 = fieldAuditResult.value;
+					}
+					if (financialVerifResult.status === 'fulfilled' && financialVerifResult.value) {
+						(compiledReport as any).llm_financial_verification_v1 = financialVerifResult.value;
+					}
+
+					// ── Phase 3: Deterministic Validator ──────────────────────────────────
+					// Validates LLM proposals, produces correction lineage + learning events.
+					// INVARIANT: applied_to_scoring is always false. No scoring fields mutated.
+					const fieldAudit = fieldAuditResult.status === 'fulfilled' ? fieldAuditResult.value : null;
+					const financialVerif = financialVerifResult.status === 'fulfilled' ? financialVerifResult.value : null;
+
+					if (fieldAudit !== null || financialVerif !== null) {
+						const validatorResult = await runDeterministicValidatorShadow({
+							deal_id: dealId,
+							run_id: runId,
+							company_name: companyName ?? null,
+							archetype: archetype ?? null,
+							llm_field_audit: fieldAudit,
+							llm_financial_verification: financialVerif,
+							structured_summary: structuredSummary,
+							financial_breakdown: financialBreakdown,
+						});
+
+						if (validatorResult) {
+							(compiledReport as any).correction_lineage_v1 = [validatorResult.correction_lineage];
+							(compiledReport as any).llm_validation_summary_v1 = validatorResult.validation_summary;
+						}
+					}
+				} catch {
+					// Fail-open: shadow audit errors must never block the analysis job
+				}
 
 				// Explicitly stamp updated_at so the staleness detector can use DIO.updated_at
 				// as the authoritative freshness anchor for the financial snapshot.

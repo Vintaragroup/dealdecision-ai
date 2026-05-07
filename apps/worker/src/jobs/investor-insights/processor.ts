@@ -104,6 +104,7 @@ import {
 	buildGovernedSummarySection,
 	buildGovernedExecutiveSummarySection,
 	buildProductProfileSection,
+	buildKeyFactsSynthesisSection,
 	buildLlmInterpretationSection,
 } from "./stages/stage-3-llm";
 import {
@@ -1056,6 +1057,18 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	}
 	if (productProfileSection) {
 		sections.push(productProfileSection);
+	}
+	// Global Key Facts recovery: synthesize investor-readable narratives for all 4
+	// Key Facts cards from broader evidence. This is the highest-priority UI source.
+	const keyFactsSynthesisSection = await buildKeyFactsSynthesisSection(
+		insightSlotInputs,
+		canonicalFieldsBodyForProfile,
+		productProfileSection?.body ?? null,
+		dealName ?? undefined,
+		llmOpts
+	);
+	if (keyFactsSynthesisSection) {
+		sections.push(keyFactsSynthesisSection);
 	}
 	sections.push(fusionSection);
 	sections.push(limitedScoringSection);

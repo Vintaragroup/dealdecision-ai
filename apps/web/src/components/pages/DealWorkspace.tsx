@@ -2493,6 +2493,65 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return selectDeterministicOverviewSlotsV1(investorInsights.report ?? null);
   }, [investorInsights.report]);
 
+  // LLM synthesis slots: company_description and solution_summary from product_profile_v1 section.
+  // This is the highest-priority source for Key Facts — entity-aware, LLM-synthesized, governed.
+  const llmSynthesisSlots = useMemo(() => {
+    const sections = investorInsights.report?.render_package?.sections;
+    const nullResult = { product: null, market: null, businessModel: null, raiseTerms: null };
+    if (!Array.isArray(sections)) return nullResult;
+
+    // Primary: read from key_facts_synthesis_v1 — global recovery synthesis for all 4 fields
+    const kfSection = sections.find((s) => s.key === 'key_facts_synthesis_v1');
+    if (kfSection?.body) {
+      try {
+        const kf = JSON.parse(kfSection.body) as Record<string, unknown>;
+        const PLACEHOLDER_RE = /not described in provided materials/i;
+        const strOrNull = (v: unknown): string | null => {
+          if (typeof v !== 'string') return null;
+          const t = v.trim();
+          return PLACEHOLDER_RE.test(t) ? null : (t || null);
+        };
+        const product = strOrNull(kf.product_narrative);
+        const market = strOrNull(kf.market_narrative);
+        const businessModel = strOrNull(kf.business_model_narrative);
+        const raiseTerms = strOrNull(kf.raise_terms_narrative);
+        // At least one field synthesized → use this section
+        if (product || market || businessModel || raiseTerms) {
+          return { product, market, businessModel, raiseTerms };
+        }
+      } catch {
+        // JSON parse failure → fall through to product_profile_v1
+      }
+    }
+
+    // Fallback: read product only from product_profile_v1 (legacy path)
+    const ppSection = sections.find((s) => s.key === 'product_profile_v1');
+    if (!ppSection?.body) return nullResult;
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(ppSection.body);
+    } catch {
+      return nullResult;
+    }
+
+    const companyDescription = typeof parsed.company_description === 'string'
+      ? parsed.company_description.trim()
+      : '';
+    const solutionSummary = typeof parsed.solution_summary === 'string'
+      ? parsed.solution_summary.trim()
+      : '';
+
+    // Combine company_description + solution_summary for a richer product key fact.
+    // Exclude placeholder text emitted when the LLM had nothing to say.
+    const PLACEHOLDER_RE = /not described in provided materials/i;
+    const productText = PLACEHOLDER_RE.test(companyDescription)
+      ? (PLACEHOLDER_RE.test(solutionSummary) ? '' : solutionSummary)
+      : companyDescription;
+
+    return { product: productText || null, market: null, businessModel: null, raiseTerms: null };
+  }, [investorInsights.report]);
+
   const canonicalTiers = canonicalDealSummaryReady && (canonicalDealSummaryV1 as any)?.tiers && typeof (canonicalDealSummaryV1 as any).tiers === 'object'
     ? (canonicalDealSummaryV1 as any).tiers
     : null;
@@ -4033,6 +4092,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       },
       keyFacts: {
         product: {
+          llm_synthesis: { value: llmSynthesisSlots.product || null },
           structured: { value: authoritativeProductTextV1 || null },
           deal_summary_v1: { value: canonicalProduct || null },
           deterministicSlot: { value: deterministicOverviewSlots.product?.value ?? null },
@@ -4040,6 +4100,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           phase1: { value: overviewProduct || null },
         },
         market: {
+          llm_synthesis: { value: llmSynthesisSlots.market || null },
           structured: { value: authoritativeMarketTextV1 || null },
           deal_summary_v1: { value: canonicalMarket || null },
           deterministicSlot: { value: deterministicOverviewSlots.market?.value ?? null },
@@ -4047,6 +4108,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           phase1: { value: overviewMarketIcp || null },
         },
         business_model: {
+          llm_synthesis: { value: llmSynthesisSlots.businessModel || null },
           structured: { value: authoritativeBusinessModel.value || null },
           deal_summary_v1: { value: overviewBusinessModelCanonical || null },
           deterministicSlot: { value: deterministicOverviewSlots.business_model?.value ?? null },
@@ -4054,6 +4116,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           phase1: { value: overviewBusinessModel || null },
         },
         raise_terms: {
+          llm_synthesis: { value: llmSynthesisSlots.raiseTerms || null },
           structured: { value: reportStructuredRaise || null },
           deal_summary_v1: { value: overviewRaiseTermsCanonical || null },
           overlay: { value: overlayRaiseTerms || null },
@@ -4076,6 +4139,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     deterministicOverviewSlots.product?.value,
     deterministicOverviewSlots.market?.value,
     deterministicOverviewSlots.business_model?.value,
+    llmSynthesisSlots.product,
+    llmSynthesisSlots.market,
+    llmSynthesisSlots.businessModel,
+    llmSynthesisSlots.raiseTerms,
     overviewDealOneLiner,
     overviewDealSummaryParagraphs,
     overviewDealSummaryParagraphsCanonical,
@@ -7269,11 +7336,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         }
         intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} financialTiles={shellProps.financialTiles} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null} /> : null}
         scoreBreakdownSections={scoreBreakdownSections}
-        decisionRationale={
-          (reportFromApi as any)?.llm_decision_rationale_v1?.status === 'validated'
-            ? (reportFromApi as any).llm_decision_rationale_v1
-            : null
-        }
+        decisionRationale={(reportFromApi as any)?.llm_decision_rationale_v1 ?? null}
       />
       )}
 

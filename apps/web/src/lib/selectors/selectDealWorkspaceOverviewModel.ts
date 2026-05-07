@@ -11,6 +11,7 @@ export type DealWorkspaceOverviewTrustState =
   | 'conflicted';
 
 export type DealWorkspaceOverviewSource =
+  | 'llm_synthesis'
   | 'structured_summary'
   | 'deal_summary_v1'
   | 'deterministic_slot'
@@ -85,6 +86,8 @@ type InputField = {
 };
 
 type OverviewFieldCandidates = {
+  /** LLM-synthesized text — highest priority, entity-aware. */
+  llm_synthesis?: InputField;
   structured?: InputField;
   canonical?: InputField;
   deterministicSlot?: InputField;
@@ -142,6 +145,7 @@ const normalizeEvidenceIds = (ids: unknown): string[] => {
 };
 
 const FALLBACK_ORDER: Exclude<DealWorkspaceOverviewSource, null>[] = [
+  'llm_synthesis',
   'overlay',
   'structured_summary',
   'deal_summary_v1',
@@ -150,6 +154,7 @@ const FALLBACK_ORDER: Exclude<DealWorkspaceOverviewSource, null>[] = [
 ];
 
 const SOURCE_TO_TRUST: Record<Exclude<DealWorkspaceOverviewSource, null>, DealWorkspaceOverviewTrustState> = {
+  llm_synthesis: 'governed',
   structured_summary: 'structured',
   deal_summary_v1: 'structured',
   deterministic_slot: 'interim_extraction',
@@ -158,6 +163,7 @@ const SOURCE_TO_TRUST: Record<Exclude<DealWorkspaceOverviewSource, null>, DealWo
 };
 
 const SOURCE_TO_ORIGIN: Record<Exclude<DealWorkspaceOverviewSource, null>, DealWorkspaceOverviewOrigin> = {
+  llm_synthesis: 'overlay',
   structured_summary: 'deterministic',
   deal_summary_v1: 'deterministic',
   deterministic_slot: 'deterministic',

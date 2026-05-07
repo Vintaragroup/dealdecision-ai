@@ -59,6 +59,10 @@ import {
 	serializeLlmInterpretationBody,
 	type LlmInterpretationV1,
 } from "../llm-interpretation-v1";
+import {
+	generateKeyFactsSynthesisV1,
+	serializeKeyFactsSynthesisBody,
+} from "../llm-key-facts-synthesis-v1";
 
 export async function buildGovernedSummarySection(
 	inputs: InsightSlotInputs,
@@ -487,6 +491,89 @@ export async function buildProductProfileSection(
 			report_id: opts?.report_id,
 			governedSkips: opts?.governedSkips,
 		});
+		return null;
+	}
+}
+
+/**
+ * Build the key_facts_synthesis_v1 section — global Key Facts recovery path.
+ *
+ * Synthesizes investor-readable 1–2 sentence narratives for the four Key Facts cards
+ * (product, market, business_model, raise_terms) from broader evidence when raw
+ * extraction quality is insufficient.
+ *
+ * This section is read by the UI as the highest-priority candidate for all Key Facts
+ * fields, superseding raw structured extractions and falling back gracefully.
+ *
+ * Returns null when evidence is insufficient or the LLM is unavailable.
+ */
+export async function buildKeyFactsSynthesisSection(
+	inputs: InsightSlotInputs,
+	canonicalFieldsBody: string | null,
+	/** Serialized ProductProfileV1 JSON string from the product_profile_v1 section, if available. */
+	productProfileBody: string | null,
+	dealName?: string,
+	opts?: { governedSkips?: GovernedSkip[]; deal_id?: string; report_id?: string }
+): Promise<RenderPackage["sections"][number] | null> {
+	try {
+		const productNarrativeBody = buildProductNarrativeBody(inputs);
+		const slotsSection = buildInsightSlotsSection(inputs);
+		const insightSlotsBody =
+			typeof slotsSection.body === "string" && slotsSection.body.trim().length > 0
+				? slotsSection.body
+				: null;
+
+		const evidenceSnippets = inputs.evidenceSnippets
+			.filter((e) => e.claim_text && e.claim_text.trim().length > 20)
+			.slice(0, 8)
+			.map((e) => ({ id: e.id, text: e.claim_text! }));
+
+		const result = await generateKeyFactsSynthesisV1({
+			productProfileBody,
+			productNarrativeBody,
+			insightSlotsBody,
+			canonicalFieldsBody,
+			evidenceSnippets,
+			dealName,
+		});
+
+		if (!result.ok) {
+			console.log(
+				JSON.stringify({
+					event: "KEY_FACTS_SYNTHESIS_V1_SKIP",
+					reason: result.reason,
+					deal_id: opts?.deal_id,
+				})
+			);
+			return null;
+		}
+
+		console.log(
+			JSON.stringify({
+				event: "KEY_FACTS_SYNTHESIS_V1_RESOLVED",
+				product_status: result.value.diagnostics.product.synthesis_status,
+				market_status: result.value.diagnostics.market.synthesis_status,
+				business_model_status: result.value.diagnostics.business_model.synthesis_status,
+				raise_terms_status: result.value.diagnostics.raise_terms.synthesis_status,
+				deal_id: opts?.deal_id,
+			})
+		);
+
+		return {
+			key: "key_facts_synthesis_v1",
+			title: "Key Facts Synthesis",
+			kind: "message",
+			body: serializeKeyFactsSynthesisBody(result.value),
+			fallback: "Key facts synthesis unavailable.",
+		};
+	} catch (err) {
+		console.error(
+			JSON.stringify({
+				event: "KEY_FACTS_SYNTHESIS_V1_ERROR",
+				error: err instanceof Error ? err.message : String(err),
+				deal_id: opts?.deal_id,
+			})
+		);
 		return null;
 	}
 }

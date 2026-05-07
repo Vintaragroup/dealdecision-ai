@@ -32,7 +32,7 @@ import type { WorkspaceOverviewFactTrust } from './contracts/workspaceViewModel'
 import { EvidenceChipRow } from './EvidenceChip';
 import { EvidenceTraceDrawer } from './EvidenceTraceDrawer';
 import { DocumentsTab } from '../documents/DocumentsTab';
-import { DecisionRationaleSection, type DecisionRationaleV1 } from './analysis/DecisionRationaleSection';
+import type { DecisionRationaleV1 } from './analysis/DecisionRationaleSection';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -420,15 +420,120 @@ type _Contributor = { key: string; label: string; scoreDelta: number | null; evi
 
 /**
  * Strips known internal system artifacts from governed copy strings.
- * Targeted: standalone "deterministic" / "governed" adjective use.
+ * Targeted: standalone "deterministic" / "governed" adjective use,
+ * extraction artifacts, and N/A sentinel values.
  * Conservative — does not stem or rewrite sentences.
  */
 function cleanCopy(s: string | null): string | null {
   if (!s) return null;
   let out = s;
+  // Strip internal pipeline adjectives
   out = out.replace(/\bdeterministic\s+(?=evidence|signal|support|data|model|score)/gi, '');
+  // Strip sentinel / placeholder values
+  if (/^(n\/a|not\s+available|not\s+provided|not\s+extracted|unknown|—|--)$/i.test(out.trim())) return null;
+  // Strip dangling fragment markers
+  out = out.replace(/\s*\.\.\.$/, '').replace(/^\s*[•·\-–—]\s*/, '');
   out = out.replace(/[ \t]{2,}/g, ' ').trim();
   return out || null;
+}
+
+/**
+ * Returns true when a product/market value looks like a short extraction fragment
+ * (e.g. "Ice touring", "Hockey", "B2B SaaS") rather than a readable sentence.
+ * Used to suppress low-quality values from the Key Facts cards.
+ */
+function isExtractionFragment(s: string | null): boolean {
+  if (!s) return true;
+  const trimmed = s.trim();
+  // Fewer than 3 words and no verb punctuation → likely a fragment
+  const wordCount = trimmed.split(/\s+/).length;
+  if (wordCount <= 2 && !/[.!?]$/.test(trimmed)) return true;
+  return false;
+}
+
+/**
+ * Returns true when text exhibits characteristics of OCR garbage:
+ * random character sequences, numeric tokens embedded mid-sentence,
+ * extremely high short-token ratio, excessive non-alphabetic symbols,
+ * all-caps noise, or broken spacing artifacts from scanned decks.
+ */
+function isLikelyOcrGarbage(text: string): boolean {
+  if (!text) return true;
+  const trimmed = text.trim();
+  const tokens = trimmed.split(/\s+/);
+  if (tokens.length === 0) return true;
+
+  // All-caps extraction noise (≥15 chars with no lowercase letters)
+  if (/^[A-Z0-9\s,.:;!?()-]{15,}$/.test(trimmed) && !/[a-z]/.test(trimmed)) return true;
+
+  // Broken spacing artifacts from scanned decks (3+ consecutive spaces mid-text)
+  if (/\s{3,}/.test(trimmed)) return true;
+
+  // Standalone numeric tokens appearing mid-sentence (not at start/end)
+  const hasMidNumericToken = tokens.some(
+    (t, i) => i > 0 && i < tokens.length - 1 && /^\d+$/.test(t),
+  );
+  if (hasMidNumericToken) return true;
+
+  // High ratio of very short tokens (≤2 chars) across a multi-token string
+  const shortTokenRatio = tokens.filter((t) => t.replace(/[^a-zA-Z]/g, '').length <= 2).length / tokens.length;
+  if (tokens.length > 5 && shortTokenRatio > 0.45) return true;
+
+  // High ratio of non-alphabetic, non-space characters (symbols, numbers)
+  const alphaChars = (trimmed.match(/[a-zA-Z]/g) ?? []).length;
+  const spaceChars = (trimmed.match(/\s/g) ?? []).length;
+  const nonAlpha = trimmed.length - alphaChars - spaceChars;
+  if (alphaChars > 0 && nonAlpha / alphaChars > 0.25) return true;
+
+  // Most content words should be recognisable alpha tokens (≥3 chars, mostly letters)
+  const realWords = tokens.filter((t) => /^[a-zA-Z''-]{3,}$/.test(t));
+  if (tokens.length >= 6 && realWords.length / tokens.length < 0.55) return true;
+
+  return false;
+}
+
+/**
+ * Returns true when text looks like it describes a project, portfolio asset,
+ * or customer example rather than the company's own product/business.
+ * Used as a heuristic to flag potential entity confusion — not authoritative.
+ */
+function isLikelyEntityConfusion(text: string): boolean {
+  if (!text) return false;
+  return (
+    /\bProject\s+[A-Z]\b/.test(text) ||
+    /\bphase\s+[1-9I]+\b/i.test(text) ||
+    /\bportfolio\s+(?:company|asset|project)\b/i.test(text) ||
+    /\bcustomer\s+case\s+study\b/i.test(text)
+  );
+}
+
+/**
+ * Returns true when text forms a coherent, investor-readable sentence:
+ * at least 8 words, majority alpha tokens, ends with terminal punctuation.
+ */
+function isInvestorReadableSentence(text: string): boolean {
+  if (!text) return false;
+  const trimmed = text.trim();
+  const tokens = trimmed.split(/\s+/);
+  if (tokens.length < 8) return false;
+  const realWords = tokens.filter((t) => /^[a-zA-Z''-]{2,}$/.test(t));
+  return realWords.length / tokens.length >= 0.65;
+}
+
+/**
+ * Assess investor-facing text quality for product/market/business-model cards.
+ * Returns a suppression reason string if the text should not be shown to investors,
+ * or null if the text passes quality gates.
+ */
+function assessCopyQuality(
+  text: string | null,
+): 'ocr_garbage' | 'extraction_fragment' | 'low_confidence' | 'wrong_entity_suspected' | null {
+  if (!text) return 'extraction_fragment';
+  if (isLikelyOcrGarbage(text)) return 'ocr_garbage';
+  if (isExtractionFragment(text)) return 'extraction_fragment';
+  if (isLikelyEntityConfusion(text)) return 'wrong_entity_suspected';
+  if (!isInvestorReadableSentence(text)) return 'low_confidence';
+  return null;
 }
 
 /**
@@ -583,6 +688,7 @@ function composeInvestmentNarrative({
 /**
  * Composes a product card narrative. Returns `primary` (the governed value, cleaned and
  * normalized) and an optional `signal` line sourced from conviction contributor keys.
+ * Accepts an optional `rationalePrimary` override sourced from a validated LLM rationale.
  */
 function composeProductNarrative({
   productValue,
@@ -592,10 +698,19 @@ function composeProductNarrative({
   productValue: string | null;
   topPositiveContributors: _Contributor[];
   topNegativeContributors: _Contributor[];
-}): { primary: string | null; signal: string | null } {
-  const primary = productValue
-    ? normalizeSentence(cleanCopy(productValue) ?? productValue)
-    : null;
+}): {
+  primary: string | null;
+  signal: string | null;
+  suppressedRaw: string | null;
+  suppressionReason: 'ocr_garbage' | 'extraction_fragment' | 'low_confidence' | 'wrong_entity_suspected' | null;
+} {
+  const cleaned = cleanCopy(productValue);
+  const suppressionReason = assessCopyQuality(cleaned);
+  const suppressedRaw = suppressionReason !== null ? cleaned : null;
+  const primary =
+    suppressionReason === null && cleaned
+      ? normalizeSentence(cleaned)
+      : null;
 
   const hasQualityPositive = topPositiveContributors.some(
     (c) => c.key === 'product_or_asset_quality' || c.key === 'traction_validation',
@@ -610,12 +725,13 @@ function composeProductNarrative({
       ? 'Product quality evidence is limited — independent verification required.'
       : null;
 
-  return { primary, signal };
+  return { primary, signal, suppressedRaw, suppressionReason };
 }
 
 /**
  * Composes a market card narrative. Cleans internal artifacts from the governed value
  * and appends a demand-validation signal line sourced from conviction contributor keys.
+ * Accepts an optional `rationalePrimary` override from a validated LLM rationale.
  */
 function composeMarketNarrative({
   marketValue,
@@ -625,10 +741,19 @@ function composeMarketNarrative({
   marketValue: string | null;
   topPositiveContributors: _Contributor[];
   topNegativeContributors: _Contributor[];
-}): { primary: string | null; signal: string | null } {
-  const primary = marketValue
-    ? normalizeSentence(cleanCopy(marketValue) ?? marketValue)
-    : null;
+}): {
+  primary: string | null;
+  signal: string | null;
+  suppressedRaw: string | null;
+  suppressionReason: 'ocr_garbage' | 'extraction_fragment' | 'low_confidence' | 'wrong_entity_suspected' | null;
+} {
+  const cleaned = cleanCopy(marketValue);
+  const suppressionReason = assessCopyQuality(cleaned);
+  const suppressedRaw = suppressionReason !== null ? cleaned : null;
+  const primary =
+    suppressionReason === null && cleaned
+      ? normalizeSentence(cleaned)
+      : null;
 
   const hasDemandPositive = topPositiveContributors.some(
     (c) => c.key === 'market_demand' || c.key === 'external_corroboration',
@@ -643,7 +768,7 @@ function composeMarketNarrative({
       ? 'Market demand validation is limited — traction or third-party corroboration is needed.'
       : null;
 
-  return { primary, signal };
+  return { primary, signal, suppressedRaw, suppressionReason };
 }
 
 /**
@@ -1792,16 +1917,34 @@ export function DealWorkspaceV4({
       : null;
 
   // Product / Market: primary governed value + optional signal line from contributors.
-  const { primary: productPrimary, signal: productSignal } = composeProductNarrative({
+  const {
+    primary: productPrimary,
+    signal: productSignal,
+    suppressedRaw: productSuppressedRaw,
+    suppressionReason: productSuppressionReason,
+  } = composeProductNarrative({
     productValue: product.value && product.value !== '—' ? product.value : null,
     topPositiveContributors,
     topNegativeContributors,
   });
-  const { primary: marketPrimary, signal: marketSignal } = composeMarketNarrative({
+  const {
+    primary: marketPrimary,
+    signal: marketSignal,
+    suppressedRaw: marketSuppressedRaw,
+    suppressionReason: marketSuppressionReason,
+  } = composeMarketNarrative({
     marketValue: market.value && market.value !== '—' ? market.value : null,
     topPositiveContributors,
     topNegativeContributors,
   });
+
+  // Business Model: apply same quality gate as product/market.
+  const rawBusinessModel = businessModel.value && businessModel.value !== '—' ? businessModel.value : null;
+  const businessModelSuppressionReason = assessCopyQuality(cleanCopy(rawBusinessModel));
+  const businessModelPrimary =
+    businessModelSuppressionReason === null ? rawBusinessModel : null;
+  const businessModelSuppressedRaw =
+    businessModelSuppressionReason !== null ? rawBusinessModel : null;
 
   // Financial Snapshot: targeted summaries + tile availability + integrity context.
   const financialProseLines = composeFinancialNarrative({
@@ -1902,22 +2045,42 @@ export function DealWorkspaceV4({
   ]);
   const compactFinancialNotes = financialNotes.slice(0, 3);
   const confidenceLevel = normalizeConfidenceLevel(verdictResistanceLabel, verdictResistanceScore ?? convictionScore);
-  const primaryReason = opportunitySummaryLine ?? decisionStatus.narrative;
+
+  // ── Rationale enrichment ─────────────────────────────────────────────────
+  // When a validated LLM rationale is present, its curated fields improve
+  // existing section copy. No new section is added — rationale data feeds
+  // directly into blockers, signals, validation, and confidence copy.
+  const isValidatedRationale = decisionRationale?.status === 'validated';
+
+  const primaryReason = (isValidatedRationale && decisionRationale.primary_reason)
+    ? decisionRationale.primary_reason
+    : (opportunitySummaryLine ?? decisionStatus.narrative);
+
   const blockerTexts = dedupeText([
+    // Rationale gating risks lead — they are curated, deal-specific, IC-memo grade
+    ...(isValidatedRationale ? (decisionRationale.gating_risks ?? []) : []),
     ...dealBreakers.map((item) => item.text),
     ...topNegativeContributors.map((c) => enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'negative'), financialTruthBadge)),
     ...fragilityItems.map((item) => item.text),
   ]);
-  const positiveTexts = dedupeText(
-    topPositiveContributors.map((c) => enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'positive'), financialTruthBadge)),
-  );
-  const validationTexts = validationItems.map((item) => item.text);
-  const mainBlocker =
+  const positiveTexts = dedupeText([
+    // Rationale strongest signals lead — curated, investor-readable
+    ...(isValidatedRationale ? (decisionRationale.strongest_signals ?? []) : []),
+    ...topPositiveContributors.map((c) => enforceFinancialTruth(mapContributorToSignal(c.key, c.label, 'positive'), financialTruthBadge)),
+  ]);
+  const validationTexts = dedupeText([
+    // Rationale missing evidence leads — specific, actionable
+    ...(isValidatedRationale ? (decisionRationale.missing_evidence ?? []) : []),
+    ...validationItems.map((item) => item.text),
+  ]);
+  const mainBlocker: string =
+    (isValidatedRationale ? decisionRationale.gating_risks?.[0] : undefined) ??
     blockerTexts[0] ??
     missingForUnderwriting[0] ??
     validationTexts[0] ??
     (decisionStatus.tier === 'go' ? 'No primary blocker surfaced.' : 'Primary blocker not identified.');
-  const nextRequiredAction =
+  const nextRequiredAction: string =
+    (isValidatedRationale ? decisionRationale.missing_evidence?.[0] : undefined) ??
     validationTexts[0] ??
     missingForUnderwriting[0] ??
     (onRunAnalysis ? 'Re-run analysis with the latest documents.' : 'No required action surfaced.');
@@ -2229,14 +2392,6 @@ export function DealWorkspaceV4({
           </div>
         )}
 
-        {/* Phase 5: Decision Rationale — validated LLM IC-memo narrative */}
-        {decisionRationale?.status === 'validated' && (
-          <DecisionRationaleSection
-            rationale={decisionRationale}
-            darkMode={darkMode}
-          />
-        )}
-
         {/* Decision Layer (Above the Fold) */}
         <div className="grid grid-cols-1 md:grid-cols-[2fr_1fr] gap-6">
 
@@ -2294,9 +2449,11 @@ export function DealWorkspaceV4({
                         </span>
                       )}
                     </div>
-                    {/* One-liner interpretation — capital-readiness specific */}
+                    {/* One-liner interpretation: rationale confidence_explanation when available, otherwise generic */}
                     <p className={`text-[11px] leading-relaxed ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
-                      This reflects whether capital would commit to this deal at current evidence levels.
+                      {(isValidatedRationale && decisionRationale.confidence_explanation)
+                        ? decisionRationale.confidence_explanation
+                        : 'This reflects whether capital would commit to this deal at current evidence levels.'}
                     </p>
                     <div className={`text-sm font-medium tabular-nums ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
                       {verdictResistanceScore !== null && verdictResistanceScore !== undefined
@@ -2446,7 +2603,9 @@ export function DealWorkspaceV4({
                 {productPrimary ? (
                   <p className={`text-sm leading-relaxed ${body}`}>{productPrimary}</p>
                 ) : (
-                  <p className={`text-sm ${muted}`}>Not extracted</p>
+                  <p className={`text-sm ${muted}`} data-testid="product-copy-fallback">
+                    Product description is not yet reliable from the uploaded materials. Review the source documents or add a clean product summary before relying on product strength.
+                  </p>
                 )}
                 {productSignal && (
                   <p className={`text-xs leading-relaxed ${muted}`}>{productSignal}</p>
@@ -2463,7 +2622,9 @@ export function DealWorkspaceV4({
                 {marketPrimary ? (
                   <p className={`text-sm leading-relaxed ${body}`}>{marketPrimary}</p>
                 ) : (
-                  <p className={`text-sm ${muted}`}>Not extracted</p>
+                  <p className={`text-sm ${muted}`} data-testid="market-copy-fallback">
+                    Market description is not yet reliable from the uploaded materials. Add market sizing, ICP, and third-party validation to strengthen this section.
+                  </p>
                 )}
                 {marketSignal && (
                   <p className={`text-xs leading-relaxed ${muted}`}>{marketSignal}</p>
@@ -2476,8 +2637,14 @@ export function DealWorkspaceV4({
                 <Activity className={`w-4 h-4 mt-0.5 ${muted}`} />
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Business Model</div>
               </div>
-              <div className={`text-sm ${businessModel.value && businessModel.value !== '—' ? heading : muted}`}>
-                {businessModel.value && businessModel.value !== '—' ? businessModel.value : 'Not extracted'}
+              <div className={`text-sm ${businessModelPrimary ? heading : muted}`}>
+                {businessModelPrimary ? businessModelPrimary : (
+                  <span data-testid="business-model-copy-fallback">
+                    {businessModelSuppressionReason
+                      ? 'Business model description is not yet reliable from the uploaded materials. Confirm revenue model, pricing, customers, and sales motion.'
+                      : 'Not extracted'}
+                  </span>
+                )}
               </div>
             </div>
 
@@ -2724,7 +2891,7 @@ export function DealWorkspaceV4({
               </div>
             </div>
 
-            {(financialProseLines.length > 0 || underwritingNarrative) && (
+            {(financialProseLines.length > 0 || underwritingNarrative || decisionRationale || productSuppressedRaw || marketSuppressedRaw || businessModelSuppressedRaw || product.source === 'llm_synthesis' || market.source === 'llm_synthesis' || businessModel.source === 'llm_synthesis' || raiseTerms.source === 'llm_synthesis') && (
               <details className={`mt-4 rounded-lg border px-3 py-2.5 ${subCard}`}>
                 <summary className={`cursor-pointer list-none text-[11px] font-medium ${sectionLabel}`}>
                   Source notes and diagnostics
@@ -2735,6 +2902,53 @@ export function DealWorkspaceV4({
                   ))}
                   {underwritingNarrative && (
                     <p className={`text-[11px] leading-snug ${sectionLabel}`}>{underwritingNarrative}</p>
+                  )}
+                  {/* Key facts synthesis source diagnostics */}
+                  {product.source === 'llm_synthesis' && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="product-synthesis-source">
+                      Product · final_source: llm_synthesis (key_facts_synthesis_v1)
+                    </p>
+                  )}
+                  {market.source === 'llm_synthesis' && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="market-synthesis-source">
+                      Market · final_source: llm_synthesis (key_facts_synthesis_v1)
+                    </p>
+                  )}
+                  {businessModel.source === 'llm_synthesis' && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="business-model-synthesis-source">
+                      Business Model · final_source: llm_synthesis (key_facts_synthesis_v1)
+                    </p>
+                  )}
+                  {raiseTerms.source === 'llm_synthesis' && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="raise-terms-synthesis-source">
+                      Raise Terms · final_source: llm_synthesis (key_facts_synthesis_v1)
+                    </p>
+                  )}
+                  {/* Suppressed key-facts raw text — diagnostic only, never shown in main UI */}
+                  {productSuppressedRaw && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="product-suppressed-raw">
+                      Product raw (suppressed · {productSuppressionReason}): {productSuppressedRaw.slice(0, 120)}{productSuppressedRaw.length > 120 ? '…' : ''}
+                    </p>
+                  )}
+                  {marketSuppressedRaw && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="market-suppressed-raw">
+                      Market raw (suppressed · {marketSuppressionReason}): {marketSuppressedRaw.slice(0, 120)}{marketSuppressedRaw.length > 120 ? '…' : ''}
+                    </p>
+                  )}
+                  {businessModelSuppressedRaw && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="business-model-suppressed-raw">
+                      Business model raw (suppressed · {businessModelSuppressionReason}): {businessModelSuppressedRaw.slice(0, 120)}{businessModelSuppressedRaw.length > 120 ? '…' : ''}
+                    </p>
+                  )}
+                  {/* Rationale availability — diagnostic only, not surfaced in main UI */}
+                  {decisionRationale && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="rationale-diagnostics">
+                      AI Rationale: {decisionRationale.status}
+                      {isValidatedRationale && decisionRationale.model ? ` · ${decisionRationale.model}` : ''}
+                      {isValidatedRationale && decisionRationale.canonical_verdict
+                        ? ` · canonical verdict: ${decisionRationale.canonical_verdict}`
+                        : ''}
+                    </p>
                   )}
                 </div>
               </details>

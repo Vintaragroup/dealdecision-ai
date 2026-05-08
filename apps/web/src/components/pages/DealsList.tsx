@@ -200,7 +200,10 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     return () => {
       cancelled = true;
     };
-  }, []);
+    // fetchDealsAndDocuments identity changes when lifecycleFilter changes (useCallback dep),
+    // so this effect re-runs on filter change as intended.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchDealsAndDocuments]);
 
   const openDeleteModal = (deal: { id: string; name: string }) => {
     setError(null);
@@ -393,7 +396,10 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
     const matchesSearch = deal.name.toLowerCase().includes(q) || (deal.owner ?? '').toLowerCase().includes(q) || deal.stage.toLowerCase().includes(q);
     const matchesStage = stageFilter === 'all' || deal.stage === stageFilter;
     const matchesPriority = priorityFilter === 'all' || deal.priority === priorityFilter;
-    const matchesLifecycle = lifecycleFilter === 'all' || deal.lifecycleStatus === lifecycleFilter;
+    // Draft deals are in-progress creations — show them in the active view with a status badge
+    const matchesLifecycle = lifecycleFilter === 'all'
+      || deal.lifecycleStatus === lifecycleFilter
+      || (lifecycleFilter === 'active' && deal.lifecycleStatus === 'draft');
     return matchesSearch && matchesStage && matchesPriority && matchesLifecycle;
   });
 
@@ -859,8 +865,15 @@ export function DealsList({ darkMode, onDealClick, onNewDeal, onExportAll, creat
                             <span className="text-white text-sm">{deal.name[0]}</span>
                           </div>
                           <div>
-                            <div className={`text-sm mb-0.5 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                            <div className={`text-sm mb-0.5 flex items-center gap-2 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
                               {deal.name}
+                              {deal.lifecycleStatus === 'draft' && (
+                                <span className={`text-xs px-1.5 py-0.5 rounded font-medium ${
+                                  darkMode ? 'bg-zinc-700 text-zinc-400' : 'bg-gray-200 text-gray-500'
+                                }`}>
+                                  Draft
+                                </span>
+                              )}
                             </div>
                             <div className={`text-xs flex items-center gap-1 ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
                               <Users className="w-3 h-3" />

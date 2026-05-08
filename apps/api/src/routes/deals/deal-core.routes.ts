@@ -209,9 +209,15 @@ export async function registerDealCoreRoutes(
     }
 
     if (hasLifecycleStatus && lifecycleFilter !== "all") {
-      params.push(lifecycleFilter);
-      const i = params.length;
-      whereClauses.push(`COALESCE(d.lifecycle_status, 'active') = $${i}`);
+      if (lifecycleFilter === "active") {
+        // Draft deals are in-progress user-created deals — include them in the active pipeline so
+        // newly created deals (which start as 'draft') are immediately visible.
+        whereClauses.push(`COALESCE(d.lifecycle_status, 'active') IN ('active', 'draft')`);
+      } else {
+        params.push(lifecycleFilter);
+        const i = params.length;
+        whereClauses.push(`COALESCE(d.lifecycle_status, 'active') = $${i}`);
+      }
     }
 
     const { rows } = await pool.query<DealRow & {

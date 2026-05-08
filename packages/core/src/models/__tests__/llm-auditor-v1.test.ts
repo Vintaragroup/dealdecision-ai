@@ -263,8 +263,20 @@ describe('InvestmentInterpretationV1', () => {
           evidence_refs: ['ev-001'],
           source_quality: 'directional',
           warnings: [],
+          section_hygiene: {
+            section_id: 'product',
+            raw_text: 'The company presents an enterprise workflow automation product.',
+            source_field: 'phase1_overview.product_solution',
+            evidence_refs: ['ev-001'],
+            section_fit: 'strong',
+            contamination_flags: [],
+            clean_text: 'The company presents an enterprise workflow automation product.',
+            reason: 'product-specific language with clear offering context',
+            confidence: 0.94,
+          },
         },
       ],
+      synthesis_warnings: [],
     };
     expect(obj.sections[0]?.section_id).toBe('product');
     expect(obj.status).toBe('shadow_only');
@@ -285,6 +297,9 @@ describe('NarrativeQualityValidationV1', () => {
       investment_implication_check: 'pass',
       limitation_presence_check: 'pass',
       unsupported_claim_check: 'warning',
+      section_fit_check: 'pass',
+      contamination_check: 'pass',
+      archetype_consistency_check: 'pass',
       generic_language_warnings: [],
       critical_warnings: [],
       recommended_edits: [],

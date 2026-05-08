@@ -489,16 +489,8 @@ export async function registerInvestorInsightsRoutes(
       return reply.status(404).send({ error: "not_found" });
     }
 
-    // Fetch the Track 1 primary score so the canonical decision resolver has
-    // the authoritative score from the analyze_deal pipeline.
-    const { rows: dealRows } = await pool.query<{ overall_score: number | null }>(
-      `SELECT overall_score FROM deals WHERE id = $1 AND deleted_at IS NULL LIMIT 1`,
-      [dealId]
-    );
-    const overall_score = dealRows[0]?.overall_score ?? undefined;
-
     try {
-      const report = buildOrchestratorReportV1({ dealId, renderPackage: rp, overall_score });
+      const report = buildOrchestratorReportV1({ dealId, renderPackage: rp });
       return reply.status(200).send({ schema_version: "ddai_orchestrator_report_v1", report });
     } catch (err) {
       return reply.status(500).send({

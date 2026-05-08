@@ -231,14 +231,7 @@ export async function applyCanonicalDecisionV1(
 	renderPackage: RenderPackage,
 ): Promise<void> {
 	try {
-		const { rows } = await pool.query<{ overall_score: number | null }>(
-			`SELECT overall_score FROM public.deals WHERE id = $1::uuid`,
-			[dealId],
-		);
-		const overall_score =
-			typeof rows[0]?.overall_score === "number" ? rows[0].overall_score : null;
-
-		const report = buildOrchestratorReportV1({ dealId, renderPackage, overall_score });
+		const report = buildOrchestratorReportV1({ dealId, renderPackage });
 		const cd = report.canonical_decision;
 		if (!cd) return;
 

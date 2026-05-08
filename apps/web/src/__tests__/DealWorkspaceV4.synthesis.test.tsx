@@ -82,6 +82,18 @@ const OCR_GARBAGE_PRODUCT = {
   nullReason: null,
 };
 
+const strongSectionHygiene = (sectionId: 'product' | 'market' | 'business_model' | 'raise_terms', sourceField: string, evidenceRef: string) => ({
+  section_id: sectionId,
+  raw_text: `${sectionId} raw text`,
+  source_field: sourceField,
+  evidence_refs: [evidenceRef],
+  section_fit: 'strong',
+  contamination_flags: [],
+  clean_text: `${sectionId} clean text`,
+  reason: 'clean section evidence',
+  confidence: 0.95,
+});
+
 // ─── LLM synthesis is used when available ────────────────────────────────────
 
 describe('Product card: LLM synthesis is used when available', () => {
@@ -148,7 +160,7 @@ describe('Product card: fallback when no synthesis and raw quality fails', () =>
         product={OCR_GARBAGE_PRODUCT}
       />,
     );
-    expect(screen.getByTestId('product-copy-fallback')).toBeInTheDocument();
+    expect(screen.getByTestId('product-copy-conservative-fallback')).toBeInTheDocument();
     expect(screen.queryByTestId('product-synthesis-source')).not.toBeInTheDocument();
   });
 });
@@ -199,27 +211,18 @@ describe('Product card: portfolio project entity distinction', () => {
     );
     expect(screen.queryByText(/Project S Tidal Energy/i)).not.toBeInTheDocument();
     expect(screen.queryByTestId('product-copy-fallback')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('product-copy-conservative-fallback')).not.toBeInTheDocument();
   });
 
-  it('shows entity-confused extraction as suppressed-raw diagnostic, not as primary', () => {
-    // When only entity-confused raw is available (no synthesis), quality gate should
-    // still suppress it if it fails readability (this text is long enough to pass).
-    // This test verifies the rendering path for the case where entity-confused text
-    // is present but synthesis is absent — the raw value will be shown if it passes
-    // quality gates (which is the status quo; entity-filtering is a worker concern).
+  it('shows conservative fallback when entity-confused raw copy is the only input', () => {
     render(
       <DealWorkspaceV4
         {...BASE_PROPS}
         product={ENTITY_CONFUSED_PRODUCT}
       />,
     );
-    // Since this text is long enough, it passes quality gates — the test simply confirms
-    // it is rendered (the entity distinction fix is applied at the worker prompt level).
-    // This is intentional: the UI gate cannot know which entity is being described.
-    const productCard = screen.queryByText(ENTITY_CONFUSED_PRODUCT.value);
-    const fallback = screen.queryByTestId('product-copy-fallback');
-    // Either the text renders (if quality gate passes) or fallback appears — either is valid.
-    expect(productCard !== null || fallback !== null).toBe(true);
+    expect(screen.queryByText(ENTITY_CONFUSED_PRODUCT.value)).not.toBeInTheDocument();
+    expect(screen.getByTestId('product-copy-conservative-fallback')).toBeInTheDocument();
   });
 });
 
@@ -290,6 +293,7 @@ describe('Investment interpretation experimental rendering', () => {
               evidence_refs: ['prod-1'],
               source_quality: 'directional',
               warnings: [],
+              section_hygiene: strongSectionHygiene('product', 'phase1_overview.product_solution', 'prod-1'),
             },
             {
               section_id: 'market',
@@ -302,6 +306,7 @@ describe('Investment interpretation experimental rendering', () => {
               evidence_refs: ['mkt-1'],
               source_quality: 'directional',
               warnings: [],
+              section_hygiene: strongSectionHygiene('market', 'phase1_overview.market_icp', 'mkt-1'),
             },
             {
               section_id: 'business_model',
@@ -314,6 +319,7 @@ describe('Investment interpretation experimental rendering', () => {
               evidence_refs: ['bm-1'],
               source_quality: 'directional',
               warnings: [],
+              section_hygiene: strongSectionHygiene('business_model', 'structured_summary.business_model', 'bm-1'),
             },
             {
               section_id: 'raise_terms',
@@ -326,6 +332,7 @@ describe('Investment interpretation experimental rendering', () => {
               evidence_refs: ['raise-1'],
               source_quality: 'directional',
               warnings: [],
+              section_hygiene: strongSectionHygiene('raise_terms', 'structured_summary.raise', 'raise-1'),
             },
           ],
         } as any}
@@ -335,6 +342,9 @@ describe('Investment interpretation experimental rendering', () => {
           evidence_grounding_check: 'pass',
           investment_implication_check: 'pass',
           limitation_presence_check: 'pass',
+          section_fit_check: 'pass',
+          contamination_check: 'pass',
+          archetype_consistency_check: 'pass',
           critical_warnings: [],
         } as any}
       />,
@@ -395,6 +405,69 @@ describe('Investment interpretation experimental rendering', () => {
     expect(screen.getByText(/Existing governed product copy remains visible because the company sells workflow software to enterprise climate teams with a clear compliance use case\./i)).toBeInTheDocument();
     expect(screen.queryByTestId('product-interpretation-source')).not.toBeInTheDocument();
     expect(screen.queryByText(/Suppressed interpretation observation/i)).not.toBeInTheDocument();
+  });
+
+  it('suppresses contaminated interpretation and contaminated legacy product copy', () => {
+    vi.stubEnv('VITE_USE_INVESTMENT_INTERPRETATION_V1', 'true');
+
+    render(
+      <DealWorkspaceV4
+        {...BASE_PROPS}
+        product={{
+          value: 'Climatic Funding: FO / EU Green Bonds income for the poorest in society...',
+          trust: 'structured',
+          source: 'structured_summary',
+          origin: 'deterministic',
+          evidenceIds: [],
+          evidence: [],
+          nullReason: null,
+        }}
+        investmentInterpretation={{
+          schema_version: 'investment_interpretation_v1',
+          status: 'shadow_only',
+          sections: [
+            {
+              section_id: 'product',
+              observation: 'Climatic Funding: FO / EU Green Bonds income for the poorest in society...',
+              interpretation: 'Polished but wrong interpretation.',
+              limitations: ['Suppressed limitation.'],
+              investment_implication: 'Suppressed implication.',
+              supporting_evidence: ['Suppressed evidence.'],
+              confidence: 'low',
+              evidence_refs: ['prod-1'],
+              source_quality: 'unverified',
+              warnings: ['Product interpretation omitted because clean section-specific evidence was insufficient.'],
+              section_hygiene: {
+                section_id: 'product',
+                raw_text: 'Climatic Funding: FO / EU Green Bonds income for the poorest in society...',
+                source_field: 'phase1_overview.product_solution',
+                evidence_refs: ['prod-1'],
+                section_fit: 'invalid',
+                contamination_flags: ['ocr_noise', 'insufficient_clean_evidence'],
+                clean_text: null,
+                reason: 'insufficient clean product evidence for interpretation',
+                confidence: 0.1,
+              },
+            },
+          ],
+        } as any}
+        narrativeQualityValidation={{
+          schema_version: 'narrative_quality_validation_v1',
+          status: 'passed',
+          evidence_grounding_check: 'pass',
+          investment_implication_check: 'pass',
+          limitation_presence_check: 'pass',
+          section_fit_check: 'fail',
+          contamination_check: 'fail',
+          archetype_consistency_check: 'pass',
+          critical_warnings: ['product: contamination flags present'],
+        } as any}
+      />,
+    );
+
+    expect(screen.queryByText(/Polished but wrong interpretation/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Climatic Funding: FO \/ EU Green Bonds income/i)).not.toBeInTheDocument();
+    expect(screen.getByTestId('product-copy-conservative-fallback')).toHaveTextContent(/do not provide a clean, section-specific product description sufficient for interpretation/i);
   });
 });
 

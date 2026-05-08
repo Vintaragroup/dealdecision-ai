@@ -68,6 +68,95 @@ describe('synthesizeInvestmentInterpretationV1', () => {
     ]);
     expect(result?.sections[0]?.evidence_refs.length).toBeGreaterThan(0);
   });
+
+  it('rejects noisy and wrong-section evidence before interpretation synthesis', () => {
+    const result = synthesizeInvestmentInterpretationV1({
+      deal_id: 'deal-2',
+      report_id: 'report-2',
+      run_id: 'run-2',
+      company_name: 'Climatic',
+      canonical_verdict: 'CAUTION',
+      archetype: 'infrastructure_energy',
+      selected_policy_id: 'real_estate_underwriting',
+      structured_summary: {
+        business_model: {
+          value: 'Marketplace / platform',
+          sources: [{ evidence_id: 'e-bm-2', note_snippet: 'Marketplace / platform' }],
+        },
+        raise: {
+          value: 'Raising $10M equity to fund deployment and project build-out.',
+          sources: [{ evidence_id: 'e-raise-2', note_snippet: 'Seeking $10M equity financing for deployment.' }],
+        },
+      },
+      phase1_overview: {
+        product_solution: 'Climatic Funding: FO / EU Green Bonds income for the poorest in society...',
+        market_icp: 'Michael studied at the Technical University of Denmark and Copenhagen Business School.',
+        sources: [{ evidence_id: 'e-p1-2', note_snippet: 'Michael studied at the Technical University of Denmark and Copenhagen Business School.' }],
+      },
+      promoted_facts_sample: [
+        { evidence_id: 'pf-bm-1', fact_type: 'business_model', summary: 'Project finance structure relies on ammonia deployment economics, contracted offtake, and asset-backed cash flows.', confidence: 0.95 },
+        { evidence_id: 'pf-raise-1', fact_type: 'raise', summary: 'Raise combines equity capital with project-finance readiness and deployment milestones.', confidence: 0.91 },
+      ],
+      financial_verification: {
+        schema_version: 'llm_financial_verification_v1',
+        deal_id: 'deal-2',
+        run_id: 'run-2',
+        created_at: '2026-05-08T00:00:00.000Z',
+        company_name: 'Climatic',
+        has_xlsx: true,
+        cap_table_present: false,
+        financial_gaps: [],
+        deck_vs_xlsx_conflicts: [],
+        confidence: 'medium',
+        status: 'shadow_only',
+        provider: 'openai',
+        model: 'gpt-5.4',
+      } as any,
+      validation_summary: null,
+      accepted_corrections: [],
+      underwriting_readiness: null,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result?.sections.find((section) => section.section_id === 'product')).toBeUndefined();
+    expect(result?.sections.find((section) => section.section_id === 'market')).toBeUndefined();
+    const businessModel = result?.sections.find((section) => section.section_id === 'business_model');
+    expect(businessModel?.observation).toMatch(/project finance structure relies on ammonia deployment economics/i);
+    expect(businessModel?.section_hygiene?.source_field).toMatch(/promoted_facts_sample\.business_model/i);
+    expect(result?.synthesis_warnings).toContain('product: insufficient_clean_evidence');
+    expect(result?.synthesis_warnings).toContain('market: insufficient_clean_evidence');
+  });
+
+  it('flags demographic-only consumer copy as partial product evidence', () => {
+    const result = synthesizeInvestmentInterpretationV1({
+      deal_id: 'deal-3',
+      report_id: 'report-3',
+      run_id: 'run-3',
+      company_name: 'Palm',
+      canonical_verdict: 'CAUTION',
+      archetype: 'consumer_brand',
+      selected_policy_id: 'consumer_retail',
+      structured_summary: {
+        business_model: { value: 'Direct-to-consumer branded equipment sales.', sources: [{ evidence_id: 'bm-3', note_snippet: 'Direct-to-consumer branded equipment sales.' }] },
+        raise: { value: 'Raising $6M equity financing.', sources: [{ evidence_id: 'raise-3', note_snippet: 'Raising $6M equity financing.' }] },
+      },
+      phase1_overview: {
+        product_solution: 'Palm is a company focused on the evolving golf market and younger female players.',
+        market_icp: 'Bachelor\'s degree from the University of Notre Dame and an MBA from Harvard Business School.',
+        sources: [{ evidence_id: 'phase1-3', note_snippet: 'Palm is a company focused on the evolving golf market and younger female players.' }],
+      },
+      promoted_facts_sample: [],
+      financial_verification: null,
+      validation_summary: null,
+      accepted_corrections: [],
+      underwriting_readiness: null,
+    });
+
+    const product = result?.sections.find((section) => section.section_id === 'product');
+    expect(product?.section_hygiene?.section_fit).toBe('partial');
+    expect(product?.section_hygiene?.contamination_flags).toContain('generic_jargon');
+    expect(result?.sections.find((section) => section.section_id === 'market')).toBeUndefined();
+  });
 });
 
 describe('validateNarrativeQualityV1', () => {
@@ -95,8 +184,20 @@ describe('validateNarrativeQualityV1', () => {
             evidence_refs: [],
             source_quality: 'unverified',
             warnings: [],
+            section_hygiene: {
+              section_id: 'product',
+              raw_text: 'This is a compelling investment opportunity with verified evidence across key underwriting dimensions.',
+              source_field: 'phase1_overview.product_solution',
+              evidence_refs: [],
+              section_fit: 'invalid',
+              contamination_flags: ['generic_jargon', 'insufficient_clean_evidence'],
+              clean_text: null,
+              reason: 'product evidence flagged for generic_jargon, insufficient_clean_evidence (invalid)',
+              confidence: 0.12,
+            },
           },
         ],
+        synthesis_warnings: ['product: insufficient_clean_evidence'],
       },
     });
 
@@ -104,6 +205,8 @@ describe('validateNarrativeQualityV1', () => {
     expect(validation.evidence_grounding_check).toBe('warning');
     expect(validation.score_narration_check).toBe('fail');
     expect(validation.unsupported_claim_check).toBe('warning');
+    expect(validation.section_fit_check).toBe('fail');
+    expect(validation.contamination_check).toBe('fail');
   });
 
   it('passes grounded interpretation with implication, limitation, and evidence refs', () => {
@@ -130,8 +233,20 @@ describe('validateNarrativeQualityV1', () => {
             evidence_refs: ['e-1'],
             source_quality: 'directional',
             warnings: [],
+            section_hygiene: {
+              section_id: 'market',
+              raw_text: 'The company targets mid-market industrial customers facing climate disclosure mandates.',
+              source_field: 'phase1_overview.market_icp',
+              evidence_refs: ['e-1'],
+              section_fit: 'strong',
+              contamination_flags: [],
+              clean_text: 'The company targets mid-market industrial customers facing climate disclosure mandates.',
+              reason: 'market evidence appears section-specific and readable',
+              confidence: 0.91,
+            },
           },
         ],
+        synthesis_warnings: [],
       },
     });
 

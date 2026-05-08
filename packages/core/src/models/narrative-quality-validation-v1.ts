@@ -14,6 +14,9 @@ export type NarrativeQualityValidationV1 = {
   investment_implication_check: NarrativeQualityCheckResult;
   limitation_presence_check: NarrativeQualityCheckResult;
   unsupported_claim_check: NarrativeQualityCheckResult;
+  section_fit_check: NarrativeQualityCheckResult;
+  contamination_check: NarrativeQualityCheckResult;
+  archetype_consistency_check: NarrativeQualityCheckResult;
   generic_language_warnings: string[];
   critical_warnings: string[];
   recommended_edits: string[];

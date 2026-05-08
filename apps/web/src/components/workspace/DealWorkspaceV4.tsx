@@ -45,12 +45,35 @@ type InvestmentInterpretationSectionV1 = {
   evidence_refs: string[];
   source_quality: 'verified' | 'directional' | 'unverified' | 'conflicted';
   warnings: string[];
+  section_hygiene?: {
+    section_id: 'product' | 'market' | 'business_model' | 'raise_terms';
+    raw_text: string | null;
+    source_field: string;
+    evidence_refs: string[];
+    section_fit: 'strong' | 'partial' | 'weak' | 'invalid';
+    contamination_flags: Array<
+      | 'ocr_noise'
+      | 'biography_text'
+      | 'team_background'
+      | 'unrelated_person_credential'
+      | 'wrong_section'
+      | 'generic_jargon'
+      | 'malformed_text'
+      | 'financial_amount_without_context'
+      | 'unsupported_business_model_label'
+      | 'insufficient_clean_evidence'
+    >;
+    clean_text: string | null;
+    reason: string;
+    confidence: number;
+  } | null;
 };
 
 type InvestmentInterpretationV1 = {
   schema_version: 'investment_interpretation_v1';
   sections: InvestmentInterpretationSectionV1[];
   status?: 'shadow_only' | 'validated' | 'rejected';
+  synthesis_warnings?: string[];
 };
 
 type NarrativeQualityValidationV1 = {
@@ -59,6 +82,9 @@ type NarrativeQualityValidationV1 = {
   evidence_grounding_check: 'pass' | 'fail' | 'warning';
   investment_implication_check: 'pass' | 'fail' | 'warning';
   limitation_presence_check: 'pass' | 'fail' | 'warning';
+  section_fit_check?: 'pass' | 'fail' | 'warning';
+  contamination_check?: 'pass' | 'fail' | 'warning';
+  archetype_consistency_check?: 'pass' | 'fail' | 'warning';
   critical_warnings: string[];
 };
 
@@ -162,6 +188,10 @@ function buildInterpretationDisplay(section: InvestmentInterpretationSectionV1 |
   if (!section.investment_implication || section.investment_implication.trim().length === 0) return null;
   if (!Array.isArray(section.limitations) || section.limitations.length === 0) return null;
   if (!Array.isArray(section.evidence_refs) || section.evidence_refs.length === 0) return null;
+  const hygiene = section.section_hygiene;
+  if (!hygiene) return null;
+  if (hygiene.section_fit !== 'strong' && hygiene.section_fit !== 'partial') return null;
+  if ((hygiene.contamination_flags ?? []).some((flag) => flag !== 'generic_jargon')) return null;
 
   return [section.observation, section.interpretation, section.limitations[0], section.investment_implication]
     .map((item) => cleanCopy(item))
@@ -557,6 +587,22 @@ function isLikelyEntityConfusion(text: string): boolean {
   );
 }
 
+function isLikelyBiographyText(text: string): boolean {
+  if (!text) return false;
+  return /\b(mba|bachelor'?s|master'?s|phd|studied at|graduated from|university|business school|degree|technical university)\b/i.test(text);
+}
+
+function isLikelyTeamBackground(text: string): boolean {
+  if (!text) return false;
+  return /\b(founder|co-founder|ceo|cto|executive|leadership|years of experience|team brings|background in)\b/i.test(text);
+}
+
+function isLikelyFinancialSectionContamination(text: string | null): boolean {
+  if (!text) return false;
+  return /\b(funding|green bonds|equity|safe|valuation|debt|project finance|capital stack|raise|raising|financing)\b/i.test(text)
+    && !/\b(product|service|technology|platform|software|device|solution|offering|sells|provides|builds|deploys|manufactures|produces)\b/i.test(text);
+}
+
 /**
  * Returns true when text forms a coherent, investor-readable sentence:
  * at least 8 words, majority alpha tokens, ends with terminal punctuation.
@@ -577,13 +623,35 @@ function isInvestorReadableSentence(text: string): boolean {
  */
 function assessCopyQuality(
   text: string | null,
-): 'ocr_garbage' | 'extraction_fragment' | 'low_confidence' | 'wrong_entity_suspected' | null {
+): 'ocr_garbage' | 'extraction_fragment' | 'low_confidence' | 'wrong_entity_suspected' | 'biography_text' | 'team_background' | null {
   if (!text) return 'extraction_fragment';
   if (isLikelyOcrGarbage(text)) return 'ocr_garbage';
+  if (isLikelyBiographyText(text)) return 'biography_text';
+  if (isLikelyTeamBackground(text)) return 'team_background';
   if (isExtractionFragment(text)) return 'extraction_fragment';
   if (isLikelyEntityConfusion(text)) return 'wrong_entity_suspected';
   if (!isInvestorReadableSentence(text)) return 'low_confidence';
   return null;
+}
+
+function conservativeSectionFallback(section: 'product' | 'market' | 'business_model' | 'raise_terms'): string {
+  switch (section) {
+    case 'product':
+      return 'The current materials do not provide a clean, section-specific product description sufficient for interpretation.';
+    case 'market':
+      return 'The current materials do not provide clean, section-specific market evidence sufficient for interpretation.';
+    case 'business_model':
+      return 'The current materials do not provide a clean, section-specific business model description sufficient for interpretation.';
+    case 'raise_terms':
+      return 'The current materials do not provide clean financing evidence sufficient for interpretation.';
+  }
+}
+
+function shouldShowSuppressedRaw(
+  reason: 'ocr_garbage' | 'extraction_fragment' | 'low_confidence' | 'wrong_entity_suspected' | 'biography_text' | 'team_background' | null,
+): boolean {
+  if (!reason) return false;
+  return reason === 'extraction_fragment' || reason === 'low_confidence';
 }
 
 /**
@@ -742,20 +810,31 @@ function composeInvestmentNarrative({
  */
 function composeProductNarrative({
   productValue,
+  productSource,
   topPositiveContributors,
   topNegativeContributors,
 }: {
   productValue: string | null;
+  productSource?: string | null;
   topPositiveContributors: _Contributor[];
   topNegativeContributors: _Contributor[];
 }): {
   primary: string | null;
   signal: string | null;
   suppressedRaw: string | null;
-  suppressionReason: 'ocr_garbage' | 'extraction_fragment' | 'low_confidence' | 'wrong_entity_suspected' | null;
+  suppressionReason:
+    | 'ocr_garbage'
+    | 'extraction_fragment'
+    | 'low_confidence'
+    | 'wrong_entity_suspected'
+    | 'biography_text'
+    | 'team_background'
+    | null;
 } {
   const cleaned = cleanCopy(productValue);
-  const suppressionReason = assessCopyQuality(cleaned);
+  const suppressionReason = productSource !== 'llm_synthesis' && isLikelyFinancialSectionContamination(cleaned)
+    ? 'wrong_entity_suspected'
+    : assessCopyQuality(cleaned);
   const suppressedRaw = suppressionReason !== null ? cleaned : null;
   const primary =
     suppressionReason === null && cleaned
@@ -795,7 +874,14 @@ function composeMarketNarrative({
   primary: string | null;
   signal: string | null;
   suppressedRaw: string | null;
-  suppressionReason: 'ocr_garbage' | 'extraction_fragment' | 'low_confidence' | 'wrong_entity_suspected' | null;
+  suppressionReason:
+    | 'ocr_garbage'
+    | 'extraction_fragment'
+    | 'low_confidence'
+    | 'wrong_entity_suspected'
+    | 'biography_text'
+    | 'team_background'
+    | null;
 } {
   const cleaned = cleanCopy(marketValue);
   const suppressionReason = assessCopyQuality(cleaned);
@@ -1977,6 +2063,7 @@ export function DealWorkspaceV4({
     suppressionReason: productSuppressionReason,
   } = composeProductNarrative({
     productValue: product.value && product.value !== '—' ? product.value : null,
+    productSource: product.source ?? null,
     topPositiveContributors,
     topNegativeContributors,
   });
@@ -1997,6 +2084,9 @@ export function DealWorkspaceV4({
     narrativeQualityValidation?.evidence_grounding_check === 'pass' &&
     narrativeQualityValidation?.investment_implication_check === 'pass' &&
     narrativeQualityValidation?.limitation_presence_check === 'pass' &&
+    (narrativeQualityValidation?.section_fit_check ?? 'pass') === 'pass' &&
+    (narrativeQualityValidation?.contamination_check ?? 'pass') === 'pass' &&
+    (narrativeQualityValidation?.archetype_consistency_check ?? 'pass') === 'pass' &&
     (narrativeQualityValidation?.critical_warnings?.length ?? 0) === 0;
 
   const interpretationSections = new Map(
@@ -2018,6 +2108,15 @@ export function DealWorkspaceV4({
     businessModelSuppressionReason === null ? rawBusinessModel : null;
   const businessModelSuppressedRaw =
     businessModelSuppressionReason !== null ? rawBusinessModel : null;
+  const safeProductFallback = !productInterpretation && productSuppressionReason !== null
+    ? conservativeSectionFallback('product')
+    : null;
+  const safeMarketFallback = !marketInterpretation && marketSuppressionReason !== null
+    ? conservativeSectionFallback('market')
+    : null;
+  const safeBusinessModelFallback = !businessModelInterpretation && businessModelSuppressionReason !== null
+    ? conservativeSectionFallback('business_model')
+    : null;
 
   // Financial Snapshot: targeted summaries + tile availability + integrity context.
   const financialProseLines = composeFinancialNarrative({
@@ -2675,6 +2774,10 @@ export function DealWorkspaceV4({
               <div className="space-y-1.5">
                 {productCardPrimary ? (
                   <p className={`text-sm leading-relaxed ${body}`}>{productCardPrimary}</p>
+                ) : safeProductFallback ? (
+                  <p className={`text-sm ${muted}`} data-testid="product-copy-conservative-fallback">
+                    {safeProductFallback}
+                  </p>
                 ) : (
                   <p className={`text-sm ${muted}`} data-testid="product-copy-fallback">
                     Product description is not yet reliable from the uploaded materials. Review the source documents or add a clean product summary before relying on product strength.
@@ -2694,6 +2797,10 @@ export function DealWorkspaceV4({
               <div className="space-y-1.5">
                 {marketCardPrimary ? (
                   <p className={`text-sm leading-relaxed ${body}`}>{marketCardPrimary}</p>
+                ) : safeMarketFallback ? (
+                  <p className={`text-sm ${muted}`} data-testid="market-copy-conservative-fallback">
+                    {safeMarketFallback}
+                  </p>
                 ) : (
                   <p className={`text-sm ${muted}`} data-testid="market-copy-fallback">
                     Market description is not yet reliable from the uploaded materials. Add market sizing, ICP, and third-party validation to strengthen this section.
@@ -2711,7 +2818,9 @@ export function DealWorkspaceV4({
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Business Model</div>
               </div>
               <div className={`text-sm ${businessModelInterpretation || businessModelPrimary ? heading : muted}`}>
-                {businessModelInterpretation || businessModelPrimary ? (businessModelInterpretation ?? businessModelPrimary) : (
+                {businessModelInterpretation || businessModelPrimary ? (businessModelInterpretation ?? businessModelPrimary) : safeBusinessModelFallback ? (
+                  <span data-testid="business-model-copy-conservative-fallback">{safeBusinessModelFallback}</span>
+                ) : (
                   <span data-testid="business-model-copy-fallback">
                     {businessModelSuppressionReason
                       ? 'Business model description is not yet reliable from the uploaded materials. Confirm revenue model, pricing, customers, and sales motion.'
@@ -3018,17 +3127,17 @@ export function DealWorkspaceV4({
                     </p>
                   )}
                   {/* Suppressed key-facts raw text — diagnostic only, never shown in main UI */}
-                  {productSuppressedRaw && (
+                  {productSuppressedRaw && shouldShowSuppressedRaw(productSuppressionReason) && (
                     <p className={`text-[11px] leading-snug ${muted}`} data-testid="product-suppressed-raw">
                       Product raw (suppressed · {productSuppressionReason}): {productSuppressedRaw.slice(0, 120)}{productSuppressedRaw.length > 120 ? '…' : ''}
                     </p>
                   )}
-                  {marketSuppressedRaw && (
+                  {marketSuppressedRaw && shouldShowSuppressedRaw(marketSuppressionReason) && (
                     <p className={`text-[11px] leading-snug ${muted}`} data-testid="market-suppressed-raw">
                       Market raw (suppressed · {marketSuppressionReason}): {marketSuppressedRaw.slice(0, 120)}{marketSuppressedRaw.length > 120 ? '…' : ''}
                     </p>
                   )}
-                  {businessModelSuppressedRaw && (
+                  {businessModelSuppressedRaw && shouldShowSuppressedRaw(businessModelSuppressionReason) && (
                     <p className={`text-[11px] leading-snug ${muted}`} data-testid="business-model-suppressed-raw">
                       Business model raw (suppressed · {businessModelSuppressionReason}): {businessModelSuppressedRaw.slice(0, 120)}{businessModelSuppressedRaw.length > 120 ? '…' : ''}
                     </p>

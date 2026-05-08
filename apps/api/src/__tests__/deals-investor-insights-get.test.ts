@@ -155,3 +155,51 @@ test("GET /api/v1/deals/:deal_id/investor-insights returns report shape when row
 
   await app.close();
 });
+
+test("GET /api/v1/deals/:deal_id/orchestrator-report builds without querying deals.overall_score", async () => {
+  const dealId = "00000000-0000-0000-0000-000000000063";
+
+  const mockPool = {
+    query: async (sql: string, params?: unknown[]) => {
+      if (sql.includes("SELECT to_regclass")) {
+        return { rows: [{ oid: "investor_insight_reports" }] };
+      }
+      if (sql.includes("FROM investor_insight_reports") && sql.includes("ORDER BY updated_at DESC")) {
+        assert.deepEqual(params, [dealId]);
+        return {
+          rows: [
+            {
+              status: "deterministic_only",
+              upstream_fingerprint: "fp-123",
+              render_package: {
+                gate_state: { results: [] },
+                sections: [],
+              },
+            },
+          ],
+        };
+      }
+      if (sql.includes("FROM deals") || sql.includes("overall_score")) {
+        throw new Error(`unexpected deals score query: ${sql}`);
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as any;
+
+  const app = Fastify();
+  await registerDealRoutes(app, mockPool, {
+    enqueueJob: async () => ({ id: 1, job_id: "job-1", status: "queued" as any }),
+  });
+
+  const res = await app.inject({
+    method: "GET",
+    url: `/api/v1/deals/${dealId}/orchestrator-report`,
+  });
+
+  assert.equal(res.statusCode, 200);
+  const body = res.json() as any;
+  assert.equal(body.schema_version, "ddai_orchestrator_report_v1");
+  assert.equal(body.report?.deal_id, dealId);
+
+  await app.close();
+});

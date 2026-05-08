@@ -197,6 +197,9 @@ export type {
   InvestmentInterpretationConfidence,
   InvestmentInterpretationSourceQuality,
   InvestmentInterpretationStatus,
+  SectionEvidenceFit,
+  SectionEvidenceContaminationFlag,
+  SectionEvidenceHygieneV1,
 } from './models/investment-interpretation-v1';
 export type {
   NarrativeQualityValidationV1,

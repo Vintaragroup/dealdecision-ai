@@ -3,9 +3,11 @@ import type {
   InvestmentInterpretationSectionV1,
   InvestmentInterpretationConfidence,
   InvestmentInterpretationSourceQuality,
+  SectionEvidenceHygieneV1,
 } from '@dealdecision/core';
 import type { LLMFinancialVerificationV1 } from '@dealdecision/core/dist/models/llm-financial-verification-v1';
 import type { LLMValidationSummaryV1 } from '@dealdecision/core/dist/models/llm-validation-summary-v1';
+import { classifySectionEvidenceV1 } from './section-evidence-hygiene-v1.js';
 
 type PromotedFactSample = {
   evidence_id: string;
@@ -136,6 +138,52 @@ function inferSourceQuality(evidenceRefs: string[], confidence: InvestmentInterp
   return 'unverified';
 }
 
+type SectionCandidate = {
+  rawText: string | null;
+  sourceField: string;
+  evidenceRefs: string[];
+  supportingEvidence: string[];
+};
+
+function dedupeStrings(values: string[], limit = 6): string[] {
+  return uniqueStrings(values, limit);
+}
+
+function pickBestSectionCandidate(params: {
+  sectionId: InvestmentInterpretationSectionV1['section_id'];
+  candidates: SectionCandidate[];
+  archetype: string | null;
+  selectedPolicyId: string | null;
+}): { hygiene: SectionEvidenceHygieneV1 | null; refs: string[]; supportingEvidence: string[] } {
+  const hygiened = params.candidates.map((candidate) => ({
+    candidate,
+    hygiene: classifySectionEvidenceV1({
+      sectionId: params.sectionId,
+      rawText: candidate.rawText,
+      sourceField: candidate.sourceField,
+      evidenceRefs: candidate.evidenceRefs,
+      archetype: params.archetype,
+      selectedPolicyId: params.selectedPolicyId,
+    }),
+  }));
+
+  const best = hygiened.find((item) => item.hygiene.section_fit === 'strong')
+    ?? hygiened.find((item) => item.hygiene.section_fit === 'partial')
+    ?? null;
+
+  if (!best) return { hygiene: null, refs: [], supportingEvidence: [] };
+
+  return {
+    hygiene: best.hygiene,
+    refs: dedupeStrings([...best.candidate.evidenceRefs, ...best.hygiene.evidence_refs], 6),
+    supportingEvidence: dedupeStrings(best.candidate.supportingEvidence, 3),
+  };
+}
+
+function isInfrastructureArchetype(archetype: string | null, selectedPolicyId: string | null): boolean {
+  return /infrastructure|energy|project[_ -]?finance|real[_ -]?estate|asset[_ -]?backed|underwriting/i.test(`${archetype ?? ''} ${selectedPolicyId ?? ''}`);
+}
+
 function buildSection(params: {
   sectionId: InvestmentInterpretationSectionV1['section_id'];
   observation: string | null;
@@ -145,6 +193,7 @@ function buildSection(params: {
   interpretation: string;
   implication: string;
   warnings: Array<string | null>;
+  sectionHygiene?: SectionEvidenceHygieneV1 | null;
 }): InvestmentInterpretationSectionV1 | null {
   const observation = normalizeSentence(params.observation);
   if (!observation) return null;
@@ -167,6 +216,7 @@ function buildSection(params: {
     evidence_refs: evidenceRefs,
     source_quality: sourceQuality,
     warnings,
+    section_hygiene: params.sectionHygiene ?? null,
   };
 }
 
@@ -194,17 +244,102 @@ export function synthesizeInvestmentInterpretationV1(
   const marketEvidence = pickPromotedEvidence(input.promoted_facts_sample, /(market|customer|segment|demand|traction|pipeline)/i);
   const businessModelEvidence = pickPromotedEvidence(input.promoted_facts_sample, /(business_model|pricing|subscription|contract|revenue|customer)/i);
   const raiseEvidence = pickPromotedEvidence(input.promoted_facts_sample, /(raise|round|safe|valuation|cap table|equity|term)/i);
+  const synthesisWarnings: string[] = [];
 
   const disagreementCount = Number((input.validation_summary as any)?.high_confidence_disagreements ?? 0);
   const financialGapCount = Array.isArray(input.financial_verification?.financial_gaps)
     ? input.financial_verification!.financial_gaps.length
     : 0;
 
+  const productCandidate = pickBestSectionCandidate({
+    sectionId: 'product',
+    archetype: input.archetype,
+    selectedPolicyId: input.selected_policy_id,
+    candidates: [
+      {
+        rawText: productObservation,
+        sourceField: 'phase1_overview.product_solution',
+        evidenceRefs: sharedPhase1Refs,
+        supportingEvidence: [...sharedPhase1Snippets, ...productEvidence.snippets],
+      },
+      ...productEvidence.snippets.map((snippet, index) => ({
+        rawText: snippet,
+        sourceField: `promoted_facts_sample.product[${index}]`,
+        evidenceRefs: productEvidence.refs,
+        supportingEvidence: [snippet],
+      })),
+    ],
+  });
+  if (!productCandidate.hygiene) synthesisWarnings.push('product: insufficient_clean_evidence');
+
+  const marketCandidate = pickBestSectionCandidate({
+    sectionId: 'market',
+    archetype: input.archetype,
+    selectedPolicyId: input.selected_policy_id,
+    candidates: [
+      {
+        rawText: marketObservation,
+        sourceField: 'phase1_overview.market_icp',
+        evidenceRefs: sharedPhase1Refs,
+        supportingEvidence: [...sharedPhase1Snippets, ...marketEvidence.snippets],
+      },
+      ...marketEvidence.snippets.map((snippet, index) => ({
+        rawText: snippet,
+        sourceField: `promoted_facts_sample.market[${index}]`,
+        evidenceRefs: marketEvidence.refs,
+        supportingEvidence: [snippet],
+      })),
+    ],
+  });
+  if (!marketCandidate.hygiene) synthesisWarnings.push('market: insufficient_clean_evidence');
+
+  const businessModelCandidate = pickBestSectionCandidate({
+    sectionId: 'business_model',
+    archetype: input.archetype,
+    selectedPolicyId: input.selected_policy_id,
+    candidates: [
+      {
+        rawText: businessModelObservation,
+        sourceField: 'structured_summary.business_model',
+        evidenceRefs: businessModelRefs,
+        supportingEvidence: [...businessModelSnippets, ...businessModelEvidence.snippets],
+      },
+      ...businessModelEvidence.snippets.map((snippet, index) => ({
+        rawText: snippet,
+        sourceField: `promoted_facts_sample.business_model[${index}]`,
+        evidenceRefs: businessModelEvidence.refs,
+        supportingEvidence: [snippet],
+      })),
+    ],
+  });
+  if (!businessModelCandidate.hygiene) synthesisWarnings.push('business_model: insufficient_clean_evidence');
+
+  const raiseCandidate = pickBestSectionCandidate({
+    sectionId: 'raise_terms',
+    archetype: input.archetype,
+    selectedPolicyId: input.selected_policy_id,
+    candidates: [
+      {
+        rawText: raiseObservation,
+        sourceField: 'structured_summary.raise',
+        evidenceRefs: raiseRefs,
+        supportingEvidence: [...raiseSnippets, ...raiseEvidence.snippets],
+      },
+      ...raiseEvidence.snippets.map((snippet, index) => ({
+        rawText: snippet,
+        sourceField: `promoted_facts_sample.raise_terms[${index}]`,
+        evidenceRefs: raiseEvidence.refs,
+        supportingEvidence: [snippet],
+      })),
+    ],
+  });
+  if (!raiseCandidate.hygiene) synthesisWarnings.push('raise_terms: insufficient_clean_evidence');
+
   const productSection = buildSection({
     sectionId: 'product',
-    observation: productObservation,
-    evidenceRefs: [...sharedPhase1Refs, ...productEvidence.refs],
-    supportingEvidence: [...sharedPhase1Snippets, ...productEvidence.snippets],
+    observation: productCandidate.hygiene?.clean_text ?? null,
+    evidenceRefs: productCandidate.refs,
+    supportingEvidence: productCandidate.supportingEvidence,
     limitations: [
       'The current package does not yet show independent customer adoption or deployment proof for this product description.',
       disagreementCount > 0 ? 'Some upstream interpretation signals still disagree with deterministic extraction and should be reviewed.' : null,
@@ -214,15 +349,17 @@ export function synthesizeInvestmentInterpretationV1(
     implication:
       'For capital, this means product quality should be underwritten through proof of deployment success, buyer urgency, and conversion evidence before it is treated as durable differentiation.',
     warnings: [
-      sharedPhase1Refs.length === 0 && productEvidence.refs.length === 0 ? 'Product interpretation is evidence-light and should remain shadow-only.' : null,
+      !productCandidate.hygiene ? 'Product interpretation omitted because clean section-specific evidence was insufficient.' : null,
+      productCandidate.hygiene?.reason ?? null,
     ],
+    sectionHygiene: productCandidate.hygiene,
   });
 
   const marketSection = buildSection({
     sectionId: 'market',
-    observation: marketObservation,
-    evidenceRefs: [...sharedPhase1Refs, ...marketEvidence.refs],
-    supportingEvidence: [...sharedPhase1Snippets, ...marketEvidence.snippets],
+    observation: marketCandidate.hygiene?.clean_text ?? null,
+    evidenceRefs: marketCandidate.refs,
+    supportingEvidence: marketCandidate.supportingEvidence,
     limitations: [
       'The current materials do not yet establish whether the cited market demand converts into repeatable acquisition efficiency or durable retention.',
       financialGapCount > 0 ? 'Financial verification still reports unresolved gaps, which limits confidence in any demand-to-revenue inference.' : null,
@@ -232,33 +369,41 @@ export function synthesizeInvestmentInterpretationV1(
     implication:
       'For capital, this means market attractiveness should be judged through evidence of buyer concentration, sales motion repeatability, and externally corroborated demand rather than headline TAM language.',
     warnings: [
-      sharedPhase1Refs.length === 0 && marketEvidence.refs.length === 0 ? 'Market interpretation is evidence-light and should remain shadow-only.' : null,
+      !marketCandidate.hygiene ? 'Market interpretation omitted because clean section-specific evidence was insufficient.' : null,
+      marketCandidate.hygiene?.reason ?? null,
     ],
+    sectionHygiene: marketCandidate.hygiene,
   });
 
   const businessModelSection = buildSection({
     sectionId: 'business_model',
-    observation: businessModelObservation,
-    evidenceRefs: [...businessModelRefs, ...businessModelEvidence.refs],
-    supportingEvidence: [...businessModelSnippets, ...businessModelEvidence.snippets],
+    observation: businessModelCandidate.hygiene?.clean_text ?? null,
+    evidenceRefs: businessModelCandidate.refs,
+    supportingEvidence: businessModelCandidate.supportingEvidence,
     limitations: [
       'The current package does not yet provide independently validated pricing, retention, or unit economics sufficient for full underwriting confidence.',
       input.accepted_corrections.length > 0 ? `Accepted shadow corrections remain advisory only: ${input.accepted_corrections.slice(0, 2).join('; ')}.` : null,
     ],
     interpretation:
-      'The stated business model matters because underwriting depends on how revenue is contracted, repeated, and scaled relative to delivery cost.',
+      isInfrastructureArchetype(input.archetype, input.selected_policy_id)
+        ? 'For infrastructure and energy deals, the business model must be underwritten through project finance structure, contracted offtake, deployment economics, and asset-backed cash-flow mechanics rather than generic software labels.'
+        : 'The stated business model matters because underwriting depends on how revenue is contracted, repeated, and scaled relative to delivery cost.',
     implication:
-      'For capital, this means the business model should only be treated as durable if pricing, customer concentration, and margin mechanics hold up under independent diligence.',
+      isInfrastructureArchetype(input.archetype, input.selected_policy_id)
+        ? 'For capital, this means the model should only be treated as durable if project economics, customer or offtake commitments, and capital-stack sufficiency hold up under independent diligence.'
+        : 'For capital, this means the business model should only be treated as durable if pricing, customer concentration, and margin mechanics hold up under independent diligence.',
     warnings: [
-      businessModelRefs.length === 0 && businessModelEvidence.refs.length === 0 ? 'Business model interpretation is evidence-light and should remain shadow-only.' : null,
+      !businessModelCandidate.hygiene ? 'Business model interpretation omitted because clean section-specific evidence was insufficient.' : null,
+      businessModelCandidate.hygiene?.reason ?? null,
     ],
+    sectionHygiene: businessModelCandidate.hygiene,
   });
 
   const raiseSection = buildSection({
     sectionId: 'raise_terms',
-    observation: raiseObservation,
-    evidenceRefs: [...raiseRefs, ...raiseEvidence.refs],
-    supportingEvidence: [...raiseSnippets, ...raiseEvidence.snippets],
+    observation: raiseCandidate.hygiene?.clean_text ?? null,
+    evidenceRefs: raiseCandidate.refs,
+    supportingEvidence: raiseCandidate.supportingEvidence,
     limitations: [
       'The financing structure is not yet paired with a fully underwritten dilution model, cap table context, or milestone-based use-of-proceeds analysis.',
       input.financial_verification?.cap_table_present ? null : 'Cap table support is absent or incomplete, which limits ownership and dilution interpretation.',
@@ -268,8 +413,10 @@ export function synthesizeInvestmentInterpretationV1(
     implication:
       'For capital, this means term quality should be evaluated alongside ownership, time-to-next-round, and evidence that the raise amount is sufficient for the stated execution plan.',
     warnings: [
-      raiseRefs.length === 0 && raiseEvidence.refs.length === 0 ? 'Raise-terms interpretation is evidence-light and should remain shadow-only.' : null,
+      !raiseCandidate.hygiene ? 'Raise-terms interpretation omitted because clean financing evidence was insufficient.' : null,
+      raiseCandidate.hygiene?.reason ?? null,
     ],
+    sectionHygiene: raiseCandidate.hygiene,
   });
 
   const sections = [productSection, marketSection, businessModelSection, raiseSection].filter(
@@ -287,5 +434,6 @@ export function synthesizeInvestmentInterpretationV1(
     status: 'shadow_only',
     synthesizer_version: 'deterministic_v1',
     sections,
+    synthesis_warnings: synthesisWarnings,
   };
 }

@@ -4,6 +4,32 @@ export type InvestmentInterpretationSectionId =
   | 'business_model'
   | 'raise_terms';
 
+export type SectionEvidenceFit = 'strong' | 'partial' | 'weak' | 'invalid';
+
+export type SectionEvidenceContaminationFlag =
+  | 'ocr_noise'
+  | 'biography_text'
+  | 'team_background'
+  | 'unrelated_person_credential'
+  | 'wrong_section'
+  | 'generic_jargon'
+  | 'malformed_text'
+  | 'financial_amount_without_context'
+  | 'unsupported_business_model_label'
+  | 'insufficient_clean_evidence';
+
+export type SectionEvidenceHygieneV1 = {
+  section_id: InvestmentInterpretationSectionId;
+  raw_text: string | null;
+  source_field: string;
+  evidence_refs: string[];
+  section_fit: SectionEvidenceFit;
+  contamination_flags: SectionEvidenceContaminationFlag[];
+  clean_text: string | null;
+  reason: string;
+  confidence: number;
+};
+
 export type InvestmentInterpretationConfidence = 'high' | 'medium' | 'low' | 'none';
 
 export type InvestmentInterpretationSourceQuality =
@@ -25,6 +51,7 @@ export type InvestmentInterpretationSectionV1 = {
   evidence_refs: string[];
   source_quality: InvestmentInterpretationSourceQuality;
   warnings: string[];
+  section_hygiene?: SectionEvidenceHygieneV1 | null;
 };
 
 export type InvestmentInterpretationV1 = {
@@ -36,4 +63,5 @@ export type InvestmentInterpretationV1 = {
   status: InvestmentInterpretationStatus;
   synthesizer_version?: string | null;
   sections: InvestmentInterpretationSectionV1[];
+  synthesis_warnings?: string[];
 };

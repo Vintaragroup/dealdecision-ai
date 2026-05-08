@@ -54,6 +54,9 @@ export function validateNarrativeQualityV1(
   let implicationFailed = false;
   let limitationFailed = false;
   let unsupportedFailed = false;
+  let sectionFitFailed = false;
+  let contaminationFailed = false;
+  let archetypeFailed = false;
 
   for (const section of sections) {
     const combined = [
@@ -84,6 +87,24 @@ export function validateNarrativeQualityV1(
     if ((section.evidence_refs ?? []).length === 0) {
       evidenceFailed = true;
       recommendedEdits.push(`Add evidence refs for ${section.section_id} or keep the current fallback copy.`);
+    }
+
+    const hygiene = section.section_hygiene;
+    if (hygiene) {
+      if (hygiene.section_fit === 'weak' || hygiene.section_fit === 'invalid') {
+        sectionFitFailed = true;
+        criticalWarnings.push(`${section.section_id}: section-fit hygiene rejected the current source text.`);
+        recommendedEdits.push(`Remove or replace the current ${section.section_id} source because it is not section-specific enough.`);
+      }
+      if ((hygiene.contamination_flags ?? []).length > 0) {
+        contaminationFailed = true;
+        criticalWarnings.push(`${section.section_id}: contamination flags present (${hygiene.contamination_flags.join(', ')}).`);
+      }
+      if ((hygiene.contamination_flags ?? []).includes('unsupported_business_model_label')) {
+        archetypeFailed = true;
+        criticalWarnings.push(`${section.section_id}: archetype consistency check failed.`);
+        recommendedEdits.push(`Replace the unsupported business-model label in ${section.section_id} with archetype-consistent economics.`);
+      }
     }
 
     for (const pattern of GENERIC_JARGON_PATTERNS) {
@@ -117,6 +138,9 @@ export function validateNarrativeQualityV1(
   const investmentImplicationCheck = safeResult(!implicationFailed, sections.length > 0);
   const limitationPresenceCheck = safeResult(!limitationFailed, sections.length > 0);
   const unsupportedClaimCheck = safeResult(!unsupportedFailed, criticalWarnings.length > 0);
+  const sectionFitCheck = safeResult(!sectionFitFailed);
+  const contaminationCheck = safeResult(!contaminationFailed);
+  const archetypeConsistencyCheck = safeResult(!archetypeFailed);
 
   const hasFailure = [
     specificityCheck,
@@ -126,6 +150,9 @@ export function validateNarrativeQualityV1(
     investmentImplicationCheck,
     limitationPresenceCheck,
     unsupportedClaimCheck,
+    sectionFitCheck,
+    contaminationCheck,
+    archetypeConsistencyCheck,
   ].includes('fail');
 
   const status: NarrativeQualityValidationStatus = hasFailure
@@ -146,6 +173,9 @@ export function validateNarrativeQualityV1(
     investment_implication_check: investmentImplicationCheck,
     limitation_presence_check: limitationPresenceCheck,
     unsupported_claim_check: unsupportedClaimCheck,
+    section_fit_check: sectionFitCheck,
+    contamination_check: contaminationCheck,
+    archetype_consistency_check: archetypeConsistencyCheck,
     generic_language_warnings: genericLanguageWarnings,
     critical_warnings: criticalWarnings,
     recommended_edits: Array.from(new Set(recommendedEdits)),

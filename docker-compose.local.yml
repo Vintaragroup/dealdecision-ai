@@ -147,6 +147,7 @@ services:
         VITE_API_BASE_URL: ${WEB_VITE_API_BASE_URL:-http://localhost:9001}
         VITE_BACKEND_MODE: ${VITE_BACKEND_MODE:-live}
         VITE_CLERK_PUBLISHABLE_KEY: ${VITE_CLERK_PUBLISHABLE_KEY:-}
+        VITE_USE_INVESTMENT_INTERPRETATION_V1: ${VITE_USE_INVESTMENT_INTERPRETATION_V1:-0}
     environment:
       NODE_ENV: production
     ports:
@@ -267,6 +268,8 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile.dev
+    env_file:
+      - .env.docker.local
     command:
       - sh
       - -lc

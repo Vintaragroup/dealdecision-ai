@@ -56,6 +56,8 @@ import type { LLMDecisionRationaleV1 } from '../models/llm-decision-rationale-v1
 import type { LLMRationaleValidationV1 } from '../models/llm-rationale-validation-v1.js';
 import type { CorrectionLineageV1 } from '../models/correction-lineage-v1.js';
 import type { LLMValidationSummaryV1 } from '../models/llm-validation-summary-v1.js';
+import type { InvestmentInterpretationV1 } from '../models/investment-interpretation-v1.js';
+import type { NarrativeQualityValidationV1 } from '../models/narrative-quality-validation-v1.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -209,6 +211,10 @@ type ReportDTO = {
   correction_lineage_v1?: CorrectionLineageV1[] | null;
   /** Validator summary: aggregate statistics from DeterministicCorrectionValidatorV1 */
   llm_validation_summary_v1?: LLMValidationSummaryV1 | null;
+  /** Investment interpretation layer: section-level underwriting implications */
+  investment_interpretation_v1?: InvestmentInterpretationV1 | null;
+  /** Narrative quality validation for the interpretation layer */
+  narrative_quality_validation_v1?: NarrativeQualityValidationV1 | null;
 };
 
 type ReportSection = {
@@ -2099,6 +2105,8 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     llm_rationale_validation_v1: null,
     correction_lineage_v1: null,
     llm_validation_summary_v1: null,
+    investment_interpretation_v1: null,
+    narrative_quality_validation_v1: null,
   };
 }
 

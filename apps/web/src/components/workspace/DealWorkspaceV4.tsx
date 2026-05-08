@@ -34,6 +34,34 @@ import { EvidenceTraceDrawer } from './EvidenceTraceDrawer';
 import { DocumentsTab } from '../documents/DocumentsTab';
 import type { DecisionRationaleV1 } from './analysis/DecisionRationaleSection';
 
+type InvestmentInterpretationSectionV1 = {
+  section_id: 'product' | 'market' | 'business_model' | 'raise_terms';
+  observation: string;
+  interpretation: string;
+  supporting_evidence: string[];
+  limitations: string[];
+  investment_implication: string;
+  confidence: 'high' | 'medium' | 'low' | 'none';
+  evidence_refs: string[];
+  source_quality: 'verified' | 'directional' | 'unverified' | 'conflicted';
+  warnings: string[];
+};
+
+type InvestmentInterpretationV1 = {
+  schema_version: 'investment_interpretation_v1';
+  sections: InvestmentInterpretationSectionV1[];
+  status?: 'shadow_only' | 'validated' | 'rejected';
+};
+
+type NarrativeQualityValidationV1 = {
+  schema_version: 'narrative_quality_validation_v1';
+  status: 'passed' | 'failed' | 'needs_review';
+  evidence_grounding_check: 'pass' | 'fail' | 'warning';
+  investment_implication_check: 'pass' | 'fail' | 'warning';
+  limitation_presence_check: 'pass' | 'fail' | 'warning';
+  critical_warnings: string[];
+};
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 export type RerunAnalysisProgress = {
@@ -102,6 +130,10 @@ export type DealWorkspaceV4Props = WorkspaceRedesignedShellProps & {
    * Only rendered when rationale.status === 'validated'. Absent = hidden, no error.
    */
   decisionRationale?: DecisionRationaleV1 | null;
+  /** Experimental section-level investment interpretation. Shadow-only unless env-gated. */
+  investmentInterpretation?: InvestmentInterpretationV1 | null;
+  /** Validation result for investmentInterpretation. */
+  narrativeQualityValidation?: NarrativeQualityValidationV1 | null;
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -117,6 +149,24 @@ function formatLastAnalyzed(isoString: string | null): string | null {
   } catch {
     return isoString;
   }
+}
+
+function isInvestmentInterpretationEnabled(): boolean {
+  const env = ((import.meta as any)?.env ?? {}) as Record<string, unknown>;
+  const raw = String(env.VITE_USE_INVESTMENT_INTERPRETATION_V1 ?? env.USE_INVESTMENT_INTERPRETATION_V1 ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+function buildInterpretationDisplay(section: InvestmentInterpretationSectionV1 | null): string | null {
+  if (!section) return null;
+  if (!section.investment_implication || section.investment_implication.trim().length === 0) return null;
+  if (!Array.isArray(section.limitations) || section.limitations.length === 0) return null;
+  if (!Array.isArray(section.evidence_refs) || section.evidence_refs.length === 0) return null;
+
+  return [section.observation, section.interpretation, section.limitations[0], section.investment_implication]
+    .map((item) => cleanCopy(item))
+    .filter(Boolean)
+    .join(' ');
 }
 
 function findTile(tiles: FinancialTile[], label: string): FinancialTile {
@@ -1822,6 +1872,8 @@ export function DealWorkspaceV4({
   dealId,
   documentsReloadKey = 0,
   decisionRationale,
+  investmentInterpretation,
+  narrativeQualityValidation,
 }: DealWorkspaceV4Props) {
   const [showDocsModal, setShowDocsModal] = useState(false);
 
@@ -1853,6 +1905,7 @@ export function DealWorkspaceV4({
   const recommendation = mapPosture(convictionPosture);
   const investmentParas = splitIntoParas(investmentSnapshotBody);
   const activeKeyDrivers = (keyDrivers ?? []).filter(Boolean);
+  const interpretationFeatureEnabled = isInvestmentInterpretationEnabled();
 
   // ── TRACE: final props received by DealWorkspaceV4 ──────────────────────────
   useEffect(() => {
@@ -1937,6 +1990,26 @@ export function DealWorkspaceV4({
     topPositiveContributors,
     topNegativeContributors,
   });
+
+  const canUseInterpretation =
+    interpretationFeatureEnabled &&
+    narrativeQualityValidation?.status === 'passed' &&
+    narrativeQualityValidation?.evidence_grounding_check === 'pass' &&
+    narrativeQualityValidation?.investment_implication_check === 'pass' &&
+    narrativeQualityValidation?.limitation_presence_check === 'pass' &&
+    (narrativeQualityValidation?.critical_warnings?.length ?? 0) === 0;
+
+  const interpretationSections = new Map(
+    (investmentInterpretation?.sections ?? []).map((section) => [section.section_id, section] as const),
+  );
+  const productInterpretation = canUseInterpretation ? buildInterpretationDisplay(interpretationSections.get('product') ?? null) : null;
+  const marketInterpretation = canUseInterpretation ? buildInterpretationDisplay(interpretationSections.get('market') ?? null) : null;
+  const businessModelInterpretation = canUseInterpretation ? buildInterpretationDisplay(interpretationSections.get('business_model') ?? null) : null;
+  const raiseTermsInterpretation = canUseInterpretation ? buildInterpretationDisplay(interpretationSections.get('raise_terms') ?? null) : null;
+  const productCardPrimary = productInterpretation ?? productPrimary;
+  const marketCardPrimary = marketInterpretation ?? marketPrimary;
+  const productCardSignal = productInterpretation ? null : productSignal;
+  const marketCardSignal = marketInterpretation ? null : marketSignal;
 
   // Business Model: apply same quality gate as product/market.
   const rawBusinessModel = businessModel.value && businessModel.value !== '—' ? businessModel.value : null;
@@ -2600,15 +2673,15 @@ export function DealWorkspaceV4({
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Product</div>
               </div>
               <div className="space-y-1.5">
-                {productPrimary ? (
-                  <p className={`text-sm leading-relaxed ${body}`}>{productPrimary}</p>
+                {productCardPrimary ? (
+                  <p className={`text-sm leading-relaxed ${body}`}>{productCardPrimary}</p>
                 ) : (
                   <p className={`text-sm ${muted}`} data-testid="product-copy-fallback">
                     Product description is not yet reliable from the uploaded materials. Review the source documents or add a clean product summary before relying on product strength.
                   </p>
                 )}
-                {productSignal && (
-                  <p className={`text-xs leading-relaxed ${muted}`}>{productSignal}</p>
+                {productCardSignal && (
+                  <p className={`text-xs leading-relaxed ${muted}`}>{productCardSignal}</p>
                 )}
               </div>
             </div>
@@ -2619,15 +2692,15 @@ export function DealWorkspaceV4({
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Market</div>
               </div>
               <div className="space-y-1.5">
-                {marketPrimary ? (
-                  <p className={`text-sm leading-relaxed ${body}`}>{marketPrimary}</p>
+                {marketCardPrimary ? (
+                  <p className={`text-sm leading-relaxed ${body}`}>{marketCardPrimary}</p>
                 ) : (
                   <p className={`text-sm ${muted}`} data-testid="market-copy-fallback">
                     Market description is not yet reliable from the uploaded materials. Add market sizing, ICP, and third-party validation to strengthen this section.
                   </p>
                 )}
-                {marketSignal && (
-                  <p className={`text-xs leading-relaxed ${muted}`}>{marketSignal}</p>
+                {marketCardSignal && (
+                  <p className={`text-xs leading-relaxed ${muted}`}>{marketCardSignal}</p>
                 )}
               </div>
             </div>
@@ -2637,8 +2710,8 @@ export function DealWorkspaceV4({
                 <Activity className={`w-4 h-4 mt-0.5 ${muted}`} />
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Business Model</div>
               </div>
-              <div className={`text-sm ${businessModelPrimary ? heading : muted}`}>
-                {businessModelPrimary ? businessModelPrimary : (
+              <div className={`text-sm ${businessModelInterpretation || businessModelPrimary ? heading : muted}`}>
+                {businessModelInterpretation || businessModelPrimary ? (businessModelInterpretation ?? businessModelPrimary) : (
                   <span data-testid="business-model-copy-fallback">
                     {businessModelSuppressionReason
                       ? 'Business model description is not yet reliable from the uploaded materials. Confirm revenue model, pricing, customers, and sales motion.'
@@ -2653,8 +2726,8 @@ export function DealWorkspaceV4({
                 <DollarSign className={`w-4 h-4 mt-0.5 ${muted}`} />
                 <div className={`text-xs uppercase tracking-wide ${muted}`}>Raise Terms</div>
               </div>
-              <div className={`text-sm ${raiseTerms.value && raiseTerms.value !== '—' ? heading : muted}`}>
-                {raiseTerms.value && raiseTerms.value !== '—' ? raiseTerms.value : 'Not extracted'}
+              <div className={`text-sm ${raiseTermsInterpretation || (raiseTerms.value && raiseTerms.value !== '—') ? heading : muted}`}>
+                {raiseTermsInterpretation || (raiseTerms.value && raiseTerms.value !== '—' ? raiseTerms.value : 'Not extracted')}
               </div>
             </div>
           </div>
@@ -2891,7 +2964,7 @@ export function DealWorkspaceV4({
               </div>
             </div>
 
-            {(financialProseLines.length > 0 || underwritingNarrative || decisionRationale || productSuppressedRaw || marketSuppressedRaw || businessModelSuppressedRaw || product.source === 'llm_synthesis' || market.source === 'llm_synthesis' || businessModel.source === 'llm_synthesis' || raiseTerms.source === 'llm_synthesis') && (
+            {(financialProseLines.length > 0 || underwritingNarrative || decisionRationale || productSuppressedRaw || marketSuppressedRaw || businessModelSuppressedRaw || product.source === 'llm_synthesis' || market.source === 'llm_synthesis' || businessModel.source === 'llm_synthesis' || raiseTerms.source === 'llm_synthesis' || productInterpretation || marketInterpretation || businessModelInterpretation || raiseTermsInterpretation) && (
               <details className={`mt-4 rounded-lg border px-3 py-2.5 ${subCard}`}>
                 <summary className={`cursor-pointer list-none text-[11px] font-medium ${sectionLabel}`}>
                   Source notes and diagnostics
@@ -2902,6 +2975,26 @@ export function DealWorkspaceV4({
                   ))}
                   {underwritingNarrative && (
                     <p className={`text-[11px] leading-snug ${sectionLabel}`}>{underwritingNarrative}</p>
+                  )}
+                  {productInterpretation && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="product-interpretation-source">
+                      Product · final_source: investment_interpretation_v1 (experimental)
+                    </p>
+                  )}
+                  {marketInterpretation && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="market-interpretation-source">
+                      Market · final_source: investment_interpretation_v1 (experimental)
+                    </p>
+                  )}
+                  {businessModelInterpretation && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="business-model-interpretation-source">
+                      Business Model · final_source: investment_interpretation_v1 (experimental)
+                    </p>
+                  )}
+                  {raiseTermsInterpretation && (
+                    <p className={`text-[11px] leading-snug ${muted}`} data-testid="raise-terms-interpretation-source">
+                      Raise Terms · final_source: investment_interpretation_v1 (experimental)
+                    </p>
                   )}
                   {/* Key facts synthesis source diagnostics */}
                   {product.source === 'llm_synthesis' && (

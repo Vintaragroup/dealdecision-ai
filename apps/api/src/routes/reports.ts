@@ -111,6 +111,32 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 // by an older version are automatically treated as stale and recompiled.
 const REPORT_COMPILER_VERSION = 44; // bumped: challenge_pass now read from deal_challenge_pass_results into compiled report
 
+const DIO_OPTIONAL_REPORT_FIELDS = [
+  'llm_field_audit_v1',
+  'llm_financial_verification_v1',
+  'correction_lineage_v1',
+  'llm_validation_summary_v1',
+  'llm_decision_rationale_v1',
+  'llm_rationale_validation_v1',
+  'investment_interpretation_v1',
+  'narrative_quality_validation_v1',
+] as const;
+
+function injectOptionalReportFieldsFromDio(report: any, dioData: any): void {
+  if (!report || typeof report !== 'object') return;
+  const dioReport = dioData?.report;
+  if (!dioReport || typeof dioReport !== 'object') return;
+
+  for (const field of DIO_OPTIONAL_REPORT_FIELDS) {
+    const value = (dioReport as any)?.[field] ?? null;
+    if (value === null) continue;
+    (report as any)[field] = value;
+    if ((report as any).report && typeof (report as any).report === 'object') {
+      (report as any).report = { ...(report as any).report, [field]: value };
+    }
+  }
+}
+
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
     const r = await pool.query<{ summary: any }>(
@@ -2986,17 +3012,8 @@ export async function registerReportRoutes(
                 cacheHitReport.report = { ...cacheHitReport.report, decision_readiness: cacheHitReport.decision_readiness };
               }
             } catch { /* fail-open */ }
-            // Phase 4: inject llm_decision_rationale_v1 from DIO on cache-hit.
-            // It is LLM-generated and stored only in dio_data.report — never re-derived during
-            // report compilation, so it must be layered in from the DIO on every read path.
             try {
-              const dioRationale = (row as any)?.dio_data?.report?.llm_decision_rationale_v1 ?? null;
-              if (dioRationale && typeof dioRationale === 'object') {
-                cacheHitReport.llm_decision_rationale_v1 = dioRationale;
-                if (cacheHitReport.report && typeof cacheHitReport.report === 'object') {
-                  cacheHitReport.report = { ...cacheHitReport.report, llm_decision_rationale_v1: dioRationale };
-                }
-              }
+              injectOptionalReportFieldsFromDio(cacheHitReport, (row as any)?.dio_data);
             } catch { /* fail-open */ }
             return reply.status(200).send({ ...cacheHitReport, financial_snapshot_stale });
           }
@@ -3932,14 +3949,8 @@ export async function registerReportRoutes(
             // ignore
           }
 
-          // Phase 4: inject llm_decision_rationale_v1 from DIO before persisting payload.
-          // It is LLM-generated and stored only in dio_data.report — not re-derived during
-          // report compilation. Must be layered in so it survives the ingestion_reports cache.
           try {
-            const dioRationale = (row as any)?.dio_data?.report?.llm_decision_rationale_v1 ?? null;
-            if (dioRationale && typeof dioRationale === 'object' && report && typeof report === 'object') {
-              (report as any).llm_decision_rationale_v1 = dioRationale;
-            }
+            injectOptionalReportFieldsFromDio(report, (row as any)?.dio_data);
           } catch { /* fail-open */ }
           payload.report = report;
           // Spread the report into the response for compatibility with older consumers.
@@ -4121,15 +4132,8 @@ export async function registerReportRoutes(
                 (cached as any).report = { ...(cached as any).report, decision_readiness: (cached as any).decision_readiness };
               }
             } catch { /* fail-open */ }
-            // Phase 4: inject llm_decision_rationale_v1 from DIO on cache-hit (versioned route).
             try {
-              const dioRationale = (row as any)?.dio_data?.report?.llm_decision_rationale_v1 ?? null;
-              if (dioRationale && typeof dioRationale === 'object') {
-                (cached as any).llm_decision_rationale_v1 = dioRationale;
-                if ((cached as any).report && typeof (cached as any).report === 'object') {
-                  (cached as any).report = { ...(cached as any).report, llm_decision_rationale_v1: dioRationale };
-                }
-              }
+              injectOptionalReportFieldsFromDio(cached, (row as any)?.dio_data);
             } catch { /* fail-open */ }
             // Lazy recompile: when financial_facts_v1 are newer than the DIO's updated_at, trigger a
             // fresh analyze_deal job in the background. Idempotent via dedupe — never blocks response.
@@ -4625,12 +4629,8 @@ export async function registerReportRoutes(
         });
 
         const payload: any = { ready: true, version: versionNum, artifact };
-        // Phase 4: inject llm_decision_rationale_v1 from DIO before persisting payload (versioned route).
         try {
-          const dioRationale = (row as any)?.dio_data?.report?.llm_decision_rationale_v1 ?? null;
-          if (dioRationale && typeof dioRationale === 'object' && report && typeof report === 'object') {
-            (report as any).llm_decision_rationale_v1 = dioRationale;
-          }
+          injectOptionalReportFieldsFromDio(report, (row as any)?.dio_data);
         } catch { /* fail-open */ }
         payload.report = report;
         // Spread the report into the response for compatibility with older consumers.

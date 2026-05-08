@@ -11,8 +11,12 @@
 
 import { render, screen } from '@testing-library/react';
 import React from 'react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DealWorkspaceV4, type DealWorkspaceV4Props } from '../components/workspace/DealWorkspaceV4';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 const emptyFact = { value: null, trust: 'not_extracted' as const, nullReason: 'Not extracted' };
 
@@ -249,6 +253,148 @@ describe('Synthesis diagnostics', () => {
     );
     const diag = screen.queryByTestId('product-synthesis-source');
     expect(diag?.textContent).toMatch(/key_facts_synthesis_v1/i);
+  });
+});
+
+describe('Investment interpretation experimental rendering', () => {
+  it('replaces key-fact copy when env is enabled and narrative validation passes', () => {
+    vi.stubEnv('VITE_USE_INVESTMENT_INTERPRETATION_V1', 'true');
+
+    render(
+      <DealWorkspaceV4
+        {...BASE_PROPS}
+        product={{
+          value: 'Legacy raw product copy that should not win.',
+          trust: 'structured',
+          source: 'structured_summary',
+          origin: 'deterministic',
+          evidenceIds: [],
+          evidence: [],
+          nullReason: null,
+        }}
+        market={{ value: 'Legacy market copy', trust: 'structured', nullReason: null }}
+        businessModel={{ value: 'Legacy business model copy', trust: 'structured', nullReason: null }}
+        raiseTerms={{ value: 'Legacy raise copy', trust: 'structured', nullReason: null }}
+        investmentInterpretation={{
+          schema_version: 'investment_interpretation_v1',
+          status: 'shadow_only',
+          sections: [
+            {
+              section_id: 'product',
+              observation: 'Product observation.',
+              interpretation: 'Product interpretation.',
+              limitations: ['Product limitation.'],
+              investment_implication: 'Product implication.',
+              supporting_evidence: ['Product evidence.'],
+              confidence: 'medium',
+              evidence_refs: ['prod-1'],
+              source_quality: 'directional',
+              warnings: [],
+            },
+            {
+              section_id: 'market',
+              observation: 'Market observation.',
+              interpretation: 'Market interpretation.',
+              limitations: ['Market limitation.'],
+              investment_implication: 'Market implication.',
+              supporting_evidence: ['Market evidence.'],
+              confidence: 'medium',
+              evidence_refs: ['mkt-1'],
+              source_quality: 'directional',
+              warnings: [],
+            },
+            {
+              section_id: 'business_model',
+              observation: 'Business model observation.',
+              interpretation: 'Business model interpretation.',
+              limitations: ['Business model limitation.'],
+              investment_implication: 'Business model implication.',
+              supporting_evidence: ['Business model evidence.'],
+              confidence: 'medium',
+              evidence_refs: ['bm-1'],
+              source_quality: 'directional',
+              warnings: [],
+            },
+            {
+              section_id: 'raise_terms',
+              observation: 'Raise observation.',
+              interpretation: 'Raise interpretation.',
+              limitations: ['Raise limitation.'],
+              investment_implication: 'Raise implication.',
+              supporting_evidence: ['Raise evidence.'],
+              confidence: 'medium',
+              evidence_refs: ['raise-1'],
+              source_quality: 'directional',
+              warnings: [],
+            },
+          ],
+        } as any}
+        narrativeQualityValidation={{
+          schema_version: 'narrative_quality_validation_v1',
+          status: 'passed',
+          evidence_grounding_check: 'pass',
+          investment_implication_check: 'pass',
+          limitation_presence_check: 'pass',
+          critical_warnings: [],
+        } as any}
+      />,
+    );
+
+    expect(screen.getByText(/Product observation\. Product interpretation\. Product limitation\. Product implication\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Market observation\. Market interpretation\. Market limitation\. Market implication\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Business model observation\. Business model interpretation\. Business model limitation\. Business model implication\./i)).toBeInTheDocument();
+    expect(screen.getByText(/Raise observation\. Raise interpretation\. Raise limitation\. Raise implication\./i)).toBeInTheDocument();
+    expect(screen.getByTestId('product-interpretation-source')).toBeInTheDocument();
+    expect(screen.queryByText('Legacy raw product copy that should not win.')).not.toBeInTheDocument();
+  });
+
+  it('keeps existing copy when validation does not pass', () => {
+    vi.stubEnv('VITE_USE_INVESTMENT_INTERPRETATION_V1', 'true');
+
+    render(
+      <DealWorkspaceV4
+        {...BASE_PROPS}
+        product={{
+          value: 'Existing governed product copy remains visible because the company sells workflow software to enterprise climate teams with a clear compliance use case.',
+          trust: 'structured',
+          source: 'structured_summary',
+          origin: 'deterministic',
+          evidenceIds: [],
+          evidence: [],
+          nullReason: null,
+        }}
+        investmentInterpretation={{
+          schema_version: 'investment_interpretation_v1',
+          status: 'shadow_only',
+          sections: [
+            {
+              section_id: 'product',
+              observation: 'Suppressed interpretation observation.',
+              interpretation: 'Suppressed interpretation text.',
+              limitations: ['Suppressed limitation.'],
+              investment_implication: 'Suppressed implication.',
+              supporting_evidence: ['Suppressed evidence.'],
+              confidence: 'medium',
+              evidence_refs: ['prod-1'],
+              source_quality: 'directional',
+              warnings: [],
+            },
+          ],
+        } as any}
+        narrativeQualityValidation={{
+          schema_version: 'narrative_quality_validation_v1',
+          status: 'failed',
+          evidence_grounding_check: 'fail',
+          investment_implication_check: 'pass',
+          limitation_presence_check: 'pass',
+          critical_warnings: ['product: failed grounding'],
+        } as any}
+      />,
+    );
+
+    expect(screen.getByText(/Existing governed product copy remains visible because the company sells workflow software to enterprise climate teams with a clear compliance use case\./i)).toBeInTheDocument();
+    expect(screen.queryByTestId('product-interpretation-source')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Suppressed interpretation observation/i)).not.toBeInTheDocument();
   });
 });
 

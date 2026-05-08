@@ -61,6 +61,8 @@ import {
 	runLLMDecisionRationaleShadow,
 	runLLMRationaleValidationShadow,
 } from "../../lib/intelligence/llm-auditor-hooks";
+import { synthesizeInvestmentInterpretationV1 } from '../../lib/intelligence/investment-interpretation-synthesizer-v1';
+import { validateNarrativeQualityV1 } from '../../lib/intelligence/narrative-quality-validator-v1';
 
 // -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
 function safeJsonParseObject(raw: string): Record<string, unknown> | null {
@@ -107,6 +109,11 @@ function countWords(value: string): number {
 	const s = String(value ?? "");
 	const words = s.trim().split(/\s+/).filter(Boolean);
 	return words.length;
+}
+
+function envFlagEnabled(value: string | undefined): boolean {
+	const normalized = String(value ?? '').trim().toLowerCase();
+	return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
 }
 
 const SUMMARY_BROKEN_ARTICLE_RX = /\bis an\s+for\b/gi;
@@ -1935,6 +1942,50 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						if (validatorResult) {
 							(compiledReport as any).correction_lineage_v1 = [validatorResult.correction_lineage];
 							(compiledReport as any).llm_validation_summary_v1 = validatorResult.validation_summary;
+						}
+					}
+
+					if (envFlagEnabled(process.env.INVESTMENT_INTERPRETATION_SHADOW_MODE)) {
+						const selectedPolicyIdForInterpretation =
+							getSelectedPolicyIdFromAnyLike((result as any)?.dio) ??
+							getSelectedPolicyIdFromAnyLike((result as any)?.storage_result?.dio_data) ??
+							null;
+						const interpretation = synthesizeInvestmentInterpretationV1({
+							deal_id: dealId,
+							report_id: null,
+							run_id: runId,
+							company_name: companyName ?? null,
+							canonical_verdict:
+								(compiledReport as any)?.canonical_decision_v2?.verdict ??
+								(compiledReport as any)?.recommendation ??
+								null,
+							archetype: archetype ?? null,
+							selected_policy_id: selectedPolicyIdForInterpretation,
+							structured_summary: structuredSummary,
+							phase1_overview: ((result as any)?.dio as any)?.phase1?.deal_overview_v2 ?? null,
+							promoted_facts_sample: promotedFactsSample.map((fact) => ({
+								evidence_id: fact.evidence_id,
+								fact_type: fact.fact_type,
+								summary: String((fact as any).content?.summary ?? fact.content?.text ?? fact.content?.value ?? '').slice(0, 220),
+								confidence: fact.confidence,
+								source_kind: null,
+							})),
+							financial_verification: financialVerif,
+							validation_summary: (compiledReport as any)?.llm_validation_summary_v1 ?? null,
+							accepted_corrections: ((compiledReport as any)?.correction_lineage_v1?.[0]?.corrections ?? [])
+								.filter((item: any) => item?.validator_status === 'accepted')
+								.slice(0, 5)
+								.map((item: any) => `${item.original_field} -> ${item.proposed_field}: ${item.correction_type}`),
+							underwriting_readiness: (compiledReport as any)?.underwriting_readiness_v1 ?? null,
+						});
+
+						if (interpretation) {
+							(compiledReport as any).investment_interpretation_v1 = interpretation;
+							(compiledReport as any).narrative_quality_validation_v1 = validateNarrativeQualityV1({
+								deal_id: dealId,
+								run_id: runId,
+								interpretation,
+							});
 						}
 					}
 				} catch {

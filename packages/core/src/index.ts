@@ -190,6 +190,19 @@ export type {
   ConvictionRequiredCheckV1,
   ConvictionLineageV1,
 } from "./models/conviction-v1";
+export type {
+  InvestmentInterpretationV1,
+  InvestmentInterpretationSectionV1,
+  InvestmentInterpretationSectionId,
+  InvestmentInterpretationConfidence,
+  InvestmentInterpretationSourceQuality,
+  InvestmentInterpretationStatus,
+} from './models/investment-interpretation-v1';
+export type {
+  NarrativeQualityValidationV1,
+  NarrativeQualityCheckResult,
+  NarrativeQualityValidationStatus,
+} from './models/narrative-quality-validation-v1';
 export { buildDeterministicDealSummaryV1FromStructuredSummary } from "./reports/deal-summary-v1-deterministic";
 export { buildInvestmentAnalysisOverviewV2 } from "./reports/investment-analysis-overview-v2";
 export { buildClaimSupportV1 } from "./reports/claim-support-v1";

@@ -7337,6 +7337,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} financialTiles={shellProps.financialTiles} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null} /> : null}
         scoreBreakdownSections={scoreBreakdownSections}
         decisionRationale={(reportFromApi as any)?.llm_decision_rationale_v1 ?? null}
+        investmentInterpretation={(reportFromApi as any)?.investment_interpretation_v1 ?? null}
+        narrativeQualityValidation={(reportFromApi as any)?.narrative_quality_validation_v1 ?? null}
       />
       )}
 

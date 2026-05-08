@@ -12,6 +12,8 @@ import type { LLMDecisionRationaleV1 } from '../llm-decision-rationale-v1.js';
 import type { LLMRationaleValidationV1 } from '../llm-rationale-validation-v1.js';
 import type { CorrectionLineageV1, CorrectionLineageItem } from '../correction-lineage-v1.js';
 import type { LearningEventV1 } from '../learning-event-v1.js';
+import type { InvestmentInterpretationV1 } from '../investment-interpretation-v1.js';
+import type { NarrativeQualityValidationV1 } from '../narrative-quality-validation-v1.js';
 
 // ─── LLMFieldAuditV1 ──────────────────────────────────────────────────────────
 
@@ -236,6 +238,59 @@ describe('LLMRationaleValidationV1', () => {
     };
     expect(obj.schema_version).toBe('llm_rationale_validation_v1');
     expect(obj.overall_status).toBe('passed');
+  });
+});
+
+describe('InvestmentInterpretationV1', () => {
+  it('accepts a valid interpretation object', () => {
+    const obj: InvestmentInterpretationV1 = {
+      schema_version: 'investment_interpretation_v1',
+      deal_id: 'deal-abc',
+      report_id: null,
+      run_id: 'run-001',
+      created_at: new Date().toISOString(),
+      status: 'shadow_only',
+      synthesizer_version: 'deterministic_v1',
+      sections: [
+        {
+          section_id: 'product',
+          observation: 'The company presents an enterprise workflow automation product.',
+          interpretation: 'A workflow-specific product could support differentiated adoption if it maps to a painful operational bottleneck.',
+          supporting_evidence: ['Product overview appears in the company materials.'],
+          limitations: ['Customer adoption evidence is not independently validated.'],
+          investment_implication: 'Product quality may matter to pricing power, but current underwriting confidence remains limited without proof of deployment success.',
+          confidence: 'medium',
+          evidence_refs: ['ev-001'],
+          source_quality: 'directional',
+          warnings: [],
+        },
+      ],
+    };
+    expect(obj.sections[0]?.section_id).toBe('product');
+    expect(obj.status).toBe('shadow_only');
+  });
+});
+
+describe('NarrativeQualityValidationV1', () => {
+  it('accepts a valid quality validation object', () => {
+    const obj: NarrativeQualityValidationV1 = {
+      schema_version: 'narrative_quality_validation_v1',
+      deal_id: 'deal-abc',
+      run_id: 'run-001',
+      created_at: new Date().toISOString(),
+      specificity_check: 'pass',
+      evidence_grounding_check: 'pass',
+      jargon_check: 'pass',
+      score_narration_check: 'pass',
+      investment_implication_check: 'pass',
+      limitation_presence_check: 'pass',
+      unsupported_claim_check: 'warning',
+      generic_language_warnings: [],
+      critical_warnings: [],
+      recommended_edits: [],
+      status: 'passed',
+    };
+    expect(obj.status).toBe('passed');
   });
 });
 

@@ -383,12 +383,22 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
   // at least one of these genuinely clinical signals is present.  Terms like
   // "burn rate" or "sensitivity analysis" that appear in any financial deck
   // must NOT drive healthcare domain routing.
+  //
+  // Patterns are intentionally narrow to avoid false positives on infrastructure
+  // and project-finance documents that commonly use "Phase 1/2", "reimbursement",
+  // or acronyms like "IRB" in a non-clinical sense.
   const hardClinicalMarkers = [
     /\bind\b|investigational\s+new\s+drug|\bide\b|investigational\s+device/i,
     /\b(510\(k\)|pma\b|de\s*novo|eua\b|emergency\s+use\s+authorization|fda\s+(?:clearance|approval|submission|filing))/i,
-    /clinical\s+trial|trial\s+phase|phase\s+(?:i|ii|iii|iv|1|2|3|4)\b|first[-\s]?in[-\s]?human/i,
-    /\birb\b|institutional\s+review\s+board/i,
-    /reimbursement|\bcpt\b\s*code|\bdrg\b|icd[-\s]?10|\bmedicare\b|\bmedicaid\b/i,
+    // Require clinical/trial context around phase numbers — infrastructure decks use
+    // "Phase 1", "Phase 2" for construction/project stages which must not trigger this gate.
+    /clinical\s+trial|trial\s+phase|phase\s+(?:i|ii|iii|iv|1|2|3|4)\s+(?:clinical|trial|study|cohort)|first[-\s]?in[-\s]?human/i,
+    // Require the full spelled-out form; bare "IRB" acronym appears in many finance contexts
+    // (e.g. Internal Revenue Bond, Internal Rate of Benefit).
+    /institutional\s+review\s+board/i,
+    // Require medical/clinical context for "reimbursement" — the bare word appears commonly
+    // in green bond, grant, and project-finance documents (e.g. "reimbursement of proceeds").
+    /(?:medical|patient|clinical|healthcare|drug|device|therapy|treatment)\s+reimbursement|reimbursement\s+(?:claim|code|schedule|rate\b)|\bcpt\b\s*code|\bdrg\b|icd[-\s]?10|\bmedicare\b|\bmedicaid\b/i,
     /\bhipaa\b|business\s+associate\s+agreement|\bbaa\b/i,
   ];
   const hasHardClinicalMarker = hardClinicalMarkers.some((re) => re.test(textLc));
@@ -407,7 +417,12 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
   // Healthcare domain requires at least one hard clinical marker (IND, FDA filing,
   // clinical trial, IRB, reimbursement, HIPAA).  Without it, generic terms like
   // "sensitivity analysis" and "burn rate" must not drive policy routing.
-  const healthcareBiotechEffective = hasHardClinicalMarker ? healthcareBiotech : { score: 0, signals: [] as string[] };
+  // Additionally, suppress healthcare routing when strong infrastructure/energy signals
+  // are present — infra decks commonly share terminology with biotech (project phases,
+  // regulatory approvals) and must not be misclassified as healthcare deals.
+  const healthcareBiotechEffective = hasHardClinicalMarker && infraEnergy.score === 0
+    ? healthcareBiotech
+    : { score: 0, signals: [] as string[] };
   const enterpriseSaas = scoreSignals(textLc, enterpriseSaasRules);
   const mediaIp = scoreSignals(textLc, mediaIpRules);
   const physicalCpgSpirits = scoreSignals(textLc, physicalCpgSpiritsRules);

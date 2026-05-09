@@ -541,36 +541,57 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			);
 			if (rows[0]) {
 				if (rows[0].has_canonical_identity) {
-					// Full dedup hit — cached report already contains canonical_identity.
-					console.log(
-						JSON.stringify({
-							event: "INVESTOR_INSIGHTS_DEDUP_HIT",
-							reason_code: "FP_IDEMPOTENT_HIT_SKIP",
-							v: "CANONICAL_IDENTITY_BUILD_V3",
+					// Bypass dedup when the prior run produced only deterministic output (no LLM
+					// synthesis — typically caused by a missing API key at the time of the original
+					// run).  Re-running when status is "deterministic_only" is safe and cheap;
+					// it ensures interpretation fields are populated on subsequent runs.
+					const isDeterministicOnly = rows[0].status === "deterministic_only";
+					if (isDeterministicOnly) {
+						console.log(
+							JSON.stringify({
+								event: "INVESTOR_INSIGHTS_DEDUP_BYPASS_DETERMINISTIC_ONLY",
+								reason_code: "DETERMINISTIC_ONLY_NEEDS_LLM_RETRY",
+								v: "CANONICAL_IDENTITY_BUILD_V3",
+								deal_id: dealId,
+								engine_version: engineVersion,
+								upstream_fingerprint: upstreamFingerprint,
+								existing_report_id: rows[0].id,
+								existing_status: rows[0].status,
+								ts: new Date().toISOString(),
+							})
+						);
+					} else {
+						// Full dedup hit — cached report already contains canonical_identity.
+						console.log(
+							JSON.stringify({
+								event: "INVESTOR_INSIGHTS_DEDUP_HIT",
+								reason_code: "FP_IDEMPOTENT_HIT_SKIP",
+								v: "CANONICAL_IDENTITY_BUILD_V3",
+								deal_id: dealId,
+								engine_version: engineVersion,
+								upstream_fingerprint: upstreamFingerprint,
+								existing_report_id: rows[0].id,
+								existing_status: rows[0].status,
+								ts: new Date().toISOString(),
+							})
+						);
+						// Stage 5 not run — prior run assumed complete; dedup skips reprocessing.
+						console.log(JSON.stringify({
+							event: "INVESTOR_INSIGHTS_STAGE5_STATUS",
 							deal_id: dealId,
-							engine_version: engineVersion,
-							upstream_fingerprint: upstreamFingerprint,
-							existing_report_id: rows[0].id,
-							existing_status: rows[0].status,
+							path: "dedup_skip",
+							stage5_status: "skipped",
+							reason: "dedup_hit_prior_run_assumed_complete",
 							ts: new Date().toISOString(),
-						})
-					);
-					// Stage 5 not run — prior run assumed complete; dedup skips reprocessing.
-					console.log(JSON.stringify({
-						event: "INVESTOR_INSIGHTS_STAGE5_STATUS",
-						deal_id: dealId,
-						path: "dedup_skip",
-						stage5_status: "skipped",
-						reason: "dedup_hit_prior_run_assumed_complete",
-						ts: new Date().toISOString(),
-					}));
-					return {
-						ok: true,
-						status: "dedup_skip",
-						reason_code: "FP_IDEMPOTENT_HIT_SKIP",
-						report_id: rows[0].id,
-						stage5_status: "skipped",
-					};
+						}));
+						return {
+							ok: true,
+							status: "dedup_skip",
+							reason_code: "FP_IDEMPOTENT_HIT_SKIP",
+							report_id: rows[0].id,
+							stage5_status: "skipped",
+						};
+					}
 				}
 				// Report predates canonical_identity feature — bypass dedup so this
 				// run refreshes the persisted render_package with the new field.

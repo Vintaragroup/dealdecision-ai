@@ -525,11 +525,18 @@ function capsTokenRatio(value: string): number {
 	return capsTokens / tokens.length;
 }
 
+// Edu-bio rejection pattern — shared by both hard-validation gates.
+// Matches biography/education fragments that should never appear as product/ICP copy.
+const EDU_BIO_REJECT_RE =
+	/\b(?:studied\s+at|bachelor[''s]*\s+(?:of|in|degree)|master[''s]*\s+(?:of|in|degree|science|arts)|m\.?b\.?a\.?|ph\.?d\.?\s+(?:from|in)|graduated\s+from|university\s+of|columbia\s+university|harvard\s+(?:university|business\s+school|law\s+school)|stanford\s+(?:university|business\s+school|law\s+school)|notre\s+dame|wharton\s+school|london\s+business\s+school|kellogg\s+school|technical\s+university\s+of|copenhagen\s+business\s+school)\b/i;
+
 function hardValidateProductSolution(value: string): string {
 	const s = sanitizeInlineText(value);
 	if (!s) return "";
 	if (hasSpacedLogoOcrArtifact(s)) return "";
 	if (/^(unknown|n\/?a|none)$/i.test(s.trim())) return "";
+	// Reject bio/education fragments.
+	if (EDU_BIO_REJECT_RE.test(s)) return "";
 	// Policy-only mandates are not product descriptions (e.g., "Medicaid requires...").
 	// Keep these out so downstream fallbacks can prefer actual solution statements.
 	if (/^\s*in\s+addition,\s*medicaid\s+requires\b/i.test(s)) return "";
@@ -549,6 +556,8 @@ function hardValidateMarketICP(value: string): string {
 	if (hasSpacedLogoOcrArtifact(s)) return "";
 	if (capsTokenRatio(s) > 0.4) return "";
 	if (/^(unknown|n\/?a|none)$/i.test(s.trim())) return "";
+	// Reject bio/education fragments (founder bios, degree lists, school names).
+	if (EDU_BIO_REJECT_RE.test(s)) return "";
 
 	// ICP lines are often noun phrases; allow "for/target/built for" without requiring a business verb.
 	const hasIcpSignal =

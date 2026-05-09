@@ -679,6 +679,103 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 	try {
 		// Phase 7: observability — log the analysis mode so first-pass jobs are clearly
 		// distinguishable in production logs without having to scan job payloads.
+
+		// ── Prereq readiness check ──────────────────────────────────────────────
+		// Evaluate upstream completion before committing to analysis work.
+		// Checks: (a) eligible extracted docs exist, (b) DPU rows exist for pitch-deck docs,
+		// (c) on force_refresh: DPU rows are newer than min_dpu_created_at.
+		// Emits ANALYZE_DEAL_PREREQ_PENDING when coverage is insufficient; still proceeds
+		// (fail-open) but the log makes timing issues visible without blocking the queue.
+		try {
+			const pool = getPool();
+			const [docsRes, dpuRes] = await Promise.all([
+				pool.query<{ id: string; status: string; type: string }>(
+					`SELECT id::text, status, COALESCE(type,'other') AS type
+					   FROM documents
+					  WHERE deal_id = $1::uuid AND deleted_at IS NULL`,
+					[dealId]
+				),
+				pool.query<{ document_id: string; dpu_count: string; latest_created_at: string | null }>(
+					`SELECT document_id::text,
+					        COUNT(*)::text AS dpu_count,
+					        MAX(created_at)::text AS latest_created_at
+					   FROM document_page_understanding
+					  WHERE deal_id = $1::uuid
+					  GROUP BY document_id`,
+					[dealId]
+				),
+			]);
+
+			const allDocs = docsRes.rows;
+			const dpuByDoc = new Map(dpuRes.rows.map((r) => [r.document_id, r]));
+			const extractedDocs = allDocs.filter((d) => d.status === "completed" || d.status === "ready_for_analysis");
+			const pitchDeckDocs = allDocs.filter((d) => d.type === "pitch_deck");
+			const pitchDecksWithDpu = pitchDeckDocs.filter((d) => dpuByDoc.has(d.id) && Number(dpuByDoc.get(d.id)!.dpu_count) > 0);
+
+			// For force_refresh: check that at least one DPU row is newer than min_dpu_created_at.
+			let dpuFreshForRefresh = true;
+			if (isForceRefresh && minDpuCreatedAt && dpuRes.rows.length > 0) {
+				const latestDpu = dpuRes.rows
+					.map((r) => r.latest_created_at ?? "")
+					.filter(Boolean)
+					.sort()
+					.pop() ?? "";
+				dpuFreshForRefresh = latestDpu >= minDpuCreatedAt;
+			}
+
+			const prereqReady =
+				extractedDocs.length > 0 &&
+				(pitchDeckDocs.length === 0 || pitchDecksWithDpu.length > 0) &&
+				dpuFreshForRefresh;
+
+			if (!prereqReady) {
+				console.log(
+					JSON.stringify({
+						event: "ANALYZE_DEAL_PREREQ_PENDING",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						is_force_refresh: isForceRefresh,
+						is_first_pass: isFirstPass,
+						all_docs_count: allDocs.length,
+						extracted_docs_count: extractedDocs.length,
+						pitch_deck_docs_count: pitchDeckDocs.length,
+						pitch_decks_with_dpu: pitchDecksWithDpu.length,
+						dpu_fresh_for_refresh: dpuFreshForRefresh,
+						min_dpu_created_at: minDpuCreatedAt,
+						ts: new Date().toISOString(),
+					})
+				);
+			} else {
+				const totalDpuRows = dpuRes.rows.reduce((s, r) => s + Number(r.dpu_count), 0);
+				console.log(
+					JSON.stringify({
+						event: "ANALYZE_DEAL_PREREQ_READY",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						is_force_refresh: isForceRefresh,
+						is_first_pass: isFirstPass,
+						extracted_docs_count: extractedDocs.length,
+						pitch_deck_docs_count: pitchDeckDocs.length,
+						pitch_decks_with_dpu: pitchDecksWithDpu.length,
+						total_dpu_rows: totalDpuRows,
+						min_dpu_created_at: minDpuCreatedAt,
+						ts: new Date().toISOString(),
+					})
+				);
+			}
+		} catch (prereqCheckErr) {
+			// Never block analysis on a prereq-check error — fail open.
+			console.warn(
+				JSON.stringify({
+					event: "ANALYZE_DEAL_PREREQ_CHECK_FAILED",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					reason: prereqCheckErr instanceof Error ? prereqCheckErr.message : String(prereqCheckErr),
+					ts: new Date().toISOString(),
+				})
+			);
+		}
+
 		console.log(
 			JSON.stringify({
 				event: "ANALYZE_DEAL_START",

@@ -450,12 +450,22 @@ const REJECT_BLOCK_RE: RegExp[] = [
 	// Biographical language — personal pronoun + copula signals a bio sentence, not a product
 	// tagline (e.g. "He is a CPA", "She was also a founder").
 	/\b(he|she)\s+(is|was|also)\s+(a|an)\b/i,
+	// Education / team biography language — these appear on Team slides, not Product/Market.
+	// E.g. "Michael studied at MIT", "Bachelor's degree in...", "PhD from Stanford".
+	/\b(?:studied\s+at|bachelor[''s]*\s+(?:of|in|degree)|master[''s]*\s+(?:of|in|degree|science|arts)|m\.?b\.?a\.?|ph\.?d\.?\s+(?:from|in)|graduated\s+from|university\s+of|columbia\s+university|harvard\s+(?:university|business\s+school|law\s+school)|stanford\s+(?:university|business\s+school|law\s+school)|notre\s+dame|wharton\s+school|london\s+business\s+school|kellogg\s+school)\b/i,
 	// PE/VC advisor activity — describes what an advisor does, not a product
 	// (e.g. "source deals, raise capital and provide value to dealmakers").
 	/\b(source[sd]?\s+deals?|raise\s+capital|source\s+capital)\b/i,
 	// Advisor employer bio language — "The firm partners with clients..." describes an advisor's
 	// employer (e.g. BCG), not the deal company's own product or service.
 	/\bthe\s+firm\s+(partners?|works?|helps?|delivers?|serves?|supports?|advises?)\b/i,
+	// Funding / use-of-funds / capital raise fragments — these describe the raise instrument, not
+	// the product or target market. E.g. "Climatic Funding: FO / EU Green Bonds income for the
+	// poorest...", "Use of Proceeds:", "Gross proceeds from the offering".
+	/\b(?:use\s+of\s+(?:funds?|proceeds?)|funding\s*:|proceeds?\s+(?:from|of)\s+(?:the\s+)?(?:offering|raise|investment|issuance))\b/i,
+	// Green finance instrument fragments — EU Green Bonds, Sustainability-Linked Bonds, etc.
+	// These appear in debt/financing slides; they describe the capital instrument, not the product.
+	/\b(?:EU\s+green\s+bonds?|green\s+bonds?\s+(?:income|standard|framework|principle)|sustainability[\s-]?linked\s+bonds?|climate\s+bonds?\s+initiative)\b/i,
 	// SPAC / merger / corporate transaction language — describes a securities transaction,
 	// not the company's product or market. "provide[s]" in SPAC offer language would otherwise
 	// match TAGLINE_VERB_RE and contaminate product_solution / market_icp candidates.

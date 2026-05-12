@@ -8,7 +8,7 @@ export type DimensionKey =
   | "team"
   | "use_of_funds_raise_logic";
 
-export function getStageWeightMatrix(stage: "pre_seed" | "seed" | "series_a" | "growth" | "unknown"): Record<DimensionKey, number> {
+export function getStageWeightMatrix(stage: "pre_seed" | "seed" | "series_a" | "growth" | "ipo" | "public_company" | "unknown"): Record<DimensionKey, number> {
   if (stage === "pre_seed") {
     return {
       team: 0.22,
@@ -46,6 +46,20 @@ export function getStageWeightMatrix(stage: "pre_seed" | "seed" | "series_a" | "
     };
   }
   if (stage === "growth") {
+    return {
+      financial_profile: 0.22,
+      traction: 0.16,
+      business_model: 0.14,
+      use_of_funds_raise_logic: 0.12,
+      market: 0.10,
+      team: 0.10,
+      solution_product: 0.08,
+      problem_clarity: 0.08,
+    };
+  }
+
+  // RC-004: IPO prep and public company — weight similarly to growth (financial-heavy)
+  if (stage === "ipo" || stage === "public_company") {
     return {
       financial_profile: 0.22,
       traction: 0.16,

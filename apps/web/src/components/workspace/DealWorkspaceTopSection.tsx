@@ -30,7 +30,7 @@ interface DealWorkspaceHeaderProps {
   raiseAmount: string;
   industry: string;
   score: number;
-  verdict: 'INVEST' | 'CONSIDER' | 'PASS' | 'HARD_PASS';
+  verdict: 'INVEST' | 'INVESTIGATE' | 'CONSIDER' | 'PASS' | 'HARD_PASS';
   primaryIssues: string[];
   blockers: number;
   concerns: number;
@@ -79,6 +79,25 @@ interface DealWorkspaceHeaderProps {
     /** Signal inference trace — present when inference layer ran. */
     inference?: VCScoringV2InferenceLike;
   } | null;
+  /**
+   * Venture Lens V1 — conviction layer on top of V2.
+   * Rendered as a second labeled score block adjacent to the circle.
+   * Pass 2 validation determines whether this becomes the hero score.
+   */
+  ventureLensV1?: {
+    venture_score: number;
+    conviction_level: 'LOW' | 'MEDIUM' | 'HIGH';
+    adjustment: number;
+    final_investment_score: number;
+    final_posture: 'PASS' | 'MONITOR' | 'INVESTIGATE' | 'HIGH_PRIORITY_DILIGENCE' | 'INVESTABLE';
+    breakdown: {
+      team: number;
+      market: number;
+      product: number;
+      traction: number;
+      upside: number;
+    };
+  } | null;
 }
 
 export function DealWorkspaceHeader({
@@ -112,18 +131,34 @@ export function DealWorkspaceHeader({
   scoreStrengthBullets = [],
   scoreWeaknessBullets = [],
   vcScoringV2,
+  ventureLensV1,
 }: DealWorkspaceHeaderProps) {
   
   const [hoveredTooltip, setHoveredTooltip] = useState<string | null>(null);
 
-  // Primary display score: VC composite when V2 is available, legacy evidence score as fallback.
-  const displayScore = vcScoringV2?.vc_composite_score ?? score;
+  // Primary display score: Venture Lens V3 > VC composite V2 > legacy evidence score.
+  const displayScore = ventureLensV1?.final_investment_score ?? vcScoringV2?.vc_composite_score ?? score;
+  // Active posture: prefer V3 final posture > V2 posture > null (falls back to legacy verdict)
+  const activePosture = ventureLensV1?.final_posture ?? vcScoringV2?.investment_posture ?? null;
+  // Hero tooltip content — changes by active score mode
+  const heroTooltipTitle = ventureLensV1
+    ? 'Final Investment Score'
+    : vcScoringV2
+    ? 'VC Composite'
+    : 'Evidence Score';
+  const heroTooltipBody = ventureLensV1
+    ? 'Final investment score derived from opportunity, confidence, and risk, then adjusted by the venture lens.'
+    : vcScoringV2
+    ? 'Composite score derived from opportunity, confidence, and risk.'
+    : 'Legacy evidence-weighted score based on available extracted deal signals.';
 
   // Verdict color scheme
   const getVerdictColor = () => {
     switch (verdict) {
       case 'INVEST':
         return darkMode ? 'text-emerald-400' : 'text-emerald-600';
+      case 'INVESTIGATE':
+        return darkMode ? 'text-amber-400' : 'text-amber-600';
       case 'CONSIDER':
         return darkMode ? 'text-blue-400' : 'text-blue-600';
       case 'PASS':
@@ -307,7 +342,7 @@ export function DealWorkspaceHeader({
           {/* Left: Circular Score */}
           <div
             className="flex-shrink-0 pr-0 md:pr-2 relative"
-            onMouseEnter={() => { if (vcScoringV2) setHoveredTooltip('vc-composite'); }}
+            onMouseEnter={() => setHoveredTooltip('hero-score')}
             onMouseLeave={() => setHoveredTooltip(null)}
           >
             <div data-testid="radial-score-chart" className="relative w-20 h-20 sm:w-24 sm:h-24">
@@ -340,26 +375,26 @@ export function DealWorkspaceHeader({
                 </span>
               </div>
             </div>
-            {/* Score label — posture when VC V2 is present, verdict when legacy */}
+            {/* Score label — posture when V3/V2 is present, verdict when legacy */}
             <div className={`text-center mt-1.5 text-xs font-semibold tracking-wide ${
-              vcScoringV2
-                ? (vcScoringV2.investment_posture === 'INVESTABLE' ? (darkMode ? 'text-emerald-400' : 'text-emerald-700')
-                  : vcScoringV2.investment_posture === 'HIGH_PRIORITY_DILIGENCE' ? (darkMode ? 'text-blue-400' : 'text-blue-700')
-                  : vcScoringV2.investment_posture === 'INVESTIGATE' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
-                  : vcScoringV2.investment_posture === 'MONITOR' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
+              activePosture
+                ? (activePosture === 'INVESTABLE' ? (darkMode ? 'text-emerald-400' : 'text-emerald-700')
+                  : activePosture === 'HIGH_PRIORITY_DILIGENCE' ? (darkMode ? 'text-blue-400' : 'text-blue-700')
+                  : activePosture === 'INVESTIGATE' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
+                  : activePosture === 'MONITOR' ? (darkMode ? 'text-amber-400' : 'text-amber-600')
                   : (darkMode ? 'text-red-400' : 'text-red-700'))
                 : getVerdictColor()
             }`}>
-              {vcScoringV2
-                ? ({ INVESTABLE: 'Investable', HIGH_PRIORITY_DILIGENCE: 'High Priority', INVESTIGATE: 'Investigate', MONITOR: 'Monitor', PASS: 'Pass' } as Record<string, string>)[vcScoringV2.investment_posture] ?? vcScoringV2.investment_posture
+              {activePosture
+                ? ({ INVESTABLE: 'Investable', HIGH_PRIORITY_DILIGENCE: 'High Priority', INVESTIGATE: 'Investigate', MONITOR: 'Monitor', PASS: 'Pass' } as Record<string, string>)[activePosture] ?? activePosture
                 : verdict}
             </div>
             {/* Score caption */}
             <div className={`text-center mt-0.5 text-[10px] ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
-              {vcScoringV2 ? 'VC Composite Score' : 'Evidence Score'}
+              {ventureLensV1 ? 'Final Investment Score' : vcScoringV2 ? 'VC Composite' : 'Evidence Score'}
             </div>
-            {/* Demoted evidence score — visible only when V2 composite is primary */}
-            {vcScoringV2 && (
+            {/* Demoted evidence score — visible when V3 or V2 is primary */}
+            {(ventureLensV1 || vcScoringV2) && (
               <div
                 data-testid="evidence-score-secondary"
                 className={`text-center mt-0.5 text-[10px] ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}
@@ -367,15 +402,16 @@ export function DealWorkspaceHeader({
                 Evidence: {score}
               </div>
             )}
-            {/* VC composite formula tooltip */}
-            {hoveredTooltip === 'vc-composite' && (
+            {/* Hero score tooltip — content adapts to active score mode */}
+            {hoveredTooltip === 'hero-score' && (
               <div
-                data-testid="vc-composite-tooltip"
-                className={`absolute left-1/2 -translate-x-1/2 top-full mt-1 px-2.5 py-1.5 rounded text-[11px] whitespace-nowrap z-20 ${
+                data-testid="hero-score-tooltip"
+                className={`absolute left-1/2 -translate-x-1/2 top-full mt-1 px-2.5 py-1.5 rounded text-[11px] z-20 w-52 ${
                   darkMode ? 'bg-gray-900 text-gray-300 border border-white/10' : 'bg-white text-gray-700 border border-gray-200 shadow-lg'
                 }`}
               >
-                50% Opportunity · 25% Confidence · 25% (100 − Risk)
+                <div className="font-semibold mb-0.5">{heroTooltipTitle}</div>
+                <div>{heroTooltipBody}</div>
               </div>
             )}
           </div>
@@ -495,6 +531,54 @@ export function DealWorkspaceHeader({
                 {inferenceSummary}
               </div>
             )}
+          </div>
+        );
+      })()}
+
+      {/* LAYER 2c — VENTURE LENS (conditional — only when available) */}
+      {ventureLensV1 && (() => {
+        const POSTURE_LABELS: Record<string, string> = {
+          INVESTABLE: 'Investable',
+          HIGH_PRIORITY_DILIGENCE: 'High Priority Diligence',
+          INVESTIGATE: 'Investigate',
+          MONITOR: 'Monitor',
+          PASS: 'Pass',
+        };
+        const postureColorMap: Record<string, string> = {
+          INVESTABLE: darkMode ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' : 'text-emerald-700 bg-emerald-50 border-emerald-200',
+          HIGH_PRIORITY_DILIGENCE: darkMode ? 'text-blue-400 bg-blue-500/10 border-blue-500/30' : 'text-blue-700 bg-blue-50 border-blue-200',
+          INVESTIGATE: darkMode ? 'text-amber-400 bg-amber-500/10 border-amber-500/30' : 'text-amber-700 bg-amber-50 border-amber-200',
+          MONITOR: darkMode ? 'text-amber-400/80 bg-amber-500/5 border-amber-500/20' : 'text-amber-600 bg-amber-50 border-amber-200',
+          PASS: darkMode ? 'text-red-400 bg-red-500/10 border-red-500/30' : 'text-red-700 bg-red-50 border-red-200',
+        };
+        const convictionColorMap: Record<string, string> = {
+          HIGH: darkMode ? 'text-emerald-400' : 'text-emerald-700',
+          MEDIUM: darkMode ? 'text-amber-400' : 'text-amber-600',
+          LOW: darkMode ? 'text-red-400' : 'text-red-700',
+        };
+        const postureClass = postureColorMap[ventureLensV1.final_posture] ?? (darkMode ? 'text-gray-400 bg-gray-500/10 border-gray-500/20' : 'text-gray-600 bg-gray-100 border-gray-200');
+        const convictionClass = convictionColorMap[ventureLensV1.conviction_level] ?? (darkMode ? 'text-gray-400' : 'text-gray-600');
+        const { team, market, product, traction, upside } = ventureLensV1.breakdown;
+        return (
+          <div
+            data-testid="venture-lens-strip"
+            className={`px-4 py-3 sm:px-6 border-b ${darkMode ? 'border-white/10 bg-white/2' : 'border-gray-200/50 bg-gray-50/40'}`}
+          >
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+              <span className={`font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>Venture Lens</span>
+              <span className={`px-2.5 py-1 rounded border text-xs font-bold ${postureClass}`}>
+                {POSTURE_LABELS[ventureLensV1.final_posture] ?? ventureLensV1.final_posture}
+              </span>
+              <span className={`hidden sm:inline ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}>|</span>
+              <span className={darkMode ? 'text-gray-500' : 'text-gray-500'}>Score</span>
+              <span className={`font-bold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{ventureLensV1.final_investment_score}</span>
+              <span className={`hidden sm:inline ${darkMode ? 'text-gray-700' : 'text-gray-400'}`}>·</span>
+              <span className={darkMode ? 'text-gray-500' : 'text-gray-500'}>Conviction</span>
+              <span className={`font-semibold ${convictionClass}`}>{ventureLensV1.conviction_level}</span>
+            </div>
+            <div className={`mt-1.5 text-[11px] ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+              Team {team} · Market {market} · Product {product} · Traction {traction} · Upside {upside}
+            </div>
           </div>
         );
       })()}

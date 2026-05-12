@@ -8,6 +8,27 @@
     "delivery_model": "SaaS"
   },
   "financials": {
-    "revenue": 8000
+    "_note": "Updated 2026-04-04 per source-doc audit. Docs: Financials - WebMax Valuation and Allocation of funds.xlsx, PD - WebMax Investor Deck 2026.pdf",
+    "current_state": {
+      "revenue":   { "value": 8000, "source_kind": "xlsx", "evidence": "XLSX revenue scenario showing $8K/month for September–November" },
+      "burn_rate": { "value": 32000, "source_kind": "xlsx", "evidence": "XLSX operating expenses — flat $32K/month across all periods" }
+    },
+    "known_noise": {
+      "zero_revenue_facts": { "evidence": "XLSX contains a second revenue series with $0 values — likely pre-launch scenario row; should NOT win truth-layer over $8K series" }
+    },
+    "raise": { "value_min": 2000000, "value_max": 4000000, "evidence": "Deck says '$2M-$4M' range — system captures only $2M" },
+    "validation": {
+      "extraction_checks": [
+        { "metric_key": "revenue",   "expected_value": 8000,  "tolerance_pct": 15, "allowed_source_kinds": ["xlsx"], "note": "Non-zero XLSX revenue must be extracted" },
+        { "metric_key": "burn_rate", "expected_value": 32000, "tolerance_pct": 15, "allowed_source_kinds": ["xlsx", "structured_derived", "unknown"], "note": "Monthly burn must be extracted" }
+      ],
+      "noise_checks": [
+        { "label": "duplicate zero revenue for same period", "sql_filter": "metric_key = 'revenue' AND value = 0 AND source_kind = 'xlsx' AND period_label ILIKE '%september%'", "expected_count": 0, "failure_layer": "truth_resolution", "description": "$0 xlsx revenue fact for September should be suppressed in favour of $8K fact" }
+      ],
+      "report_checks": [
+        { "label": "current_state.revenue should be $8K not $0", "report_path": ["financial_breakdown_v1", "current_state", "revenue"], "expected_value": 8000, "tolerance_pct": 15, "failure_layer": "truth_resolution" },
+        { "label": "structured_summary.revenue",                  "report_path": ["structured_summary", "revenue", "value", "amount"], "expected_value": 8000, "tolerance_pct": 15 }
+      ]
+    }
   }
 }

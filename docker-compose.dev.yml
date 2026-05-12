@@ -128,7 +128,8 @@ services:
       FUNDABILITY_SHADOW_MODE: ${FUNDABILITY_SHADOW_MODE:-1}
       FUNDABILITY_SOFT_CAPS: ${FUNDABILITY_SOFT_CAPS:-1}
       FUNDABILITY_HARD_GATES: ${FUNDABILITY_HARD_GATES:-0}
-      DEBUG_PHASE1_OVERVIEW_V2: "1"
+      DDAI_INTELLIGENCE_LAYER_ENABLED: ${DDAI_INTELLIGENCE_LAYER_ENABLED:-0}
+      DDAI_INTELLIGENCE_ROLLOUT_MODE: ${DDAI_INTELLIGENCE_ROLLOUT_MODE:-off}
     volumes:
       - ./apps/worker/src:/app/apps/worker/src
       - ./apps/worker/package.json:/app/apps/worker/package.json
@@ -140,6 +141,8 @@ services:
       - ./tsconfig.base.json:/app/tsconfig.base.json
       - ./pnpm-lock.yaml:/app/pnpm-lock.yaml
       - dealdecision_uploads:/app/uploads
+      # Policy prompt artifacts for GovernLLM — avoids image rebuild when files change.
+      - ./artifacts:/app/apps/worker/artifacts:ro
     depends_on:
       postgres:
         condition: service_healthy

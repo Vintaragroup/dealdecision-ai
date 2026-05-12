@@ -108,6 +108,9 @@ RUN apt-get update \
 COPY --from=build /app/apps/worker/dist ./dist
 COPY --from=build /app/apps/worker/package.json ./package.json
 RUN mkdir -p /app/artifacts ./artifacts
+# Policy prompt artifacts required by GovernLLM at runtime.
+# These are loaded by loadPolicyPromptRuntimePacket() from /app/artifacts.
+COPY artifacts/DealDecision-*.md /app/artifacts/
 
 # pnpm workspace runtime deps (symlinks + .pnpm store live under /app/node_modules)
 COPY --from=deps /app/node_modules /app/node_modules

@@ -1,0 +1,225 @@
+{
+  "deal_id": "5c8c7d6e-c992-4be7-8b10-268eac36f663",
+  "deal_name": "Palm",
+  "mode": "deal_understanding_audit",
+  "source_type": "pdf_only",
+  "_synthetic": false,
+  "ground_truth": {
+    "what_company_does": "A golf lifestyle brand that designs and sells apparel and accessories for modern golfers through eCommerce and retail channels.",
+    "business_model": "Consumer brand / eCommerce + wholesale retail",
+    "revenue_model": "Revenue from direct-to-consumer online sales, wholesale distribution to retailers, and partnerships/licensing",
+    "go_to_market": "Digital-first acquisition via paid media, email/SMS marketing, influencer partnerships, and expansion into wholesale retail channels",
+    "target_customer": "Male golfers aged 25–44 with higher income, expanding into women and youth segments",
+    "traction_summary": "Approximately $2.75M revenue in 2024 with strong growth from prior years, 134K customer database, and $800K revenue driven by email/SMS marketing",
+    "market_positioning": "Modern golf lifestyle brand targeting younger and style-conscious golfers as the market shifts away from traditional brands",
+    "competitive_differentiation": "Strong brand identity, digital-first growth engine, influencer partnerships, and focus on lifestyle positioning beyond traditional golf apparel",
+    "key_strengths": [
+      "Demonstrated revenue traction and growth",
+      "Strong digital marketing engine with measurable performance",
+      "Large and engaged first-party customer database",
+      "Clear expansion path into wholesale and new segments",
+      "Brand aligned with evolving golf demographics"
+    ],
+    "key_risks": [
+      "Low or negative profitability with increasing burn",
+      "Heavy reliance on marketing spend for growth",
+      "Inventory and supply chain complexity",
+      "Highly competitive apparel market",
+      "Aggressive growth projections dependent on wholesale success"
+    ],
+    "investor_relevance_notes": [
+      "This is a consumer brand scaling from DTC into wholesale",
+      "Key driver of value is brand + distribution expansion",
+      "Marketing efficiency and CAC/LTV dynamics are critical",
+      "Wholesale execution will determine next growth phase",
+      "Capital is being used primarily for marketing and hiring"
+    ]
+  },
+  "validation": {
+    "_schema": "deal_understanding_audit_v1",
+    "understanding_checks": [
+      {
+        "label": "business_model identifies consumer brand / retail",
+        "field": "business_model",
+        "check_type": "contains_any",
+        "expected_terms": [
+          "brand",
+          "ecommerce",
+          "retail",
+          "consumer",
+          "wholesale"
+        ],
+        "layer": "L1-FIDELITY"
+      },
+      {
+        "label": "what_company_does mentions apparel, accessories, or golf",
+        "field": "what_company_does",
+        "check_type": "contains_any",
+        "expected_terms": [
+          "apparel",
+          "accessories",
+          "golf",
+          "brand",
+          "lifestyle"
+        ],
+        "layer": "L1-FIDELITY"
+      },
+      {
+        "label": "solution identifies a brand, product, or lifestyle offering",
+        "field": "solution",
+        "check_type": "contains_any",
+        "expected_terms": [
+          "apparel",
+          "golf",
+          "brand",
+          "lifestyle",
+          "accessories"
+        ],
+        "layer": "L1-FIDELITY"
+      },
+      {
+        "label": "risks surface marketing, competitive, or burn-related concerns",
+        "field": "risks",
+        "check_type": "contains_any",
+        "expected_terms": [
+          "marketing",
+          "burn",
+          "competitive",
+          "wholesale",
+          "inventory"
+        ],
+        "layer": "L2-UNDERSTANDING"
+      },
+      {
+        "label": "investment_signals is populated",
+        "field": "investment_signals",
+        "check_type": "not_empty",
+        "layer": "L3-USEFULNESS"
+      }
+    ],
+    "consistency_checks": [
+      {
+        "label": "business_model and revenue_model are both populated",
+        "check_type": "both_non_empty",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "layer": "L2-UNDERSTANDING"
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "label": "business_model does not incorrectly claim SaaS",
+        "field": "business_model",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": [
+          "saas",
+          "subscription software",
+          "platform revenue"
+        ],
+        "layer": "L4-HALLUCINATION"
+      },
+      {
+        "label": "traction_summary does not claim inflated revenue projections as current",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": [
+          "$4.5m arr current",
+          "$7.5m current revenue"
+        ],
+        "layer": "L4-HALLUCINATION"
+      },
+      {
+        "label": "solution does not misclassify as SaaS, drug testing, or medical device",
+        "field": "solution",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": [
+          "saas platform",
+          "drug testing",
+          "lead exposure",
+          "diagnostic"
+        ],
+        "layer": "L4-HALLUCINATION"
+      }
+    ],
+    "completeness_checks": [
+      {
+        "label": "what_company_does is populated",
+        "field": "what_company_does",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "business_model is populated",
+        "field": "business_model",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "revenue_model is populated",
+        "field": "revenue_model",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "go_to_market is populated",
+        "field": "go_to_market",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "target_customer is populated",
+        "field": "target_customer",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "traction_summary is populated",
+        "field": "traction_summary",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "market_positioning is populated",
+        "field": "market_positioning",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "competitive_differentiation is populated",
+        "field": "competitive_differentiation",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "problem is populated",
+        "field": "problem",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "solution is populated",
+        "field": "solution",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "why_now is populated",
+        "field": "why_now",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "risks is populated",
+        "field": "risks",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "investment_signals is populated",
+        "field": "investment_signals",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      }
+    ]
+  }
+}

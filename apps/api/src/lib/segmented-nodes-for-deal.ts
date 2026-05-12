@@ -5,6 +5,12 @@ import { assessTextQuality, sanitizeForDisplay } from "./text-quality";
 
 const asNonEmptyString = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
 
+// Patterns used by the page_text bullet fallback to pre-filter garbage lines before
+// normalizeAndFilterLines is applied.  These catch SEC/legal headers and balance-sheet
+// table rows that should never surface as product/market bullet candidates.
+const PAGE_TEXT_SEC_HEADER_RE = /\b(?:securities\s+and\s+exchange\s+commission|exhibit\s+\d|form\s+[fs]-?\d|pursuant\s+to\s+section|annual\s+report\s+on\s+form|proxy\s+statement)\b/i;
+const PAGE_TEXT_BALANCE_SHEET_RE = /\b(?:term\s+loan|net\s+of\s+discounts?|total\s+liabilities|total\s+assets|convertible\s+notes?\s+payable|derivative\s+warrant|lease\s+liabilities|stockholders.{0,5}equity)\b/i;
+
 function isUuid(value: unknown): value is string {
   return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -145,25 +151,56 @@ function bulletLinesFromPayload(payload: any): { kept: string[]; dropped: Droppe
   const structured = payload?.structured ?? null;
   const textBlocks = payload?.text_blocks ?? null;
   const bullets: unknown = Array.isArray(structured?.bullets) ? structured.bullets : Array.isArray(textBlocks?.bullets) ? textBlocks.bullets : null;
-  if (!Array.isArray(bullets)) return { kept: [], dropped: [] };
 
-  const rawLines: string[] = [];
-  for (const b of bullets) {
-    const s = asNonEmptyString(b);
-    if (!s) continue;
-    // Split multi-line bullets and inline bullet separators.
-    for (const piece of s.split(/\r?\n/g)) {
-      const trimmed = piece.trim();
-      if (!trimmed) continue;
-      if (trimmed.includes("•")) {
-        rawLines.push(...trimmed.split(/\s*•\s*/g));
-      } else {
-        rawLines.push(trimmed);
+  // Primary path: use structured bullets when present.
+  if (Array.isArray(bullets) && bullets.length > 0) {
+    const rawLines: string[] = [];
+    for (const b of bullets) {
+      const s = asNonEmptyString(b);
+      if (!s) continue;
+      // Split multi-line bullets and inline bullet separators.
+      for (const piece of s.split(/\r?\n/g)) {
+        const trimmed = piece.trim();
+        if (!trimmed) continue;
+        if (trimmed.includes("•")) {
+          rawLines.push(...trimmed.split(/\s*•\s*/g));
+        } else {
+          rawLines.push(trimmed);
+        }
       }
     }
+    return normalizeAndFilterLines(rawLines);
   }
 
-  return normalizeAndFilterLines(rawLines);
+  // Fallback: derive candidate lines from page_text when structured bullets are absent.
+  // This recovers narrative content from text-PDF pages and OCR-heavy decks that lack
+  // LLM-structured bullets, enabling downstream segment classification and summary building.
+  // Kept conservative: minimum line length, SEC/balance-sheet pre-filter, 20-line cap.
+  const pageText = typeof payload?.page_text === "string" ? payload.page_text.trim() : "";
+  if (!pageText) return { kept: [], dropped: [] };
+
+  // Pre-strip inline copyright/confidentiality footers that PPTX OCR embeds in slide text.
+  // Pattern: "© 2023 COMPANY NAME - PROPRIETARY INFORMATION – CONFIDENTIAL".
+  // We replace the footer with a double-space so the subsequent \s{2,} split can
+  // cleanly separate content that appeared before and after the footer in the original.
+  const stripped = pageText
+    .replace(/©[^\n]{0,150}?(?:CONFIDENTIAL|PROPRIETARY\s+INFORMATION)/gi, "  ")
+    .trim();
+  if (!stripped) return { kept: [], dropped: [] };
+
+  // Split on real newlines OR on 2+ consecutive spaces (OCR column / region boundaries).
+  // Also cap line length at 240 chars so downstream consumers (bestBullet maxLen=260) can
+  // use the resulting lines. Lines longer than 240 chars are usually concatenated SEC or
+  // legal prose that the SEC_HEADER and BALANCE_SHEET filters will catch anyway.
+  const candidates = stripped
+    .split(/\r?\n|\s{2,}/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 25 && s.length <= 240)
+    .filter((s) => !PAGE_TEXT_SEC_HEADER_RE.test(s))
+    .filter((s) => !PAGE_TEXT_BALANCE_SHEET_RE.test(s))
+    .slice(0, 20);
+
+  return normalizeAndFilterLines(candidates);
 }
 
 function bulletsFromPayload(payload: any, maxBullets = 12): string[] {

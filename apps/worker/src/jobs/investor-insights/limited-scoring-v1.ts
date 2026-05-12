@@ -1,3 +1,10 @@
+// TODO: deprecated — scheduled for review after canonical decision unification.
+// LimitedScoringV1 currently runs in Stage 2 of the investor-insights pipeline.
+// Its computed scores (completeness, deal terms, traction, market) are NOT included
+// in canonical_decision.source_breakdown. After unification, evaluate whether these
+// categories can be absorbed into T1 (overall_score) or retired.
+// Ref: packages/core/src/scoring/canonical-decision.ts — CanonicalDecisionInput
+
 /**
  * Limited Scoring MVP — Conservative, deterministic, evidence-grounded.
  *

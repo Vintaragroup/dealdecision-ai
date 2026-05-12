@@ -1,0 +1,20 @@
+{
+  "fetchedAt": "2026-04-06T13:24:07.458Z",
+  "requestUrl": "http://localhost:9001/api/v1/deals/05042123-6c4f-4dcb-9131-a95fce3cd28c/understanding",
+  "ok": true,
+  "status": 200,
+  "statusText": "OK",
+  "body": {
+    "understanding": {
+      "what_company_does": "HEAL [OCR page 12] WHY TOXYScreen IS THE SOLUTION ® NON-INVASIVE EASE OF COLLECTION.",
+      "business_model": "Medical / diagnostic testing",
+      "revenue_model": "Medical / diagnostic testing",
+      "go_to_market": "HEAL [OCR page 12] WHY TOXYScreen IS THE SOLUTION ® NON-INVASIVE EASE OF COLLECTION.",
+      "target_customer": "HEAL [OCR page 12] WHY TOXYScreen IS THE SOLUTION ® NON-INVASIVE EASE OF COLLECTION.",
+      "traction_summary": "Growth mentioned",
+      "market_positioning": "The current deal overview indicates a product solution related to the TOXYScreen, but lacks clarity on its market, ideal customer profile (ICP), and business model. The absence of these fundamental details raises concerns about the viability and potential success of the offering. Additionally, the deal type is categorized as 'other,' which does not provide further insights into the nature of the investment opportunity.",
+      "competitive_differentiation": "Raise: Unknown.",
+      "investment_signals": "Primary risk is validation and adoption for this regulated medical testing workflow. Distribution likely requires partnerships with healthcare systems and public agencies."
+    }
+  }
+}

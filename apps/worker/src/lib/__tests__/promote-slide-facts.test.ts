@@ -57,6 +57,97 @@ describe("promote slide facts", () => {
 		}
 	});
 
+	// ── RC-S6-003: RaaS over Licensing ────────────────────────────────────────────
+	it("RC-S6-003: resolves Robot-as-a-Service (RaaS) when deck has explicit RaaS language, NOT Licensing", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		// PAI-style deck: primary model is RaaS; licensing refers to IP input, not revenue model.
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Business Model",
+				"Robot as a Service (RaaS): customers lease humanoid robots at $75K–$100K+ per year.",
+				"We own and manage the asset. RaaS drives recurring revenue.",
+				"Technology: licensed NASA's Robonaut 2 Hand Patent Portfolio as technical foundation.",
+				"Licensing of IP is an input to our product, not our revenue model.",
+			].join("\n")
+		);
+		expect(bm).toBeTruthy();
+		expect(bm?.value_json?.display).toBe("Robot-as-a-Service (RaaS)");
+		expect(bm?.value_json?.display).not.toBe("Licensing");
+		expect((bm?.value_json?.scores?.raas ?? 0)).toBeGreaterThanOrEqual(5);
+	});
+
+	it("RC-S6-003: RaaS keyword alone is sufficient to override Licensing classification", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Revenue Model",
+				"RaaS subscription: per-robot fee billed monthly. Customers do not own hardware.",
+				"IP licensing from third-party patents enables product capabilities.",
+			].join("\n")
+		);
+		expect(bm).toBeTruthy();
+		expect(bm?.value_json?.display).toBe("Robot-as-a-Service (RaaS)");
+	});
+
+	// ── RC-S6-001: Enterprise tech OCR-noise guard ─────────────────────────────
+	it("RC-S6-001: does not classify as DTC Ecommerce when only ecom-mechanics noise present with enterprise signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		// Weavstra-style OCR noise: enterprise deck with spurious "orders" / "customers" from OCR.
+		// No explicit DTC keyword ("DTC", "e-commerce", "Shopify", "online store") present.
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Enterprise AI Platform",
+				"Sovereign AI infrastructure for government and enterprise customers.",
+				"Orders processed securely via our quantum-grade middleware layer.",
+				"Deep-tech data center AI platform with embedded compliance.",
+				"B2B enterprise software licensing and deployment pipeline.",
+			].join("\n")
+		);
+		// Must not resolve to DTC Ecommerce — "orders" and "customers" are noise in this context.
+		if (bm !== null) {
+			expect(bm.value_json?.display).not.toBe("DTC Ecommerce");
+			expect((bm.value_json?.diagnostics?.applied_guards ?? [])).toContain(
+				"enterprise_tech_blocks_mechanics_only_dtc"
+			);
+		}
+	});
+
+	it("RC-S6-001: DTC classification survives when explicit DTC keyword is present alongside enterprise signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		// Explicit "DTC e-commerce" keyword in deck — enterprise guard must NOT suppress this.
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Go to Market",
+				"DTC e-commerce storefront for enterprise buyers purchasing direct.",
+				"Enterprise software enabling the checkout flow.",
+			].join("\n")
+		);
+		// Has explicit DTC keyword — enterprise guard should not fire.
+		expect(bm).toBeTruthy();
+		expect(bm?.value_json?.display).toBe("DTC Ecommerce");
+	});
+
+	it("suppresses standalone Wholesale/Retail label for marketplace/fintech channel language", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Go to Market",
+				"Distribution channels include affiliate and partner channels",
+				"Two-sided marketplace with platform fees and commission model",
+				"Consumer lending platform for personal finance users",
+			].join("\n")
+		);
+
+		// RC-007: this corpus has marketplace/fintech context but no explicit "wholesale" token.
+		// It previously leaked into a standalone Wholesale/Retail label from generic channel terms.
+		expect(bm).toBeNull();
+	});
+
 	it("real_estate_underwriting maps channel language to preferred-equity real-estate model", async () => {
 		const { promoteSlideFactsFromDocumentPageUnderstanding } = await import("../promote-slide-facts.js");
 
@@ -597,5 +688,60 @@ describe("promote slide facts", () => {
 		// Should extract raise terms from the PDF page using the resolved_slide_type fallback boost.
 		const raiseFact = res.facts.find((f: any) => f?.fact_type === "raise_terms_v1");
 		expect(raiseFact).toBeTruthy();
+	});
+});
+// ─── P5 Phase 3 — has_real_estate_signals regex hardening ────────────────────
+
+describe("Phase 3: has_real_estate_signals — generic lending terms must not trigger real-estate override", () => {
+	it("car-finance text with 'ltv' does NOT set has_real_estate_signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		// Carmoola-like text: LTV is a car-loan metric, not a real estate signal.
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Go-to-Market",
+				"Direct consumer car financing platform.",
+				"We offer DTC auto loans at competitive LTV ratios.",
+				"Consumers apply via mobile and receive instant approvals.",
+			].join("\n")
+		);
+
+		// has_real_estate_signals must NOT fire on LTV alone
+		expect((bm?.value_json as any)?.diagnostics?.has_real_estate_signals).toBe(false);
+		// Display must NOT be 'Real estate structured investment'
+		expect(bm?.value_json?.display).not.toBe("Real estate structured investment");
+	});
+
+	it("car-finance text with 'dscr' does NOT set has_real_estate_signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Business Model",
+				"Consumer lending platform with DSCR-based risk scoring.",
+				"Direct-to-consumer subscriptions for credit monitoring.",
+				"ARR of $2.1M across 5,000 subscribers.",
+			].join("\n")
+		);
+
+		expect((bm?.value_json as any)?.diagnostics?.has_real_estate_signals).toBe(false);
+	});
+
+	it("text with unambiguous 'real estate' DOES set has_real_estate_signals", async () => {
+		const { __test__ } = await import("../promote-slide-facts.js");
+
+		const bm = __test__.inferBusinessModelFromText(
+			[
+				"Investment Strategy",
+				"Multifamily real estate investment with preferred equity tranches.",
+				"NOI yield targeting 6-8% cap rate.",
+			].join("\n")
+		);
+
+		// Real estate specific terms should still trigger the flag
+		if (bm) {
+			expect((bm.value_json as any)?.diagnostics?.has_real_estate_signals).toBe(true);
+		}
+		// Note: bm may be null if no primary model label is selected for this real-estate text
 	});
 });

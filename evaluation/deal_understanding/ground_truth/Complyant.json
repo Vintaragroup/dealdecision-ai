@@ -1,0 +1,120 @@
+{
+  "deal_name": "Complyant",
+  "deal_id": "cc1ddde7-2553-42ed-bc98-09e52c4137cd",
+  "source_type": "startup_pitch_deck",
+  "source_docs": [
+    "ComplYant - 4M - 2022.pdf"
+  ],
+  "ground_truth": {
+    "what_company_does": "Business tax compliance software that helps small businesses manage filings, reminders, payments, and tax workflows.",
+    "problem": "Small businesses struggle to track and complete multiple business tax obligations, leading to missed filings and large penalties.",
+    "solution": "A digital assistant for business tax compliance with reminders, wallet/savings, filing and payment tools, and accountant access.",
+    "why_now": "There is a large unmet business tax compliance burden and substantial penalties from missed filings.",
+    "business_model": "B2B / SMB software",
+    "revenue_model": "Software subscriptions / paid subscribers and accountant-access-driven monetization.",
+    "go_to_market": "Cold outreach, state data access, small business events, SEO, tax workshops, and accountant affiliate programs.",
+    "target_customer": "Small businesses, freelancers, and new business owners needing help with tax compliance.",
+    "traction_summary": "Pre-seed startup with milestones including Techstars backing, partnerships, grant funding, and 200th paid subscriber.",
+    "market_positioning": "Focused business-tax compliance layer distinct from broader bookkeeping or generic tax tools.",
+    "competitive_differentiation": "Tracks multiple tax types and offers reminders, tax savings wallet, tax payment processing, property tax tools, license management, and annual report management.",
+    "risks": "Early-stage execution risk, limited scale, uncertain CAC efficiency, product adoption risk, and need to prove retention and monetization."
+  },
+  "validation": {
+    "_schema": "deal_understanding_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-COM-001",
+        "layer": "L1-FIDELITY",
+        "field": "problem",
+        "check_type": "contains_any",
+        "expected_terms": ["tax", "filings", "penalties", "obligations", "small businesses"]
+      },
+      {
+        "id": "L1-COM-002",
+        "layer": "L1-FIDELITY",
+        "field": "solution",
+        "check_type": "contains_any",
+        "expected_terms": ["digital assistant", "reminders", "wallet", "filing", "accountant access"]
+      },
+      {
+        "id": "L1-COM-003",
+        "layer": "L1-FIDELITY",
+        "field": "business_model",
+        "check_type": "contains_any",
+        "expected_terms": ["software", "saas", "b2b", "smb", "subscriber"]
+      },
+      {
+        "id": "L1-COM-004",
+        "layer": "L1-FIDELITY",
+        "field": "go_to_market",
+        "check_type": "contains_any",
+        "expected_terms": ["seo", "events", "outreach", "workshops", "affiliate"]
+      },
+      {
+        "id": "L1-COM-005",
+        "layer": "L1-FIDELITY",
+        "field": "traction_summary",
+        "check_type": "contains_any",
+        "expected_terms": ["techstars", "partnerships", "paid subscriber", "grant", "pre-seed"]
+      },
+      {
+        "id": "L1-COM-006",
+        "layer": "L1-FIDELITY",
+        "field": "competitive_differentiation",
+        "check_type": "contains_any",
+        "expected_terms": ["deadline tracking", "wallet", "sales tax", "license", "annual report"]
+      }
+    ],
+    "consistency_checks": [
+      {
+        "id": "L2-COM-007",
+        "layer": "L2-UNDERSTANDING",
+        "check_type": "term_alignment",
+        "field_a": "problem",
+        "field_b": "solution",
+        "expected_shared_terms": ["tax", "filing", "business", "compliance"],
+        "min_shared": 1
+      },
+      {
+        "id": "L2-COM-008",
+        "layer": "L2-UNDERSTANDING",
+        "check_type": "term_alignment",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "expected_shared_terms": ["software", "subscription", "paid", "saas"],
+        "min_shared": 1
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "id": "L4-COM-009",
+        "layer": "L4-HALLUCINATION",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["28m arr", "350m financed", "profitability", "enterprise sales at scale"]
+      },
+      {
+        "id": "L4-COM-010",
+        "layer": "L4-HALLUCINATION",
+        "field": "revenue_model",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["interchange", "lending spread", "media rights", "real estate lease"]
+      }
+    ],
+    "completeness_checks": [
+      { "id": "L5-COM-011", "layer": "L5-COMPLETENESS", "field": "problem", "check_type": "not_empty" },
+      { "id": "L5-COM-012", "layer": "L5-COMPLETENESS", "field": "solution", "check_type": "not_empty" },
+      { "id": "L5-COM-013", "layer": "L5-COMPLETENESS", "field": "business_model", "check_type": "not_empty" },
+      { "id": "L5-COM-014", "layer": "L5-COMPLETENESS", "field": "go_to_market", "check_type": "not_empty" },
+      { "id": "L5-COM-015", "layer": "L5-COMPLETENESS", "field": "traction_summary", "check_type": "not_empty" },
+      { "id": "L5-COM-016", "layer": "L5-COMPLETENESS", "field": "risks", "check_type": "not_empty" }
+    ]
+  },
+  "investor_relevance_notes": [
+    "This is an early-stage compliance software business, not a mature fintech platform.",
+    "A strong understanding should separate market size and penalty statistics from actual company traction.",
+    "Important diligence areas include CAC efficiency, retention, accountant-channel adoption, and monetization of paid subscribers.",
+    "The system should identify the product as tax compliance workflow software for SMBs, not generic consumer tax filing.",
+    "Use of funds and milestones should be recognized as forward-looking, not current financial performance."
+  ]
+}

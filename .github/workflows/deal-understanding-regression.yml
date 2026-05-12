@@ -1,0 +1,180 @@
+name: deal-understanding-regression
+
+on:
+  pull_request:
+    paths:
+      - 'apps/api/**'
+      - 'apps/worker/**'
+      - 'packages/core/**'
+      - 'evaluation/deal_understanding/**'
+      - 'scripts/deal-understanding-regression.ts'
+      - '.github/workflows/deal-understanding-regression.yml'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: "Override API base URL for benchmark validation"
+        required: false
+        type: string
+
+concurrency:
+  group: deal-understanding-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression-gate:
+    name: Deal Understanding Regression Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve API base URL
+        id: resolve-api
+        shell: bash
+        env:
+          INPUT_API_BASE_URL: ${{ github.event.inputs.api_base_url }}
+          SECRET_API_BASE_URL: ${{ secrets.DEAL_UNDERSTANDING_API_BASE_URL }}
+        run: |
+          set -euo pipefail
+
+          API_BASE_URL="${INPUT_API_BASE_URL:-}"
+          if [ -z "$API_BASE_URL" ]; then
+            API_BASE_URL="${SECRET_API_BASE_URL:-}"
+          fi
+
+          if [ -z "$API_BASE_URL" ]; then
+            echo "Missing API base URL. Set workflow input 'api_base_url' or secret DEAL_UNDERSTANDING_API_BASE_URL." >&2
+            exit 1
+          fi
+
+          echo "api_base_url=$API_BASE_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.1
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Preflight runs BEFORE the regression gate.
+      # A preflight failure means the API is unreachable or misconfigured — not a regression.
+      # The gate step does not run when preflight fails.
+      - name: Preflight — verify API reachability
+        id: preflight
+        shell: python3 {0}
+        env:
+          API_BASE_URL: ${{ steps.resolve-api.outputs.api_base_url }}
+          BENCHMARK_AUTH_TOKEN: ${{ secrets.DEAL_UNDERSTANDING_BENCHMARK_AUTH_TOKEN }}
+        run: |
+          import os, sys, urllib.request, urllib.error, json
+
+          base = os.environ["API_BASE_URL"].rstrip("/")
+          token = os.environ.get("BENCHMARK_AUTH_TOKEN", "")
+          deal_ids = {
+              "Palm":       "5c8c7d6e-c992-4be7-8b10-268eac36f663",
+              "Probility":  "42be8b30-2b7d-45e0-ade0-99427a505c59",
+              "Verse":      "bcd59d33-7887-41cd-80b9-742bc5ba945a",
+              "ToxyScreen": "05042123-6c4f-4dcb-9131-a95fce3cd28c",
+          }
+          failures = []
+          for name, deal_id in deal_ids.items():
+              url = f"{base}/api/v1/deals/{deal_id}/understanding"
+              req = urllib.request.Request(url)
+              if token:
+                  req.add_header("Authorization", f"Bearer {token}")
+              try:
+                  with urllib.request.urlopen(req, timeout=15) as resp:
+                      body = json.loads(resp.read())
+                      payload = body.get("understanding") or body
+                      if not payload.get("what_company_does"):
+                          failures.append(f"  {name}: 200 but what_company_does is empty")
+                      else:
+                          print(f"  {name}: OK")
+              except urllib.error.HTTPError as e:
+                  failures.append(f"  {name}: HTTP {e.code} — {url}")
+              except Exception as e:
+                  failures.append(f"  {name}: {e}")
+          if failures:
+              print("Preflight FAILED — unreachable deals:", file=sys.stderr)
+              for f in failures:
+                  print(f, file=sys.stderr)
+              sys.exit(1)
+          print("Preflight passed — all 4 benchmark deals reachable")
+
+      # Regression gate runs only when preflight passes.
+      # Failures here are assertion regressions — review validator-report.md in artifacts.
+      - name: Run deal understanding regression gate
+        id: regression-gate
+        env:
+          DEAL_UNDERSTANDING_API_BASE_URL: ${{ steps.resolve-api.outputs.api_base_url }}
+          BENCHMARK_AUTH_TOKEN: ${{ secrets.DEAL_UNDERSTANDING_BENCHMARK_AUTH_TOKEN }}
+          PYTHON_BIN: python3
+        run: pnpm deal-understanding-regression
+
+      # Artifacts upload on both pass and fail — always() ensures this even when the gate fails.
+      - name: Upload regression artifacts
+        id: upload-artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deal-understanding-regression-${{ github.sha }}
+          path: artifacts/deal-understanding-regression/**
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: CI summary
+        if: always()
+        shell: bash
+        env:
+          PREFLIGHT_OUTCOME: ${{ steps.preflight.outcome }}
+          GATE_OUTCOME: ${{ steps.regression-gate.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload-artifacts.outcome }}
+        run: |
+          set -euo pipefail
+
+          preflight_ok="false"
+          regression_ok="false"
+          artifacts_ok="false"
+
+          [[ "$PREFLIGHT_OUTCOME" == "success" ]]        && preflight_ok="true"
+          [[ "$GATE_OUTCOME"     == "success" ]]        && regression_ok="true"
+          [[ "$UPLOAD_OUTCOME"   == "success" ]]        && artifacts_ok="true"
+
+          ready="false"
+          reason=""
+          if [[ "$preflight_ok" == "true" && "$regression_ok" == "true" && "$artifacts_ok" == "true" ]]; then
+            ready="true"
+          else
+            if [[ "$preflight_ok" != "true" ]]; then
+              reason="preflight failed — API unreachable or secret missing"
+            elif [[ "$regression_ok" != "true" ]]; then
+              reason="regression gate failed — check validator-report.md in artifacts"
+            else
+              reason="artifact upload failed"
+            fi
+          fi
+
+          echo "benchmark_deals_checked: 4"
+          echo "preflight_status:        $PREFLIGHT_OUTCOME"
+          echo "regression_status:       $GATE_OUTCOME"
+          echo "artifacts_uploaded:      $artifacts_ok"
+          echo "ready_to_make_required:  $ready"
+          [[ -n "$reason" ]] && echo "reason_if_not_ready:     $reason" || true

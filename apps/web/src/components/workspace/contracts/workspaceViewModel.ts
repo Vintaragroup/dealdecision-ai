@@ -46,6 +46,40 @@ export type WorkspaceOverviewSignal = {
   confidence: 'Strong Evidence' | 'Partial Evidence' | 'Limited Evidence';
 };
 
+export type WorkspaceOverviewFactTrust =
+  | 'structured'
+  | 'governed'
+  | 'interim_extraction'
+  | 'not_extracted'
+  | 'conflicted';
+
+export type WorkspaceOverviewFactMeta = {
+  value: string;
+  trust: WorkspaceOverviewFactTrust;
+  source?: string | null;
+  conflict?: { with: string; value: string } | null;
+};
+
+export type WorkspaceRcS6TeamHighlight = { name: string; role: string; credential?: string | null };
+
+export type WorkspaceRcS6UseOfFundsItem = { category: string; amountLabel?: string | null };
+
+export type WorkspaceRcS6ProjectPipelineItem = {
+  name: string;
+  capitalLabel?: string | null;
+  revenueLabel?: string | null;
+  returnPct?: string | null;
+  startDate?: string | null;
+};
+
+export type WorkspaceRcS6RevenueModel = {
+  type: string | null;
+  unitEconomics: string | null;
+  detail: string | null;
+  recurring: boolean | null;
+  trust: WorkspaceOverviewFactTrust;
+};
+
 export type WorkspaceHeaderVM = {
   dealName: string;
   dealDescription: string;
@@ -131,6 +165,12 @@ export type WorkspaceOverviewVM = {
     businessModel: string;
     raise: string;
   };
+  keyFacts: {
+    product: WorkspaceOverviewFactMeta;
+    market: WorkspaceOverviewFactMeta;
+    businessModel: WorkspaceOverviewFactMeta;
+    raise: WorkspaceOverviewFactMeta;
+  };
   productSummary: string;
   marketSummary: string;
   businessModelSummary: string;
@@ -143,6 +183,12 @@ export type WorkspaceOverviewVM = {
   investmentSnapshotBody: string;
   insightsScore: number;
   insightsConfidence: 'High' | 'Medium' | 'Low';
+  rcS6: {
+    teamHighlights: WorkspaceRcS6TeamHighlight[];
+    useOfFunds: WorkspaceRcS6UseOfFundsItem[];
+    projectPipeline: WorkspaceRcS6ProjectPipelineItem[];
+    revenueModel: WorkspaceRcS6RevenueModel;
+  };
 };
 
 export type WorkspaceViewModel = {

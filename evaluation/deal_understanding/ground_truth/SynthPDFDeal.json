@@ -1,0 +1,252 @@
+{
+  "_schema": "deal_understanding_audit_v1",
+  "_status": "FIXTURE-READY",
+  "_synthetic": true,
+  "_coverage_rationale": "REF-DU-1: PDF-only B2B SaaS deal (SynthCommerce) used as the canonical example for the deal understanding audit system. Exercises all five check layers: fidelity, understanding, usefulness, hallucination, and completeness.",
+
+  "deal_name": "SynthCommerce",
+  "deal_id": "00000000-0000-5000-9000-000000000001",
+  "mode": "deal_understanding_audit",
+  "source_type": "pdf_only",
+
+  "ground_truth": {
+    "what_company_does": "B2B SaaS platform that helps mid-market e-commerce retailers optimize paid ad spend using first-party customer data signals and real-time attribution recalculation.",
+    "business_model": "B2B SaaS with annual subscription contracts. Customers connect their Shopify or WooCommerce store and ad platforms. Revenue recognised on subscription start date. No usage-based fees.",
+    "revenue_model": "Annual recurring subscription with three tiers: Starter $12K/yr, Growth $36K/yr, Enterprise custom pricing. No per-seat or usage fees. Primarily annual contracts with auto-renew.",
+    "go_to_market": "Product-led growth via Shopify App Store and WooCommerce marketplace listings. Supplemented by direct outbound to merchants with >$5M GMV. No paid acquisition. Word-of-mouth from high NPS.",
+    "target_customer": "Mid-market e-commerce brands with $2M–$50M GMV. Primary buyer is Head of Marketing or DTC Growth Lead. Core pain point is rising CAC from third-party cookie deprecation.",
+    "traction_summary": "280 paying customers, $1.2M ARR, 18% MoM growth over last 6 months, NPS 72, <2% monthly churn. Top 10 customers represent 45% of ARR.",
+    "market_positioning": "Competes directly with Northbeam and Triple Whale in e-commerce attribution. Differentiates on real-time attribution recalculation — incumbents update overnight. Also supports headless commerce storefronts that competitors cannot instrument.",
+    "competitive_differentiation": "Real-time attribution refresh versus overnight batch updates from Northbeam and Triple Whale. Native headless commerce support (competitors Shopify-only). First-party signals from all store events, not only purchase events.",
+    "key_strengths": [
+      "Product-led growth via Shopify App Store eliminates need for enterprise sales motion — CAC near zero.",
+      "NPS 72 and <2% monthly churn demonstrate strong retention in a market with historically high SMB churn.",
+      "Real-time attribution is a genuine technical differentiator versus the two category incumbents.",
+      "Founder has prior experience building attribution tooling at Criteo."
+    ],
+    "key_risks": [
+      "Distribution concentrated in Shopify App Store — a policy change or delisting could eliminate the PLG channel overnight.",
+      "ARR concentration: top 10 customers represent 45% of ARR, creating revenue cliff risk.",
+      "Attribution accuracy degrades with continued browser and OS privacy changes — mitigated but not eliminated.",
+      "Two well-funded incumbents (Northbeam, Triple Whale) could replicate real-time refresh within 12–18 months."
+    ],
+    "investor_relevance_notes": [
+      "PLG motion with Shopify App Store is replicable and proven — key diligence question is growth rate post App Store saturation.",
+      "Funding ask ($3M seed) vs ARR ($1.2M) implies ~2.5x ARR valuation multiple — aggressive for current market.",
+      "Founder's Criteo background is credible signal for attribution accuracy claims — verify via reference check."
+    ]
+  },
+
+  "validation": {
+    "_note": "Checks run against the output of GET /api/v1/deals/{deal_id}/understanding. TODO (DDA-UNDERSTANDING): implement the endpoint before live-deal checks become active.",
+
+    "understanding_checks": [
+      {
+        "label": "what_company_does captures ad-tech / attribution context",
+        "field": "what_company_does",
+        "check_type": "contains_any",
+        "expected_terms": ["attribution", "ad spend", "e-commerce", "ecommerce", "first-party", "marketing analytics"],
+        "layer": "L1-FIDELITY",
+        "note": "A generic 'SaaS company for retailers' extract fails this — must reflect the specific attribution function."
+      },
+      {
+        "label": "target_customer identifies mid-market e-commerce segment",
+        "field": "target_customer",
+        "check_type": "contains_any",
+        "expected_terms": ["mid-market", "e-commerce", "ecommerce", "shopify", "retailer", "brand"],
+        "layer": "L1-FIDELITY",
+        "note": "Must not be generic 'businesses' or 'companies'."
+      },
+      {
+        "label": "traction_summary contains key metrics (ARR or customer count)",
+        "field": "traction_summary",
+        "check_type": "contains_any",
+        "expected_terms": ["280", "1.2", "ARR", "18%", "churn", "NPS"],
+        "layer": "L1-FIDELITY",
+        "note": "Numeric specificity is required — a vague 'strong growth' fails."
+      },
+      {
+        "label": "go_to_market identifies Shopify App Store or PLG channel",
+        "field": "go_to_market",
+        "check_type": "contains_any",
+        "expected_terms": ["shopify", "app store", "product-led", "plg", "marketplace"],
+        "layer": "L1-FIDELITY",
+        "note": "The PLG / zero-CAC motion is a key investor signal — vague 'online marketing' fails."
+      },
+      {
+        "label": "competitive_differentiation names at least one incumbent",
+        "field": "competitive_differentiation",
+        "check_type": "contains_any",
+        "expected_terms": ["northbeam", "triple whale", "attribution vendor", "incumbent"],
+        "layer": "L1-FIDELITY",
+        "note": "Named competitor required — 'better than competition' is generic and fails."
+      },
+      {
+        "label": "what_company_does is specific (not generic boilerplate)",
+        "field": "what_company_does",
+        "check_type": "not_generic",
+        "generic_phrases": [
+          "a software company",
+          "provides solutions",
+          "innovative platform",
+          "next generation",
+          "cutting edge",
+          "disruptive",
+          "various services",
+          "multiple features"
+        ],
+        "layer": "L1-FIDELITY",
+        "note": "Boilerplate phrasing without domain-specific language signals hallucination or shallow extraction."
+      },
+      {
+        "label": "what_company_does has minimum specificity (≥12 words)",
+        "field": "what_company_does",
+        "check_type": "min_length",
+        "min_words": 12,
+        "layer": "L1-FIDELITY",
+        "note": "Sub-12-word descriptions are too shallow to be useful."
+      },
+      {
+        "label": "revenue_model contains subscription / recurring language",
+        "field": "revenue_model",
+        "check_type": "contains_any",
+        "expected_terms": ["subscription", "recurring", "annual", "arr", "saas", "tier"],
+        "layer": "L2-UNDERSTANDING",
+        "note": "Must reflect the SaaS subscription structure — not transactional or usage-based language."
+      },
+      {
+        "label": "business_model aligns with SaaS recurring revenue framing",
+        "field": "business_model",
+        "check_type": "contains_any",
+        "expected_terms": ["saas", "subscription", "b2b", "annual", "recurring"],
+        "layer": "L2-UNDERSTANDING",
+        "note": "business_model and revenue_model should both use subscription/SaaS language."
+      },
+      {
+        "label": "market_positioning mentions real-time attribution or specific differentiator",
+        "field": "market_positioning",
+        "check_type": "contains_any",
+        "expected_terms": ["real-time", "realtime", "overnight", "attribution", "northbeam", "triple whale"],
+        "layer": "L2-UNDERSTANDING",
+        "note": "Generic 'better performance' without the real-time angle misses the core positioning."
+      }
+    ],
+
+    "consistency_checks": [
+      {
+        "label": "business_model and revenue_model are both non-empty",
+        "check_type": "both_non_empty",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "layer": "L2-UNDERSTANDING",
+        "note": "These two fields must both be populated — a missing one signals incomplete extraction."
+      },
+      {
+        "label": "revenue_model and go_to_market share subscription / PLG alignment",
+        "check_type": "term_alignment",
+        "field_a": "revenue_model",
+        "field_b": "go_to_market",
+        "expected_shared_terms": ["shopify", "annual", "subscription", "arr"],
+        "min_shared": 1,
+        "layer": "L2-UNDERSTANDING",
+        "note": "If revenue_model mentions annual contracts and go_to_market says 'Shopify App Store', at least one contract-related term should appear in both."
+      },
+      {
+        "label": "traction_summary and target_customer mention same segment",
+        "check_type": "term_alignment",
+        "field_a": "traction_summary",
+        "field_b": "target_customer",
+        "expected_shared_terms": ["ecommerce", "e-commerce", "merchant", "brand", "retailer", "shopify"],
+        "min_shared": 1,
+        "layer": "L2-UNDERSTANDING",
+        "note": "Traction figures must be attributed to the correct customer segment — not a different market."
+      }
+    ],
+
+    "hallucination_checks": [
+      {
+        "label": "what_company_does does not claim enterprise focus (company targets mid-market)",
+        "field": "what_company_does",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["enterprise clients", "fortune 500", "large enterprise", "global corporations"],
+        "layer": "L4-HALLUCINATION",
+        "note": "SynthCommerce explicitly targets mid-market — enterprise framing contradicts the source deck."
+      },
+      {
+        "label": "competitive_differentiation does not claim market monopoly / only player",
+        "field": "competitive_differentiation",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["only solution", "no competition", "no competitors", "sole provider", "monopoly"],
+        "layer": "L4-HALLUCINATION",
+        "note": "Northbeam and Triple Whale are named competitors — 'only solution' claims are unsupported."
+      },
+      {
+        "label": "traction_summary does not claim profitability (company is pre-profit at seed stage)",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["profitable", "cash flow positive", "ebitda positive", "net profitable"],
+        "layer": "L4-HALLUCINATION",
+        "note": "No profitability data in the source deck — any profitability claim would be hallucinated."
+      },
+      {
+        "label": "revenue_model does not incorrectly claim usage-based or transactional pricing",
+        "field": "revenue_model",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["pay per use", "transaction fee", "per transaction", "usage fee", "per-click"],
+        "layer": "L4-HALLUCINATION",
+        "note": "SynthCommerce uses flat annual subscription tiers — usage-based framing is unsupported."
+      }
+    ],
+
+    "completeness_checks": [
+      {
+        "label": "what_company_does is populated",
+        "field": "what_company_does",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "business_model is populated",
+        "field": "business_model",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "revenue_model is populated",
+        "field": "revenue_model",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "go_to_market is populated",
+        "field": "go_to_market",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "target_customer is populated",
+        "field": "target_customer",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "traction_summary is populated",
+        "field": "traction_summary",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "market_positioning is populated",
+        "field": "market_positioning",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      },
+      {
+        "label": "competitive_differentiation is populated",
+        "field": "competitive_differentiation",
+        "check_type": "not_empty",
+        "layer": "L5-COMPLETENESS"
+      }
+    ]
+  }
+}

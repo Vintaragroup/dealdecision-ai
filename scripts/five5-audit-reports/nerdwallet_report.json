@@ -1,0 +1,4254 @@
+{
+  "deal_id": "2590957b-278d-4b7b-add4-a6d43e06dddd",
+  "doc_ids": [
+    "6f110941-51de-4eb4-98ca-3bb5b8c422f3"
+  ],
+  "report": {
+    "ready": true,
+    "version": 1,
+    "artifact": {
+      "kind": "deal_intelligence_object",
+      "dio_id": "6c09f7b2-f682-44d8-a288-f68756cf7b69",
+      "analysis_version": 1,
+      "updated_at": "2026-04-11T16:22:34.001Z",
+      "recommendation": "CONDITIONAL",
+      "overall_score": "33.00"
+    },
+    "deal_summary": {
+      "version": "deal_summary_v1",
+      "ready": false,
+      "reason": "insufficient_overview_evidence,missing_product,missing_market_target,missing_one_liner",
+      "meta": {},
+      "tiers": {
+        "hero": "Insufficient overview evidence.",
+        "overview": "Insufficient overview evidence.",
+        "deep": "Insufficient overview evidence."
+      },
+      "one_liner": null,
+      "product": null,
+      "market_target": null,
+      "market_context": null,
+      "market": null,
+      "paragraphs": [],
+      "warnings": []
+    },
+    "metadata": {
+      "analysisCount": 4,
+      "evidenceCount": 0,
+      "documentCount": 1,
+      "scoreAvailable": true,
+      "scoreConfidence": 0.703125,
+      "score_explanation": {
+        "totals": {
+          "overall_score": 35,
+          "coverage_ratio": 0.8,
+          "evidence_factor": 0.776253781512605,
+          "confidence_score": 0.703125,
+          "adjustment_factor": 0.7490848991596639,
+          "unadjusted_pinned": false,
+          "unadjusted_reason": null,
+          "due_diligence_factor": 0.9650000000000001,
+          "unadjusted_overall_score": 30,
+          "unadjusted_missing_inputs": []
+        },
+        "context": {
+          "stage": "fund_ops",
+          "vertical": "other",
+          "deal_type": "fund_spv",
+          "confidence": 0.9375,
+          "primary_doc_type": "business_plan_im"
+        },
+        "components": {
+          "narrative_arc": {
+            "gaps": [],
+            "notes": [],
+            "reason": "Narrative pacing score computed",
+            "status": "ok",
+            "penalty": 0,
+            "reasons": [
+              "Narrative pacing score computed"
+            ],
+            "coverage": 0.8,
+            "raw_score": 70,
+            "red_flags": [],
+            "confidence": 0.75,
+            "used_score": 70,
+            "evidence_ids": [],
+            "weighted_contribution": 0
+          },
+          "visual_design": {
+            "gaps": [],
+            "notes": [],
+            "reason": "Visual design weaknesses detected (4)",
+            "status": "ok",
+            "penalty": 0,
+            "reasons": [
+              "Visual design weaknesses detected (4)"
+            ],
+            "coverage": 0.8,
+            "raw_score": 27,
+            "red_flags": [],
+            "confidence": 0.75,
+            "used_score": 27,
+            "evidence_ids": [],
+            "weighted_contribution": 0
+          },
+          "slide_sequence": {
+            "gaps": [
+              "headings",
+              "sections",
+              "status_not_ok",
+              "confidence_low"
+            ],
+            "notes": [
+              "penalized_non_ok -> used_score=50 penalty=6 (status=insufficient_data)"
+            ],
+            "reason": "Insufficient structure signal; expected slide headings/sections not detected",
+            "status": "penalized_non_ok",
+            "penalty": 6,
+            "reasons": [
+              "Insufficient structure signal; expected slide headings/sections not detected",
+              "Neutral baseline=50 applied with penalty=6",
+              "Low confidence (0.30); blended toward neutral baseline"
+            ],
+            "coverage": 0,
+            "raw_score": null,
+            "red_flags": [],
+            "confidence": 0.3,
+            "used_score": 50,
+            "evidence_ids": [],
+            "weighted_contribution": 0
+          },
+          "risk_assessment": {
+            "gaps": [],
+            "notes": [
+              "risk inverted: 70 -> 30"
+            ],
+            "reason": "Red flags detected in risk assessment (2)",
+            "status": "ok",
+            "penalty": 0,
+            "reasons": [
+              "Red flags detected in risk assessment (2)"
+            ],
+            "coverage": 0.8,
+            "raw_score": 70,
+            "red_flags": [
+              "high: Key technical role unfilled - CTO position vacant",
+              "high: Regulatory requirements - approval timeline uncertain"
+            ],
+            "confidence": 0.75,
+            "used_score": 30,
+            "evidence_ids": [
+              "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+              "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+            ],
+            "weighted_contribution": 30,
+            "inverted_investment_score": 30
+          },
+          "financial_health": {
+            "gaps": [
+              "revenue",
+              "expenses",
+              "burn_rate",
+              "cash_balance",
+              "runway_months",
+              "burn_multiple",
+              "status_not_ok",
+              "confidence_low"
+            ],
+            "notes": [
+              "penalized_non_ok -> used_score=50 penalty=6 (status=insufficient_data)"
+            ],
+            "reason": "No financial KPIs extracted (revenue/expenses/burn/runway)",
+            "status": "penalized_non_ok",
+            "penalty": 6,
+            "reasons": [
+              "No financial KPIs extracted (revenue/expenses/burn/runway)",
+              "Neutral baseline=50 applied with penalty=6",
+              "Low confidence (0.30); blended toward neutral baseline"
+            ],
+            "coverage": 0,
+            "raw_score": null,
+            "red_flags": [],
+            "confidence": 0.3,
+            "used_score": 50,
+            "evidence_ids": [],
+            "weighted_contribution": 0
+          },
+          "metric_benchmark": {
+            "gaps": [],
+            "notes": [
+              "Fintech: compliance posture not clearly stated (KYC/AML, licensing, regulatory readiness).",
+              "deterministic_score_v1 applied (inputs_hash=8f6b811a449f\u2026, modifier=0.863)"
+            ],
+            "reason": "Benchmarks applied to extracted metrics",
+            "status": "ok",
+            "penalty": 0,
+            "reasons": [
+              "Benchmarks applied to extracted metrics"
+            ],
+            "coverage": 0.8,
+            "raw_score": 50,
+            "red_flags": [],
+            "confidence": 0.75,
+            "used_score": 50,
+            "evidence_ids": [
+              "f5f2f38d-9dac-4bc0-986a-4733a3b7dcc7"
+            ],
+            "weighted_contribution": 0
+          }
+        },
+        "aggregation": {
+          "method": "weighted_mean",
+          "weights": {
+            "narrative_arc": 0,
+            "visual_design": 0,
+            "slide_sequence": 0,
+            "risk_assessment": 1.6,
+            "financial_health": 0,
+            "metric_benchmark": 0
+          },
+          "policy_id": "consumer_fintech_platform_v1",
+          "excluded_components": [],
+          "included_components": [
+            "slide_sequence",
+            "metric_benchmark",
+            "visual_design",
+            "narrative_arc",
+            "financial_health",
+            "risk_assessment"
+          ]
+        },
+        "understanding_v1": {
+          "summary": "Strengths and open items below explain what drove the score and what would move it.",
+          "strengths": [
+            {
+              "text": "Narrative pacing score computed",
+              "evidence_ids": [],
+              "component_keys": [
+                "narrative_arc"
+              ]
+            }
+          ],
+          "diligence_open_items": [
+            {
+              "text": "raise",
+              "evidence_ids": [],
+              "component_keys": [
+                "phase1"
+              ]
+            },
+            {
+              "text": "Add evidence for missing sections: gtm.",
+              "evidence_ids": [],
+              "component_keys": [
+                "phase1"
+              ]
+            },
+            {
+              "text": "Operating controls and instrumentation (cohorts, conversion, chargebacks/fraud where applicable).",
+              "evidence_ids": [],
+              "component_keys": [
+                "rubric"
+              ]
+            }
+          ],
+          "execution_dependencies": []
+        },
+        "stage_weighted_v1": {
+          "stage": "pre_seed",
+          "weights": {
+            "team": 0.22,
+            "problem_clarity": 0.18,
+            "solution_product": 0.16,
+            "market": 0.14,
+            "business_model": 0.12,
+            "traction": 0.1,
+            "use_of_funds_raise_logic": 0.06,
+            "financial_profile": 0.02
+          },
+          "score_0_100": 24.22,
+          "dimensions": [
+            {
+              "key": "team",
+              "score_0_100": 5.5,
+              "weight": 0.22,
+              "weighted_points": 1.21,
+              "present": false,
+              "confidence": 0.35,
+              "evidence_ids": [],
+              "notes": [
+                "no_founder",
+                "no_technical_lead",
+                "no_gtm_lead",
+                "no_prior_experience",
+                "no_domain_experience"
+              ]
+            },
+            {
+              "key": "problem_clarity",
+              "score_0_100": 20,
+              "weight": 0.18,
+              "weighted_points": 3.6,
+              "present": false,
+              "confidence": 0,
+              "evidence_ids": []
+            },
+            {
+              "key": "solution_product",
+              "score_0_100": 20,
+              "weight": 0.16,
+              "weighted_points": 3.2,
+              "present": false,
+              "confidence": 0,
+              "evidence_ids": []
+            },
+            {
+              "key": "market",
+              "score_0_100": 30.5,
+              "weight": 0.14,
+              "weighted_points": 4.27,
+              "present": false,
+              "confidence": 0.35,
+              "evidence_ids": []
+            },
+            {
+              "key": "business_model",
+              "score_0_100": 54.75,
+              "weight": 0.12,
+              "weighted_points": 6.57,
+              "present": true,
+              "confidence": 0.35,
+              "evidence_ids": [],
+              "notes": [
+                "bm_pricing_missing",
+                "bm_revenue_model_missing",
+                "bm_customer_segment_missing",
+                "bm_monetization_missing"
+              ]
+            },
+            {
+              "key": "traction",
+              "score_0_100": 30.5,
+              "weight": 0.1,
+              "weighted_points": 3.05,
+              "present": false,
+              "confidence": 0.35,
+              "evidence_ids": []
+            },
+            {
+              "key": "use_of_funds_raise_logic",
+              "score_0_100": 29,
+              "weight": 0.06,
+              "weighted_points": 1.74,
+              "present": false,
+              "confidence": 0.3,
+              "evidence_ids": [],
+              "notes": [
+                "raise_present"
+              ]
+            },
+            {
+              "key": "financial_profile",
+              "score_0_100": 29,
+              "weight": 0.02,
+              "weighted_points": 0.58,
+              "present": false,
+              "confidence": 0.3,
+              "evidence_ids": []
+            }
+          ],
+          "signals_used": [
+            "business_model_signal_v1",
+            "market_accessibility_signal_v1",
+            "traction_signal_v1",
+            "team_signal_v1"
+          ]
+        }
+      },
+      "revenue_convergence": {
+        "converged": true,
+        "structured_summary_amount_before_guard": null,
+        "financial_breakdown_amount": null,
+        "backfill_applied": false
+      },
+      "field_authority_guard": {
+        "rejected_count": 0,
+        "accepted_count": 3,
+        "log": [
+          {
+            "fact_type": "raise_terms_v1",
+            "fact_index": 0,
+            "action": "accept",
+            "reasons": [],
+            "authority_tier": "preferred",
+            "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+            "source_page_index": 15,
+            "document_family": "pitch_deck"
+          },
+          {
+            "fact_type": "business_model_v1",
+            "fact_index": 1,
+            "action": "accept",
+            "reasons": [],
+            "authority_tier": "preferred",
+            "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+            "source_page_index": 17,
+            "document_family": "pitch_deck"
+          },
+          {
+            "fact_type": "marketing_attributed_revenue_v1",
+            "fact_index": 2,
+            "action": "accept",
+            "reasons": [],
+            "authority_tier": "acceptable",
+            "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+            "source_page_index": 15,
+            "document_family": "pitch_deck"
+          }
+        ],
+        "fill_ins_applied": [
+          "product_summary_v1",
+          "market_summary_v1"
+        ]
+      },
+      "field_candidate_selector": [
+        {
+          "field": "raise_terms_v1",
+          "candidates": [
+            {
+              "fact_index": 0,
+              "document_family": "pitch_deck",
+              "authority_rank": 75,
+              "positive_signals": [
+                "institutional_amount",
+                "large_transaction_amount"
+              ],
+              "penalty_signals": [],
+              "final_score": 134,
+              "confidence": 0.8,
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "source_page_index": 15,
+              "selection_rationale": "authority:pitch_deck(75) signals:[institutional_amount,large_transaction_amount] score:134.0"
+            }
+          ],
+          "winner_index": 0,
+          "winner_rationale": "authority:pitch_deck(75) signals:[institutional_amount,large_transaction_amount] score:134.0",
+          "rejected_indices": [],
+          "rejected_reasons": []
+        },
+        {
+          "field": "business_model_v1",
+          "candidates": [
+            {
+              "fact_index": 1,
+              "document_family": "pitch_deck",
+              "authority_rank": 75,
+              "positive_signals": [
+                "pitch_deck_source"
+              ],
+              "penalty_signals": [
+                "generic_wholesale"
+              ],
+              "final_score": 113.75,
+              "confidence": 0.75,
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "source_page_index": 17,
+              "selection_rationale": "authority:pitch_deck(75) signals:[pitch_deck_source] score:113.8"
+            }
+          ],
+          "winner_index": 1,
+          "winner_rationale": "authority:pitch_deck(75) signals:[pitch_deck_source] score:113.8",
+          "rejected_indices": [],
+          "rejected_reasons": []
+        }
+      ],
+      "deck_archetype": {
+        "version": "deck_archetype_v1",
+        "key": "unknown",
+        "confidence": 0,
+        "scores": {
+          "consumer_apparel_dtc": 0,
+          "enterprise_saas_compliance": 0,
+          "pe_rollup_consolidation": 0
+        },
+        "segment_counts": {
+          "unknown": 20
+        },
+        "keyword_hits": {}
+      },
+      "archetype_diagnostics": [
+        {
+          "kind": "overrepresentation",
+          "segment": "unknown",
+          "message": "Overrepresented segment: unknown (100% of nodes)",
+          "details": {
+            "segment": "unknown",
+            "fraction": 1,
+            "segment_counts": {
+              "unknown": 20
+            }
+          }
+        }
+      ],
+      "archetype_segment_drift_v1": null,
+      "override_quality": {
+        "total_nodes": 20,
+        "overridden_nodes": 0,
+        "override_ratio": 0,
+        "by_segment": {},
+        "by_override_rule": {},
+        "assessment": "low",
+        "notes": [],
+        "by_override_rule_segments": {}
+      },
+      "deterministic_score_inputs_v1": {
+        "version": "deterministic_score_inputs_v1",
+        "segments": {
+          "total_nodes": 20,
+          "counts": {
+            "unknown": 20
+          },
+          "override_ratio": 0,
+          "overridden_nodes": 0
+        },
+        "deck": {
+          "deck_archetype_key": "unknown",
+          "drift_assessment": "unknown"
+        },
+        "kpis": [
+          {
+            "key": "customers",
+            "confidence": 0,
+            "sources": [],
+            "value_raw": null
+          },
+          {
+            "key": "first_party_database_active_pct",
+            "confidence": 0,
+            "sources": [],
+            "value_raw": null
+          },
+          {
+            "key": "first_party_database_size",
+            "confidence": 0,
+            "sources": [],
+            "value_raw": null
+          },
+          {
+            "key": "growth",
+            "confidence": 0,
+            "sources": [],
+            "value_raw": null
+          },
+          {
+            "key": "marketing_attributed_revenue_email_sms",
+            "confidence": 0.62,
+            "sources": [
+              {
+                "document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 15
+              }
+            ],
+            "value_raw": "$44M"
+          },
+          {
+            "key": "paid_media_conversion_pct",
+            "confidence": 0,
+            "sources": [],
+            "value_raw": null
+          },
+          {
+            "key": "revenue",
+            "confidence": 0,
+            "sources": [],
+            "value_raw": null
+          }
+        ],
+        "inputs_hash": "8f6b811a449f273c7d9c3297b753c8f9e7b7ed771d30bc83fe0b5cae9b594026"
+      },
+      "deterministic_score_preview_v1": {
+        "version": "deterministic_score_preview_v1",
+        "enabled": true,
+        "gate": {
+          "drift_assessment": "unknown",
+          "blocked_by_drift_misaligned": false,
+          "blocked_by_unadjusted_pinned": false
+        },
+        "notes": [],
+        "inputs_hash": "8f6b811a449f273c7d9c3297b753c8f9e7b7ed771d30bc83fe0b5cae9b594026",
+        "modifier_v1": {
+          "signal_strength": 0.041680672268907565,
+          "modifier": 0.8625042016806722,
+          "notes": [
+            "segment_coverage=0.000",
+            "kpi_count=7",
+            "kpi_avg_conf=0.089",
+            "kpi_bonus=1.00 (has_revenue_or_customers=false)",
+            "signal_strength=0.042",
+            "base_modifier=0.863",
+            "modifier=0.863"
+          ]
+        },
+        "baseline": {
+          "overall_score": 33,
+          "unadjusted_overall_score": 30,
+          "unadjusted_pinned": false,
+          "unadjusted_pin_reason": null,
+          "unadjusted_reason": null,
+          "unadjusted_missing_inputs": [],
+          "evidence_factor": 0.9,
+          "due_diligence_factor": 0.9650000000000001,
+          "adjustment_factor": 0.8685
+        },
+        "deterministic": {
+          "overall_score": 35,
+          "evidence_factor": 0.776253781512605,
+          "adjustment_factor": 0.7490848991596639
+        },
+        "delta_overall_score": 2,
+        "delta_unrounded_overall": 2.388302016806726,
+        "delta_adjustment_factor": -0.11941510084033613,
+        "delta_evidence_factor": -0.12374621848739498,
+        "rounding_note": null,
+        "applied": true,
+        "applied_parts": [
+          "score_explanation.totals.evidence_factor",
+          "score_explanation.totals.adjustment_factor",
+          "score_explanation.totals.overall_score",
+          "report.overallScore"
+        ]
+      },
+      "score_band_v2": {
+        "key": "hard_pass",
+        "label": "Hard Pass",
+        "overall_score": 35,
+        "thresholds_version": "v2"
+      },
+      "hard_pass_guardrail_v2": {
+        "triggered": false,
+        "reason": null,
+        "note": null,
+        "criteria_snapshot": {
+          "overall_score": 35,
+          "coverage_ratio": 0.8,
+          "unadjusted_overall_score": 30,
+          "drift_assessment": "unknown",
+          "kpi_selected": {
+            "key": "marketing_attributed_revenue_email_sms",
+            "confidence": 0.62,
+            "value_raw_present": true
+          },
+          "criteria": {
+            "overall_score_lt_45": true,
+            "coverage_ratio_gte_085": false,
+            "baseline_present": true,
+            "kpi_present_conf_gte_060": true,
+            "drift_not_misaligned": true,
+            "full_criteria_in_place": false
+          },
+          "thresholds": {
+            "coverage_ratio_min": 0.85,
+            "kpi_confidence_min": 0.6,
+            "overall_hard_pass_max": 44
+          }
+        }
+      },
+      "decision_v1": {
+        "recommendation_key": "hard_pass",
+        "label": "Hard Pass",
+        "severity": "danger",
+        "reasons": [
+          "band:hard_pass",
+          "overrides:low",
+          "coverage_ratio:0.80"
+        ]
+      },
+      "legacy_recommendation_v0": "pass",
+      "legacy_grade_v0": "Needs Improvement",
+      "decision_v1_report_alignment_v1": true,
+      "decision_v1_sections_alignment_v1": true,
+      "investment_analysis_overview_v2": {
+        "version": "investment_analysis_overview_v2",
+        "archetype": {
+          "value": "consumer_product",
+          "confidence": 0.43902439024390244
+        },
+        "traction": {
+          "present": true,
+          "signals": [
+            "Customers mentioned",
+            "Growth mentioned",
+            "Revenue mentioned",
+            "Users mentioned"
+          ],
+          "metrics": []
+        },
+        "capital_profile": {
+          "runway_months": null,
+          "burn_multiple": null
+        },
+        "evidence_strength": {
+          "coverage_ratio": 0.8,
+          "confidence_score": 0.703125,
+          "evidence_factor": 0.776253781512605,
+          "due_diligence_factor": 0.9650000000000001,
+          "adjustment_factor": 0.7490848991596639,
+          "diligence_readiness_band": "high"
+        },
+        "kpis": {
+          "inputs_hash": "8f6b811a449f273c7d9c3297b753c8f9e7b7ed771d30bc83fe0b5cae9b594026",
+          "keys": [
+            "customers",
+            "first_party_database_active_pct",
+            "first_party_database_size",
+            "growth",
+            "marketing_attributed_revenue_email_sms",
+            "paid_media_conversion_pct",
+            "revenue"
+          ]
+        },
+        "open_items": {
+          "source": "score_explanation.understanding_v1.diligence_open_items",
+          "items": [
+            "Add evidence for missing sections: gtm.",
+            "Operating controls and instrumentation (cohorts, conversion, chargebacks/fraud where applicable).",
+            "raise"
+          ]
+        },
+        "top_risks": {
+          "source": "dio.analyzer_results.risk_assessment",
+          "items": [
+            "Key technical role unfilled - CTO position vacant",
+            "Regulatory requirements - approval timeline uncertain"
+          ]
+        },
+        "coverage_gaps": [],
+        "summary": "The deal focuses on a DTC Ecommerce model leveraging data science to build consumer trust through personalized recommendations.",
+        "summary_medium": "This deal revolves around a DTC Ecommerce model that utilizes advanced data science models to enhance consumer trust and deliver tailored recommendations. The target customer base includes individuals who value personalized experiences, as exemplified by relatable figures such as a mother and a high school physics teacher. The strength of the platform lies in its ability to foster trust with consumers, which is critical for driving engagement and loyalty.",
+        "summary_long": "The executive summary indicates a recommendation to proceed with the deal, scoring 67 out of 100 with medium confidence; However, there are notable gaps in the coverage, particularly concerning the go-to-market strategy, financial details, and specific traction metrics; The identified risks include competition, regulatory compliance, and security concerns, which could impact the overall viability of the business model. What it is: our data science models. strength of our platform is the trust that we build with consumers and the tailored and personalized recommendations we deliver via.\n\nDespite the identified risks, the traction signals suggest positive indicators such as revenue growth and customer engagement; The business archetype aligns with consumer products, indicating a focus on building a trusted brand; However, the absence of detailed financial metrics and a clear go-to-market strategy raises questions about the deal's potential success and sustainability in a competitive landscape. What it is: our data science models. strength of our platform is the trust that we build with consumers and the tailored and personalized recommendations we deliver via.",
+        "raise": {
+          "value": "$44M Equity",
+          "guarded": false
+        },
+        "business_model": {
+          "value": "Wholesale/Retail",
+          "guarded": false
+        },
+        "revenue": {
+          "value": null,
+          "guarded": false,
+          "is_projected": false
+        }
+      }
+    },
+    "promoted_facts": [
+      {
+        "fact_type": "raise_terms_v1",
+        "value_json": {
+          "round": null,
+          "amount": {
+            "amount": 44000000,
+            "currency": "USD"
+          },
+          "display": "$44M Equity",
+          "raw_text": "\u2022 Access to Consumers Who Are Ready to Transact. Because our expertise and personalized guidance are helpful for consumers at all stages of the financial decision-making process, many of the consumers on our platform are poised to make a transaction after using our platform. For our financial services partners, these consumers who have a better understanding of our partners\u2019 products than the average customer are more likely to successfully match with products offered by financial services partners . We believe that these high-quality matches can result in higher customer lifetime values for our financial services partners. \u2022 Positive Brand Association. We believe that our consumers place a high value on our unbiased guidance, and as such, we believe that our financial services partners greatly benefit from placement on our \u201cBest-of\u201d Awards lists, in our reviews and within other NerdWall\n\u2022 Access to Consumers Who Are Ready to Transact. Because our expertise and personalized guidance are helpful for consumers at all stages of the financial decision-making process, many of the consumers on our platform are poised to make a transaction after using our platform. For our financial services partners, these consumers who have a better understanding of our partners\u2019 products than the average customer are more likely to successfully match with products offered by financial services partners . We believe that these high-quality matches can result in higher customer lifetime values for our financial services partners. \u2022 Positive Brand Association. We believe that our consumers place a high value on our unbiased guidance, and as such, we believe that our financial services partners greatly benefit from placement on our \u201cBest-of\u201d Awards lists, in our reviews and within other NerdWallet content. As a result, many of our financial services partners use their \u201cBest-of\u201d designation in their own marketing materials. \u2022 Exposure to Consumers Seeking a Broad Range of Financial Products. Given the breadth of our expertise, financial services partners can provide their offerings to consumers that use our platform for multiple facets of their financial well-being. Our Strengths We have five core strengths that we believe provide us with a competitive advantage: \u2022 Trusted Platform for Consumer and SMB Financial Guidance. We have maintained an unwavering commitment to providing consumers with free and trusted financial guidance for over a decade, including unbiased recommendations and decision-making tools. Additionally, in the trailing twelve months as of June 30, 2021, approximately 73% of our traffic on NerdWallet came from direct or unpaid traffic sources, further demonstrating the value of our brand, organic marketing efforts and strategy. \u2022 Massive Top-of-the-Funnel Reach. The foundation of our platform is a direct, consumer-first approach, combined with deep domain expertise. This drives superior brand awareness and traffic to our platform. \u2022 Unique Breadth of Financial Offerings Under One Brand. We are a one-stop destination for consumer and SMB financial guidance, covering credit cards, mortgages, insurance, SMB products, personal loans, banking, investing and student loans. This makes it easy for consumers to compare solutions from a wide array of providers across multiple products to meet their diverse needs. \u2022 Platform That Drives and Benefits from Strong Network Effects. As more consumers use our platform and engage with our extensive financial guidance and tools, our consumer and transaction database grows and our product recommendations yield higher success rates. This increases user satisfaction, converting more users into Registered Users and improving repeat user rates. As we apply machine learning to match more high-quality consumers with products and services, our platform becomes increasingly valuable to financial services partners. This, in turn, attracts new partners and new financial products to the platform. \u2022 Founder-Led Management Team Focused on Continual Innovation and Capital Efficiency. Our co-founder and Chief Executive Officer, Tim Chen, started NerdWallet in 2009 to bring clarity to all of life\u2019s financial decisions. We grew to approximately $44 million of revenue in 2014 with no outside equity capital. Today, we continue to maintain a mindset of capital and financial discipline balanced with growth-oriented investing. Our Growth Strategies Our key growth strategies include: \u2022 Grow Our Traffic and Increase Engagement. We convert unique users into Registered Users that utilize our consumer decisioning tools and machine learning. We plan to continue to invest in building efficient and scalable technical capabilities to deliver personalized guidance and nudge consumers, at the right time, to take action based on our advice. With better machine learning, we believe our recommendations and contextual nudges will encourage repeat engagement and user registration on our platform.\n\u2022 Access to Consumers Who Are Ready to Transact. Because our expertise and personalized guidance are helpful for consumers at all stages of the financial decision-making process, many of the consumers on our platform are poised to make a transaction after using our platform. For our financial services partners, these consumers who have a better understanding of our partners\u2019 products than the average customer are more likely to successfully match with products offered by financial services partners . We believe that these high-quality matches can result in higher customer lifetime values for our financial services partners. \u2022 Positive Brand Association. We believe that our consumers place a high value on our unbiased guidance, and as such, we believe that our financial services partners greatly benefit from placement on our \u201cBest-of\u201d Awards lists, in our reviews and within other NerdWallet content. As a result, many of our financial services partners use their \u201cBest-of\u201d designation in their own marketing materials. \u2022 Exposure to Consumers Seeking a Broad Range of Financial Products. Given the breadth of our expertise, financial services partners can provide their offerings to consumers that use our platform for multiple facets of their financial well-being. Our Strengths We have five core strengths that we believe provide us with a competitive advantage: \u2022 Trusted Platform for Consumer and SMB Financial Guidance. We have maintained an unwavering commitment to providing consumers with free and trusted financial guidance for over a decade, including unbiased recommendations and decision-making tools. Additionally, in the trailing twelve months as of June 30, 2021, approximately 73% of our traffic on NerdWallet came from direct or unpaid traffic sources, further demonstrating the value of our brand, organic marketing efforts and strategy. \u2022 Massive Top-of-the-Funnel Reach. The foundation of our platform is a direct, consumer-first approach, combined with deep domain expertise. This drives superior brand awareness and traffic to our platform. \u2022 Unique Breadth of Financial Offerings Under One Brand. We are a one-stop destination for consumer and SMB financial guidance, covering credit cards, mortgages, insurance, SMB products, personal loans, banking, investing and student loans. This makes it easy for consumers to compare solutions from a wide array of providers across multiple products to meet their diverse needs. \u2022 Platform That Drives and Benefits from Strong Network Effects. As more consumers use our platform and engage with our extensive financial guidance and tools, our consumer and transaction database grows and our product recommendations yield higher success rates. This increases user satisfaction, converting more users into Registered Users and improving repeat user rates. As we apply machine learning to match more high-quality consumers with products and services, our platform becomes increasingly valuable to financial services partners. This, in turn, attracts new partners and new financial products to the platform. \u2022 Founder-Led Management Team Focused on Continual Innovation and Capital Efficiency. Our co-founder and Chief Executive Officer, Tim Chen, started NerdWallet in 2009 to bring clarity to all of life\u2019s financial decisions. We grew to approximately $44 million of revenue in 2014 with no outside equity capital. Today, we continue to maintain a mindset of capital and financial discipline balanced with growth-oriented investing. Our Growth Strategies Our key growth strategies include: \u2022 Grow Our Traffic and Increase Engagement. We convert unique users into Registered Users that utilize our consumer decisioning tools and machine learning. We plan to continue to invest in building efficient and scalable technical capabilities to deliver personalized guidance and nudge consumers, at the right time, to take action based on our advice. With better machine learning, we believe our recommendations and contextual nudges will encourage repeat engagement and user registration on our platform.",
+          "valuation": null,
+          "instrument": "Equity",
+          "valuation_cap": null,
+          "valuation_kind": null
+        },
+        "confidence": 0.8,
+        "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+        "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:raise_terms_v1",
+        "extracted_at": "2026-04-11 16:22:09.163+00"
+      },
+      {
+        "fact_type": "business_model_v1",
+        "value_json": {
+          "scores": {
+            "dtc": 0,
+            "hcp": 0,
+            "saas": 0,
+            "licensing": 0,
+            "wholesale": 6
+          },
+          "display": "Wholesale/Retail",
+          "sources": [
+            {
+              "scores": {
+                "dtc": 0,
+                "hcp": 0,
+                "saas": 0,
+                "licensing": 0,
+                "wholesale": 2,
+                "title_boost": 0,
+                "licensing_raw": 0
+              },
+              "quality": "low",
+              "snippet": "GLOSSARY OF TERMS Adjusted EBITDA We define Adjusted EBITDA as net income (loss) from continuing operations adjusted to exclude depreciatio\u2026",
+              "page_index": 11,
+              "document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "slide_title": null
+            },
+            {
+              "scores": {
+                "dtc": 0,
+                "hcp": 0,
+                "saas": 0,
+                "licensing": 0,
+                "wholesale": 2,
+                "title_boost": 0,
+                "licensing_raw": 0
+              },
+              "quality": "low",
+              "snippet": "Our Platform Our trusted platform aligns the interests of consumers seeking financial products with the financial services providers that o\u2026",
+              "page_index": 14,
+              "document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "slide_title": null
+            },
+            {
+              "scores": {
+                "dtc": 0,
+                "hcp": 0,
+                "saas": 0,
+                "licensing": 0,
+                "wholesale": 2,
+                "title_boost": 0,
+                "licensing_raw": 0
+              },
+              "quality": "low",
+              "snippet": "\u2022 Grow Within Existing and New Verticals. We plan to add capabilities within our existing verticals and expand to new verticals to provide\u2026",
+              "page_index": 17,
+              "document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "slide_title": null
+            }
+          ],
+          "diagnostics": {
+            "dtc_hits": [],
+            "policy_id": null,
+            "media_hits": [],
+            "routing_mode": "deterministic_policy_aware_v1",
+            "applied_guards": [],
+            "decision_reason": "totals(dtc=0, wholesale=6, saas=0, licensing=0, hcp=0) raw_label=Wholesale/Retail display=Wholesale/Retail",
+            "has_fund_signals": false,
+            "has_media_signals": false,
+            "has_ecom_mechanics": true,
+            "is_preferred_equity": false,
+            "has_real_estate_signals": false
+          },
+          "note_snippet": "\u2022 Grow Within Existing and New Verticals. We plan to add capabilities within our existing verticals and expand to new verticals to provide\u2026",
+          "primary_label": "Wholesale/Retail",
+          "secondary_tags": [],
+          "display_label_raw": "Wholesale/Retail"
+        },
+        "confidence": 0.75,
+        "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:18",
+        "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:business_model_v1",
+        "extracted_at": "2026-04-11 16:22:19.941+00"
+      },
+      {
+        "fact_type": "marketing_attributed_revenue_v1",
+        "value_json": {
+          "display": "$44M",
+          "subtype": "attributed",
+          "year": null,
+          "scope": "channel_attributed",
+          "typing_reason": "marketing_attributed_revenue_v1: tokens=[marketing]",
+          "note_snippet": "\u2022 Access to Consumers Who Are Ready to Transact. Because our expertise and personalized guidance are helpful for consumers at all stages of the financial decision-making process, many of the consumers on our platform are poised to make a tr",
+          "entity_scope": "unknown",
+          "amount": {
+            "amount": 44000000,
+            "currency": "USD"
+          }
+        },
+        "confidence": 0.62,
+        "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+        "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:dpu_fact:marketing_attributed_revenue_v1:attributed:na",
+        "extracted_at": "2026-04-11T16:22:09.163723+00:00"
+      }
+    ],
+    "report": {
+      "dealId": "2590957b-278d-4b7b-add4-a6d43e06dddd",
+      "generatedAt": "2026-04-11T16:22:38.939Z",
+      "version": 1,
+      "overallScore": 35,
+      "funding_stage_v1": {
+        "funding_stage": "pre_seed",
+        "confidence": 0.6,
+        "signals": [
+          {
+            "label": "company_phase_label:pre_seed",
+            "weight": 0.6,
+            "value": "IDEA"
+          }
+        ]
+      },
+      "financial_coverage_v1": {
+        "confidence": "low",
+        "sources": [
+          {
+            "kind": "deck"
+          }
+        ],
+        "coverage": {
+          "historical_revenue_present": false,
+          "forecast_revenue_present": false,
+          "income_statement_present": false,
+          "burn_rate_present": false,
+          "runway_present": false,
+          "unit_economics_present": false,
+          "balance_sheet_present": false,
+          "cash_flow_present": false
+        },
+        "evidence": {},
+        "score": 0
+      },
+      "capital_logic_v1": {
+        "confidence": "low",
+        "raise": {
+          "present": true,
+          "amount": 44000000,
+          "sources": [
+            {
+              "document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "page_index": 15,
+              "page": 16,
+              "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16"
+            }
+          ]
+        },
+        "use_of_funds": {
+          "present": false
+        },
+        "milestones": {
+          "present": false
+        },
+        "coherence": {
+          "has_raise_and_use_of_funds": false,
+          "has_raise_and_milestones": false,
+          "has_use_of_funds_and_milestones": false,
+          "appears_coherent": false
+        }
+      },
+      "stage_expectations_v1": {
+        "stage": "pre_seed",
+        "confidence": "high",
+        "expectations": {
+          "requires_traction_evidence": false,
+          "requires_unit_economics": false,
+          "requires_income_statement": false,
+          "requires_burn_and_runway": false,
+          "requires_capital_logic": true,
+          "requires_team_depth": false
+        },
+        "observed": {
+          "traction_evidence_present": false,
+          "unit_economics_present": false,
+          "income_statement_present": false,
+          "burn_and_runway_present": false,
+          "capital_logic_present": true,
+          "xlsx_present": false
+        },
+        "gaps": [
+          {
+            "code": "missing_capital_logic",
+            "severity": "medium",
+            "message": "Missing coherent capital logic (raise + use of funds + milestones)."
+          }
+        ],
+        "notes": [
+          "funding_stage_only"
+        ]
+      },
+      "business_model_signal_v1": {
+        "present": true,
+        "pricing_present": false,
+        "revenue_model_present": false,
+        "customer_segment_present": false,
+        "monetization_mechanics_present": false,
+        "confidence": "low",
+        "signals": [
+          {
+            "code": "business_model_present",
+            "present": true
+          },
+          {
+            "code": "pricing_present",
+            "present": false
+          },
+          {
+            "code": "revenue_model_present",
+            "present": false
+          },
+          {
+            "code": "customer_segment_present",
+            "present": false
+          },
+          {
+            "code": "monetization_mechanics_present",
+            "present": false
+          }
+        ]
+      },
+      "market_accessibility_signal_v1": {
+        "tam_present": false,
+        "sam_present": false,
+        "som_present": false,
+        "icp_defined": false,
+        "target_segment_defined": false,
+        "distribution_channel_defined": false,
+        "wedge_defined": false,
+        "confidence": "low",
+        "signals": [
+          {
+            "code": "tam_present",
+            "present": false
+          },
+          {
+            "code": "sam_present",
+            "present": false
+          },
+          {
+            "code": "som_present",
+            "present": false
+          },
+          {
+            "code": "icp_defined",
+            "present": false
+          },
+          {
+            "code": "target_segment_defined",
+            "present": false
+          },
+          {
+            "code": "distribution_channel_defined",
+            "present": false
+          },
+          {
+            "code": "wedge_defined",
+            "present": false
+          },
+          {
+            "code": "heuristic_fact_type_match",
+            "present": false
+          }
+        ]
+      },
+      "traction_signal_v1": {
+        "historical_revenue_present": false,
+        "forecast_revenue_present": false,
+        "user_metrics_present": false,
+        "growth_rate_present": false,
+        "recurring_revenue_present": false,
+        "bookings_present": false,
+        "tam_only": false,
+        "confidence": "low",
+        "signals": [
+          {
+            "code": "historical_revenue_present",
+            "present": false
+          },
+          {
+            "code": "forecast_revenue_present",
+            "present": false
+          },
+          {
+            "code": "user_metrics_present",
+            "present": false
+          },
+          {
+            "code": "growth_rate_present",
+            "present": false
+          },
+          {
+            "code": "recurring_revenue_present",
+            "present": false
+          },
+          {
+            "code": "bookings_present",
+            "present": false
+          },
+          {
+            "code": "tam_only",
+            "present": false
+          }
+        ]
+      },
+      "team_signal_v1": {
+        "founder_count": 0,
+        "key_roles_present": {
+          "ceo": false,
+          "technical": false,
+          "gtm": false
+        },
+        "prior_startup_experience_present": false,
+        "prior_exit_present": false,
+        "domain_experience_present": false,
+        "team_size_known": false,
+        "confidence": "low",
+        "signals": [
+          {
+            "code": "no_founder",
+            "present": true
+          },
+          {
+            "code": "solo_founder",
+            "present": false
+          },
+          {
+            "code": "balanced_team",
+            "present": false
+          },
+          {
+            "code": "no_technical_lead",
+            "present": true
+          },
+          {
+            "code": "no_gtm_lead",
+            "present": true
+          },
+          {
+            "code": "no_prior_experience",
+            "present": true
+          },
+          {
+            "code": "no_domain_experience",
+            "present": true
+          }
+        ]
+      },
+      "conviction_v1": {
+        "schema_version": "conviction_v1",
+        "selected_policy_id": "consumer_fintech_platform_v1",
+        "conviction_score_0_100": 27,
+        "conviction_band": "hard_pass",
+        "recommendation_posture": "pass",
+        "confidence_0_1": 0.5626897600636797,
+        "coverage_ratio_0_1": 0.338255634203889,
+        "contradiction_index_0_1": 0.42400000000000004,
+        "inputs": {
+          "financial_truth": {
+            "family": "financial_truth",
+            "status": "unknown",
+            "signal_strength": 0.35,
+            "confidence": 0.45,
+            "coverage": 0,
+            "source": "deck",
+            "source_priority": 4,
+            "evidence_refs": [],
+            "notes": []
+          },
+          "capital_structure": {
+            "family": "capital_structure",
+            "status": "probable",
+            "signal_strength": 0.4,
+            "confidence": 0.45,
+            "coverage": 0.3333333333333333,
+            "source": "capital_logic_v1",
+            "source_priority": 2,
+            "evidence_refs": [
+              "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16"
+            ],
+            "notes": []
+          },
+          "traction_validation": {
+            "family": "traction_validation",
+            "status": "probable",
+            "signal_strength": 0.56,
+            "confidence": 0.58,
+            "coverage": 0.5,
+            "source": "traction_signal_v1",
+            "source_priority": 3,
+            "evidence_refs": [
+              "f5f2f38d-9dac-4bc0-986a-4733a3b7dcc7"
+            ],
+            "notes": [
+              "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:traction_validation:traction_structured=0,refs=1"
+            ]
+          },
+          "market_demand": {
+            "family": "market_demand",
+            "status": "unknown",
+            "signal_strength": 0,
+            "confidence": 0.45,
+            "coverage": 0,
+            "source": "market_accessibility_signal_v1",
+            "source_priority": 3,
+            "evidence_refs": [],
+            "notes": [
+              "headings",
+              "sections",
+              "status_not_ok",
+              "confidence_low"
+            ]
+          },
+          "product_or_asset_quality": {
+            "family": "product_or_asset_quality",
+            "status": "unknown",
+            "signal_strength": 0,
+            "confidence": 0.45,
+            "coverage": 0,
+            "source": "business_model_signal_v1",
+            "source_priority": 3,
+            "evidence_refs": [],
+            "notes": []
+          },
+          "team_execution": {
+            "family": "team_execution",
+            "status": "probable",
+            "signal_strength": 0.56,
+            "confidence": 0.58,
+            "coverage": 0.5,
+            "source": "team_signal_v1",
+            "source_priority": 3,
+            "evidence_refs": [],
+            "notes": [
+              "no_founder",
+              "no_technical_lead",
+              "no_gtm_lead",
+              "no_prior_experience",
+              "no_domain_experience",
+              "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:team_execution:team_structured=0"
+            ]
+          },
+          "risk_dependencies": {
+            "family": "risk_dependencies",
+            "status": "contradicted",
+            "signal_strength": 0.5,
+            "confidence": 0.75,
+            "coverage": 0.8,
+            "source": "score_explanation.components.risk_assessment",
+            "source_priority": 3,
+            "evidence_refs": [
+              "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+              "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+            ],
+            "notes": [
+              "high: Key technical role unfilled - CTO position vacant",
+              "high: Regulatory requirements - approval timeline uncertain"
+            ]
+          },
+          "external_corroboration": {
+            "family": "external_corroboration",
+            "status": "unknown",
+            "signal_strength": 0.5,
+            "confidence": 0.5,
+            "coverage": 0.2,
+            "source": "not_available_phase1",
+            "source_priority": 5,
+            "evidence_refs": [],
+            "notes": [
+              "reserved_for_future_external_signal_integration"
+            ]
+          },
+          "evidence_quality": {
+            "family": "evidence_quality",
+            "status": "confirmed",
+            "signal_strength": 0.8015625,
+            "confidence": 0.8015625,
+            "coverage": 0.8,
+            "source": "score_explanation.totals",
+            "source_priority": 3,
+            "evidence_refs": [],
+            "notes": [
+              "confidence_score=0.703",
+              "evidence_factor=0.900"
+            ]
+          },
+          "coverage": {
+            "family": "coverage",
+            "status": "confirmed",
+            "signal_strength": 0.8,
+            "confidence": 0.8015625,
+            "coverage": 0.8,
+            "source": "score_explanation.totals",
+            "source_priority": 3,
+            "evidence_refs": [],
+            "notes": [
+              "coverage_ratio=0.800"
+            ]
+          },
+          "contradictions": {
+            "family": "contradictions",
+            "status": "contradicted",
+            "signal_strength": 0.325,
+            "confidence": 0.8,
+            "coverage": 0.85,
+            "source": "conviction_v1.contradictions",
+            "source_priority": 3,
+            "evidence_refs": [
+              "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+              "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+            ],
+            "notes": [
+              "red_flag_risk_assessment",
+              "no_technical_lead",
+              "no_gtm_lead",
+              "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_technical_lead",
+              "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_gtm_lead"
+            ]
+          }
+        },
+        "summary": {
+          "headline": "Conviction 27/100 (Hard Pass)",
+          "rationale": "Primary deterministic support is led by Evidence Quality, Coverage, Traction Validation.",
+          "provisional": false,
+          "notes": [
+            "phase2_native_deterministic_conviction",
+            "policy=consumer_fintech_platform_v1",
+            "stage=pre_seed",
+            "policy_label=Consumer Fintech Platform",
+            "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:team_execution",
+            "RECONCILED_TEAM_EXECUTION",
+            "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:traction_validation",
+            "RECONCILED_TRACTION_VALIDATION",
+            "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_technical_lead",
+            "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_gtm_lead"
+          ]
+        },
+        "top_positive_contributors": [
+          {
+            "key": "evidence_quality",
+            "label": "Evidence Quality",
+            "score_delta_0_100": 1.6,
+            "evidence_refs": [],
+            "notes": [
+              "confidence_score=0.703",
+              "evidence_factor=0.900"
+            ]
+          },
+          {
+            "key": "coverage",
+            "label": "Coverage",
+            "score_delta_0_100": 1.6,
+            "evidence_refs": [],
+            "notes": [
+              "coverage_ratio=0.800"
+            ]
+          },
+          {
+            "key": "traction_validation",
+            "label": "Traction Validation",
+            "score_delta_0_100": 0.8,
+            "evidence_refs": [
+              "f5f2f38d-9dac-4bc0-986a-4733a3b7dcc7"
+            ],
+            "notes": [
+              "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:traction_validation:traction_structured=0,refs=1"
+            ]
+          }
+        ],
+        "top_negative_contributors": [
+          {
+            "key": "risk_dependencies",
+            "label": "Risk Dependencies",
+            "score_delta_0_100": -8.3,
+            "evidence_refs": [
+              "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+              "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+            ],
+            "notes": [
+              "high: Key technical role unfilled - CTO position vacant",
+              "high: Regulatory requirements - approval timeline uncertain"
+            ]
+          },
+          {
+            "key": "contradictions",
+            "label": "Contradictions",
+            "score_delta_0_100": -5.4,
+            "evidence_refs": [
+              "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+              "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+            ],
+            "notes": [
+              "red_flag_risk_assessment",
+              "no_technical_lead",
+              "no_gtm_lead",
+              "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_technical_lead",
+              "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_gtm_lead"
+            ]
+          },
+          {
+            "key": "market_demand",
+            "label": "Market Demand",
+            "score_delta_0_100": -3.7,
+            "evidence_refs": [],
+            "notes": [
+              "headings",
+              "sections",
+              "status_not_ok",
+              "confidence_low"
+            ]
+          }
+        ],
+        "unknowns": [
+          {
+            "code": "unknown_financial_truth",
+            "text": "Financial Truth is currently unknown and needs additional deterministic evidence.",
+            "evidence_refs": []
+          },
+          {
+            "code": "unknown_market_demand",
+            "text": "Market Demand is currently unknown and needs additional deterministic evidence.",
+            "evidence_refs": []
+          },
+          {
+            "code": "unknown_product_or_asset_quality",
+            "text": "Product/Asset Quality is currently unknown and needs additional deterministic evidence.",
+            "evidence_refs": []
+          },
+          {
+            "code": "unknown_external_corroboration",
+            "text": "External Corroboration is currently unknown and needs additional deterministic evidence.",
+            "evidence_refs": []
+          }
+        ],
+        "contradictions": [
+          {
+            "code": "red_flag_risk_assessment",
+            "text": "high: Key technical role unfilled - CTO position vacant",
+            "severity": "medium",
+            "evidence_refs": [
+              "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+              "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+            ],
+            "source": "score_explanation.components.risk_assessment.red_flags"
+          },
+          {
+            "code": "red_flag_risk_assessment",
+            "text": "high: Regulatory requirements - approval timeline uncertain",
+            "severity": "medium",
+            "evidence_refs": [
+              "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+              "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+            ],
+            "source": "score_explanation.components.risk_assessment.red_flags"
+          }
+        ],
+        "required_next_checks": [
+          {
+            "text": "Provide deterministic evidence for financial_truth.",
+            "expected_direction": "clarify",
+            "evidence_refs": []
+          },
+          {
+            "text": "Provide deterministic evidence for market_demand.",
+            "expected_direction": "clarify",
+            "evidence_refs": []
+          },
+          {
+            "text": "Provide deterministic evidence for product_or_asset_quality.",
+            "expected_direction": "clarify",
+            "evidence_refs": []
+          },
+          {
+            "text": "Resolve contradiction: high: Key technical role unfilled - CTO position vacant",
+            "expected_direction": "increase",
+            "evidence_refs": [
+              "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+              "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+            ]
+          },
+          {
+            "text": "Resolve contradiction: high: Regulatory requirements - approval timeline uncertain",
+            "expected_direction": "increase",
+            "evidence_refs": [
+              "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+              "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+            ]
+          },
+          {
+            "text": "raise",
+            "expected_direction": "clarify",
+            "evidence_refs": []
+          }
+        ],
+        "lineage": {
+          "generated_at": "2026-04-11T16:22:38.944Z",
+          "mapping_version": "phase2_deterministic_v1",
+          "source_artifacts": [
+            {
+              "artifact": "financial_coverage_v1",
+              "path": "report.financial_coverage_v1",
+              "used": true,
+              "note": "phase2 primary financial truth and coverage input"
+            },
+            {
+              "artifact": "capital_logic_v1",
+              "path": "report.capital_logic_v1",
+              "used": true,
+              "note": "phase2 primary capital-structure input"
+            },
+            {
+              "artifact": "business_model_signal_v1",
+              "path": "report.business_model_signal_v1",
+              "used": true,
+              "note": "phase2 primary product/asset quality input"
+            },
+            {
+              "artifact": "market_accessibility_signal_v1",
+              "path": "report.market_accessibility_signal_v1",
+              "used": true,
+              "note": "phase2 primary market-demand input"
+            },
+            {
+              "artifact": "traction_signal_v1",
+              "path": "report.traction_signal_v1",
+              "used": true,
+              "note": "phase2 primary traction-validation input"
+            },
+            {
+              "artifact": "team_signal_v1",
+              "path": "report.team_signal_v1",
+              "used": true,
+              "note": "phase2 primary team-execution input"
+            },
+            {
+              "artifact": "funding_stage_v1",
+              "path": "report.funding_stage_v1",
+              "used": true,
+              "note": "phase2 stage-aware weighting input"
+            },
+            {
+              "artifact": "score_explanation",
+              "path": "metadata.score_explanation",
+              "used": true,
+              "note": "phase2 secondary deterministic compatibility input (evidence quality + contradictions), not conviction source of truth"
+            },
+            {
+              "artifact": "recommendation",
+              "path": "report.recommendation",
+              "used": true,
+              "note": "compatibility surface only; conviction posture is computed natively"
+            },
+            {
+              "artifact": "overall_score",
+              "path": "report.overallScore",
+              "used": true,
+              "note": "compatibility surface only; not used as native conviction score passthrough"
+            },
+            {
+              "artifact": "financial_breakdown_v1",
+              "path": "report.financial_breakdown_v1",
+              "used": true
+            }
+          ]
+        }
+      },
+      "structured_summary": {
+        "raise": {
+          "value": "$44M Equity",
+          "value_json": {
+            "amount": {
+              "amount": 44000000,
+              "currency": "USD"
+            }
+          },
+          "round_label": null,
+          "confidence": 0.8,
+          "sources": [
+            {
+              "kind": "promoted_fact",
+              "fact_type": "raise_terms_v1",
+              "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:raise_terms_v1",
+              "extracted_at": "2026-04-11 16:22:09.163+00",
+              "evidence_role": "primary",
+              "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "page_index": 15,
+              "page": 16,
+              "slide_number": null,
+              "segment_key": "unknown",
+              "segment_reason": null,
+              "slide_title": null
+            }
+          ]
+        },
+        "business_model": {
+          "value": "Wholesale/Retail",
+          "confidence": 0.75,
+          "sources": [
+            {
+              "kind": "promoted_fact",
+              "fact_type": "business_model_v1",
+              "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:business_model_v1",
+              "extracted_at": "2026-04-11 16:22:19.941+00",
+              "evidence_role": "primary",
+              "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:18",
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "page_index": 17,
+              "page": 18,
+              "slide_number": null,
+              "segment_key": "unknown",
+              "segment_reason": null,
+              "slide_title": null
+            }
+          ]
+        },
+        "revenue": {
+          "value": null,
+          "confidence": 0,
+          "sources": [],
+          "label": null,
+          "selection_reason": "not_extracted_yet"
+        },
+        "customers": {
+          "value": null,
+          "confidence": 0,
+          "sources": [],
+          "label": null
+        },
+        "growth": {
+          "value": null,
+          "confidence": 0,
+          "sources": [],
+          "label": null
+        },
+        "marketing_metrics": {
+          "attributed_revenue": {
+            "value_raw": "$44M",
+            "channel": null,
+            "confidence": 0.62,
+            "sources": [
+              {
+                "kind": "promoted_fact",
+                "fact_type": "marketing_attributed_revenue_v1",
+                "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:dpu_fact:marketing_attributed_revenue_v1:attributed:na",
+                "extracted_at": "2026-04-11T16:22:09.163723+00:00",
+                "evidence_role": "primary",
+                "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 15,
+                "page": 16,
+                "slide_number": null,
+                "segment_key": "unknown",
+                "segment_reason": {
+                  "rules_hit": [
+                    "segmenter:dpu_page_v1"
+                  ],
+                  "keywords_hit": [],
+                  "classifier_confidence": 0,
+                  "source": "deterministic"
+                },
+                "slide_title": null,
+                "note_snippet": "\u2022 Access to Consumers Who Are Ready to Transact. Because our expertise and personalized guidance are helpful for consumers at all stages of the financial decision-making process, many of the consumers on our platform are poised to make a tr"
+              }
+            ]
+          }
+        },
+        "issues": [],
+        "strengths": [],
+        "recommendations": [],
+        "topsection_v1": {
+          "schema_version": "topsection_v1",
+          "score_driver_one_liner": "Score of 33 \u2014 business metrics was a strength (+0 pts), while risk profile needs improvement (-20 pts).",
+          "strengths": [],
+          "weaknesses": [
+            "Add evidence for missing sections: gtm.",
+            "Operating controls and instrumentation (cohorts, conversion, chargebacks/fraud where applicable)."
+          ],
+          "actions_to_improve": []
+        },
+        "product_summary_v1": null,
+        "market_summary_v1": null,
+        "deal_summary_v1": {
+          "version": "deal_summary_v1",
+          "ready": true,
+          "reason": null,
+          "tiers": {
+            "hero": "Wholesale/Retail",
+            "overview": "Raise: $44M.",
+            "deep": "Business model: Wholesale/Retail"
+          },
+          "one_liner": {
+            "text": "Wholesale/Retail",
+            "sources": []
+          },
+          "product": null,
+          "market": null,
+          "paragraphs": [
+            {
+              "text": "Raise: $44M.",
+              "sources": [
+                {
+                  "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                  "page_index": 15,
+                  "slide_title": null,
+                  "snippet": ""
+                }
+              ]
+            },
+            {
+              "text": "Business model: Wholesale/Retail",
+              "sources": [
+                {
+                  "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                  "page_index": 15,
+                  "slide_title": null,
+                  "snippet": ""
+                },
+                {
+                  "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                  "page_index": 17,
+                  "slide_title": null,
+                  "snippet": ""
+                }
+              ]
+            }
+          ],
+          "warnings": [
+            "product_missing",
+            "market_missing"
+          ]
+        },
+        "deck_type": "unknown",
+        "market_summary": {
+          "value": null,
+          "confidence": 0,
+          "sources": []
+        },
+        "product_summary": {
+          "value": null,
+          "confidence": 0,
+          "sources": []
+        },
+        "gtm_summary": {
+          "value": null,
+          "confidence": 0,
+          "sources": []
+        },
+        "deal_summary": {
+          "value": null,
+          "confidence": 0,
+          "sources": []
+        },
+        "kpis": {
+          "raise": {
+            "value": "$44M Equity",
+            "value_json": {
+              "amount": {
+                "amount": 44000000,
+                "currency": "USD"
+              }
+            },
+            "round_label": null,
+            "confidence": 0.8,
+            "sources": [
+              {
+                "kind": "promoted_fact",
+                "fact_type": "raise_terms_v1",
+                "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:raise_terms_v1",
+                "extracted_at": "2026-04-11 16:22:09.163+00",
+                "evidence_role": "primary",
+                "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 15,
+                "page": 16,
+                "slide_number": null,
+                "segment_key": "unknown",
+                "segment_reason": null,
+                "slide_title": null
+              }
+            ]
+          },
+          "revenue": {
+            "value": null,
+            "confidence": 0,
+            "sources": [],
+            "label": null,
+            "selection_reason": "not_extracted_yet"
+          },
+          "customers": {
+            "value": null,
+            "confidence": 0,
+            "sources": [],
+            "label": null
+          },
+          "growth": {
+            "value": null,
+            "confidence": 0,
+            "sources": [],
+            "label": null
+          },
+          "business_model": {
+            "value": "Wholesale/Retail",
+            "confidence": 0.75,
+            "sources": [
+              {
+                "kind": "promoted_fact",
+                "fact_type": "business_model_v1",
+                "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:business_model_v1",
+                "extracted_at": "2026-04-11 16:22:19.941+00",
+                "evidence_role": "primary",
+                "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:18",
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 17,
+                "page": 18,
+                "slide_number": null,
+                "segment_key": "unknown",
+                "segment_reason": null,
+                "slide_title": null
+              }
+            ]
+          },
+          "performance": {
+            "marketing_attributed_revenue_v1": {
+              "value_raw": "$44M",
+              "channel": null,
+              "confidence": 0.62,
+              "sources": [
+                {
+                  "kind": "promoted_fact",
+                  "fact_type": "marketing_attributed_revenue_v1",
+                  "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:dpu_fact:marketing_attributed_revenue_v1:attributed:na",
+                  "extracted_at": "2026-04-11T16:22:09.163723+00:00",
+                  "evidence_role": "primary",
+                  "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+                  "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                  "page_index": 15,
+                  "page": 16,
+                  "slide_number": null,
+                  "segment_key": "unknown",
+                  "segment_reason": {
+                    "rules_hit": [
+                      "segmenter:dpu_page_v1"
+                    ],
+                    "keywords_hit": [],
+                    "classifier_confidence": 0,
+                    "source": "deterministic"
+                  },
+                  "slide_title": null,
+                  "note_snippet": "\u2022 Access to Consumers Who Are Ready to Transact. Because our expertise and personalized guidance are helpful for consumers at all stages of the financial decision-making process, many of the consumers on our platform are poised to make a tr"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "grade": "Needs Improvement",
+      "recommendation": "pass",
+      "categories": [
+        {
+          "name": "Presentation Quality",
+          "score": 27,
+          "maxScore": 100,
+          "color": "#3b82f6",
+          "issues": [
+            "208 pages above pitch deck max (15); not penalized for primary_doc_type=business_plan_im",
+            "\u26a0 Too text-heavy - consider adding more visuals (~0 KB/page)",
+            "\u26a0 Only 0% of slides have headings (70% recommended)",
+            "Consider improving visual design - details above"
+          ],
+          "strengths": [],
+          "recommendations": []
+        },
+        {
+          "name": "Business Metrics",
+          "score": 50,
+          "maxScore": 100,
+          "color": "#8b5cf6",
+          "issues": [],
+          "strengths": [],
+          "recommendations": []
+        },
+        {
+          "name": "Narrative & Story",
+          "score": 70,
+          "maxScore": 100,
+          "color": "#f59e0b",
+          "issues": [],
+          "strengths": [
+            "Story archetype: Unknown"
+          ],
+          "recommendations": []
+        },
+        {
+          "name": "Risk Assessment",
+          "score": 30,
+          "maxScore": 100,
+          "color": "#ef4444",
+          "issues": [
+            "[high] Key technical role unfilled - CTO position vacant",
+            "[high] Regulatory requirements - approval timeline uncertain"
+          ],
+          "strengths": [],
+          "recommendations": []
+        }
+      ],
+      "redFlags": [
+        {
+          "severity": "high",
+          "message": "Key technical role unfilled - CTO position vacant",
+          "action": "Monitor closely"
+        },
+        {
+          "severity": "high",
+          "message": "Regulatory requirements - approval timeline uncertain",
+          "action": "Monitor closely"
+        }
+      ],
+      "greenFlags": [],
+      "sections": [
+        {
+          "id": "executive-summary",
+          "title": "Executive Summary",
+          "content": "Overall Score: 33/100 (Needs Improvement)\\n\\nRecommendation: Hard Pass\\n\\nBased on analysis of 4 evaluation dimensions.",
+          "evidence_ids": []
+        },
+        {
+          "id": "slide-sequence",
+          "title": "Presentation Structure",
+          "content": "Score: N/A\n\nPattern: unknown\n\nFollows expected structure",
+          "evidence_ids": []
+        },
+        {
+          "id": "metric-benchmark",
+          "title": "Business Metrics",
+          "content": "Score: 50/100\n\nMetrics Analyzed:\\n\u2022 revenue: 16.1 vs 0 (Missing)",
+          "evidence_ids": [],
+          "metrics": [
+            {
+              "label": "Metrics Score",
+              "value": 50,
+              "evidence_ids": []
+            }
+          ]
+        },
+        {
+          "id": "visual-design",
+          "title": "Visual Design",
+          "content": "Score: 27/100\n\nWeaknesses:\\n\u2022 208 pages above pitch deck max (15); not penalized for primary_doc_type=business_plan_im\\n\u2022 \u26a0 Too text-heavy - consider adding more visuals (~0 KB/page)\\n\u2022 \u26a0 Only 0% of slides have headings (70% recommended)\\n\u2022 Consider improving visual design - details above",
+          "evidence_ids": [],
+          "metrics": [
+            {
+              "label": "Design Score",
+              "value": 27,
+              "evidence_ids": []
+            }
+          ]
+        },
+        {
+          "id": "narrative-arc",
+          "title": "Narrative & Story",
+          "content": "Pacing Score: 70/100\n\nArchetype: Unknown (0% confidence)\n\nNo emotional beats detected",
+          "evidence_ids": [],
+          "metrics": [
+            {
+              "label": "Pacing Score",
+              "value": 70,
+              "evidence_ids": []
+            }
+          ]
+        },
+        {
+          "id": "financial-health",
+          "title": "Financial Health",
+          "content": "Health Score: N/A\n\n",
+          "evidence_ids": []
+        },
+        {
+          "id": "risk-assessment",
+          "title": "Risk Assessment",
+          "content": "Risk Score: 70/100\nTotal Risks: 2 (Critical: 0, High: 2)\\n\\nRisks by Category:\\n\u2022 Market: 0\\n\u2022 Team: 1\\n\u2022 Financial: 0\\n\u2022 Execution: 1\\n\\nTop Risks:\\n\u2022 [high] Key technical role unfilled - CTO position vacant\\n\u2022 [high] Regulatory requirements - approval timeline uncertain",
+          "evidence_ids": [],
+          "metrics": [
+            {
+              "label": "Risk Score",
+              "value": 70,
+              "evidence_ids": []
+            }
+          ]
+        },
+        {
+          "id": "recommendation",
+          "title": "Investment Recommendation",
+          "content": "Recommendation: Hard Pass\\n\\nOverall Score: 33/100\\nGrade: Needs Improvement\\n\\nConcerns:\\n\u2022 Key technical role unfilled - CTO position vacant\\n\u2022 Regulatory requirements - approval timeline uncertain",
+          "evidence_ids": []
+        }
+      ],
+      "completeness": 100,
+      "metadata": {
+        "analysisCount": 4,
+        "evidenceCount": 0,
+        "documentCount": 1,
+        "scoreAvailable": true,
+        "scoreConfidence": 0.703125,
+        "score_explanation": {
+          "totals": {
+            "overall_score": 35,
+            "coverage_ratio": 0.8,
+            "evidence_factor": 0.776253781512605,
+            "confidence_score": 0.703125,
+            "adjustment_factor": 0.7490848991596639,
+            "unadjusted_pinned": false,
+            "unadjusted_reason": null,
+            "due_diligence_factor": 0.9650000000000001,
+            "unadjusted_overall_score": 30,
+            "unadjusted_missing_inputs": []
+          },
+          "context": {
+            "stage": "fund_ops",
+            "vertical": "other",
+            "deal_type": "fund_spv",
+            "confidence": 0.9375,
+            "primary_doc_type": "business_plan_im"
+          },
+          "components": {
+            "narrative_arc": {
+              "gaps": [],
+              "notes": [],
+              "reason": "Narrative pacing score computed",
+              "status": "ok",
+              "penalty": 0,
+              "reasons": [
+                "Narrative pacing score computed"
+              ],
+              "coverage": 0.8,
+              "raw_score": 70,
+              "red_flags": [],
+              "confidence": 0.75,
+              "used_score": 70,
+              "evidence_ids": [],
+              "weighted_contribution": 0
+            },
+            "visual_design": {
+              "gaps": [],
+              "notes": [],
+              "reason": "Visual design weaknesses detected (4)",
+              "status": "ok",
+              "penalty": 0,
+              "reasons": [
+                "Visual design weaknesses detected (4)"
+              ],
+              "coverage": 0.8,
+              "raw_score": 27,
+              "red_flags": [],
+              "confidence": 0.75,
+              "used_score": 27,
+              "evidence_ids": [],
+              "weighted_contribution": 0
+            },
+            "slide_sequence": {
+              "gaps": [
+                "headings",
+                "sections",
+                "status_not_ok",
+                "confidence_low"
+              ],
+              "notes": [
+                "penalized_non_ok -> used_score=50 penalty=6 (status=insufficient_data)"
+              ],
+              "reason": "Insufficient structure signal; expected slide headings/sections not detected",
+              "status": "penalized_non_ok",
+              "penalty": 6,
+              "reasons": [
+                "Insufficient structure signal; expected slide headings/sections not detected",
+                "Neutral baseline=50 applied with penalty=6",
+                "Low confidence (0.30); blended toward neutral baseline"
+              ],
+              "coverage": 0,
+              "raw_score": null,
+              "red_flags": [],
+              "confidence": 0.3,
+              "used_score": 50,
+              "evidence_ids": [],
+              "weighted_contribution": 0
+            },
+            "risk_assessment": {
+              "gaps": [],
+              "notes": [
+                "risk inverted: 70 -> 30"
+              ],
+              "reason": "Red flags detected in risk assessment (2)",
+              "status": "ok",
+              "penalty": 0,
+              "reasons": [
+                "Red flags detected in risk assessment (2)"
+              ],
+              "coverage": 0.8,
+              "raw_score": 70,
+              "red_flags": [
+                "high: Key technical role unfilled - CTO position vacant",
+                "high: Regulatory requirements - approval timeline uncertain"
+              ],
+              "confidence": 0.75,
+              "used_score": 30,
+              "evidence_ids": [
+                "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+                "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+              ],
+              "weighted_contribution": 30,
+              "inverted_investment_score": 30
+            },
+            "financial_health": {
+              "gaps": [
+                "revenue",
+                "expenses",
+                "burn_rate",
+                "cash_balance",
+                "runway_months",
+                "burn_multiple",
+                "status_not_ok",
+                "confidence_low"
+              ],
+              "notes": [
+                "penalized_non_ok -> used_score=50 penalty=6 (status=insufficient_data)"
+              ],
+              "reason": "No financial KPIs extracted (revenue/expenses/burn/runway)",
+              "status": "penalized_non_ok",
+              "penalty": 6,
+              "reasons": [
+                "No financial KPIs extracted (revenue/expenses/burn/runway)",
+                "Neutral baseline=50 applied with penalty=6",
+                "Low confidence (0.30); blended toward neutral baseline"
+              ],
+              "coverage": 0,
+              "raw_score": null,
+              "red_flags": [],
+              "confidence": 0.3,
+              "used_score": 50,
+              "evidence_ids": [],
+              "weighted_contribution": 0
+            },
+            "metric_benchmark": {
+              "gaps": [],
+              "notes": [
+                "Fintech: compliance posture not clearly stated (KYC/AML, licensing, regulatory readiness).",
+                "deterministic_score_v1 applied (inputs_hash=8f6b811a449f\u2026, modifier=0.863)"
+              ],
+              "reason": "Benchmarks applied to extracted metrics",
+              "status": "ok",
+              "penalty": 0,
+              "reasons": [
+                "Benchmarks applied to extracted metrics"
+              ],
+              "coverage": 0.8,
+              "raw_score": 50,
+              "red_flags": [],
+              "confidence": 0.75,
+              "used_score": 50,
+              "evidence_ids": [
+                "f5f2f38d-9dac-4bc0-986a-4733a3b7dcc7"
+              ],
+              "weighted_contribution": 0
+            }
+          },
+          "aggregation": {
+            "method": "weighted_mean",
+            "weights": {
+              "narrative_arc": 0,
+              "visual_design": 0,
+              "slide_sequence": 0,
+              "risk_assessment": 1.6,
+              "financial_health": 0,
+              "metric_benchmark": 0
+            },
+            "policy_id": "consumer_fintech_platform_v1",
+            "excluded_components": [],
+            "included_components": [
+              "slide_sequence",
+              "metric_benchmark",
+              "visual_design",
+              "narrative_arc",
+              "financial_health",
+              "risk_assessment"
+            ]
+          },
+          "understanding_v1": {
+            "summary": "Strengths and open items below explain what drove the score and what would move it.",
+            "strengths": [
+              {
+                "text": "Narrative pacing score computed",
+                "evidence_ids": [],
+                "component_keys": [
+                  "narrative_arc"
+                ]
+              }
+            ],
+            "diligence_open_items": [
+              {
+                "text": "raise",
+                "evidence_ids": [],
+                "component_keys": [
+                  "phase1"
+                ]
+              },
+              {
+                "text": "Add evidence for missing sections: gtm.",
+                "evidence_ids": [],
+                "component_keys": [
+                  "phase1"
+                ]
+              },
+              {
+                "text": "Operating controls and instrumentation (cohorts, conversion, chargebacks/fraud where applicable).",
+                "evidence_ids": [],
+                "component_keys": [
+                  "rubric"
+                ]
+              }
+            ],
+            "execution_dependencies": []
+          },
+          "stage_weighted_v1": {
+            "stage": "pre_seed",
+            "weights": {
+              "team": 0.22,
+              "problem_clarity": 0.18,
+              "solution_product": 0.16,
+              "market": 0.14,
+              "business_model": 0.12,
+              "traction": 0.1,
+              "use_of_funds_raise_logic": 0.06,
+              "financial_profile": 0.02
+            },
+            "score_0_100": 24.22,
+            "dimensions": [
+              {
+                "key": "team",
+                "score_0_100": 5.5,
+                "weight": 0.22,
+                "weighted_points": 1.21,
+                "present": false,
+                "confidence": 0.35,
+                "evidence_ids": [],
+                "notes": [
+                  "no_founder",
+                  "no_technical_lead",
+                  "no_gtm_lead",
+                  "no_prior_experience",
+                  "no_domain_experience"
+                ]
+              },
+              {
+                "key": "problem_clarity",
+                "score_0_100": 20,
+                "weight": 0.18,
+                "weighted_points": 3.6,
+                "present": false,
+                "confidence": 0,
+                "evidence_ids": []
+              },
+              {
+                "key": "solution_product",
+                "score_0_100": 20,
+                "weight": 0.16,
+                "weighted_points": 3.2,
+                "present": false,
+                "confidence": 0,
+                "evidence_ids": []
+              },
+              {
+                "key": "market",
+                "score_0_100": 30.5,
+                "weight": 0.14,
+                "weighted_points": 4.27,
+                "present": false,
+                "confidence": 0.35,
+                "evidence_ids": []
+              },
+              {
+                "key": "business_model",
+                "score_0_100": 54.75,
+                "weight": 0.12,
+                "weighted_points": 6.57,
+                "present": true,
+                "confidence": 0.35,
+                "evidence_ids": [],
+                "notes": [
+                  "bm_pricing_missing",
+                  "bm_revenue_model_missing",
+                  "bm_customer_segment_missing",
+                  "bm_monetization_missing"
+                ]
+              },
+              {
+                "key": "traction",
+                "score_0_100": 30.5,
+                "weight": 0.1,
+                "weighted_points": 3.05,
+                "present": false,
+                "confidence": 0.35,
+                "evidence_ids": []
+              },
+              {
+                "key": "use_of_funds_raise_logic",
+                "score_0_100": 29,
+                "weight": 0.06,
+                "weighted_points": 1.74,
+                "present": false,
+                "confidence": 0.3,
+                "evidence_ids": [],
+                "notes": [
+                  "raise_present"
+                ]
+              },
+              {
+                "key": "financial_profile",
+                "score_0_100": 29,
+                "weight": 0.02,
+                "weighted_points": 0.58,
+                "present": false,
+                "confidence": 0.3,
+                "evidence_ids": []
+              }
+            ],
+            "signals_used": [
+              "business_model_signal_v1",
+              "market_accessibility_signal_v1",
+              "traction_signal_v1",
+              "team_signal_v1"
+            ]
+          }
+        },
+        "revenue_convergence": {
+          "converged": true,
+          "structured_summary_amount_before_guard": null,
+          "financial_breakdown_amount": null,
+          "backfill_applied": false
+        },
+        "field_authority_guard": {
+          "rejected_count": 0,
+          "accepted_count": 3,
+          "log": [
+            {
+              "fact_type": "raise_terms_v1",
+              "fact_index": 0,
+              "action": "accept",
+              "reasons": [],
+              "authority_tier": "preferred",
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "source_page_index": 15,
+              "document_family": "pitch_deck"
+            },
+            {
+              "fact_type": "business_model_v1",
+              "fact_index": 1,
+              "action": "accept",
+              "reasons": [],
+              "authority_tier": "preferred",
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "source_page_index": 17,
+              "document_family": "pitch_deck"
+            },
+            {
+              "fact_type": "marketing_attributed_revenue_v1",
+              "fact_index": 2,
+              "action": "accept",
+              "reasons": [],
+              "authority_tier": "acceptable",
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "source_page_index": 15,
+              "document_family": "pitch_deck"
+            }
+          ],
+          "fill_ins_applied": [
+            "product_summary_v1",
+            "market_summary_v1"
+          ]
+        },
+        "field_candidate_selector": [
+          {
+            "field": "raise_terms_v1",
+            "candidates": [
+              {
+                "fact_index": 0,
+                "document_family": "pitch_deck",
+                "authority_rank": 75,
+                "positive_signals": [
+                  "institutional_amount",
+                  "large_transaction_amount"
+                ],
+                "penalty_signals": [],
+                "final_score": 134,
+                "confidence": 0.8,
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "source_page_index": 15,
+                "selection_rationale": "authority:pitch_deck(75) signals:[institutional_amount,large_transaction_amount] score:134.0"
+              }
+            ],
+            "winner_index": 0,
+            "winner_rationale": "authority:pitch_deck(75) signals:[institutional_amount,large_transaction_amount] score:134.0",
+            "rejected_indices": [],
+            "rejected_reasons": []
+          },
+          {
+            "field": "business_model_v1",
+            "candidates": [
+              {
+                "fact_index": 1,
+                "document_family": "pitch_deck",
+                "authority_rank": 75,
+                "positive_signals": [
+                  "pitch_deck_source"
+                ],
+                "penalty_signals": [
+                  "generic_wholesale"
+                ],
+                "final_score": 113.75,
+                "confidence": 0.75,
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "source_page_index": 17,
+                "selection_rationale": "authority:pitch_deck(75) signals:[pitch_deck_source] score:113.8"
+              }
+            ],
+            "winner_index": 1,
+            "winner_rationale": "authority:pitch_deck(75) signals:[pitch_deck_source] score:113.8",
+            "rejected_indices": [],
+            "rejected_reasons": []
+          }
+        ],
+        "deck_archetype": {
+          "version": "deck_archetype_v1",
+          "key": "unknown",
+          "confidence": 0,
+          "scores": {
+            "consumer_apparel_dtc": 0,
+            "enterprise_saas_compliance": 0,
+            "pe_rollup_consolidation": 0
+          },
+          "segment_counts": {
+            "unknown": 20
+          },
+          "keyword_hits": {}
+        },
+        "archetype_diagnostics": [
+          {
+            "kind": "overrepresentation",
+            "segment": "unknown",
+            "message": "Overrepresented segment: unknown (100% of nodes)",
+            "details": {
+              "segment": "unknown",
+              "fraction": 1,
+              "segment_counts": {
+                "unknown": 20
+              }
+            }
+          }
+        ],
+        "archetype_segment_drift_v1": null,
+        "override_quality": {
+          "total_nodes": 20,
+          "overridden_nodes": 0,
+          "override_ratio": 0,
+          "by_segment": {},
+          "by_override_rule": {},
+          "assessment": "low",
+          "notes": [],
+          "by_override_rule_segments": {}
+        },
+        "deterministic_score_inputs_v1": {
+          "version": "deterministic_score_inputs_v1",
+          "segments": {
+            "total_nodes": 20,
+            "counts": {
+              "unknown": 20
+            },
+            "override_ratio": 0,
+            "overridden_nodes": 0
+          },
+          "deck": {
+            "deck_archetype_key": "unknown",
+            "drift_assessment": "unknown"
+          },
+          "kpis": [
+            {
+              "key": "customers",
+              "confidence": 0,
+              "sources": [],
+              "value_raw": null
+            },
+            {
+              "key": "first_party_database_active_pct",
+              "confidence": 0,
+              "sources": [],
+              "value_raw": null
+            },
+            {
+              "key": "first_party_database_size",
+              "confidence": 0,
+              "sources": [],
+              "value_raw": null
+            },
+            {
+              "key": "growth",
+              "confidence": 0,
+              "sources": [],
+              "value_raw": null
+            },
+            {
+              "key": "marketing_attributed_revenue_email_sms",
+              "confidence": 0.62,
+              "sources": [
+                {
+                  "document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                  "page_index": 15
+                }
+              ],
+              "value_raw": "$44M"
+            },
+            {
+              "key": "paid_media_conversion_pct",
+              "confidence": 0,
+              "sources": [],
+              "value_raw": null
+            },
+            {
+              "key": "revenue",
+              "confidence": 0,
+              "sources": [],
+              "value_raw": null
+            }
+          ],
+          "inputs_hash": "8f6b811a449f273c7d9c3297b753c8f9e7b7ed771d30bc83fe0b5cae9b594026"
+        },
+        "deterministic_score_preview_v1": {
+          "version": "deterministic_score_preview_v1",
+          "enabled": true,
+          "gate": {
+            "drift_assessment": "unknown",
+            "blocked_by_drift_misaligned": false,
+            "blocked_by_unadjusted_pinned": false
+          },
+          "notes": [],
+          "inputs_hash": "8f6b811a449f273c7d9c3297b753c8f9e7b7ed771d30bc83fe0b5cae9b594026",
+          "modifier_v1": {
+            "signal_strength": 0.041680672268907565,
+            "modifier": 0.8625042016806722,
+            "notes": [
+              "segment_coverage=0.000",
+              "kpi_count=7",
+              "kpi_avg_conf=0.089",
+              "kpi_bonus=1.00 (has_revenue_or_customers=false)",
+              "signal_strength=0.042",
+              "base_modifier=0.863",
+              "modifier=0.863"
+            ]
+          },
+          "baseline": {
+            "overall_score": 33,
+            "unadjusted_overall_score": 30,
+            "unadjusted_pinned": false,
+            "unadjusted_pin_reason": null,
+            "unadjusted_reason": null,
+            "unadjusted_missing_inputs": [],
+            "evidence_factor": 0.9,
+            "due_diligence_factor": 0.9650000000000001,
+            "adjustment_factor": 0.8685
+          },
+          "deterministic": {
+            "overall_score": 35,
+            "evidence_factor": 0.776253781512605,
+            "adjustment_factor": 0.7490848991596639
+          },
+          "delta_overall_score": 2,
+          "delta_unrounded_overall": 2.388302016806726,
+          "delta_adjustment_factor": -0.11941510084033613,
+          "delta_evidence_factor": -0.12374621848739498,
+          "rounding_note": null,
+          "applied": true,
+          "applied_parts": [
+            "score_explanation.totals.evidence_factor",
+            "score_explanation.totals.adjustment_factor",
+            "score_explanation.totals.overall_score",
+            "report.overallScore"
+          ]
+        },
+        "score_band_v2": {
+          "key": "hard_pass",
+          "label": "Hard Pass",
+          "overall_score": 35,
+          "thresholds_version": "v2"
+        },
+        "hard_pass_guardrail_v2": {
+          "triggered": false,
+          "reason": null,
+          "note": null,
+          "criteria_snapshot": {
+            "overall_score": 35,
+            "coverage_ratio": 0.8,
+            "unadjusted_overall_score": 30,
+            "drift_assessment": "unknown",
+            "kpi_selected": {
+              "key": "marketing_attributed_revenue_email_sms",
+              "confidence": 0.62,
+              "value_raw_present": true
+            },
+            "criteria": {
+              "overall_score_lt_45": true,
+              "coverage_ratio_gte_085": false,
+              "baseline_present": true,
+              "kpi_present_conf_gte_060": true,
+              "drift_not_misaligned": true,
+              "full_criteria_in_place": false
+            },
+            "thresholds": {
+              "coverage_ratio_min": 0.85,
+              "kpi_confidence_min": 0.6,
+              "overall_hard_pass_max": 44
+            }
+          }
+        },
+        "decision_v1": {
+          "recommendation_key": "hard_pass",
+          "label": "Hard Pass",
+          "severity": "danger",
+          "reasons": [
+            "band:hard_pass",
+            "overrides:low",
+            "coverage_ratio:0.80"
+          ]
+        },
+        "legacy_recommendation_v0": "pass",
+        "legacy_grade_v0": "Needs Improvement",
+        "decision_v1_report_alignment_v1": true,
+        "decision_v1_sections_alignment_v1": true,
+        "investment_analysis_overview_v2": {
+          "version": "investment_analysis_overview_v2",
+          "archetype": {
+            "value": "consumer_product",
+            "confidence": 0.43902439024390244
+          },
+          "traction": {
+            "present": true,
+            "signals": [
+              "Customers mentioned",
+              "Growth mentioned",
+              "Revenue mentioned",
+              "Users mentioned"
+            ],
+            "metrics": []
+          },
+          "capital_profile": {
+            "runway_months": null,
+            "burn_multiple": null
+          },
+          "evidence_strength": {
+            "coverage_ratio": 0.8,
+            "confidence_score": 0.703125,
+            "evidence_factor": 0.776253781512605,
+            "due_diligence_factor": 0.9650000000000001,
+            "adjustment_factor": 0.7490848991596639,
+            "diligence_readiness_band": "high"
+          },
+          "kpis": {
+            "inputs_hash": "8f6b811a449f273c7d9c3297b753c8f9e7b7ed771d30bc83fe0b5cae9b594026",
+            "keys": [
+              "customers",
+              "first_party_database_active_pct",
+              "first_party_database_size",
+              "growth",
+              "marketing_attributed_revenue_email_sms",
+              "paid_media_conversion_pct",
+              "revenue"
+            ]
+          },
+          "open_items": {
+            "source": "score_explanation.understanding_v1.diligence_open_items",
+            "items": [
+              "Add evidence for missing sections: gtm.",
+              "Operating controls and instrumentation (cohorts, conversion, chargebacks/fraud where applicable).",
+              "raise"
+            ]
+          },
+          "top_risks": {
+            "source": "dio.analyzer_results.risk_assessment",
+            "items": [
+              "Key technical role unfilled - CTO position vacant",
+              "Regulatory requirements - approval timeline uncertain"
+            ]
+          },
+          "coverage_gaps": [],
+          "summary": "The deal focuses on a DTC Ecommerce model leveraging data science to build consumer trust through personalized recommendations.",
+          "summary_medium": "This deal revolves around a DTC Ecommerce model that utilizes advanced data science models to enhance consumer trust and deliver tailored recommendations. The target customer base includes individuals who value personalized experiences, as exemplified by relatable figures such as a mother and a high school physics teacher. The strength of the platform lies in its ability to foster trust with consumers, which is critical for driving engagement and loyalty.",
+          "summary_long": "The executive summary indicates a recommendation to proceed with the deal, scoring 67 out of 100 with medium confidence; However, there are notable gaps in the coverage, particularly concerning the go-to-market strategy, financial details, and specific traction metrics; The identified risks include competition, regulatory compliance, and security concerns, which could impact the overall viability of the business model. What it is: our data science models. strength of our platform is the trust that we build with consumers and the tailored and personalized recommendations we deliver via.\n\nDespite the identified risks, the traction signals suggest positive indicators such as revenue growth and customer engagement; The business archetype aligns with consumer products, indicating a focus on building a trusted brand; However, the absence of detailed financial metrics and a clear go-to-market strategy raises questions about the deal's potential success and sustainability in a competitive landscape. What it is: our data science models. strength of our platform is the trust that we build with consumers and the tailored and personalized recommendations we deliver via.",
+          "raise": {
+            "value": "$44M Equity",
+            "guarded": false
+          },
+          "business_model": {
+            "value": "Wholesale/Retail",
+            "guarded": false
+          },
+          "revenue": {
+            "value": null,
+            "guarded": false,
+            "is_projected": false
+          }
+        }
+      },
+      "financial_breakdown_v1": {
+        "has_xlsx": false,
+        "has_current_state": false,
+        "has_projections": false,
+        "has_cap_table": false,
+        "current_state": {
+          "summary": "Current financial state data is not available. The financial package does not include current-period revenue, burn, or cash figures.",
+          "data_quality": "missing"
+        },
+        "projections": {
+          "periods": [],
+          "summary": "No projected financial periods are present in the financial package. The model covers current-state data only.",
+          "data_quality": "missing"
+        },
+        "revenue_breakdown": {
+          "summary": "Revenue breakdown details are not available."
+        },
+        "expense_structure": {
+          "headcount_by_function": [],
+          "summary": "Headcount and expense structure breakdown is not available in the financial package."
+        },
+        "burn_runway": {
+          "summary": "Burn rate and runway data are not available in the current financial package.",
+          "confidence": "not_available"
+        },
+        "assumptions_summary": "No financial model assumptions are available. Financial figures are sourced from the pitch deck only.",
+        "cap_table_summary": "No cap table document or capitalization data was provided. Ownership structure, dilution, and option pool effects cannot be assessed.",
+        "has_cap_table_data": false,
+        "risks": [
+          {
+            "severity": "high",
+            "code": "deck_only",
+            "message": "No spreadsheet financial model is present. All financial data is sourced from the pitch deck, which may be selective or incomplete."
+          },
+          {
+            "severity": "medium",
+            "code": "missing_burn_runway",
+            "message": "Burn rate and runway are not present in the financial package. Cash position and capital efficiency cannot be assessed."
+          },
+          {
+            "severity": "low",
+            "code": "no_cap_table",
+            "message": "No cap table was provided. Ownership structure, dilution, and option pool effects cannot be evaluated."
+          }
+        ],
+        "narrative": "Financial data is sourced from the pitch deck only; no spreadsheet financial model is present. Burn rate and runway are not available; cash position cannot be assessed from the current package."
+      },
+      "underwriting_readiness_v1": {
+        "status": "insufficient",
+        "score": 5,
+        "reasons": [
+          "No critical financial data inconsistencies were detected."
+        ],
+        "missing": [
+          "Spreadsheet financial model (XLSX)",
+          "Current or historical revenue figures",
+          "Projected financial model",
+          "Burn rate and runway data",
+          "Income statement / P&L breakdown",
+          "Cap table and capitalization data"
+        ],
+        "gaps": [
+          "deck_only",
+          "no_current_revenue",
+          "no_burn_rate",
+          "no_runway",
+          "no_income_statement",
+          "no_cap_table"
+        ],
+        "narrative": "The financial package is insufficient for underwriting. Key missing items: Spreadsheet financial model (XLSX), Current or historical revenue figures, Projected financial model. A spreadsheet financial model should be provided alongside the pitch deck."
+      },
+      "financial_integrity_v1": {
+        "flags": [
+          {
+            "note": "No financial facts available. financial_integrity analysis requires financial_facts_v1 data.",
+            "status": "FAIL",
+            "flag_key": "completeness:no_facts",
+            "severity": "high"
+          }
+        ],
+        "score": null,
+        "has_facts": false,
+        "computed_at": "2026-04-11T16:22:33.940Z",
+        "missing_critical": [
+          "revenue",
+          "arr",
+          "mrr",
+          "burn_rate",
+          "cash",
+          "runway_months",
+          "raise_amount",
+          "pre_money_valuation"
+        ],
+        "completeness_score": null,
+        "missing_supplementary": [
+          "gross_margin",
+          "opex",
+          "churn_pct",
+          "cac",
+          "ltv",
+          "arpu",
+          "net_income"
+        ]
+      },
+      "deal_summary_v1": {
+        "version": "deal_summary_v1",
+        "ready": true,
+        "reason": null,
+        "tiers": {
+          "hero": "Wholesale/Retail",
+          "overview": "Raise: $44M.",
+          "deep": "Business model: Wholesale/Retail"
+        },
+        "one_liner": {
+          "text": "Wholesale/Retail",
+          "sources": []
+        },
+        "product": null,
+        "market": null,
+        "paragraphs": [
+          {
+            "text": "Raise: $44M.",
+            "sources": [
+              {
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 15,
+                "slide_title": null,
+                "snippet": ""
+              }
+            ]
+          },
+          {
+            "text": "Business model: Wholesale/Retail",
+            "sources": [
+              {
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 15,
+                "slide_title": null,
+                "snippet": ""
+              },
+              {
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 17,
+                "slide_title": null,
+                "snippet": ""
+              }
+            ]
+          }
+        ],
+        "warnings": [
+          "product_missing",
+          "market_missing"
+        ]
+      },
+      "deal_summary": {
+        "version": "deal_summary_v1",
+        "ready": false,
+        "reason": "insufficient_overview_evidence,missing_product,missing_market_target,missing_one_liner",
+        "meta": {},
+        "tiers": {
+          "hero": "Insufficient overview evidence.",
+          "overview": "Insufficient overview evidence.",
+          "deep": "Insufficient overview evidence."
+        },
+        "one_liner": null,
+        "product": null,
+        "market_target": null,
+        "market_context": null,
+        "market": null,
+        "paragraphs": [],
+        "warnings": []
+      },
+      "investment_analysis_overview_v2": {
+        "version": "investment_analysis_overview_v2",
+        "archetype": {
+          "value": "consumer_product",
+          "confidence": 0.43902439024390244
+        },
+        "traction": {
+          "present": true,
+          "signals": [
+            "Customers mentioned",
+            "Growth mentioned",
+            "Revenue mentioned",
+            "Users mentioned"
+          ],
+          "metrics": []
+        },
+        "capital_profile": {
+          "runway_months": null,
+          "burn_multiple": null
+        },
+        "evidence_strength": {
+          "coverage_ratio": 0.8,
+          "confidence_score": 0.703125,
+          "evidence_factor": 0.776253781512605,
+          "due_diligence_factor": 0.9650000000000001,
+          "adjustment_factor": 0.7490848991596639,
+          "diligence_readiness_band": "high"
+        },
+        "kpis": {
+          "inputs_hash": "8f6b811a449f273c7d9c3297b753c8f9e7b7ed771d30bc83fe0b5cae9b594026",
+          "keys": [
+            "customers",
+            "first_party_database_active_pct",
+            "first_party_database_size",
+            "growth",
+            "marketing_attributed_revenue_email_sms",
+            "paid_media_conversion_pct",
+            "revenue"
+          ]
+        },
+        "open_items": {
+          "source": "score_explanation.understanding_v1.diligence_open_items",
+          "items": [
+            "Add evidence for missing sections: gtm.",
+            "Operating controls and instrumentation (cohorts, conversion, chargebacks/fraud where applicable).",
+            "raise"
+          ]
+        },
+        "top_risks": {
+          "source": "dio.analyzer_results.risk_assessment",
+          "items": [
+            "Key technical role unfilled - CTO position vacant",
+            "Regulatory requirements - approval timeline uncertain"
+          ]
+        },
+        "coverage_gaps": [],
+        "summary": "The deal focuses on a DTC Ecommerce model leveraging data science to build consumer trust through personalized recommendations.",
+        "summary_medium": "This deal revolves around a DTC Ecommerce model that utilizes advanced data science models to enhance consumer trust and deliver tailored recommendations. The target customer base includes individuals who value personalized experiences, as exemplified by relatable figures such as a mother and a high school physics teacher. The strength of the platform lies in its ability to foster trust with consumers, which is critical for driving engagement and loyalty.",
+        "summary_long": "The executive summary indicates a recommendation to proceed with the deal, scoring 67 out of 100 with medium confidence; However, there are notable gaps in the coverage, particularly concerning the go-to-market strategy, financial details, and specific traction metrics; The identified risks include competition, regulatory compliance, and security concerns, which could impact the overall viability of the business model. What it is: our data science models. strength of our platform is the trust that we build with consumers and the tailored and personalized recommendations we deliver via.\n\nDespite the identified risks, the traction signals suggest positive indicators such as revenue growth and customer engagement; The business archetype aligns with consumer products, indicating a focus on building a trusted brand; However, the absence of detailed financial metrics and a clear go-to-market strategy raises questions about the deal's potential success and sustainability in a competitive landscape. What it is: our data science models. strength of our platform is the trust that we build with consumers and the tailored and personalized recommendations we deliver via.",
+        "raise": {
+          "value": "$44M Equity",
+          "guarded": false
+        },
+        "business_model": {
+          "value": "Wholesale/Retail",
+          "guarded": false
+        },
+        "revenue": {
+          "value": null,
+          "guarded": false,
+          "is_projected": false
+        }
+      }
+    },
+    "dealId": "2590957b-278d-4b7b-add4-a6d43e06dddd",
+    "generatedAt": "2026-04-11T16:22:38.939Z",
+    "overallScore": 35,
+    "funding_stage_v1": {
+      "funding_stage": "pre_seed",
+      "confidence": 0.6,
+      "signals": [
+        {
+          "label": "company_phase_label:pre_seed",
+          "weight": 0.6,
+          "value": "IDEA"
+        }
+      ]
+    },
+    "financial_coverage_v1": {
+      "confidence": "low",
+      "sources": [
+        {
+          "kind": "deck"
+        }
+      ],
+      "coverage": {
+        "historical_revenue_present": false,
+        "forecast_revenue_present": false,
+        "income_statement_present": false,
+        "burn_rate_present": false,
+        "runway_present": false,
+        "unit_economics_present": false,
+        "balance_sheet_present": false,
+        "cash_flow_present": false
+      },
+      "evidence": {},
+      "score": 0
+    },
+    "capital_logic_v1": {
+      "confidence": "low",
+      "raise": {
+        "present": true,
+        "amount": 44000000,
+        "sources": [
+          {
+            "document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+            "page_index": 15,
+            "page": 16,
+            "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16"
+          }
+        ]
+      },
+      "use_of_funds": {
+        "present": false
+      },
+      "milestones": {
+        "present": false
+      },
+      "coherence": {
+        "has_raise_and_use_of_funds": false,
+        "has_raise_and_milestones": false,
+        "has_use_of_funds_and_milestones": false,
+        "appears_coherent": false
+      }
+    },
+    "stage_expectations_v1": {
+      "stage": "pre_seed",
+      "confidence": "high",
+      "expectations": {
+        "requires_traction_evidence": false,
+        "requires_unit_economics": false,
+        "requires_income_statement": false,
+        "requires_burn_and_runway": false,
+        "requires_capital_logic": true,
+        "requires_team_depth": false
+      },
+      "observed": {
+        "traction_evidence_present": false,
+        "unit_economics_present": false,
+        "income_statement_present": false,
+        "burn_and_runway_present": false,
+        "capital_logic_present": true,
+        "xlsx_present": false
+      },
+      "gaps": [
+        {
+          "code": "missing_capital_logic",
+          "severity": "medium",
+          "message": "Missing coherent capital logic (raise + use of funds + milestones)."
+        }
+      ],
+      "notes": [
+        "funding_stage_only"
+      ]
+    },
+    "business_model_signal_v1": {
+      "present": true,
+      "pricing_present": false,
+      "revenue_model_present": false,
+      "customer_segment_present": false,
+      "monetization_mechanics_present": false,
+      "confidence": "low",
+      "signals": [
+        {
+          "code": "business_model_present",
+          "present": true
+        },
+        {
+          "code": "pricing_present",
+          "present": false
+        },
+        {
+          "code": "revenue_model_present",
+          "present": false
+        },
+        {
+          "code": "customer_segment_present",
+          "present": false
+        },
+        {
+          "code": "monetization_mechanics_present",
+          "present": false
+        }
+      ]
+    },
+    "market_accessibility_signal_v1": {
+      "tam_present": false,
+      "sam_present": false,
+      "som_present": false,
+      "icp_defined": false,
+      "target_segment_defined": false,
+      "distribution_channel_defined": false,
+      "wedge_defined": false,
+      "confidence": "low",
+      "signals": [
+        {
+          "code": "tam_present",
+          "present": false
+        },
+        {
+          "code": "sam_present",
+          "present": false
+        },
+        {
+          "code": "som_present",
+          "present": false
+        },
+        {
+          "code": "icp_defined",
+          "present": false
+        },
+        {
+          "code": "target_segment_defined",
+          "present": false
+        },
+        {
+          "code": "distribution_channel_defined",
+          "present": false
+        },
+        {
+          "code": "wedge_defined",
+          "present": false
+        },
+        {
+          "code": "heuristic_fact_type_match",
+          "present": false
+        }
+      ]
+    },
+    "traction_signal_v1": {
+      "historical_revenue_present": false,
+      "forecast_revenue_present": false,
+      "user_metrics_present": false,
+      "growth_rate_present": false,
+      "recurring_revenue_present": false,
+      "bookings_present": false,
+      "tam_only": false,
+      "confidence": "low",
+      "signals": [
+        {
+          "code": "historical_revenue_present",
+          "present": false
+        },
+        {
+          "code": "forecast_revenue_present",
+          "present": false
+        },
+        {
+          "code": "user_metrics_present",
+          "present": false
+        },
+        {
+          "code": "growth_rate_present",
+          "present": false
+        },
+        {
+          "code": "recurring_revenue_present",
+          "present": false
+        },
+        {
+          "code": "bookings_present",
+          "present": false
+        },
+        {
+          "code": "tam_only",
+          "present": false
+        }
+      ]
+    },
+    "team_signal_v1": {
+      "founder_count": 0,
+      "key_roles_present": {
+        "ceo": false,
+        "technical": false,
+        "gtm": false
+      },
+      "prior_startup_experience_present": false,
+      "prior_exit_present": false,
+      "domain_experience_present": false,
+      "team_size_known": false,
+      "confidence": "low",
+      "signals": [
+        {
+          "code": "no_founder",
+          "present": true
+        },
+        {
+          "code": "solo_founder",
+          "present": false
+        },
+        {
+          "code": "balanced_team",
+          "present": false
+        },
+        {
+          "code": "no_technical_lead",
+          "present": true
+        },
+        {
+          "code": "no_gtm_lead",
+          "present": true
+        },
+        {
+          "code": "no_prior_experience",
+          "present": true
+        },
+        {
+          "code": "no_domain_experience",
+          "present": true
+        }
+      ]
+    },
+    "conviction_v1": {
+      "schema_version": "conviction_v1",
+      "selected_policy_id": "consumer_fintech_platform_v1",
+      "conviction_score_0_100": 27,
+      "conviction_band": "hard_pass",
+      "recommendation_posture": "pass",
+      "confidence_0_1": 0.5626897600636797,
+      "coverage_ratio_0_1": 0.338255634203889,
+      "contradiction_index_0_1": 0.42400000000000004,
+      "inputs": {
+        "financial_truth": {
+          "family": "financial_truth",
+          "status": "unknown",
+          "signal_strength": 0.35,
+          "confidence": 0.45,
+          "coverage": 0,
+          "source": "deck",
+          "source_priority": 4,
+          "evidence_refs": [],
+          "notes": []
+        },
+        "capital_structure": {
+          "family": "capital_structure",
+          "status": "probable",
+          "signal_strength": 0.4,
+          "confidence": 0.45,
+          "coverage": 0.3333333333333333,
+          "source": "capital_logic_v1",
+          "source_priority": 2,
+          "evidence_refs": [
+            "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16"
+          ],
+          "notes": []
+        },
+        "traction_validation": {
+          "family": "traction_validation",
+          "status": "probable",
+          "signal_strength": 0.56,
+          "confidence": 0.58,
+          "coverage": 0.5,
+          "source": "traction_signal_v1",
+          "source_priority": 3,
+          "evidence_refs": [
+            "f5f2f38d-9dac-4bc0-986a-4733a3b7dcc7"
+          ],
+          "notes": [
+            "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:traction_validation:traction_structured=0,refs=1"
+          ]
+        },
+        "market_demand": {
+          "family": "market_demand",
+          "status": "unknown",
+          "signal_strength": 0,
+          "confidence": 0.45,
+          "coverage": 0,
+          "source": "market_accessibility_signal_v1",
+          "source_priority": 3,
+          "evidence_refs": [],
+          "notes": [
+            "headings",
+            "sections",
+            "status_not_ok",
+            "confidence_low"
+          ]
+        },
+        "product_or_asset_quality": {
+          "family": "product_or_asset_quality",
+          "status": "unknown",
+          "signal_strength": 0,
+          "confidence": 0.45,
+          "coverage": 0,
+          "source": "business_model_signal_v1",
+          "source_priority": 3,
+          "evidence_refs": [],
+          "notes": []
+        },
+        "team_execution": {
+          "family": "team_execution",
+          "status": "probable",
+          "signal_strength": 0.56,
+          "confidence": 0.58,
+          "coverage": 0.5,
+          "source": "team_signal_v1",
+          "source_priority": 3,
+          "evidence_refs": [],
+          "notes": [
+            "no_founder",
+            "no_technical_lead",
+            "no_gtm_lead",
+            "no_prior_experience",
+            "no_domain_experience",
+            "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:team_execution:team_structured=0"
+          ]
+        },
+        "risk_dependencies": {
+          "family": "risk_dependencies",
+          "status": "contradicted",
+          "signal_strength": 0.5,
+          "confidence": 0.75,
+          "coverage": 0.8,
+          "source": "score_explanation.components.risk_assessment",
+          "source_priority": 3,
+          "evidence_refs": [
+            "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+            "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+          ],
+          "notes": [
+            "high: Key technical role unfilled - CTO position vacant",
+            "high: Regulatory requirements - approval timeline uncertain"
+          ]
+        },
+        "external_corroboration": {
+          "family": "external_corroboration",
+          "status": "unknown",
+          "signal_strength": 0.5,
+          "confidence": 0.5,
+          "coverage": 0.2,
+          "source": "not_available_phase1",
+          "source_priority": 5,
+          "evidence_refs": [],
+          "notes": [
+            "reserved_for_future_external_signal_integration"
+          ]
+        },
+        "evidence_quality": {
+          "family": "evidence_quality",
+          "status": "confirmed",
+          "signal_strength": 0.8015625,
+          "confidence": 0.8015625,
+          "coverage": 0.8,
+          "source": "score_explanation.totals",
+          "source_priority": 3,
+          "evidence_refs": [],
+          "notes": [
+            "confidence_score=0.703",
+            "evidence_factor=0.900"
+          ]
+        },
+        "coverage": {
+          "family": "coverage",
+          "status": "confirmed",
+          "signal_strength": 0.8,
+          "confidence": 0.8015625,
+          "coverage": 0.8,
+          "source": "score_explanation.totals",
+          "source_priority": 3,
+          "evidence_refs": [],
+          "notes": [
+            "coverage_ratio=0.800"
+          ]
+        },
+        "contradictions": {
+          "family": "contradictions",
+          "status": "contradicted",
+          "signal_strength": 0.325,
+          "confidence": 0.8,
+          "coverage": 0.85,
+          "source": "conviction_v1.contradictions",
+          "source_priority": 3,
+          "evidence_refs": [
+            "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+            "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+          ],
+          "notes": [
+            "red_flag_risk_assessment",
+            "no_technical_lead",
+            "no_gtm_lead",
+            "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_technical_lead",
+            "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_gtm_lead"
+          ]
+        }
+      },
+      "summary": {
+        "headline": "Conviction 27/100 (Hard Pass)",
+        "rationale": "Primary deterministic support is led by Evidence Quality, Coverage, Traction Validation.",
+        "provisional": false,
+        "notes": [
+          "phase2_native_deterministic_conviction",
+          "policy=consumer_fintech_platform_v1",
+          "stage=pre_seed",
+          "policy_label=Consumer Fintech Platform",
+          "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:team_execution",
+          "RECONCILED_TEAM_EXECUTION",
+          "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:traction_validation",
+          "RECONCILED_TRACTION_VALIDATION",
+          "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_technical_lead",
+          "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_gtm_lead"
+        ]
+      },
+      "top_positive_contributors": [
+        {
+          "key": "evidence_quality",
+          "label": "Evidence Quality",
+          "score_delta_0_100": 1.6,
+          "evidence_refs": [],
+          "notes": [
+            "confidence_score=0.703",
+            "evidence_factor=0.900"
+          ]
+        },
+        {
+          "key": "coverage",
+          "label": "Coverage",
+          "score_delta_0_100": 1.6,
+          "evidence_refs": [],
+          "notes": [
+            "coverage_ratio=0.800"
+          ]
+        },
+        {
+          "key": "traction_validation",
+          "label": "Traction Validation",
+          "score_delta_0_100": 0.8,
+          "evidence_refs": [
+            "f5f2f38d-9dac-4bc0-986a-4733a3b7dcc7"
+          ],
+          "notes": [
+            "UNKNOWN_OVERRIDDEN_BY_EVIDENCE:traction_validation:traction_structured=0,refs=1"
+          ]
+        }
+      ],
+      "top_negative_contributors": [
+        {
+          "key": "risk_dependencies",
+          "label": "Risk Dependencies",
+          "score_delta_0_100": -8.3,
+          "evidence_refs": [
+            "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+            "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+          ],
+          "notes": [
+            "high: Key technical role unfilled - CTO position vacant",
+            "high: Regulatory requirements - approval timeline uncertain"
+          ]
+        },
+        {
+          "key": "contradictions",
+          "label": "Contradictions",
+          "score_delta_0_100": -5.4,
+          "evidence_refs": [
+            "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+            "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+          ],
+          "notes": [
+            "red_flag_risk_assessment",
+            "no_technical_lead",
+            "no_gtm_lead",
+            "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_technical_lead",
+            "CONTRADICTION_SUPPRESSED_BY_EVIDENCE:no_gtm_lead"
+          ]
+        },
+        {
+          "key": "market_demand",
+          "label": "Market Demand",
+          "score_delta_0_100": -3.7,
+          "evidence_refs": [],
+          "notes": [
+            "headings",
+            "sections",
+            "status_not_ok",
+            "confidence_low"
+          ]
+        }
+      ],
+      "unknowns": [
+        {
+          "code": "unknown_financial_truth",
+          "text": "Financial Truth is currently unknown and needs additional deterministic evidence.",
+          "evidence_refs": []
+        },
+        {
+          "code": "unknown_market_demand",
+          "text": "Market Demand is currently unknown and needs additional deterministic evidence.",
+          "evidence_refs": []
+        },
+        {
+          "code": "unknown_product_or_asset_quality",
+          "text": "Product/Asset Quality is currently unknown and needs additional deterministic evidence.",
+          "evidence_refs": []
+        },
+        {
+          "code": "unknown_external_corroboration",
+          "text": "External Corroboration is currently unknown and needs additional deterministic evidence.",
+          "evidence_refs": []
+        }
+      ],
+      "contradictions": [
+        {
+          "code": "red_flag_risk_assessment",
+          "text": "high: Key technical role unfilled - CTO position vacant",
+          "severity": "medium",
+          "evidence_refs": [
+            "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+            "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+          ],
+          "source": "score_explanation.components.risk_assessment.red_flags"
+        },
+        {
+          "code": "red_flag_risk_assessment",
+          "text": "high: Regulatory requirements - approval timeline uncertain",
+          "severity": "medium",
+          "evidence_refs": [
+            "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+            "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+          ],
+          "source": "score_explanation.components.risk_assessment.red_flags"
+        }
+      ],
+      "required_next_checks": [
+        {
+          "text": "Provide deterministic evidence for financial_truth.",
+          "expected_direction": "clarify",
+          "evidence_refs": []
+        },
+        {
+          "text": "Provide deterministic evidence for market_demand.",
+          "expected_direction": "clarify",
+          "evidence_refs": []
+        },
+        {
+          "text": "Provide deterministic evidence for product_or_asset_quality.",
+          "expected_direction": "clarify",
+          "evidence_refs": []
+        },
+        {
+          "text": "Resolve contradiction: high: Key technical role unfilled - CTO position vacant",
+          "expected_direction": "increase",
+          "evidence_refs": [
+            "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+            "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+          ]
+        },
+        {
+          "text": "Resolve contradiction: high: Regulatory requirements - approval timeline uncertain",
+          "expected_direction": "increase",
+          "evidence_refs": [
+            "04e75e69-2636-40d7-9a74-e2d2af5f8119",
+            "78cfe657-5d33-41c8-ac15-f6321c8fbe20"
+          ]
+        },
+        {
+          "text": "raise",
+          "expected_direction": "clarify",
+          "evidence_refs": []
+        }
+      ],
+      "lineage": {
+        "generated_at": "2026-04-11T16:22:38.944Z",
+        "mapping_version": "phase2_deterministic_v1",
+        "source_artifacts": [
+          {
+            "artifact": "financial_coverage_v1",
+            "path": "report.financial_coverage_v1",
+            "used": true,
+            "note": "phase2 primary financial truth and coverage input"
+          },
+          {
+            "artifact": "capital_logic_v1",
+            "path": "report.capital_logic_v1",
+            "used": true,
+            "note": "phase2 primary capital-structure input"
+          },
+          {
+            "artifact": "business_model_signal_v1",
+            "path": "report.business_model_signal_v1",
+            "used": true,
+            "note": "phase2 primary product/asset quality input"
+          },
+          {
+            "artifact": "market_accessibility_signal_v1",
+            "path": "report.market_accessibility_signal_v1",
+            "used": true,
+            "note": "phase2 primary market-demand input"
+          },
+          {
+            "artifact": "traction_signal_v1",
+            "path": "report.traction_signal_v1",
+            "used": true,
+            "note": "phase2 primary traction-validation input"
+          },
+          {
+            "artifact": "team_signal_v1",
+            "path": "report.team_signal_v1",
+            "used": true,
+            "note": "phase2 primary team-execution input"
+          },
+          {
+            "artifact": "funding_stage_v1",
+            "path": "report.funding_stage_v1",
+            "used": true,
+            "note": "phase2 stage-aware weighting input"
+          },
+          {
+            "artifact": "score_explanation",
+            "path": "metadata.score_explanation",
+            "used": true,
+            "note": "phase2 secondary deterministic compatibility input (evidence quality + contradictions), not conviction source of truth"
+          },
+          {
+            "artifact": "recommendation",
+            "path": "report.recommendation",
+            "used": true,
+            "note": "compatibility surface only; conviction posture is computed natively"
+          },
+          {
+            "artifact": "overall_score",
+            "path": "report.overallScore",
+            "used": true,
+            "note": "compatibility surface only; not used as native conviction score passthrough"
+          },
+          {
+            "artifact": "financial_breakdown_v1",
+            "path": "report.financial_breakdown_v1",
+            "used": true
+          }
+        ]
+      }
+    },
+    "structured_summary": {
+      "raise": {
+        "value": "$44M Equity",
+        "value_json": {
+          "amount": {
+            "amount": 44000000,
+            "currency": "USD"
+          }
+        },
+        "round_label": null,
+        "confidence": 0.8,
+        "sources": [
+          {
+            "kind": "promoted_fact",
+            "fact_type": "raise_terms_v1",
+            "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:raise_terms_v1",
+            "extracted_at": "2026-04-11 16:22:09.163+00",
+            "evidence_role": "primary",
+            "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+            "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+            "page_index": 15,
+            "page": 16,
+            "slide_number": null,
+            "segment_key": "unknown",
+            "segment_reason": null,
+            "slide_title": null
+          }
+        ]
+      },
+      "business_model": {
+        "value": "Wholesale/Retail",
+        "confidence": 0.75,
+        "sources": [
+          {
+            "kind": "promoted_fact",
+            "fact_type": "business_model_v1",
+            "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:business_model_v1",
+            "extracted_at": "2026-04-11 16:22:19.941+00",
+            "evidence_role": "primary",
+            "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:18",
+            "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+            "page_index": 17,
+            "page": 18,
+            "slide_number": null,
+            "segment_key": "unknown",
+            "segment_reason": null,
+            "slide_title": null
+          }
+        ]
+      },
+      "revenue": {
+        "value": null,
+        "confidence": 0,
+        "sources": [],
+        "label": null,
+        "selection_reason": "not_extracted_yet"
+      },
+      "customers": {
+        "value": null,
+        "confidence": 0,
+        "sources": [],
+        "label": null
+      },
+      "growth": {
+        "value": null,
+        "confidence": 0,
+        "sources": [],
+        "label": null
+      },
+      "marketing_metrics": {
+        "attributed_revenue": {
+          "value_raw": "$44M",
+          "channel": null,
+          "confidence": 0.62,
+          "sources": [
+            {
+              "kind": "promoted_fact",
+              "fact_type": "marketing_attributed_revenue_v1",
+              "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:dpu_fact:marketing_attributed_revenue_v1:attributed:na",
+              "extracted_at": "2026-04-11T16:22:09.163723+00:00",
+              "evidence_role": "primary",
+              "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "page_index": 15,
+              "page": 16,
+              "slide_number": null,
+              "segment_key": "unknown",
+              "segment_reason": {
+                "rules_hit": [
+                  "segmenter:dpu_page_v1"
+                ],
+                "keywords_hit": [],
+                "classifier_confidence": 0,
+                "source": "deterministic"
+              },
+              "slide_title": null,
+              "note_snippet": "\u2022 Access to Consumers Who Are Ready to Transact. Because our expertise and personalized guidance are helpful for consumers at all stages of the financial decision-making process, many of the consumers on our platform are poised to make a tr"
+            }
+          ]
+        }
+      },
+      "issues": [],
+      "strengths": [],
+      "recommendations": [],
+      "topsection_v1": {
+        "schema_version": "topsection_v1",
+        "score_driver_one_liner": "Score of 33 \u2014 business metrics was a strength (+0 pts), while risk profile needs improvement (-20 pts).",
+        "strengths": [],
+        "weaknesses": [
+          "Add evidence for missing sections: gtm.",
+          "Operating controls and instrumentation (cohorts, conversion, chargebacks/fraud where applicable)."
+        ],
+        "actions_to_improve": []
+      },
+      "product_summary_v1": null,
+      "market_summary_v1": null,
+      "deal_summary_v1": {
+        "version": "deal_summary_v1",
+        "ready": true,
+        "reason": null,
+        "tiers": {
+          "hero": "Wholesale/Retail",
+          "overview": "Raise: $44M.",
+          "deep": "Business model: Wholesale/Retail"
+        },
+        "one_liner": {
+          "text": "Wholesale/Retail",
+          "sources": []
+        },
+        "product": null,
+        "market": null,
+        "paragraphs": [
+          {
+            "text": "Raise: $44M.",
+            "sources": [
+              {
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 15,
+                "slide_title": null,
+                "snippet": ""
+              }
+            ]
+          },
+          {
+            "text": "Business model: Wholesale/Retail",
+            "sources": [
+              {
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 15,
+                "slide_title": null,
+                "snippet": ""
+              },
+              {
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 17,
+                "slide_title": null,
+                "snippet": ""
+              }
+            ]
+          }
+        ],
+        "warnings": [
+          "product_missing",
+          "market_missing"
+        ]
+      },
+      "deck_type": "unknown",
+      "market_summary": {
+        "value": null,
+        "confidence": 0,
+        "sources": []
+      },
+      "product_summary": {
+        "value": null,
+        "confidence": 0,
+        "sources": []
+      },
+      "gtm_summary": {
+        "value": null,
+        "confidence": 0,
+        "sources": []
+      },
+      "deal_summary": {
+        "value": null,
+        "confidence": 0,
+        "sources": []
+      },
+      "kpis": {
+        "raise": {
+          "value": "$44M Equity",
+          "value_json": {
+            "amount": {
+              "amount": 44000000,
+              "currency": "USD"
+            }
+          },
+          "round_label": null,
+          "confidence": 0.8,
+          "sources": [
+            {
+              "kind": "promoted_fact",
+              "fact_type": "raise_terms_v1",
+              "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:raise_terms_v1",
+              "extracted_at": "2026-04-11 16:22:09.163+00",
+              "evidence_role": "primary",
+              "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "page_index": 15,
+              "page": 16,
+              "slide_number": null,
+              "segment_key": "unknown",
+              "segment_reason": null,
+              "slide_title": null
+            }
+          ]
+        },
+        "revenue": {
+          "value": null,
+          "confidence": 0,
+          "sources": [],
+          "label": null,
+          "selection_reason": "not_extracted_yet"
+        },
+        "customers": {
+          "value": null,
+          "confidence": 0,
+          "sources": [],
+          "label": null
+        },
+        "growth": {
+          "value": null,
+          "confidence": 0,
+          "sources": [],
+          "label": null
+        },
+        "business_model": {
+          "value": "Wholesale/Retail",
+          "confidence": 0.75,
+          "sources": [
+            {
+              "kind": "promoted_fact",
+              "fact_type": "business_model_v1",
+              "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:fact:business_model_v1",
+              "extracted_at": "2026-04-11 16:22:19.941+00",
+              "evidence_role": "primary",
+              "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:18",
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "page_index": 17,
+              "page": 18,
+              "slide_number": null,
+              "segment_key": "unknown",
+              "segment_reason": null,
+              "slide_title": null
+            }
+          ]
+        },
+        "performance": {
+          "marketing_attributed_revenue_v1": {
+            "value_raw": "$44M",
+            "channel": null,
+            "confidence": 0.62,
+            "sources": [
+              {
+                "kind": "promoted_fact",
+                "fact_type": "marketing_attributed_revenue_v1",
+                "evidence_id": "deal:2590957b-278d-4b7b-add4-a6d43e06dddd:dpu_fact:marketing_attributed_revenue_v1:attributed:na",
+                "extracted_at": "2026-04-11T16:22:09.163723+00:00",
+                "evidence_role": "primary",
+                "source_path": "doc:6f110941-51de-4eb4-98ca-3bb5b8c422f3:page:16",
+                "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+                "page_index": 15,
+                "page": 16,
+                "slide_number": null,
+                "segment_key": "unknown",
+                "segment_reason": {
+                  "rules_hit": [
+                    "segmenter:dpu_page_v1"
+                  ],
+                  "keywords_hit": [],
+                  "classifier_confidence": 0,
+                  "source": "deterministic"
+                },
+                "slide_title": null,
+                "note_snippet": "\u2022 Access to Consumers Who Are Ready to Transact. Because our expertise and personalized guidance are helpful for consumers at all stages of the financial decision-making process, many of the consumers on our platform are poised to make a tr"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "grade": "Needs Improvement",
+    "recommendation": "pass",
+    "categories": [
+      {
+        "name": "Presentation Quality",
+        "score": 27,
+        "maxScore": 100,
+        "color": "#3b82f6",
+        "issues": [
+          "208 pages above pitch deck max (15); not penalized for primary_doc_type=business_plan_im",
+          "\u26a0 Too text-heavy - consider adding more visuals (~0 KB/page)",
+          "\u26a0 Only 0% of slides have headings (70% recommended)",
+          "Consider improving visual design - details above"
+        ],
+        "strengths": [],
+        "recommendations": []
+      },
+      {
+        "name": "Business Metrics",
+        "score": 50,
+        "maxScore": 100,
+        "color": "#8b5cf6",
+        "issues": [],
+        "strengths": [],
+        "recommendations": []
+      },
+      {
+        "name": "Narrative & Story",
+        "score": 70,
+        "maxScore": 100,
+        "color": "#f59e0b",
+        "issues": [],
+        "strengths": [
+          "Story archetype: Unknown"
+        ],
+        "recommendations": []
+      },
+      {
+        "name": "Risk Assessment",
+        "score": 30,
+        "maxScore": 100,
+        "color": "#ef4444",
+        "issues": [
+          "[high] Key technical role unfilled - CTO position vacant",
+          "[high] Regulatory requirements - approval timeline uncertain"
+        ],
+        "strengths": [],
+        "recommendations": []
+      }
+    ],
+    "redFlags": [
+      {
+        "severity": "high",
+        "message": "Key technical role unfilled - CTO position vacant",
+        "action": "Monitor closely"
+      },
+      {
+        "severity": "high",
+        "message": "Regulatory requirements - approval timeline uncertain",
+        "action": "Monitor closely"
+      }
+    ],
+    "greenFlags": [],
+    "sections": [
+      {
+        "id": "executive-summary",
+        "title": "Executive Summary",
+        "content": "Overall Score: 33/100 (Needs Improvement)\\n\\nRecommendation: Hard Pass\\n\\nBased on analysis of 4 evaluation dimensions.",
+        "evidence_ids": []
+      },
+      {
+        "id": "slide-sequence",
+        "title": "Presentation Structure",
+        "content": "Score: N/A\n\nPattern: unknown\n\nFollows expected structure",
+        "evidence_ids": []
+      },
+      {
+        "id": "metric-benchmark",
+        "title": "Business Metrics",
+        "content": "Score: 50/100\n\nMetrics Analyzed:\\n\u2022 revenue: 16.1 vs 0 (Missing)",
+        "evidence_ids": [],
+        "metrics": [
+          {
+            "label": "Metrics Score",
+            "value": 50,
+            "evidence_ids": []
+          }
+        ]
+      },
+      {
+        "id": "visual-design",
+        "title": "Visual Design",
+        "content": "Score: 27/100\n\nWeaknesses:\\n\u2022 208 pages above pitch deck max (15); not penalized for primary_doc_type=business_plan_im\\n\u2022 \u26a0 Too text-heavy - consider adding more visuals (~0 KB/page)\\n\u2022 \u26a0 Only 0% of slides have headings (70% recommended)\\n\u2022 Consider improving visual design - details above",
+        "evidence_ids": [],
+        "metrics": [
+          {
+            "label": "Design Score",
+            "value": 27,
+            "evidence_ids": []
+          }
+        ]
+      },
+      {
+        "id": "narrative-arc",
+        "title": "Narrative & Story",
+        "content": "Pacing Score: 70/100\n\nArchetype: Unknown (0% confidence)\n\nNo emotional beats detected",
+        "evidence_ids": [],
+        "metrics": [
+          {
+            "label": "Pacing Score",
+            "value": 70,
+            "evidence_ids": []
+          }
+        ]
+      },
+      {
+        "id": "financial-health",
+        "title": "Financial Health",
+        "content": "Health Score: N/A\n\n",
+        "evidence_ids": []
+      },
+      {
+        "id": "risk-assessment",
+        "title": "Risk Assessment",
+        "content": "Risk Score: 70/100\nTotal Risks: 2 (Critical: 0, High: 2)\\n\\nRisks by Category:\\n\u2022 Market: 0\\n\u2022 Team: 1\\n\u2022 Financial: 0\\n\u2022 Execution: 1\\n\\nTop Risks:\\n\u2022 [high] Key technical role unfilled - CTO position vacant\\n\u2022 [high] Regulatory requirements - approval timeline uncertain",
+        "evidence_ids": [],
+        "metrics": [
+          {
+            "label": "Risk Score",
+            "value": 70,
+            "evidence_ids": []
+          }
+        ]
+      },
+      {
+        "id": "recommendation",
+        "title": "Investment Recommendation",
+        "content": "Recommendation: Hard Pass\\n\\nOverall Score: 33/100\\nGrade: Needs Improvement\\n\\nConcerns:\\n\u2022 Key technical role unfilled - CTO position vacant\\n\u2022 Regulatory requirements - approval timeline uncertain",
+        "evidence_ids": []
+      }
+    ],
+    "completeness": 100,
+    "financial_breakdown_v1": {
+      "has_xlsx": false,
+      "has_current_state": false,
+      "has_projections": false,
+      "has_cap_table": false,
+      "current_state": {
+        "summary": "Current financial state data is not available. The financial package does not include current-period revenue, burn, or cash figures.",
+        "data_quality": "missing"
+      },
+      "projections": {
+        "periods": [],
+        "summary": "No projected financial periods are present in the financial package. The model covers current-state data only.",
+        "data_quality": "missing"
+      },
+      "revenue_breakdown": {
+        "summary": "Revenue breakdown details are not available."
+      },
+      "expense_structure": {
+        "headcount_by_function": [],
+        "summary": "Headcount and expense structure breakdown is not available in the financial package."
+      },
+      "burn_runway": {
+        "summary": "Burn rate and runway data are not available in the current financial package.",
+        "confidence": "not_available"
+      },
+      "assumptions_summary": "No financial model assumptions are available. Financial figures are sourced from the pitch deck only.",
+      "cap_table_summary": "No cap table document or capitalization data was provided. Ownership structure, dilution, and option pool effects cannot be assessed.",
+      "has_cap_table_data": false,
+      "risks": [
+        {
+          "severity": "high",
+          "code": "deck_only",
+          "message": "No spreadsheet financial model is present. All financial data is sourced from the pitch deck, which may be selective or incomplete."
+        },
+        {
+          "severity": "medium",
+          "code": "missing_burn_runway",
+          "message": "Burn rate and runway are not present in the financial package. Cash position and capital efficiency cannot be assessed."
+        },
+        {
+          "severity": "low",
+          "code": "no_cap_table",
+          "message": "No cap table was provided. Ownership structure, dilution, and option pool effects cannot be evaluated."
+        }
+      ],
+      "narrative": "Financial data is sourced from the pitch deck only; no spreadsheet financial model is present. Burn rate and runway are not available; cash position cannot be assessed from the current package."
+    },
+    "underwriting_readiness_v1": {
+      "status": "insufficient",
+      "score": 5,
+      "reasons": [
+        "No critical financial data inconsistencies were detected."
+      ],
+      "missing": [
+        "Spreadsheet financial model (XLSX)",
+        "Current or historical revenue figures",
+        "Projected financial model",
+        "Burn rate and runway data",
+        "Income statement / P&L breakdown",
+        "Cap table and capitalization data"
+      ],
+      "gaps": [
+        "deck_only",
+        "no_current_revenue",
+        "no_burn_rate",
+        "no_runway",
+        "no_income_statement",
+        "no_cap_table"
+      ],
+      "narrative": "The financial package is insufficient for underwriting. Key missing items: Spreadsheet financial model (XLSX), Current or historical revenue figures, Projected financial model. A spreadsheet financial model should be provided alongside the pitch deck."
+    },
+    "financial_integrity_v1": {
+      "flags": [
+        {
+          "note": "No financial facts available. financial_integrity analysis requires financial_facts_v1 data.",
+          "status": "FAIL",
+          "flag_key": "completeness:no_facts",
+          "severity": "high"
+        }
+      ],
+      "score": null,
+      "has_facts": false,
+      "computed_at": "2026-04-11T16:22:33.940Z",
+      "missing_critical": [
+        "revenue",
+        "arr",
+        "mrr",
+        "burn_rate",
+        "cash",
+        "runway_months",
+        "raise_amount",
+        "pre_money_valuation"
+      ],
+      "completeness_score": null,
+      "missing_supplementary": [
+        "gross_margin",
+        "opex",
+        "churn_pct",
+        "cac",
+        "ltv",
+        "arpu",
+        "net_income"
+      ]
+    },
+    "deal_summary_v1": {
+      "version": "deal_summary_v1",
+      "ready": true,
+      "reason": null,
+      "tiers": {
+        "hero": "Wholesale/Retail",
+        "overview": "Raise: $44M.",
+        "deep": "Business model: Wholesale/Retail"
+      },
+      "one_liner": {
+        "text": "Wholesale/Retail",
+        "sources": []
+      },
+      "product": null,
+      "market": null,
+      "paragraphs": [
+        {
+          "text": "Raise: $44M.",
+          "sources": [
+            {
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "page_index": 15,
+              "slide_title": null,
+              "snippet": ""
+            }
+          ]
+        },
+        {
+          "text": "Business model: Wholesale/Retail",
+          "sources": [
+            {
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "page_index": 15,
+              "slide_title": null,
+              "snippet": ""
+            },
+            {
+              "source_document_id": "6f110941-51de-4eb4-98ca-3bb5b8c422f3",
+              "page_index": 17,
+              "slide_title": null,
+              "snippet": ""
+            }
+          ]
+        }
+      ],
+      "warnings": [
+        "product_missing",
+        "market_missing"
+      ]
+    },
+    "investment_analysis_overview_v2": {
+      "version": "investment_analysis_overview_v2",
+      "archetype": {
+        "value": "consumer_product",
+        "confidence": 0.43902439024390244
+      },
+      "traction": {
+        "present": true,
+        "signals": [
+          "Customers mentioned",
+          "Growth mentioned",
+          "Revenue mentioned",
+          "Users mentioned"
+        ],
+        "metrics": []
+      },
+      "capital_profile": {
+        "runway_months": null,
+        "burn_multiple": null
+      },
+      "evidence_strength": {
+        "coverage_ratio": 0.8,
+        "confidence_score": 0.703125,
+        "evidence_factor": 0.776253781512605,
+        "due_diligence_factor": 0.9650000000000001,
+        "adjustment_factor": 0.7490848991596639,
+        "diligence_readiness_band": "high"
+      },
+      "kpis": {
+        "inputs_hash": "8f6b811a449f273c7d9c3297b753c8f9e7b7ed771d30bc83fe0b5cae9b594026",
+        "keys": [
+          "customers",
+          "first_party_database_active_pct",
+          "first_party_database_size",
+          "growth",
+          "marketing_attributed_revenue_email_sms",
+          "paid_media_conversion_pct",
+          "revenue"
+        ]
+      },
+      "open_items": {
+        "source": "score_explanation.understanding_v1.diligence_open_items",
+        "items": [
+          "Add evidence for missing sections: gtm.",
+          "Operating controls and instrumentation (cohorts, conversion, chargebacks/fraud where applicable).",
+          "raise"
+        ]
+      },
+      "top_risks": {
+        "source": "dio.analyzer_results.risk_assessment",
+        "items": [
+          "Key technical role unfilled - CTO position vacant",
+          "Regulatory requirements - approval timeline uncertain"
+        ]
+      },
+      "coverage_gaps": [],
+      "summary": "The deal focuses on a DTC Ecommerce model leveraging data science to build consumer trust through personalized recommendations.",
+      "summary_medium": "This deal revolves around a DTC Ecommerce model that utilizes advanced data science models to enhance consumer trust and deliver tailored recommendations. The target customer base includes individuals who value personalized experiences, as exemplified by relatable figures such as a mother and a high school physics teacher. The strength of the platform lies in its ability to foster trust with consumers, which is critical for driving engagement and loyalty.",
+      "summary_long": "The executive summary indicates a recommendation to proceed with the deal, scoring 67 out of 100 with medium confidence; However, there are notable gaps in the coverage, particularly concerning the go-to-market strategy, financial details, and specific traction metrics; The identified risks include competition, regulatory compliance, and security concerns, which could impact the overall viability of the business model. What it is: our data science models. strength of our platform is the trust that we build with consumers and the tailored and personalized recommendations we deliver via.\n\nDespite the identified risks, the traction signals suggest positive indicators such as revenue growth and customer engagement; The business archetype aligns with consumer products, indicating a focus on building a trusted brand; However, the absence of detailed financial metrics and a clear go-to-market strategy raises questions about the deal's potential success and sustainability in a competitive landscape. What it is: our data science models. strength of our platform is the trust that we build with consumers and the tailored and personalized recommendations we deliver via.",
+      "raise": {
+        "value": "$44M Equity",
+        "guarded": false
+      },
+      "business_model": {
+        "value": "Wholesale/Retail",
+        "guarded": false
+      },
+      "revenue": {
+        "value": null,
+        "guarded": false,
+        "is_projected": false
+      }
+    },
+    "__compiler_version": 26
+  }
+}

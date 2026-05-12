@@ -5,6 +5,8 @@ export type BusinessArchetypeValueV1 =
 	| 'services'
 	| 'fund_spv'
 	| 'real_estate'
+	| 'infrastructure_energy'
+	| 'de_spac'
 	| 'other'
 	| 'unknown';
 
@@ -106,6 +108,24 @@ type ArchetypeSpec = {
 
 const ARCHETYPES: ArchetypeSpec[] = [
 	{
+		// de-SPAC / post-merger-public: company has completed a merger with a blank-check SPAC
+		// and is now publicly listed. Must be prioritized above consumer_product / saas to
+		// prevent SPAC financial docs from driving a startup archetype classification.
+		value: 'de_spac',
+		threshold: 40,
+		rules: [
+			{ id: 'spac:trust_account', re: /\btrust\s+account\b/i, weight: 40 },
+			{ id: 'spac:blank_check', re: /\bblank\s+check\s+company\b/i, weight: 40 },
+			{ id: 'spac:business_combination', re: /\bbusiness\s+combination\b/i, weight: 32 },
+			{ id: 'spac:public_shares', re: /\bpublic\s+(?:shares?|stockholders?)\b/i, weight: 28 },
+			{ id: 'spac:minimum_cash', re: /\bminimum\s+cash\s+condition\b/i, weight: 26 },
+			{ id: 'spac:spac', re: /\bspac\b/i, weight: 22 },
+			{ id: 'spac:nasdaq_nyse', re: /\b(?:nyse|nasdaq)\s*(?:listed|:)?\s*\w{1,6}\b/i, weight: 22 },
+			{ id: 'spac:pipe', re: /\bpipe\s+(?:investors?|subscription|investment|financing)\b/i, weight: 20 },
+			{ id: 'spac:merger_consummated', re: /\b(?:merger|combination)\s+(?:was\s+)?consummated\b/i, weight: 18 },
+		],
+	},
+	{
 		value: 'fund_spv',
 		threshold: 30,
 		rules: [
@@ -113,6 +133,27 @@ const ARCHETYPES: ArchetypeSpec[] = [
 			{ id: 'fund:lp_gp', re: /\b(limited\s+partners?|\blp\b|\bgp\b|general\s+partner)\b/i, weight: 26 },
 			{ id: 'fund:carry_fees', re: /\b(carried\s+interest|carry|management\s+fee|capital\s+call)\b/i, weight: 22 },
 			{ id: 'fund:fund', re: /\b(fund\s+I|fund\s+ii|fund\s+iii|fundraise|fundraising\s+for\s+the\s+fund)\b/i, weight: 18 },
+		],
+	},
+	{
+		// Infrastructure / energy / climate-tech project finance.
+		// Placed before consumer_product to prevent energy deployment language
+		// (distribution networks, retail tariffs, project vehicles) from being
+		// mis-classified as a CPG consumer brand.
+		value: 'infrastructure_energy',
+		threshold: 28,
+		rules: [
+			// Hard domain identifiers — single match sufficient to exceed threshold
+			{ id: 'infra:iegs', re: /\biegs\b/i, weight: 40 },
+			{ id: 'infra:green_ammonia', re: /\bgreen\s+ammonia\b/i, weight: 36 },
+			{ id: 'infra:ppa_offtake', re: /\b(ppa|power\s+purchase\s+agreement|offtake\s+agreement)\b/i, weight: 34 },
+			{ id: 'infra:project_finance', re: /\bproject\s+financ(e|ing)\b/i, weight: 32 },
+			// Deployment / capex signals
+			{ id: 'infra:deployment_infra', re: /\b(infrastructure\s+deploy(ment|ed?)|deploy[a-z]*\s+infrastructure)\b/i, weight: 28 },
+			{ id: 'infra:capex', re: /\b(capex|capital\s+expenditure|megawatt[s]?|gigawatt[s]?|(?<!\w)mw\b|(?<!\w)gw\b)\b/i, weight: 22 },
+			{ id: 'infra:climate_tech', re: /\b(climate\s+(infrastructure|tech)|green\s+hydrogen|carbon\s+(reduction|capture)|net[\s-]?zero)\b/i, weight: 22 },
+			{ id: 'infra:energy_systems', re: /\b(energy\s+(system[s]?|storage|assets?)|solar\s+booster|renewable\s+energy|clean\s+energy)\b/i, weight: 18 },
+			{ id: 'infra:project_vehicle', re: /\b(project\s+vehicle|spv\s+per\s+site|per[-\s]?site\s+(cost|deployment))\b/i, weight: 18 },
 		],
 	},
 	{

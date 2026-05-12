@@ -28,6 +28,10 @@ import {
 import { useOrchestratorReport } from '../../../hooks/useOrchestratorReport';
 import { apiRegenerateInvestorInsights } from '../../../lib/apiClient';
 import type { OrchestratorReportV1, OrchestratorVerificationRequest } from '../../../lib/apiClient';
+import {
+  getCanonicalVerdictLabel,
+  getCanonicalVerdictColors,
+} from '../../../lib/canonicalVerdictDisplay';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Prop types
@@ -204,77 +208,146 @@ function OverlayContent({
   report: OrchestratorReportV1;
   darkMode: boolean;
 }) {
-  const { decision, scores, document_confidence, stage_context, segments } = report;
+  const { decision, scores, document_confidence, stage_context, segments, canonical_decision } = report;
   const ors = scores.overall_recommendation_score;
   const dci = document_confidence.score;
   const dciBand = document_confidence.band;
+
+  // Canonical decision (preferred) — fall back to legacy decision.label
+  const cd = canonical_decision ?? null;
+  const cdColors = cd ? getCanonicalVerdictColors(cd.verdict, darkMode) : null;
+  const cdLabel = cd ? getCanonicalVerdictLabel(cd.verdict) : null;
+
+  // Legacy decision styling (used in supporting-signal row when canonical is present)
   const style = decisionStyle(decision.label, darkMode);
   const { Icon } = style;
 
-  const drivers = (decision.rationale_bullets ?? []).slice(0, 6);
+  const drivers = (cd?.drivers?.length ? cd.drivers : decision.rationale_bullets ?? []).slice(0, 6);
   const verifications = sortedVerifications(segments?.risk_verification?.verification_requests, 5);
 
-  // Data limitations: missing terms from stage_context OR from segments (whichever is populated)
+  // Data limitations: conflict_detected is an upgrade over missing_critical_terms when cd present
   const missingTerms = stage_context.missing_critical_terms.length > 0
     ? stage_context.missing_critical_terms
     : (segments?.risk_verification?.data_issues?.missing_critical_terms ?? []);
-  const hasLimitations = missingTerms.length > 0 || isLowCoverage(dciBand);
+  const hasLimitations = missingTerms.length > 0 || isLowCoverage(dciBand) || (cd?.conflict_detected === true);
+
+  // Active colors for bullet dots — canonical when available, else legacy
+  const activeDot = cdColors?.dot ?? style.dot;
 
   return (
     <div className="space-y-4">
-      {/* ── Row 1: Decision badge + ORS + stage + DCI ── */}
-      <div className={`flex flex-wrap items-center gap-3 rounded-xl border p-4 ${style.bg} ${style.border}`}>
-        {/* Decision badge */}
+      {/* ── Row 1: Decision badge + score + stage + DCI ── */}
+      {cd && cdColors && cdLabel ? (
+        // ── Canonical decision header (preferred) ──
         <div
-          className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1 text-sm font-bold ${style.badgeBg} ${style.badgeText}`}
-          data-testid="decision-overlay-badge"
-          data-decision={decision.label}
+          className={`flex flex-wrap items-center gap-3 rounded-xl border p-4 ${cdColors.bg} ${cdColors.border}`}
+          data-testid="decision-overlay-canonical-header"
         >
-          <Icon size={14} />
-          {decision.label}
-        </div>
+          {/* Canonical verdict badge */}
+          <div
+            className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1 text-sm font-bold ${cdColors.bg} ${cdColors.text}`}
+            data-testid="decision-overlay-badge"
+            data-decision={cd.verdict}
+          >
+            {cdLabel}
+          </div>
 
-        {/* ORS */}
-        <div className={`flex items-center gap-1.5 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-          <span className={`text-xs uppercase tracking-wide font-medium opacity-60`}>Deal Score</span>
-          <span className="text-xl font-bold tabular-nums" data-testid="decision-overlay-ors">{ors}</span>
-          <span className={`text-xs opacity-50`}>/100</span>
-        </div>
+          {/* Canonical score */}
+          <div className={`flex items-center gap-1.5 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+            <span className="text-xs uppercase tracking-wide font-medium opacity-60">Deal Score</span>
+            <span className="text-xl font-bold tabular-nums" data-testid="decision-overlay-ors">{Math.round(cd.score)}</span>
+            <span className="text-xs opacity-50">/100</span>
+          </div>
 
-        {/* Stage */}
+          {/* Stage */}
+          <div
+            className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium
+              ${darkMode ? 'border-white/10 bg-white/5 text-gray-300' : 'border-gray-200 bg-white text-gray-700'}`}
+            data-testid="decision-overlay-stage"
+          >
+            <Activity size={11} className="opacity-70" />
+            {stage_context.stage}
+          </div>
+
+          {/* DCI */}
+          <div className="flex items-center gap-1 text-xs" data-testid="decision-overlay-dci">
+            <span className={darkMode ? 'text-gray-400' : 'text-gray-500'}>Coverage</span>
+            <span className={`font-semibold tabular-nums ${dciBandColor(dciBand, darkMode)}`}>{dci}/100</span>
+          </div>
+
+          {/* Confidence */}
+          <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium
+            ${cd.confidence >= 0.7
+              ? (darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-700')
+              : cd.confidence >= 0.45
+                ? (darkMode ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-700')
+                : (darkMode ? 'bg-gray-500/10 text-gray-400' : 'bg-gray-100 text-gray-600')
+            }`}
+          >
+            {Math.round(cd.confidence * 100)}% confidence
+          </span>
+
+          {/* Supporting: legacy ORS label */}
+          <div
+            className={`flex items-center gap-1.5 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}
+            data-testid="supporting-ors"
+          >
+            <span>ORS {ors}/100</span>
+            <span className={`rounded px-1.5 py-0.5 border text-xs font-medium ${style.badgeBg} ${style.badgeText}`}>
+              {decision.label}
+            </span>
+          </div>
+        </div>
+      ) : (
+        // ── Legacy decision header (fallback when canonical_decision absent) ──
         <div
-          className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium
-            ${darkMode ? 'border-white/10 bg-white/5 text-gray-300' : 'border-gray-200 bg-white text-gray-700'}`}
-          data-testid="decision-overlay-stage"
+          className={`flex flex-wrap items-center gap-3 rounded-xl border p-4 ${style.bg} ${style.border}`}
+          data-testid="decision-overlay-legacy-header"
         >
-          <Activity size={11} className="opacity-70" />
-          {stage_context.stage}
-        </div>
+          <div
+            className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1 text-sm font-bold ${style.badgeBg} ${style.badgeText}`}
+            data-testid="decision-overlay-badge"
+            data-decision={decision.label}
+          >
+            <Icon size={14} />
+            {decision.label}
+          </div>
 
-        {/* DCI */}
-        <div
-          className={`flex items-center gap-1 text-xs`}
-          data-testid="decision-overlay-dci"
-        >
-          <span className={darkMode ? 'text-gray-400' : 'text-gray-500'}>Coverage</span>
-          <span className={`font-semibold tabular-nums ${dciBandColor(dciBand, darkMode)}`}>{dci}/100</span>
-          <span className={`rounded px-1 py-0.5 text-xs font-medium ${dciBandColor(dciBand, darkMode)} ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`}>
-            {dciBand}
+          <div className={`flex items-center gap-1.5 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+            <span className="text-xs uppercase tracking-wide font-medium opacity-60">Deal Score</span>
+            <span className="text-xl font-bold tabular-nums" data-testid="decision-overlay-ors">{ors}</span>
+            <span className="text-xs opacity-50">/100</span>
+          </div>
+
+          <div
+            className={`flex items-center gap-1.5 rounded-lg border px-2 py-1 text-xs font-medium
+              ${darkMode ? 'border-white/10 bg-white/5 text-gray-300' : 'border-gray-200 bg-white text-gray-700'}`}
+            data-testid="decision-overlay-stage"
+          >
+            <Activity size={11} className="opacity-70" />
+            {stage_context.stage}
+          </div>
+
+          <div className="flex items-center gap-1 text-xs" data-testid="decision-overlay-dci">
+            <span className={darkMode ? 'text-gray-400' : 'text-gray-500'}>Coverage</span>
+            <span className={`font-semibold tabular-nums ${dciBandColor(dciBand, darkMode)}`}>{dci}/100</span>
+            <span className={`rounded px-1 py-0.5 text-xs font-medium ${dciBandColor(dciBand, darkMode)} ${darkMode ? 'bg-white/5' : 'bg-gray-100'}`}>
+              {dciBand}
+            </span>
+          </div>
+
+          <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium
+            ${decision.confidence_band === 'High'
+              ? (darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-700')
+              : decision.confidence_band === 'Medium'
+                ? (darkMode ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-700')
+                : (darkMode ? 'bg-gray-500/10 text-gray-400' : 'bg-gray-100 text-gray-600')
+            }`}
+          >
+            {decision.confidence_band} confidence
           </span>
         </div>
-
-        {/* Confidence band */}
-        <span className={`ml-auto text-xs px-2 py-0.5 rounded-full font-medium
-          ${decision.confidence_band === 'High'
-            ? (darkMode ? 'bg-emerald-500/10 text-emerald-400' : 'bg-emerald-50 text-emerald-700')
-            : decision.confidence_band === 'Medium'
-              ? (darkMode ? 'bg-amber-500/10 text-amber-400' : 'bg-amber-50 text-amber-700')
-              : (darkMode ? 'bg-gray-500/10 text-gray-400' : 'bg-gray-100 text-gray-600')
-          }`}
-        >
-          {decision.confidence_band} confidence
-        </span>
-      </div>
+      )}
 
       {/* ── Row 2: Why this decision ── */}
       {drivers.length > 0 && (
@@ -288,7 +361,7 @@ function OverlayContent({
           <ul className="space-y-2">
             {drivers.map((bullet, i) => (
               <li key={i} className="flex items-start gap-2" data-testid="driver-bullet">
-                <span className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${style.dot}`} />
+                <span className={`mt-1.5 w-1.5 h-1.5 rounded-full shrink-0 ${activeDot}`} />
                 <span className={`text-sm leading-relaxed ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                   {bullet}
                 </span>
@@ -345,6 +418,11 @@ function OverlayContent({
           <Info size={15} className="shrink-0 mt-0.5 opacity-80" />
           <div className="space-y-1 min-w-0">
             <p className="font-medium text-xs uppercase tracking-wide opacity-80">Data limitations</p>
+            {cd?.conflict_detected && cd.resolver_note && (
+              <p className="text-xs">
+                <span className="font-medium">Signal conflict detected:</span> {cd.resolver_note}
+              </p>
+            )}
             {missingTerms.length > 0 && (
               <p className="text-xs">
                 Not disclosed:{' '}

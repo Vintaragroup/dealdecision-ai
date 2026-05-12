@@ -1,0 +1,201 @@
+{
+  "_schema": "ground_truth_v1",
+  "_status": "FIXTURE-READY — all spec values populated, synthetic deal (no live DB row)",
+  "_synthetic": true,
+  "_synthetic_note": "No live DB deal exists for this spec. Layer 1 / Layer 2 DB checks and Layer 3 API checks are SKIPPED in the validate script; spec coherence is checked instead. Behavioral validation lives in apps/worker/src/lib/financial-facts/__tests__/synthetic-kpi-fixture.test.ts.",
+  "_coverage_rationale": "REF-DEAL-6: Deck-only company (no XLSX) with a dense KPI slide and multiple pricing traps. Tests the system's ability to read a KPI-heavy deck without mistaking pricing tiers, license fees, or market-size numbers for company revenue. The fixture targets a deck with 4+ pricing mentions, a competitor comparison table, and a market size slide all on the same pages as the traction KPIs. It also exercises multi-value ARR/MRR selection: the deck contains both the true KPI values (labeled 'Total MRR' / 'Total ARR') and several larger aspirational/competitor figures — ensuring 'Total'-prefixed KPI labels win over raw mentions.",
+  "_failure_modes_targeted": [
+    "Pricing trap: '$99/seat/month' becoming burn_rate or revenue via deck NLP",
+    "Pricing trap: '$499/month platform fee' captured as burn_rate via /month phrasing",
+    "Market size trap: '$4.2B TAM' promoted to revenue or ARR by a large-dollar-figure labeler",
+    "Competitor ARR trap: 'ARR $50M' from competitor slide assigned as company ARR instead of true $2.18M ARR",
+    "Channel projection trap: 'MRR of $381K projected channel MRR' beating true Total MRR of $182,400",
+    "Fundraise confusion: '$6M raise' mistaken for revenue",
+    "Unit economics: 'Revenue efficiency: 11x' should not generate any dollar metric",
+    "LTV/CAC: 'LTV $18,000' or 'CAC $2,100' should not become revenue or MRR values"
+  ],
+  "_onboarding_status": "PHASE-4-COMPLETE — fixture spec populated, Vitest behavioral tests passing",
+  "deal_name": "SyntheticKPI",
+  "deal_id": "00000000-0000-4000-8000-000000000002",
+  "slots": {
+    "company_description": "SynthCapture is a B2B SaaS platform for enterprise sales intelligence — real-time buyer-intent signals and contact enrichment for revenue teams",
+    "solution_summary": "AI-powered sales-intelligence platform that surfaces intent signals, enriches prospect data, and routes opportunities to quota-carrying reps in real time",
+    "target_customer": "Mid-market and enterprise B2B SaaS companies (100–5,000 employees) with quota-carrying SDR and AE teams",
+    "product_type": "SaaS",
+    "delivery_model": "B2B SaaS",
+    "product_maturity": "scaling",
+    "ai_claims_present": true,
+    "ai_evidence_strength": "documented"
+  },
+  "financials": {
+    "_note": "Synthetic fixture: deck-only deal. No XLSX. All KPI values come from the Traction slide KPI tiles. The deck has a dense noise environment: pricing page, TAM/SAM/SOM slide, competitor comparison table, unit economics slide, and channel partner opportunity slide all on adjacent pages. True operating metrics: MRR $182,400 (Total MRR tile), ARR $2,188,800 (Total ARR tile). Selection rule: '$X Total ARR/MRR' label wins over all non-Total ARR/MRR mentions regardless of dollar size.",
+    "_required_deck_shape": {
+      "slides_needed": [
+        "Traction / KPI slide",
+        "Pricing slide",
+        "Market size / TAM slide",
+        "Competitive landscape slide",
+        "Unit economics slide",
+        "Fundraise / channel opportunity slide"
+      ],
+      "traction_kpis": [
+        "$182,400 Total MRR",
+        "$2,188,800 Total ARR",
+        "152 Customers",
+        "18% MoM Growth"
+      ],
+      "pricing_traps": [
+        "$99/seat/month — Starter",
+        "$499/month — Platform Fee",
+        "$1,250 Onboarding (one-time)"
+      ],
+      "market_numbers": [
+        "$4.2B TAM",
+        "$900M SAM",
+        "$120M SOM"
+      ],
+      "competitor_numbers": [
+        "Competitor A: ARR $50M",
+        "Competitor B: ARR $12M"
+      ],
+      "unit_econ_values": [
+        "LTV $18,000",
+        "CAC $2,100",
+        "Payback 7 months",
+        "Revenue efficiency: 11x per sales dollar"
+      ],
+      "channel_trap_values": [
+        "Projected channel MRR of $381K",
+        "Channel ARR of $6M potential"
+      ],
+      "fundraise_values": [
+        "Raising $6M at $24M pre-money"
+      ]
+    },
+    "_fixture_deck_text": {
+      "_note": "Exact page text strings used in synthetic-kpi-fixture.test.ts. Must match to ensure tests are deterministic.",
+      "page_0_traction": "TRACTION — Q4 2025\n$182,400 Total MRR\n$2,188,800 Total ARR\n152 Customers\n18% MoM Growth",
+      "page_1_pricing": "PRICING\n$99/seat/month — Starter Plan\n$499/month — Platform Fee\n$1,250 Onboarding (one-time)",
+      "page_2_market": "MARKET OPPORTUNITY\nTotal Addressable Market: $4.2B TAM\nServiceable Addressable Market: $900M SAM\nServiceable Obtainable Market: $120M SOM",
+      "page_3_competitors": "COMPETITIVE LANDSCAPE\nCompetitor A: ARR $50M (Series C, 200 customers)\nCompetitor B: ARR $12M (Series B, 80 customers)\nWe offer 3x better NPS than Competitor A",
+      "page_4_unit_econ": "UNIT ECONOMICS\nLTV $18,000\nCAC $2,100\nPayback 7 months\nRevenue efficiency: 11x per sales dollar",
+      "page_5_fundraise": "FUNDRAISE\nRaising $6M at $24M pre-money\nCHANNEL PARTNER OPPORTUNITY\nProjected channel MRR of $381K (2026 target)\nChannel ARR of $6M potential by end of 2026"
+    },
+    "current_state": {
+      "mrr":      { "value": 182400,   "source_kind": "kpi_tile", "evidence": "Traction slide KPI tile — '$182,400 Total MRR'" },
+      "arr":      { "value": 2188800,  "source_kind": "kpi_tile", "evidence": "Traction slide KPI tile — '$2,188,800 Total ARR'" },
+      "revenue":  { "value": null,     "evidence": "Deck-only deal; no revenue actuals stated. Revenue field should remain null in the report." },
+      "burn_rate": { "value": null,    "evidence": "No burn or monthly spend disclosed in deck. Must not inherit pricing slide values." }
+    },
+    "known_noise": {
+      "pricing_page_values":   { "evidence": "$99/seat/month, $499/month, $1,250 onboarding — must NOT appear as burn_rate or revenue in financial_facts_v1" },
+      "tam_sam_values":        { "evidence": "$4.2B TAM, $900M SAM, $120M SOM — must NOT appear as company arr, mrr, or revenue" },
+      "competitor_arr_values": { "evidence": "ARR $50M (Competitor A), ARR $12M (Competitor B) — must NOT appear as company arr" },
+      "ltv_cac_values":        { "evidence": "LTV $18,000, CAC $2,100 — must NOT appear as revenue or mrr" },
+      "channel_projections":   { "evidence": "Projected channel MRR of $381K, Channel ARR of $6M — must NOT become current mrr or arr" }
+    },
+    "raise": { "value": 6000000, "instrument": "SAFE", "evidence": "Raising $6M at $24M pre-money (synthetic fixture)" },
+    "validation": {
+      "_note": "With _synthetic=true, the validate script runs spec coherence checks only (no DB/API). Behavioral assertions live in synthetic-kpi-fixture.test.ts.",
+      "extraction_checks": [
+        {
+          "metric_key": "arr",
+          "expected_value": 2188800,
+          "tolerance_pct": 15,
+          "allowed_source_kinds": ["kpi_tile", "deck"],
+          "note": "True company ARR from traction slide ($2,188,800 Total ARR). Must not resolve to competitor $50M ARR, channel $6M ARR potential, or raise $6M."
+        },
+        {
+          "metric_key": "mrr",
+          "expected_value": 182400,
+          "tolerance_pct": 15,
+          "allowed_source_kinds": ["kpi_tile", "deck"],
+          "note": "True company MRR from traction slide ($182,400 Total MRR). Must not resolve to channel projected MRR of $381K."
+        }
+      ],
+      "noise_checks": [
+        {
+          "label": "Pricing $99/seat not stored as burn_rate",
+          "sql_filter": "metric_key = 'burn_rate' AND value = 99",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "$99/seat/month pricing tier must land in pricing_mentions only, not burn_rate facts"
+        },
+        {
+          "label": "Pricing $499/month not stored as burn_rate",
+          "sql_filter": "metric_key = 'burn_rate' AND value = 499",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "$499/month platform fee must not be captured as monthly burn. Fix 6/7 guard."
+        },
+        {
+          "label": "TAM/SAM values not stored as company ARR/MRR/revenue",
+          "sql_filter": "metric_key IN ('arr', 'mrr', 'revenue') AND value > 100000000",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "$4.2B TAM, $900M SAM, $120M SOM must not appear as operating metrics. Any value > $100M is a market-size signal for this company."
+        },
+        {
+          "label": "Competitor ARR $50M not stored as company ARR",
+          "sql_filter": "metric_key = 'arr' AND value = 50000000",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "Competitor A '$50M ARR' from competitive landscape slide must not resolve as company ARR"
+        },
+        {
+          "label": "Raise amount $6M not stored as revenue",
+          "sql_filter": "metric_key = 'revenue' AND value = 6000000",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "'Raising $6M' fundraise mention must not be captured as company revenue"
+        },
+        {
+          "label": "Unit economics $11 efficiency ratio not stored as revenue",
+          "sql_filter": "metric_key = 'revenue' AND value = 11",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "'Revenue efficiency: 11x per sales dollar' is a unitless ratio, not a dollar revenue figure"
+        },
+        {
+          "label": "Channel projected MRR $381K not stored as current MRR",
+          "sql_filter": "metric_key = 'mrr' AND value = 381000",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "'Projected channel MRR of $381K' is a 2026 target — must not beat actual $182,400 Total MRR"
+        },
+        {
+          "label": "Channel ARR potential $6M not stored as current ARR",
+          "sql_filter": "metric_key = 'arr' AND value = 6000000",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "description": "'Channel ARR of $6M potential' must not override true company ARR of $2,188,800"
+        }
+      ],
+      "report_checks": [
+        {
+          "label": "arr resolves to true KPI value ($2.18M)",
+          "report_path": ["financial_breakdown_v1", "current_state", "arr", "value"],
+          "expected_value": 2188800,
+          "tolerance_pct": 15,
+          "failure_layer": "compiler",
+          "note": "Must not resolve to competitor $50M ARR, channel $6M ARR, or raise $6M"
+        },
+        {
+          "label": "mrr resolves to true KPI value ($182,400)",
+          "report_path": ["financial_breakdown_v1", "current_state", "mrr", "value"],
+          "expected_value": 182400,
+          "tolerance_pct": 15,
+          "failure_layer": "compiler",
+          "note": "Must not resolve to projected channel MRR $381K"
+        },
+        {
+          "label": "burn_rate should be null (no burn data in deck)",
+          "report_path": ["financial_breakdown_v1", "current_state", "burn_rate"],
+          "expected_value": null,
+          "failure_layer": "compiler",
+          "note": "No burn disclosure in deck; pricing values must not contaminate burn_rate"
+        }
+      ]
+    }
+  }
+}

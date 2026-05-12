@@ -1,0 +1,321 @@
+{
+  "deal_name": "3ICE",
+  "deal_id": "61ef36dd-391a-4a4e-b30b-1f5d1f19f91e",
+  "_synthetic": false,
+  "mode": "real_document",
+  "source_type": "pdf",
+  "_schema": "deal_understanding_ground_truth_v1",
+  "ground_truth": {
+    "what_company_does": "3ICE is a three-on-three professional hockey league and sports media company built around fast-paced overtime-style hockey, live events, broadcasts, and related media rights.",
+    "problem": "Traditional hockey formats can be slower and less optimized for short-form, high-intensity fan entertainment and modern media packaging.",
+    "solution": "3ICE packages a three-on-three hockey format with innovative rules, weekly events, broadcast-ready content, and a broader media-rights strategy designed to make hockey more exciting and commercially valuable.",
+    "why_now": "The company is moving from proving the on-ice product into Phase 2 and Phase 3 expansion, with media-rights value, local-market expansion, and branded league extensions expected to unlock the business model.",
+    "business_model": "Sports media and live-events business monetized through media rights, sponsorships, tickets, sports data, merchandise, and future franchise and brand-extension economics.",
+    "revenue_model": "Current and projected revenues are driven by media rights, sponsorships, ticket sales, sports data, merchandise, and related league and event monetization rather than software subscriptions.",
+    "traction_summary": "The deck cites two completed seasons, national broadcast partners including CBS, CBS Sports Network, TSN, and TVA, 20M+ social media impressions, and existing investor backing while positioning 2024 as the next phase of commercial growth.",
+    "risks": "Key risks include dependence on securing larger media-rights deals, execution risk around league expansion and brand extensions, event and venue operations complexity, and the uncertainty of turning projections into sustained profitability.",
+    "target_customer": "The primary audience includes hockey fans, thrill-seeking sports viewers, sponsors, broadcasters, bettors, and event attendees in major hockey and TV markets.",
+    "go_to_market": "The company grows through media distribution, live events in top hockey markets, sponsorships, social and phone-first content, and broader brand extensions such as kids, women, Canada, and World Cup properties.",
+    "market_positioning": "3ICE positions itself as a differentiated sports-media property built around three-on-three overtime-style hockey that is faster, more TV-friendly, and more snackable than traditional full-game hockey.",
+    "competitive_differentiation": "Its differentiation comes from its unique format, Hall of Fame coaches and recognizable hockey figures, broadcaster relationships, digital content strategy, and ability to package a new league plus multiple media extensions.",
+    "investor_relevance_notes": [
+      "This is a sports media and live-events business, not a SaaS company.",
+      "A strong understanding should separate current league operations from future brand extensions like 3ICE Kids, Women, Canada, and World Cup.",
+      "Media rights, sponsorships, tickets, sports data, and merchandise are the core economic drivers, not software subscription revenue.",
+      "The core diligence question is whether audience traction and media-rights value can scale enough to justify the expansion and profitability plan.",
+      "Important diligence areas include media-rights execution, sponsor demand, venue operations, expansion discipline, and the realism of the long-term financial projections."
+    ]
+  },
+  "validation": {
+    "_schema": "deal_understanding_validation_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-3ICE-001",
+        "label": "correctly identifies 3ICE as a three-on-three hockey league and media business",
+        "check_type": "contains_any",
+        "field": "what_company_does",
+        "expected_terms": [
+          "three-on-three",
+          "3-on-3",
+          "hockey league",
+          "sports media",
+          "media company",
+          "live events"
+        ]
+      },
+      {
+        "id": "L1-3ICE-002",
+        "label": "captures the product as overtime-style hockey entertainment",
+        "check_type": "contains_any",
+        "field": "solution",
+        "expected_terms": [
+          "overtime",
+          "faster",
+          "innovative rules",
+          "three-on-three",
+          "broadcast-ready",
+          "exciting"
+        ]
+      },
+      {
+        "id": "L1-3ICE-003",
+        "label": "frames business model as media rights and event monetization",
+        "check_type": "contains_any",
+        "field": "business_model",
+        "expected_terms": [
+          "media rights",
+          "sponsorships",
+          "tickets",
+          "sports data",
+          "merchandise",
+          "events"
+        ]
+      },
+      {
+        "id": "L1-3ICE-004",
+        "label": "revenue model is not software-style recurring SaaS revenue",
+        "check_type": "contains_any",
+        "field": "revenue_model",
+        "expected_terms": [
+          "media rights",
+          "sponsorship",
+          "ticket",
+          "sports data",
+          "merchandise"
+        ]
+      },
+      {
+        "id": "L1-3ICE-005",
+        "label": "go to market includes broadcasts, events, and content distribution",
+        "check_type": "contains_any",
+        "field": "go_to_market",
+        "expected_terms": [
+          "broadcast",
+          "markets",
+          "content",
+          "sponsors",
+          "live events",
+          "social"
+        ]
+      },
+      {
+        "id": "L1-3ICE-006",
+        "label": "target customer reflects fans, broadcasters, and sponsors",
+        "check_type": "contains_any",
+        "field": "target_customer",
+        "expected_terms": [
+          "fans",
+          "viewers",
+          "broadcasters",
+          "sponsors",
+          "bettors",
+          "attendees"
+        ]
+      },
+      {
+        "id": "L1-3ICE-007",
+        "label": "traction references real commercial signals from the deck",
+        "check_type": "contains_any",
+        "field": "traction_summary",
+        "expected_terms": [
+          "two seasons",
+          "cbs",
+          "tsn",
+          "20m",
+          "investors",
+          "broadcast partners"
+        ]
+      },
+      {
+        "id": "L1-3ICE-008",
+        "label": "why now reflects expansion and media-rights timing",
+        "check_type": "contains_any",
+        "field": "why_now",
+        "expected_terms": [
+          "phase 2",
+          "phase 3",
+          "media rights",
+          "expansion",
+          "local markets",
+          "unlocks"
+        ]
+      },
+      {
+        "id": "L1-3ICE-009",
+        "label": "market positioning reflects differentiated hockey entertainment property",
+        "check_type": "contains_any",
+        "field": "market_positioning",
+        "expected_terms": [
+          "differentiated",
+          "faster",
+          "tv-friendly",
+          "snackable",
+          "three-on-three",
+          "sports media"
+        ]
+      },
+      {
+        "id": "L1-3ICE-010",
+        "label": "competitive differentiation includes format and media packaging advantages",
+        "check_type": "contains_any",
+        "field": "competitive_differentiation",
+        "expected_terms": [
+          "unique format",
+          "hall of fame",
+          "broadcast",
+          "digital content",
+          "brand extensions",
+          "coaches"
+        ]
+      },
+      {
+        "id": "L1-3ICE-011",
+        "label": "risks mention media-rights and expansion execution",
+        "check_type": "contains_any",
+        "field": "risks",
+        "expected_terms": [
+          "media rights",
+          "expansion",
+          "profitability",
+          "execution",
+          "sponsors",
+          "operations"
+        ]
+      }
+    ],
+    "consistency_checks": [
+      {
+        "id": "L2-3ICE-013",
+        "label": "business model and revenue model share sports media monetization terms",
+        "check_type": "term_alignment",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "expected_shared_terms": [
+          "media",
+          "rights",
+          "sponsorship",
+          "tickets",
+          "sports data",
+          "merchandise"
+        ],
+        "min_shared": 1
+      },
+      {
+        "id": "L2-3ICE-014",
+        "label": "what company does and solution stay aligned on hockey league entertainment",
+        "check_type": "term_alignment",
+        "field_a": "what_company_does",
+        "field_b": "solution",
+        "expected_shared_terms": [
+          "hockey",
+          "three-on-three",
+          "events",
+          "broadcast",
+          "entertainment"
+        ],
+        "min_shared": 1
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "id": "L4-3ICE-015",
+        "label": "does not misclassify as SaaS or software platform",
+        "check_type": "must_not_contain",
+        "field": "business_model",
+        "prohibited_patterns": [
+          "saas",
+          "software platform",
+          "workflow automation",
+          "crm",
+          "enterprise software"
+        ]
+      },
+      {
+        "id": "L4-3ICE-016",
+        "label": "does not confuse projections with current realized results",
+        "check_type": "must_not_contain",
+        "field": "traction_summary",
+        "prohibited_patterns": [
+          "2029 revenue",
+          "world cup 2029",
+          "15x exit",
+          "future franchise sales already realized"
+        ]
+      },
+      {
+        "id": "L4-3ICE-017",
+        "label": "does not treat brand extensions as already fully launched current business lines",
+        "check_type": "must_not_contain",
+        "field": "revenue_model",
+        "prohibited_patterns": [
+          "3ice kids is already a mature revenue stream",
+          "3ice women is already fully launched and scaled",
+          "3ice canada is already fully launched and scaled",
+          "world cup is already established core revenue"
+        ]
+      },
+      {
+        "id": "L4-3ICE-018",
+        "label": "does not invent software-like recurring subscription revenue",
+        "check_type": "must_not_contain",
+        "field": "revenue_model",
+        "prohibited_patterns": [
+          "mrr",
+          "arr",
+          "seat-based pricing",
+          "monthly subscription software"
+        ]
+      }
+    ],
+    "completeness_checks": [
+      {
+        "id": "L5-3ICE-019",
+        "label": "what_company_does is not empty",
+        "check_type": "not_empty",
+        "field": "what_company_does"
+      },
+      {
+        "id": "L5-3ICE-020",
+        "label": "problem is not empty",
+        "check_type": "not_empty",
+        "field": "problem"
+      },
+      {
+        "id": "L5-3ICE-021",
+        "label": "solution is not empty",
+        "check_type": "not_empty",
+        "field": "solution"
+      },
+      {
+        "id": "L5-3ICE-022",
+        "label": "why_now is not empty",
+        "check_type": "not_empty",
+        "field": "why_now"
+      },
+      {
+        "id": "L5-3ICE-023",
+        "label": "business_model is not empty",
+        "check_type": "not_empty",
+        "field": "business_model"
+      },
+      {
+        "id": "L5-3ICE-024",
+        "label": "revenue_model is not empty",
+        "check_type": "not_empty",
+        "field": "revenue_model"
+      },
+      {
+        "id": "L5-3ICE-025",
+        "label": "traction_summary is not empty",
+        "check_type": "not_empty",
+        "field": "traction_summary"
+      },
+      {
+        "id": "L5-3ICE-026",
+        "label": "risks is not empty",
+        "check_type": "not_empty",
+        "field": "risks"
+      }
+    ]
+  }
+}

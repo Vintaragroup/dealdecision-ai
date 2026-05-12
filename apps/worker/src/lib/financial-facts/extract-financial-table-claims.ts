@@ -152,6 +152,11 @@ export function extractFinancialTableClaims(
       // OCR artifacts (e.g. "$1", "$2").  Threshold: < $100.
       if (unit === "currency" && Math.abs(value) < 100) continue;
 
+      // Year-label guard: reject plain (non-currency) integers that look like
+      // calendar years (2020–2040).  These appear when a year header bleeds into
+      // a data column or a period column is mis-parsed as a metric value.
+      if (unit === "number" && Number.isInteger(value) && value >= 2020 && value <= 2040) continue;
+
       const period_type: FinancialFactPeriodType =
         period_label === "current" ? "unknown" : inferPeriodType(period_label);
 
@@ -532,6 +537,15 @@ function extractColumnHeaders(lines: string[]): string[] {
 export interface ParsedNumeric {
   value: number;
   unit: FinancialFactUnit;
+  /**
+   * True when the token contained an explicit K/M/B/T scale suffix that was
+   * already applied to produce `value` (e.g. "$5.12M" → true, "5120" → false).
+   *
+   * Used by page-level scale callers as a double-scaling guard: when this is
+   * true, no additional scale multiplier should be applied because the suffix
+   * already encoded the magnitude.
+   */
+  has_explicit_scale_suffix: boolean;
 }
 
 /** Parse tokens like "$1.2M", "65%", "120k", "1,200,000", "2.5B" */
@@ -544,7 +558,7 @@ export function parseNumericToken(token: string): ParsedNumeric | null {
   if (pctMatch) {
     const v = parseFloat(pctMatch[1].replace(/,/g, ""));
     if (!Number.isFinite(v)) return null;
-    return { value: v, unit: "percent" };
+    return { value: v, unit: "percent", has_explicit_scale_suffix: false };
   }
 
   // Currency with multiplier: $1.2M, $120k, $2.5B etc.
@@ -554,11 +568,13 @@ export function parseNumericToken(token: string): ParsedNumeric | null {
   if (currMatch) {
     const raw = parseFloat(currMatch[1].replace(/,/g, ""));
     if (!Number.isFinite(raw)) return null;
-    const mult = resolveMultiplier(currMatch[2] ?? "");
+    const suffixStr = currMatch[2] ?? "";
+    const mult = resolveMultiplier(suffixStr);
     const hasCurrencySymbol = /[$€£¥₹]/.test(s);
     return {
       value: raw * mult,
       unit: hasCurrencySymbol ? "currency" : "number",
+      has_explicit_scale_suffix: mult > 1,
     };
   }
 

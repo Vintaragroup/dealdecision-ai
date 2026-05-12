@@ -72,6 +72,28 @@ export function isCorruptedFact(fact: FinancialFactV1): CorruptionCheckResult {
     }
   }
 
+  // Guard 4 — column-index period label (spreadsheet coordinate artefact)
+  // When the XLSX extractor uses Excel column letters or positional indices as
+  // period headers (e.g. "col_A", "col_M", "col_Z", "col_13", "column_4"), the
+  // resulting fact has no meaningful temporal scope and must be rejected.
+  // No valid financial period is named "col_M" or "column_4".
+  if (
+    /^col_[A-Za-z]+$/i.test(fact.period_label) ||
+    /^col_\d+$/i.test(fact.period_label) ||
+    /^column_\d+$/i.test(fact.period_label)
+  ) {
+    return { corrupted: true, reason: 'invalid_column_index_period' };
+  }
+
+  // Guard 5 — dollar-denomination row label (XLSX header artefact)
+  // When an XLSX parser reads a denomination header row ("$000", "$0000", meaning
+  // "values in this table are in thousands") as a period cell, the resulting fact
+  // has a period_label that is a dollar sign followed by zeros.
+  // No valid financial period is named "$000" or "$0000".
+  if (/^\$0+$/.test(fact.period_label)) {
+    return { corrupted: true, reason: 'invalid_denomination_period' };
+  }
+
   return { corrupted: false };
 }
 
@@ -106,6 +128,30 @@ const CONF_RANK: Record<string, number> = { high: 3, medium: 2, low: 1 };
 
 const PERIOD_RANK: Record<string, number> = { annual: 4, ttm: 3, quarterly: 2, monthly: 1, unknown: 0 };
 
+const WEAK_REVENUE_SOURCE_KINDS = new Set<string>(['kpi_tile', 'chart_pixel']);
+const STRONG_REVENUE_SOURCE_KINDS = new Set<string>(['xlsx', 'pdf_table', 'pdf_kpi_line']);
+
+function isHighMagnitudeWeakRevenueFactWithoutCorroboration(
+  candidate: FinancialFactV1,
+  pool: FinancialFactV1[],
+): boolean {
+  if (!WEAK_REVENUE_SOURCE_KINDS.has(candidate.source_kind)) return false;
+  if (!(candidate.value >= 100_000_000)) return false;
+  if (candidate.confidence === 'high') return false;
+
+  const hasStrongCorroboration = pool.some((other) => {
+    if (other.fact_id === candidate.fact_id) return false;
+    if (!STRONG_REVENUE_SOURCE_KINDS.has(other.source_kind)) return false;
+    if (!Number.isFinite(other.value) || other.value <= 0) return false;
+
+    // Treat sources as corroborating when they are within +/-50%.
+    const relDelta = Math.abs(other.value - candidate.value) / Math.max(candidate.value, 1);
+    return relDelta <= 0.5;
+  });
+
+  return !hasStrongCorroboration;
+}
+
 /**
  * Cross-source reconciliation ranking bonus/penalty.
  *
@@ -135,10 +181,37 @@ const CROSS_SOURCE_RANK: Record<CrossSourceReconciliationStatus, number> = {
 export function isProjectedFact(fact: FinancialFactV1): boolean {
   const scope = fact.temporal_scope;
   if (scope === 'projected' || scope === 'scenario' || scope === 'target') return true;
+  // Ordinal year labels ("Year 1", "Year 12", etc.) are always future projections
+  // in XLSX financial models, even when temporal_scope was not propagated (e.g. on
+  // derived facts that lost provenance context after DB round-trip).
+  if (/^Year\s+\d+$/i.test((fact.period_label ?? '').trim())) return true;
+  // Calendar year: "FY2027" or "2027" when current year is 2026.
   // Use digit-boundary lookahead/lookbehind so "FY2027" matches but "2024-2027" doesn't
   // spuriously match on "2024" when the current year is 2026.
   const yr = fact.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
   return yr != null && Number(yr[1]) > new Date().getFullYear();
+}
+
+/**
+ * Returns true when the fact is provisional — i.e. a derived proxy or a
+ * deck-sourced low-confidence claim.
+ *
+ * Provisional facts are not "current-state headline quality". When selecting
+ * current_state fields (burn_rate, runway, cash), non-provisional facts are
+ * always preferred. Provisional facts are still selectedwhen they are the only
+ * available option.
+ *
+ * Provisional signals:
+ *   - `is_derived: true`  — derived via a calculation rule, not directly stated
+ *   - `source_kind === 'deck' && confidence === 'low'`  — unverified deck claim
+ *
+ * Note: `isProjectedFact` is a distinct guard applied before this one.
+ */
+export function isProvisionalFact(fact: FinancialFactV1): boolean {
+  return (
+    fact.is_derived === true ||
+    (fact.source_kind === 'deck' && fact.confidence === 'low')
+  );
 }
 
 // ─── Composite rank score ─────────────────────────────────────────────────────
@@ -215,6 +288,276 @@ export function selectAuthoritativeFact(
  */
 export function filterCorruptedFacts(facts: FinancialFactV1[]): FinancialFactV1[] {
   return facts.filter((f) => !isCorruptedFact(f).corrupted);
+}
+
+// ─── Multi-year proforma model detection ─────────────────────────────────────
+
+/**
+ * Identifies current-year XLSX annual/TTM facts that are part of a multi-year
+ * forward-projection model (e.g. "Proforma Income Statement 2026 / 2027 / 2028").
+ *
+ * Signal: when the candidate pool contains XLSX annual/TTM facts for a FUTURE year,
+ * the current-year column is not a realized operating report — it is the first year
+ * of a budget/proforma model. These facts must not be selected as current-state
+ * revenue even though `isProjectedFact` returns false (which it does when
+ * `temporal_scope` is null and the year equals the current calendar year).
+ *
+ * Safety boundaries:
+ *   - Only applies when XLSX annual/TTM facts for a future year are present.
+ *   - Only marks XLSX annual/TTM facts for the current year as proforma.
+ *   - Never marks historical facts, KPI tiles, PDF-extracted facts, or quarterly facts.
+ *
+ * Returns a Set of fact_ids that should be treated as projected for selection purposes.
+ */
+export function detectProformaModelFactIds(pool: FinancialFactV1[]): Set<string> {
+  const currentYear = new Date().getFullYear();
+
+  // Trigger: at least one XLSX annual/TTM fact covers a future year
+  const hasFutureXlsxAnnualFact = pool.some((f) => {
+    if (f.source_kind !== 'xlsx') return false;
+    if (f.period_type !== 'annual' && f.period_type !== 'ttm') return false;
+    const yr = f.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
+    return yr != null && Number(yr[1]) > currentYear;
+  });
+
+  if (!hasFutureXlsxAnnualFact) return new Set();
+
+  // Collect current-year XLSX annual/TTM facts not already detected as projected
+  const ids = new Set<string>();
+  for (const f of pool) {
+    if (f.source_kind !== 'xlsx') continue;
+    if (f.period_type !== 'annual' && f.period_type !== 'ttm') continue;
+    if (isProjectedFact(f)) continue; // already handled by year > currentYear check
+    const yr = f.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
+    if (yr != null && Number(yr[1]) === currentYear) {
+      ids.add(f.fact_id);
+    }
+  }
+  return ids;
+}
+
+// ─── Canonical revenue-fact selection ────────────────────────────────────────
+
+/**
+ * The ordered set of metric keys that represent current-state company revenue.
+ * Used by both report paths to guarantee selection convergence.
+ */
+export const CANONICAL_REVENUE_KEYS: readonly string[] = ['revenue', 'arr', 'mrr'];
+
+/**
+ * Selects the single canonical current-state revenue FinancialFactV1 for a deal.
+ *
+ * This is the **shared selector** used by BOTH:
+ *   - `financial_breakdown_v1.current_state.revenue`  (via buildFinancialBreakdownV1)
+ *   - `structured_summary.revenue`  (via injectCanonicalRevenueIntoStructuredSummary)
+ *
+ * Selection contract (applied in order):
+ *   1. Reject corrupted facts (isCorruptedFact Guards 1–4: non-finite, year-equals-value,
+ *      year-integer-as-currency, column-index period label).
+ *   2. Accept only revenue / arr / mrr metric keys with positive currency values.
+ *   3. Monthly-only guard: if all non-corrupted revenue candidates are monthly-granularity
+ *      (period_type === 'monthly'), return undefined.  A single month must not become
+ *      the annual current-revenue headline.
+ *   4. Multi-year proforma model guard: if the pool contains XLSX annual facts for a
+ *      future year, any current-year XLSX annual facts are treated as projected budget
+ *      data (not realized actuals) and excluded from current-state selection.
+ *   5. Trust guard: suppress uncorroborated high-magnitude weak-source KPI tiles
+ *      (`kpi_tile` / `chart_pixel`) to avoid OCR packaging/visual outliers becoming
+ *      canonical current revenue.
+ *   6. Prefer non-projected (current / historical) facts over projected ones.
+ *   7. Apply selectAuthoritativeFact source/confidence/period ranking:
+ *      xlsx (10) > pdf_table (5) > pdf_kpi_line (4) > kpi_tile (3) > deck (1).
+ *
+ * All source kinds are eligible — not just xlsx.  This ensures PDF-extracted
+ * FinancialFactV1 records (source_kind='pdf_table' or 'pdf_kpi_line') participate,
+ * fixing Qredible-type divergence where PDF revenue appears in financial_breakdown
+ * but was previously missing from structured_summary.
+ *
+ * @param facts  All FinancialFactV1 records for a deal (raw or pre-filtered — both are safe).
+ */
+export function selectCanonicalRevenueFact(
+  facts: FinancialFactV1[],
+): FinancialFactV1 | undefined {
+  const cleanFacts = filterCorruptedFacts(facts);
+
+  const revenueFacts = cleanFacts.filter(
+    (f) =>
+      (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
+      // Accept both 'currency' and 'number' units: kpi_tile revenue facts are stored
+      // with unit='number' (monetary value, no explicit currency tag) but are canonical
+      // revenue metrics (revenue/arr/mrr are intrinsically monetary regardless of tag).
+      (f.unit === 'currency' || f.unit === 'number') &&
+      f.value > 0,
+  );
+
+  if (revenueFacts.length === 0) return undefined;
+
+  // Monthly-only guard: if every revenue candidate is monthly-granularity, do not
+  // surface a sparse monthly snapshot as the annual current-revenue headline.
+  //
+  // Rolling-monthly XLSX exception: when 4+ distinct non-zero monthly periods are
+  // present (e.g. a Jan–Dec rolling model), the guard does not fire. The deal has a
+  // full rolling-monthly financial model and the most authoritative monthly fact IS
+  // the current-revenue headline.
+  //
+  // Threshold < 4 suppresses 1–3 monthly snapshots (a partial quarter or a single
+  // month extracted from a deck or sparse XLSX), which must not become the annual
+  // revenue headline.
+  const nonMonthlyFacts = revenueFacts.filter((f) => f.period_type !== 'monthly');
+
+  // Extended monthly-fallback condition: also trigger when every non-monthly fact is from a
+  // low-quality source (deck / unknown) AND a rich structured monthly series (4+ distinct
+  // xlsx/kpi_tile/etc. periods) exists. This prevents a provisional deck non-monthly fact from
+  // blocking selection of high-confidence xlsx monthly revenue data.
+  //
+  // Example (Webmaxco / Fix 12): deck $8K (period_type='unknown') + 19 xlsx monthly $8K facts.
+  // The only non-monthly xlsx fact (col_B) was correctly rejected by the corruption guard,
+  // but the deck fact kept nonMonthlyFacts.length > 0, blocking the monthly fallback.
+  const hasValidNonMonthlyStructured = nonMonthlyFacts.some(
+    (f) => f.source_kind !== 'deck' && f.source_kind !== 'unknown',
+  );
+  const monthlyStructuredFacts = revenueFacts.filter(
+    (f) => f.period_type === 'monthly' && f.source_kind !== 'deck' && f.source_kind !== 'unknown',
+  );
+  const useMonthlyFallback =
+    nonMonthlyFacts.length === 0 ||
+    (!hasValidNonMonthlyStructured && monthlyStructuredFacts.length >= 4);
+
+  if (useMonthlyFallback) {
+    const monthlyFacts = revenueFacts.filter((f) => f.period_type === 'monthly');
+    const distinctMonthlyPeriods = new Set(monthlyFacts.map((f) => f.period_label)).size;
+    if (distinctMonthlyPeriods < 4) return undefined;
+    // Rolling-monthly model: select best monthly fact using standard source/confidence ranking.
+    return selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], monthlyFacts, { requireNonProjected: true });
+  }
+
+  // ── Three-tier selection for non-monthly revenue facts ──────────────────────
+  //
+  // Multi-year proforma model guard: if the pool contains XLSX annual/TTM facts for
+  // a future year, current-year XLSX annual facts are budget projections (not realized
+  // actuals) and must be excluded from current-state selection. This handles deals like
+  // DealDecision where a "Proforma Income Statement 2026/2027/2028" XLSX produces a
+  // current-year row that has null temporal_scope but is not a realized operating figure.
+  const proformaModelFactIds = detectProformaModelFactIds(nonMonthlyFacts);
+  const nonProformaFacts = proformaModelFactIds.size > 0
+    ? nonMonthlyFacts.filter((f) => !proformaModelFactIds.has(f.fact_id))
+    : nonMonthlyFacts;
+
+  const trustFilteredFacts = nonProformaFacts.filter(
+    (f) => !isHighMagnitudeWeakRevenueFactWithoutCorroboration(f, nonProformaFacts),
+  );
+
+  if (trustFilteredFacts.length === 0) return undefined;
+
+  // Tier A — confirmed income-statement-grade data (annual or TTM period_type).
+  //   These are the highest-quality revenue facts: a completed fiscal year or trailing-
+  //   twelve-month figure from an XLSX income statement or PDF financial table.
+  //   When any Tier A non-projected fact exists, it is always the canonical selection.
+  const tierAFacts = trustFilteredFacts.filter(
+    (f) => f.period_type === 'annual' || f.period_type === 'ttm',
+  );
+  if (tierAFacts.length > 0) {
+    const tierAResult = selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], tierAFacts, { requireNonProjected: true });
+    if (tierAResult != null) return tierAResult;
+  }
+
+  // Tier B guard — suppress Tier B when a high-confidence, non-projected XLSX fact
+  // with a current-period signal already exists in trustFilteredFacts.
+  //
+  // Problem this solves: Tier A only covers period_type==='annual'|'ttm'. An XLSX
+  // fact with period_label='current' and period_type='quarterly' (e.g. "Subscription
+  // Revenue Recognized" in Stackon Factor) misses Tier A. Without this guard, Tier B
+  // fires and selects the kpi_tile (the only Tier B eligible fact) even though the
+  // XLSX source rank (10) far exceeds kpi_tile (3). When suppressd, Tier C applies
+  // the full source/confidence ranking and the XLSX fact wins correctly.
+  //
+  // "Current-period signal" = period_label in {'current','TTM'} OR period_type in
+  // {'annual','ttm'} (annual/ttm are redundant with Tier A but included for safety).
+  //
+  // StackOP safety: StackOP's XLSX quarterly facts have period labels like "Q1 2025"
+  // and temporal_scope='historical' — neither matches this guard, so Tier B
+  // continues to select the kpi_tile correctly for that deal.
+  // Stackon Factor: Q2 2026 has temporal_scope='current' (in-progress quarter),
+  // so the guard fires and kpi_tile is suppressed in favour of the xlsx current fact.
+  const hasStrongXlsxCurrentFact = trustFilteredFacts.some(
+    (f) =>
+      f.source_kind === 'xlsx' &&
+      f.confidence === 'high' &&
+      !isProjectedFact(f) &&
+      (f.period_label === 'current' ||
+        f.period_label === 'TTM' ||
+        f.period_type === 'annual' ||
+        f.period_type === 'ttm' ||
+        f.temporal_scope === 'current'),
+  );
+
+  // Tier B — current-signal KPI facts (kpi_tile, pdf_kpi_line).
+  //   When no confirmed annual/TTM income-statement fact exists, a non-projected KPI
+  //   tile is the most reliable "actual current traction" signal: the company itself
+  //   reported this as their live key performance indicator, not an ambiguous model
+  //   projection. A quarterly or unknown-period XLSX entry with unclear temporal scope
+  //   must NOT outrank a directly measured KPI tile.
+  //
+  //   This pass only fires when Tier A is empty AND no high-confidence XLSX
+  //   current/TTM fact exists (hasStrongXlsxCurrentFact === false), ensuring it
+  //   never overrides a confirmed fiscal-period or current-period income-statement
+  //   figure.
+  const tierBFacts = hasStrongXlsxCurrentFact
+    ? []
+    : trustFilteredFacts.filter(
+        (f) =>
+          (f.source_kind === 'kpi_tile' || f.source_kind === 'pdf_kpi_line') &&
+          !isProjectedFact(f) &&
+          !isProvisionalFact(f),
+      );
+  if (tierBFacts.length > 0) {
+    const tierBResult = selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], tierBFacts, { requireNonProjected: true });
+    if (tierBResult != null) return tierBResult;
+  }
+
+  // Tier C — best available from all remaining non-monthly facts.
+  //   Fallback to the original source/confidence/period ranking across everything.
+  //   Only select non-projected facts: projection-only deals must not leak a
+  //   projected value into the current-revenue headline.
+  const tierCResult = selectAuthoritativeFact([...CANONICAL_REVENUE_KEYS], trustFilteredFacts, { requireNonProjected: true });
+  if (tierCResult != null) return tierCResult;
+
+  // Tier D — proforma-model projection fallback (Fix 14 / DealDecision pattern).
+  //
+  // When ALL of Tiers A/B/C return undefined — because every non-monthly fact is
+  // either (a) inside the proforma pool (excluded by detectProformaModelFactIds) or
+  // (b) a future-year projected fact (excluded by requireNonProjected) — the breakdown
+  // would otherwise surface null revenue and hide all financial signal.
+  //
+  // This tier surfaces the earliest-year proforma XLSX fact as the best available
+  // revenue proxy so the UI can present a labelled projection rather than nothing.
+  //
+  // CALLER CONTRACT: any fact returned from Tier D MUST be treated as a forward
+  // projection (is_projected=true, is_provisional=true). The `toMetricPoint` call
+  // in financial-breakdown-v1.ts is responsible for applying those flags.
+  //
+  // Selection: highest source/confidence ranking, then earliest calendar year
+  // (most conservative, closest-to-current estimate).
+  if (proformaModelFactIds.size > 0) {
+    const proformaFacts = nonMonthlyFacts.filter((f) => proformaModelFactIds.has(f.fact_id));
+    if (proformaFacts.length > 0) {
+      const getYr = (f: FinancialFactV1): number => {
+        const m = f.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
+        return m ? Number(m[1]) : 9999;
+      };
+      return proformaFacts.reduce((best, cur) => {
+        const bSrc = SRC_RANK[best.source_kind] ?? 0;
+        const cSrc = SRC_RANK[cur.source_kind] ?? 0;
+        if (cSrc !== bSrc) return cSrc > bSrc ? cur : best;
+        const bConf = CONF_RANK[best.confidence] ?? 0;
+        const cConf = CONF_RANK[cur.confidence] ?? 0;
+        if (cConf !== bConf) return cConf > bConf ? cur : best;
+        return getYr(cur) < getYr(best) ? cur : best; // prefer earlier year
+      });
+    }
+  }
+
+  return undefined;
 }
 
 // ─── Alternative fact discovery ───────────────────────────────────────────────

@@ -75,6 +75,160 @@ describe("DocumentIntelligence v1 determinism", () => {
 		expect(summary.by_signal_category).toHaveProperty("entity");
 		expect(summary.by_signal_category).toHaveProperty("metric");
 	});
+
+	// ── RC-001: SEC filing classifier ──────────────────────────────────────
+	test("RC-001: detects FORM S-1 and emits sec_filing_s1 doc_type hint", () => {
+		const { items } = __test__.buildEvidenceItemsForBlocks({
+			deal_id: "deal1",
+			document_id: "doc1",
+			doc_title: null,
+			doc_type: null,
+			extracted_at: "2026-01-01T00:00:00.000Z",
+			blocks: [
+				{
+					source_path: "doc:doc1:para:0",
+					page_index: 0,
+					title: null,
+					text: "FORM S-1 REGISTRATION STATEMENT UNDER THE SECURITIES ACT OF 1933",
+				},
+			],
+		});
+
+		const hintItems = items.filter((i) => i.tags.includes("doc_type:sec_filing_s1"));
+		expect(hintItems.length).toBeGreaterThanOrEqual(1);
+		expect(hintItems[0]!.confidence).toBeGreaterThanOrEqual(0.9);
+	});
+
+	test("RC-001: detects FORM 10-K and emits sec_filing_10k doc_type hint", () => {
+		const { items } = __test__.buildEvidenceItemsForBlocks({
+			deal_id: "deal1",
+			document_id: "doc1",
+			doc_title: null,
+			doc_type: null,
+			extracted_at: "2026-01-01T00:00:00.000Z",
+			blocks: [
+				{
+					source_path: "doc:doc1:para:0",
+					page_index: 0,
+					title: null,
+					text: "ANNUAL REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934 FORM 10-K",
+				},
+			],
+		});
+
+		const hintItems = items.filter((i) => i.tags.includes("doc_type:sec_filing_10k"));
+		expect(hintItems.length).toBeGreaterThanOrEqual(1);
+	});
+
+	test("RC-001: detects FORM 10-Q and emits sec_filing_10q doc_type hint", () => {
+		const { items } = __test__.buildEvidenceItemsForBlocks({
+			deal_id: "deal1",
+			document_id: "doc1",
+			doc_title: null,
+			doc_type: null,
+			extracted_at: "2026-01-01T00:00:00.000Z",
+			blocks: [
+				{
+					source_path: "doc:doc1:para:0",
+					page_index: 0,
+					title: null,
+					text: "QUARTERLY REPORT PURSUANT TO SECTION 13 OR 15(d) OF THE SECURITIES EXCHANGE ACT OF 1934",
+				},
+			],
+		});
+
+		const hintItems = items.filter((i) => i.tags.includes("doc_type:sec_filing_10q"));
+		expect(hintItems.length).toBeGreaterThanOrEqual(1);
+	});
+
+	test("RC-001: regular pitch deck does NOT emit SEC filing hints", () => {
+		const { items } = __test__.buildEvidenceItemsForBlocks({
+			deal_id: "deal1",
+			document_id: "doc1",
+			doc_title: "Company Pitch Deck",
+			doc_type: "pitch_deck",
+			extracted_at: "2026-01-01T00:00:00.000Z",
+			blocks: [
+				{
+					source_path: "doc:doc1:para:0",
+					page_index: 0,
+					title: "Traction",
+					text: "ARR $1.2M",
+				},
+			],
+		});
+
+		const secItems = items.filter((i) =>
+			i.tags.some((t) => t.startsWith("doc_type:sec_filing"))
+		);
+		expect(secItems.length).toBe(0);
+	});
+
+	// ── RC-002: Going concern detection ────────────────────────────────────
+	test("RC-002: detects 'substantial doubt ... going concern' and emits risk:going_concern evidence", () => {
+		const { items, summary } = __test__.buildEvidenceItemsForBlocks({
+			deal_id: "deal1",
+			document_id: "doc1",
+			doc_title: null,
+			doc_type: null,
+			extracted_at: "2026-01-01T00:00:00.000Z",
+			blocks: [
+				{
+					source_path: "doc:doc1:para:0",
+					page_index: 5,
+					title: null,
+					text: "The Company has incurred losses since inception. These conditions raise substantial doubt about the Company's ability to continue as a going concern.",
+				},
+			],
+		});
+
+		const gcItems = items.filter((i) => i.tags.includes("risk:going_concern"));
+		expect(gcItems.length).toBe(1);
+		expect(gcItems[0]!.confidence).toBeGreaterThanOrEqual(0.9);
+		expect(summary.by_signal_category).toHaveProperty("going_concern_signal");
+	});
+
+	test("RC-002: 'going concern' variant phrase detected", () => {
+		const { items } = __test__.buildEvidenceItemsForBlocks({
+			deal_id: "deal1",
+			document_id: "doc1",
+			doc_title: null,
+			doc_type: null,
+			extracted_at: "2026-01-01T00:00:00.000Z",
+			blocks: [
+				{
+					source_path: "doc:doc1:para:0",
+					page_index: 3,
+					title: null,
+					text: "Management has concluded there is substantial doubt about the entity's going concern status.",
+				},
+			],
+		});
+
+		const gcItems = items.filter((i) => i.tags.includes("risk:going_concern"));
+		expect(gcItems.length).toBe(1);
+	});
+
+	test("RC-002: normal financials without going concern language emit no risk:going_concern", () => {
+		const { items } = __test__.buildEvidenceItemsForBlocks({
+			deal_id: "deal1",
+			document_id: "doc1",
+			doc_title: null,
+			doc_type: null,
+			extracted_at: "2026-01-01T00:00:00.000Z",
+			blocks: [
+				{
+					source_path: "doc:doc1:para:0",
+					page_index: 0,
+					title: "Financials",
+					text: "Revenue was $1.2M in FY2024. Cash position is strong at $5M.",
+				},
+			],
+		});
+
+		const gcItems = items.filter((i) => i.tags.includes("risk:going_concern"));
+		expect(gcItems.length).toBe(0);
+	});
 });
 
 describe("DocumentIntelligenceService evidence provenance wiring", () => {

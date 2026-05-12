@@ -12,9 +12,13 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Pool } from 'pg';
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { buildDeterministicDealSummaryV1FromStructuredSummary, compileDIOToReport, compileDIOToReportWithPromotedFacts } from '@dealdecision/core';
+import { buildDeterministicDealSummaryV1FromStructuredSummary, compileDIOToReport, compileDIOToReportWithPromotedFacts, toPolicyAwareBusinessModelDisplay, buildClaimSupportV1 } from '@dealdecision/core';
 import { buildDeterministicScoreInputsV1 } from '@dealdecision/core';
 import { computeDecisionV1, computeHardPassGuardrailV2, getScoreBandV2 } from '@dealdecision/core';
+import { computeBusinessQualityV2 } from '@dealdecision/core';
+import { computeEvidenceQualityV2 } from '@dealdecision/core';
+import { computeConvictionV2 } from '@dealdecision/core';
+import { computeCanonicalDecisionV2 } from '@dealdecision/core';
 import { LlmNarrationV1Schema, degradeNarrationV1, validateNoNewFacts } from '@dealdecision/core';
 import { buildNarrationPrompt } from '@dealdecision/core';
 import type { LlmNarrationV1Type } from '@dealdecision/core';
@@ -22,7 +26,7 @@ import { buildOverviewPrompt, degradeOverviewV1 } from '@dealdecision/core';
 import { buildInvestmentAnalysisOverviewPrompt, LlmOverviewV1CitationSchema, LlmOverviewV1Schema } from '@dealdecision/core';
 import { loadPromotedFactsForDeal } from '../lib/promoted-facts';
 import { derivePromotedFactsFromDpuForDeal } from '../lib/promoted-facts-from-dpu';
-import { getFinancialFactsForReport, getFinancialFactsMaxTimestamp, getDocumentsForReport } from './financial-facts';
+import { getFinancialFactsForReport, getFinancialFactsMaxTimestamp, getDocumentsForReport, getGoingConcernPageTexts, getDocumentFullTextForDeal, getCompanyNameFromDocuments } from './financial-facts';
 import { detectFinancialSnapshotStaleness } from '@dealdecision/core';
 import { compileDealSummaryV1 } from '../lib/deal-summary-v1';
 import { getSegmentedNodesForDeal } from '../lib/segmented-nodes-for-deal';
@@ -36,6 +40,7 @@ import { computeDeterministicModifierV1, computeDeterministicScorePreviewV1Diagn
 import { StageTimer, nowMs } from '../lib/telemetry/stage-timer';
 import { enqueueJob } from '../services/jobs';
 import { recordLLMMetrics } from '../lib/llm';
+import { classifyDecisionReadiness, buildDecisionReadinessInputFromReport } from '../lib/intelligence/decision-readiness';
 
 const isUuid = (value: unknown): value is string => z.string().uuid().safeParse(value).success;
 
@@ -104,7 +109,33 @@ const stableHash = (input: string): string => createHash('sha256').update(input,
 
 // Increment when the report compiler logic changes so that all cached entries compiled
 // by an older version are automatically treated as stale and recompiled.
-const REPORT_COMPILER_VERSION = 12; // bumped: conviction_v1 canonical contract added to compiler output and cache payload
+const REPORT_COMPILER_VERSION = 44; // bumped: challenge_pass now read from deal_challenge_pass_results into compiled report
+
+const DIO_OPTIONAL_REPORT_FIELDS = [
+  'llm_field_audit_v1',
+  'llm_financial_verification_v1',
+  'correction_lineage_v1',
+  'llm_validation_summary_v1',
+  'llm_decision_rationale_v1',
+  'llm_rationale_validation_v1',
+  'investment_interpretation_v1',
+  'narrative_quality_validation_v1',
+] as const;
+
+function injectOptionalReportFieldsFromDio(report: any, dioData: any): void {
+  if (!report || typeof report !== 'object') return;
+  const dioReport = dioData?.report;
+  if (!dioReport || typeof dioReport !== 'object') return;
+
+  for (const field of DIO_OPTIONAL_REPORT_FIELDS) {
+    const value = (dioReport as any)?.[field] ?? null;
+    if (value === null) continue;
+    (report as any)[field] = value;
+    if ((report as any).report && typeof (report as any).report === 'object') {
+      (report as any).report = { ...(report as any).report, [field]: value };
+    }
+  }
+}
 
 async function readIngestionReportSummaryByDealAndVersion(pool: Pool, dealId: string, analysisVersion: number): Promise<any | null> {
   try {
@@ -1751,6 +1782,148 @@ function ensureStructuredRevenueSelectionReason(report: any): void {
   }
 }
 
+export function applyStructuredNumericTrustGates(report: any): void {
+  try {
+    if (!report || typeof report !== 'object') return;
+    const structured = (report as any).structured_summary;
+    if (!structured || typeof structured !== 'object') return;
+
+    const sourceText = (sources: any[]): string =>
+      (Array.isArray(sources) ? sources : [])
+        .map((s) => {
+          if (!s || typeof s !== 'object') return '';
+          return [
+            String((s as any).note_snippet ?? ''),
+            String((s as any).snippet ?? ''),
+            String((s as any).slide_title ?? ''),
+          ]
+            .join(' ')
+            .trim();
+        })
+        .filter((x) => x.length > 0)
+        .join(' ')
+        .toLowerCase();
+
+    const sourceKinds = (sources: any[]): Set<string> =>
+      new Set(
+        (Array.isArray(sources) ? sources : [])
+          .map((s) => (s && typeof s === 'object' ? String((s as any).kind ?? '').trim().toLowerCase() : ''))
+          .filter(Boolean)
+      );
+
+    const isExternalContractLike = (text: string): boolean =>
+      /\b(cost\s+to\s+acquire|fully\s+guaranteed|draft\s+picks?|game\s+suspension|contract\s+value|sportsbook|trade)\b/.test(text);
+
+    const isMarketSizingHypothetical = (text: string): boolean =>
+      /\b(tam|sam|som|market\s+share|users?|arr|annual\s+recurring\s+revenue)\b/.test(text) &&
+      /\?|\b(help\s+me\s+understand|what\s+if|would|could|assum(?:e|ing|ption|ptions)|imply)\b/.test(text);
+
+    const isPackagingLike = (text: string): boolean =>
+      /\b\d{2,4}\s*(ml|oz|fl\s*oz|g|kg|lb|lbs)\b/.test(text) ||
+      (/\b(cans?|bottles?|packs?)\b/.test(text) && /\b(ml|oz|fl\s*oz)\b/.test(text));
+
+    // Raise trust gate: drop large promoted raises sourced from clearly non-financing contexts.
+    try {
+      const raise = (structured as any).raise;
+      if (raise && typeof raise === 'object') {
+        const amountRaw = (raise as any)?.value_json?.amount?.amount;
+        const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
+        const sources = Array.isArray((raise as any).sources) ? (raise as any).sources : [];
+        const kinds = sourceKinds(sources);
+        const text = sourceText(sources);
+        const suspiciousContext = isExternalContractLike(text) || isMarketSizingHypothetical(text);
+        if (amount != null && amount >= 50_000_000 && kinds.has('promoted_fact') && suspiciousContext) {
+          (raise as any).value = null;
+          if ((raise as any).value_json && typeof (raise as any).value_json === 'object') {
+            (raise as any).value_json = {
+              ...(raise as any).value_json,
+              amount: {
+                amount: null,
+                currency: (raise as any).value_json?.amount?.currency ?? 'USD',
+              },
+            };
+          }
+          (raise as any).suppressed_reason = 'low_trust_raise_context';
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    // Revenue trust gate: suppress weak-source outliers and fall back to safer candidates when present.
+    try {
+      const revenue = (structured as any).revenue;
+      if (revenue && typeof revenue === 'object') {
+        const candidates: any[] = Array.isArray((revenue as any).candidates) ? (revenue as any).candidates : [];
+
+        const hasStrongCorroboration = (candidate: any): boolean => {
+          const amount = typeof candidate?.amount === 'number' && Number.isFinite(candidate.amount) ? candidate.amount : null;
+          if (amount == null || amount <= 0) return false;
+          return candidates.some((other) => {
+            if (!other || other === candidate) return false;
+            const otherAmount = typeof other?.amount === 'number' && Number.isFinite(other.amount) ? other.amount : null;
+            if (otherAmount == null || otherAmount <= 0) return false;
+            const kinds = sourceKinds(other?.sources ?? []);
+            const hasStrongKind = ['xlsx', 'pdf_table', 'pdf_kpi_line', 'input_metric'].some((k) => kinds.has(k));
+            if (!hasStrongKind) return false;
+            const relDelta = Math.abs(otherAmount - amount) / Math.max(amount, 1);
+            return relDelta <= 0.5;
+          });
+        };
+
+        const isSuspiciousRevenueCandidate = (candidate: any): boolean => {
+          const amount = typeof candidate?.amount === 'number' && Number.isFinite(candidate.amount) ? candidate.amount : null;
+          if (amount == null || amount < 100_000_000) return false;
+
+          const kinds = sourceKinds(candidate?.sources ?? []);
+          const text = sourceText(candidate?.sources ?? []);
+          const confidence = typeof candidate?.confidence === 'number' && Number.isFinite(candidate.confidence) ? candidate.confidence : 0;
+
+          if (kinds.has('promoted_fact') && (isExternalContractLike(text) || isMarketSizingHypothetical(text) || isPackagingLike(text))) {
+            return true;
+          }
+
+          const weakKpi = kinds.has('kpi_tile') || kinds.has('chart_pixel');
+          if (weakKpi && confidence <= 0.65 && !hasStrongCorroboration(candidate)) {
+            return true;
+          }
+
+          return false;
+        };
+
+        const selected = candidates.find((c) => c && c.selected === true) ?? null;
+        if (selected && isSuspiciousRevenueCandidate(selected)) {
+          const fallback = candidates.find((c) => c && c !== selected && !isSuspiciousRevenueCandidate(c)) ?? null;
+          if (fallback) {
+            const nextAmount = typeof fallback.amount === 'number' && Number.isFinite(fallback.amount) ? fallback.amount : null;
+            (revenue as any).value = {
+              amount: nextAmount,
+              currency: typeof fallback.currency === 'string' && fallback.currency.trim() ? fallback.currency : ((revenue as any)?.value?.currency ?? 'USD'),
+              period: (revenue as any)?.value?.period ?? null,
+              raw: typeof fallback.value_raw === 'string' && fallback.value_raw.trim() ? fallback.value_raw : null,
+            };
+            (revenue as any).confidence = typeof fallback.confidence === 'number' && Number.isFinite(fallback.confidence)
+              ? fallback.confidence
+              : (revenue as any).confidence;
+            (revenue as any).sources = Array.isArray(fallback.sources) ? fallback.sources : [];
+            (revenue as any).selection_reason = 'trust_gate_fallback';
+            (revenue as any).candidates = candidates.map((c) => ({ ...c, selected: c === fallback }));
+          } else {
+            (revenue as any).value = null;
+            (revenue as any).sources = [];
+            (revenue as any).selection_reason = 'suppressed_low_trust_revenue';
+            (revenue as any).candidates = candidates.map((c) => ({ ...c, selected: false }));
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  } catch {
+    // ignore
+  }
+}
+
 function ensureStructuredSummaryKpis(report: any): void {
   try {
     if (!report || typeof report !== 'object') return;
@@ -1950,6 +2123,472 @@ function alignReportSectionsToDecisionV1(args: {
   }
 }
 
+
+// ─── Scoring V2 Phase 1 — stub builder ────────────────────────────────────────
+// Populates canonical_decision_v2, business_quality_v2, evidence_quality_v2,
+// and conviction_v2 from existing V1 artifacts.  All stubs carry `stub: true`.
+// No formula changes.  Must be called AFTER meta.decision_v1 is set.
+
+function _bqBandFromKey(key: string): string {
+  const MAP: Record<string, string> = {
+    not_investment_grade: 'Not Investment Grade',
+    early_consideration: 'Early Consideration',
+    emerging_opportunity: 'Emerging Opportunity',
+    strong_opportunity: 'Strong Opportunity',
+    fund_grade: 'Fund Grade',
+    exceptional: 'Exceptional',
+  };
+  return MAP[key] ?? key;
+}
+
+function _bqBandKeyFromScoreBandKey(scoreBandKey: string): string {
+  // score_band_v2 uses the same 6-key vocabulary as BusinessQualityBandV2.
+  const valid = new Set([
+    'not_investment_grade', 'early_consideration', 'emerging_opportunity',
+    'strong_opportunity', 'fund_grade', 'exceptional',
+  ]);
+  return valid.has(scoreBandKey) ? scoreBandKey : 'not_investment_grade';
+}
+
+function _eqLabelFromScore(score: number | null): string | null {
+  if (score === null) return null;
+  if (score >= 65) return 'Strong Evidence';
+  if (score >= 40) return 'Adequate Evidence';
+  if (score >= 20) return 'Thin Evidence';
+  return 'Insufficient Evidence';
+}
+
+function _eqGateFromScore(score: number | null): string {
+  if (score === null) return 'blocked';
+  if (score >= 65) return 'clear';
+  if (score >= 40) return 'caution';
+  if (score >= 20) return 'capped';
+  return 'blocked';
+}
+
+function _cvLabelFromScore(score: number | null): string | null {
+  if (score === null) return null;
+  if (score >= 70) return 'Strong Conviction';
+  if (score >= 45) return 'Moderate Conviction';
+  if (score >= 20) return 'Low Conviction';
+  return 'Insufficient Conviction';
+}
+
+function _cvGateFromScore(score: number | null): string {
+  if (score === null) return 'clear'; // Phase 1 default: no conviction → no gate penalty
+  if (score < 20) return 'hard_pass';
+  if (score < 45) return 'capped';
+  return 'clear';
+}
+
+function _canonicalVerdictFromDecisionKey(
+  recKey: string,
+  guardrailTriggered: boolean,
+): string {
+  if (guardrailTriggered) return 'hard_pass';
+  switch (recKey) {
+    case 'fund_confident':
+    case 'fund_track':
+      return 'fund';
+    case 'fund_caution':
+    case 'strong_consider':
+      return 'advance';
+    case 'consider_caution':
+    case 'consider':
+      return 'investigate';
+    case 'hard_pass':
+      return 'hard_pass';
+    default:
+      return 'pass';
+  }
+}
+
+function _verdictLabel(verdict: string): string {
+  const MAP: Record<string, string> = {
+    fund: 'Fund', advance: 'Advance', investigate: 'Investigate',
+    pass: 'Pass', hard_pass: 'Hard Pass',
+  };
+  return MAP[verdict] ?? 'Pass';
+}
+
+function attachScoringV2Stubs(args: { meta: any; report: any; dealId?: string }): void {
+  try {
+    const { meta, report } = args;
+
+    // ── Source inputs ──
+    const scoreBand = meta?.score_band_v2 ?? null;
+    const decisionV1 = meta?.decision_v1 ?? null;
+    const guardrail = meta?.hard_pass_guardrail_v2 ?? null;
+
+    const bqScore: number | null =
+      typeof scoreBand?.overall_score === 'number' && Number.isFinite(scoreBand.overall_score)
+        ? scoreBand.overall_score
+        : typeof report?.overallScore === 'number' && Number.isFinite(report.overallScore)
+          ? report.overallScore
+          : null;
+
+    // Guard: can't build stubs without the primary score
+    if (bqScore === null) return;
+
+    const bqBandKey = _bqBandKeyFromScoreBandKey(scoreBand?.key ?? '');
+    const bqBandLabel = _bqBandFromKey(bqBandKey);
+
+    // ── Conviction V1 source (lives at report top-level or structured_summary) ──
+    const convictionV1: any =
+      report?.conviction_v1 ?? report?.structured_summary?.conviction_v1 ?? null;
+    const cvScore: number | null =
+      typeof convictionV1?.conviction_score_0_100 === 'number' &&
+      Number.isFinite(convictionV1.conviction_score_0_100)
+        ? convictionV1.conviction_score_0_100
+        : null;
+
+    // ── Evidence quality from coverage_ratio ──
+    const totals = report?.metadata?.score_explanation?.totals ?? null;
+    const coverageRatio: number | null =
+      typeof totals?.coverage_ratio === 'number' && Number.isFinite(totals.coverage_ratio)
+        ? totals.coverage_ratio
+        : null;
+    const eqScore: number | null =
+      coverageRatio !== null ? Math.round(Math.max(0, Math.min(100, coverageRatio * 100))) : null;
+
+    // ── Build: business_quality_v2 ──
+    meta.business_quality_v2 = {
+      score: bqScore,
+      band: bqBandKey,
+      band_label: bqBandLabel,
+      dimension_breakdown: { market: null, product: null, traction: null, business_model: null, team: null },
+      fhc: null,
+      data_sources_used: [],
+      formula_weights: null,
+      stub: true,
+      source: 'score_band_v2',
+      version: 'business_quality_v2',
+    };
+
+    // ── Build: evidence_quality_v2 ──
+    meta.evidence_quality_v2 = {
+      score: eqScore,
+      label: _eqLabelFromScore(eqScore),
+      coverage_ratio: coverageRatio,
+      dci: null,
+      confidence_score: null,
+      flag_counts: { critical: 0, error: 0, warn: 0 },
+      gate: { result: _eqGateFromScore(eqScore), reason: null, effective_verdict_ceiling: null },
+      missing_signals: [],
+      stub: true,
+      source: 'coverage_ratio',
+      version: 'evidence_quality_v2',
+    };
+
+    // ── Build: conviction_v2 ──
+    const keyUnknowns: string[] = [];
+    if (Array.isArray(convictionV1?.required_next_checks)) {
+      for (const c of convictionV1.required_next_checks) {
+        const t = typeof c === 'string' ? c : (c?.text ?? null);
+        if (typeof t === 'string' && t.trim()) keyUnknowns.push(t.trim());
+        if (keyUnknowns.length >= 5) break;
+      }
+    }
+
+    const posContribs: Array<{ key: string; label: string; score_delta_0_100: number | null }> = [];
+    if (Array.isArray(convictionV1?.top_positive_contributors)) {
+      for (const c of convictionV1.top_positive_contributors) {
+        const key = typeof c?.key === 'string' ? c.key : '';
+        const label = typeof c?.label === 'string' ? c.label : '';
+        const delta = typeof c?.score_delta_0_100 === 'number' ? c.score_delta_0_100 : null;
+        if (label) posContribs.push({ key, label, score_delta_0_100: delta });
+        if (posContribs.length >= 5) break;
+      }
+    }
+
+    const negContribs: Array<{ key: string; label: string; score_delta_0_100: number | null }> = [];
+    if (Array.isArray(convictionV1?.top_negative_contributors)) {
+      for (const c of convictionV1.top_negative_contributors) {
+        const key = typeof c?.key === 'string' ? c.key : '';
+        const label = typeof c?.label === 'string' ? c.label : '';
+        const delta = typeof c?.score_delta_0_100 === 'number' ? c.score_delta_0_100 : null;
+        if (label) negContribs.push({ key, label, score_delta_0_100: delta });
+        if (negContribs.length >= 5) break;
+      }
+    }
+
+    const opposingCase: string | null =
+      typeof report?.challenge_pass?.opposing_case === 'string'
+        ? report.challenge_pass.opposing_case
+        : null;
+
+    meta.conviction_v2 = {
+      score: cvScore,
+      label: _cvLabelFromScore(cvScore),
+      verdict_resistance_score: null,
+      conviction_composite: cvScore,
+      urss: null,
+      memory_influence: null,
+      gate: { result: _cvGateFromScore(cvScore), reason: null, effective_verdict_ceiling: null },
+      key_unknowns: keyUnknowns,
+      top_positive_contributors: posContribs,
+      top_negative_contributors: negContribs,
+      opposing_case: opposingCase,
+      stub: true,
+      source: 'conviction_v1',
+      version: 'conviction_v2',
+    };
+
+    // ── Build: canonical_decision_v2 ──
+    const recKey: string = typeof decisionV1?.recommendation_key === 'string'
+      ? decisionV1.recommendation_key
+      : 'pass';
+    const guardrailTriggered: boolean = Boolean(guardrail?.triggered);
+    const canonicalVerdict = _canonicalVerdictFromDecisionKey(recKey, guardrailTriggered);
+
+    // Conflict: score_band_v2 and conviction_v1 differ by > 20 pts
+    const conflictDetected: boolean =
+      cvScore !== null && Math.abs(bqScore - cvScore) > 20;
+
+    meta.canonical_decision_v2 = {
+      verdict: canonicalVerdict,
+      verdict_label: _verdictLabel(canonicalVerdict),
+      business_quality_score: bqScore,
+      business_quality_band: bqBandKey,
+      evidence_gate: _eqGateFromScore(eqScore),
+      conviction_gate: _cvGateFromScore(cvScore),
+      confidence: null,
+      confidence_label: null,
+      conflict_detected: conflictDetected,
+      hard_pass_guardrail_triggered: guardrailTriggered,
+      source_v1_decision_key: recKey,
+      stub: true,
+      version: 'canonical_v2',
+      computed_at: new Date().toISOString(),
+    };
+
+    // ── Structured log ──
+    console.log(JSON.stringify({
+      event: 'scoring_v2_stubs_attached',
+      deal_id: args.dealId ?? null,
+      verdict: canonicalVerdict,
+      source_recommendation_key: recKey,
+      bq_score: bqScore,
+      eq_score: eqScore ?? null,
+      eq_label: meta.evidence_quality_v2.label ?? null,
+      cv_score: cvScore ?? null,
+      conflict_detected: conflictDetected,
+      stub: true,
+      ts: new Date().toISOString(),
+    }));
+  } catch {
+    // Best-effort: never fail /report for V2 stub attachment.
+  }
+}
+
+/**
+ * Phase 2: fully-computed V2 scoring artifacts (stub: false on all outputs).
+ *
+ * Replaces attachScoringV2Stubs(). Pulls available signals from the compiled
+ * report payload and runs the three Phase-2 scorers (BQ, EQ, CV) plus the
+ * canonical decision resolver.
+ *
+ * Signal mapping:
+ *   dimension_score      ← meta.score_band_v2.overall_score
+ *   financial_health     ← report.underwriting_readiness_v1.score_0_100
+ *   market_proxy         ← score_explanation.totals.coverage_ratio * 100
+ *   confidence_score_01  ← score_explanation.totals.confidence_score (0–1)
+ *   coverage_ratio       ← score_explanation.totals.coverage_ratio (0–1)
+ *   verdict_resistance   ← report.challenge_pass.verdict_resistance_score
+ *   flags                ← report.challenge_pass.flag_count_{critical,error,warn}
+ *   conviction_v1_score  ← report.conviction_v1.conviction_score_0_100
+ *   urss                 ← report.underwriting_readiness_v1.score_0_100
+ */
+function attachScoringV2Computed(args: { meta: any; report: any; dealId?: string }): void {
+  try {
+    const { meta, report } = args;
+
+    // ── Extract signals ──────────────────────────────────────────────────────
+
+    const scoreBand = meta?.score_band_v2 ?? null;
+    const decisionV1 = meta?.decision_v1 ?? null;
+    const guardrail = meta?.hard_pass_guardrail_v2 ?? null;
+    const totals = report?.metadata?.score_explanation?.totals ?? null;
+    const challengePass = report?.challenge_pass ?? null;
+    const convictionV1: any =
+      report?.conviction_v1 ?? report?.structured_summary?.conviction_v1 ?? null;
+    const underwritingReadiness = report?.underwriting_readiness_v1 ?? null;
+
+    const dimensionScore: number | null =
+      typeof scoreBand?.overall_score === 'number' && Number.isFinite(scoreBand.overall_score)
+        ? scoreBand.overall_score
+        : typeof report?.overallScore === 'number' && Number.isFinite(report.overallScore)
+          ? report.overallScore
+          : null;
+
+    // Guard: cannot build V2 artifacts without primary score
+    if (dimensionScore === null) return;
+
+    const fhcProxy: number | null =
+      typeof underwritingReadiness?.score_0_100 === 'number' &&
+      Number.isFinite(underwritingReadiness.score_0_100)
+        ? underwritingReadiness.score_0_100
+        : null;
+
+    const coverageRatio: number | null =
+      typeof totals?.coverage_ratio === 'number' && Number.isFinite(totals.coverage_ratio)
+        ? totals.coverage_ratio
+        : null;
+
+    const marketProxy: number | null =
+      coverageRatio !== null ? Math.min(100, Math.max(0, coverageRatio * 100)) : null;
+
+    const confidenceScore01: number | null =
+      typeof totals?.confidence_score === 'number' && Number.isFinite(totals.confidence_score)
+        ? totals.confidence_score
+        : null;
+
+    const verdictResistance: number | null =
+      typeof challengePass?.verdict_resistance_score === 'number' &&
+      Number.isFinite(challengePass.verdict_resistance_score)
+        ? challengePass.verdict_resistance_score
+        : null;
+
+    const flagsCritical: number =
+      typeof challengePass?.flag_count_critical === 'number' ? challengePass.flag_count_critical : 0;
+    const flagsError: number =
+      typeof challengePass?.flag_count_error === 'number' ? challengePass.flag_count_error : 0;
+    const flagsWarn: number =
+      typeof challengePass?.flag_count_warn === 'number' ? challengePass.flag_count_warn : 0;
+
+    const convictionV1Score: number | null =
+      typeof convictionV1?.conviction_score_0_100 === 'number' &&
+      Number.isFinite(convictionV1.conviction_score_0_100)
+        ? convictionV1.conviction_score_0_100
+        : null;
+
+    const urss: number | null = fhcProxy; // same field — underwriting_readiness_v1.score_0_100
+
+    // ── Passthrough narrative fields (conviction_v1 / challenge_pass) ────────
+
+    const keyUnknowns: string[] = [];
+    if (Array.isArray(convictionV1?.required_next_checks)) {
+      for (const c of convictionV1.required_next_checks) {
+        const t = typeof c === 'string' ? c : (c?.text ?? null);
+        if (typeof t === 'string' && t.trim()) keyUnknowns.push(t.trim());
+        if (keyUnknowns.length >= 5) break;
+      }
+    }
+
+    const posContribs: Array<{ key: string; label: string; score_delta_0_100: number | null }> = [];
+    if (Array.isArray(convictionV1?.top_positive_contributors)) {
+      for (const c of convictionV1.top_positive_contributors) {
+        const key = typeof c?.key === 'string' ? c.key : '';
+        const label = typeof c?.label === 'string' ? c.label : '';
+        const delta = typeof c?.score_delta_0_100 === 'number' ? c.score_delta_0_100 : null;
+        if (label) posContribs.push({ key, label, score_delta_0_100: delta });
+        if (posContribs.length >= 5) break;
+      }
+    }
+
+    const negContribs: Array<{ key: string; label: string; score_delta_0_100: number | null }> = [];
+    if (Array.isArray(convictionV1?.top_negative_contributors)) {
+      for (const c of convictionV1.top_negative_contributors) {
+        const key = typeof c?.key === 'string' ? c.key : '';
+        const label = typeof c?.label === 'string' ? c.label : '';
+        const delta = typeof c?.score_delta_0_100 === 'number' ? c.score_delta_0_100 : null;
+        if (label) negContribs.push({ key, label, score_delta_0_100: delta });
+        if (negContribs.length >= 5) break;
+      }
+    }
+
+    const opposingCase: string | null =
+      typeof challengePass?.opposing_case === 'string' ? challengePass.opposing_case : null;
+
+    // ── Dimension breakdown from score_band_v2 ───────────────────────────────
+
+    const dimScores = scoreBand?.dimension_scores ?? null;
+
+    // ── Compute: business_quality_v2 ─────────────────────────────────────────
+
+    const bqResult = computeBusinessQualityV2({
+      dimension_score: dimensionScore,
+      financial_health_proxy: fhcProxy,
+      market_proxy: marketProxy,
+      dimension_scores: dimScores
+        ? {
+            market: typeof dimScores.market === 'number' ? dimScores.market : null,
+            product: typeof dimScores.product === 'number' ? dimScores.product : null,
+            traction: typeof dimScores.traction === 'number' ? dimScores.traction : null,
+            business_model: typeof dimScores.business_model === 'number' ? dimScores.business_model : null,
+            team: typeof dimScores.team === 'number' ? dimScores.team : null,
+          }
+        : null,
+    });
+    meta.business_quality_v2 = bqResult;
+
+    // ── Compute: evidence_quality_v2 ─────────────────────────────────────────
+
+    const eqResult = computeEvidenceQualityV2({
+      confidence_score_01: confidenceScore01,
+      coverage_ratio: coverageRatio,
+      flags_critical: flagsCritical,
+      flags_error: flagsError,
+      flags_warn: flagsWarn,
+    });
+    meta.evidence_quality_v2 = eqResult;
+
+    // ── Compute: conviction_v2 ───────────────────────────────────────────────
+
+    const cvResult = computeConvictionV2({
+      verdict_resistance_score: verdictResistance,
+      conviction_v1_score: convictionV1Score,
+      urss,
+      key_unknowns: keyUnknowns,
+      top_positive_contributors: posContribs,
+      top_negative_contributors: negContribs,
+      opposing_case: opposingCase,
+    });
+    meta.conviction_v2 = cvResult;
+
+    // ── Compute: canonical_decision_v2 ───────────────────────────────────────
+
+    const recKey: string =
+      typeof decisionV1?.recommendation_key === 'string' ? decisionV1.recommendation_key : 'pass';
+    const guardrailTriggered: boolean = Boolean(guardrail?.triggered);
+
+    const canonicalResult = computeCanonicalDecisionV2({
+      bq_score: bqResult.score,
+      bq_band: bqResult.band,
+      eq_score: eqResult.score,
+      cv_score: cvResult.score,
+      evidence_gate: eqResult.gate.result,
+      conviction_gate: cvResult.gate.result,
+      guardrail_triggered: guardrailTriggered,
+      source_v1_decision_key: recKey,
+      verdict_resistance_present: cvResult.verdict_resistance_present,
+    });
+    meta.canonical_decision_v2 = canonicalResult;
+
+    // ── Structured log ────────────────────────────────────────────────────────
+
+    console.log(JSON.stringify({
+      event: 'scoring_v2_computed',
+      deal_id: args.dealId ?? null,
+      verdict: canonicalResult.verdict,
+      confidence: canonicalResult.confidence,
+      confidence_label: canonicalResult.confidence_label,
+      resolution_step: canonicalResult.resolution_step,
+      bq_score: bqResult.score,
+      bq_band: bqResult.band,
+      eq_score: eqResult.score,
+      eq_gate: eqResult.gate.result,
+      cv_score: cvResult.score,
+      cv_gate: cvResult.gate.result,
+      conflict_detected: canonicalResult.conflict_detected,
+      stub: false,
+      ts: new Date().toISOString(),
+    }));
+  } catch {
+    // Best-effort: never fail /report for V2 scoring computation.
+  }
+}
+
 function attachScoreBandAndGuardrailV2(args: {
   nextMetadata: any;
   report: any;
@@ -2063,6 +2702,9 @@ function attachScoreBandAndGuardrailV2(args: {
 
     // Ensure any pre-rendered section text uses canonical decision_v1 too.
     alignReportSectionsToDecisionV1({ nextMetadata: meta, report: args.report });
+
+    // Phase 2: replace stubs with fully-computed V2 scoring artifacts.
+    attachScoringV2Computed({ meta, report: args.report });
 
     args.nextMetadata = meta;
   } catch {
@@ -2258,8 +2900,8 @@ export async function registerReportRoutes(
 
         // 404 only when the deal itself does not exist.
         const dealLookup = await timer.stage('db.deal_lookup', async () => {
-          return pool.query<{ id: string; llm_phase_mode: string | null }>(
-            `SELECT id, llm_phase_mode::text as llm_phase_mode FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+          return pool.query<{ id: string; llm_phase_mode: string | null; name: string | null }>(
+            `SELECT id, llm_phase_mode::text as llm_phase_mode, name FROM deals WHERE id = $1 AND deleted_at IS NULL`,
             [deal_id]
           );
         });
@@ -2351,6 +2993,7 @@ export async function registerReportRoutes(
               const freshIaoV2 = buildInvestmentAnalysisOverviewV2({
                 dio: row.dio_data as any,
                 report: cacheHitReport,
+                structured_summary: (cacheHitReport as any)?.structured_summary ?? null,
               });
               cacheHitReport.investment_analysis_overview_v2 = freshIaoV2;
               const meta = { ...((cacheHitReport.metadata && typeof cacheHitReport.metadata === 'object' ? cacheHitReport.metadata : {})) };
@@ -2359,6 +3002,18 @@ export async function registerReportRoutes(
               if (cacheHitReport.report && typeof cacheHitReport.report === 'object') {
                 cacheHitReport.report = { ...cacheHitReport.report, investment_analysis_overview_v2: freshIaoV2 };
               }
+            } catch { /* fail-open */ }
+            // Inject decision_readiness fresh on cache-hit from cached conviction_v1 + challenge_pass.
+            // Never persisted — always computed live so threshold changes take effect without cache bust.
+            try {
+              const drInput = buildDecisionReadinessInputFromReport(cacheHitReport);
+              cacheHitReport.decision_readiness = classifyDecisionReadiness(drInput);
+              if (cacheHitReport.report && typeof cacheHitReport.report === 'object') {
+                cacheHitReport.report = { ...cacheHitReport.report, decision_readiness: cacheHitReport.decision_readiness };
+              }
+            } catch { /* fail-open */ }
+            try {
+              injectOptionalReportFieldsFromDio(cacheHitReport, (row as any)?.dio_data);
             } catch { /* fail-open */ }
             return reply.status(200).send({ ...cacheHitReport, financial_snapshot_stale });
           }
@@ -2521,7 +3176,14 @@ export async function registerReportRoutes(
       // promoted-like facts directly from document_page_understanding payloads.
       // This keeps /report structured_summary accurate with page-level citations.
       const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
-      const hasRaise = promotedFacts.some((r: any) => factTypeOf(r) === 'raise_terms_v1');
+      const hasRaise = promotedFacts.some((r: any) => {
+        if (factTypeOf(r) !== 'raise_terms_v1') return false;
+        // Per-share prices (e.g. $1.092) are stored as raise_terms_v1 by some extractors but are
+        // NOT valid capital raise amounts. Only count raise facts with amount ≥ $1,000 so that
+        // a sub-dollar per-share artifact does not block the DPU fallback from finding the actual raise.
+        const amount = r?.content_json?.value_json?.amount?.amount ?? null;
+        return amount == null || (typeof amount === 'number' && amount >= 1000);
+      });
       const hasModel = promotedFacts.some((r: any) => factTypeOf(r) === 'business_model_v1');
       const hasKpi = promotedFacts.some((r: any) => {
         const ft = factTypeOf(r);
@@ -2556,7 +3218,6 @@ export async function registerReportRoutes(
 
             const ft = factTypeOf(r);
             if (ft === 'raise_terms_v1' && hasRaise) continue;
-            if (ft === 'business_model_v1' && hasModel) continue;
             promotedFacts.push(r as any);
             if (evidenceId) existingEvidenceIds.add(evidenceId);
           }
@@ -2566,7 +3227,25 @@ export async function registerReportRoutes(
             const compiled = await timer.stage('compile.report', async () => {
               const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
               const documents = await getDocumentsForReport(pool as any, deal_id);
-              return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents });
+              const [pageTexts, documentFullTexts, heuristicCompanyName] = await Promise.all([
+                getGoingConcernPageTexts(pool as any, deal_id),
+                getDocumentFullTextForDeal(pool as any, deal_id),
+                getCompanyNameFromDocuments(pool as any, deal_id),
+              ]);
+              const dealName = typeof dealRows[0]?.name === 'string' && dealRows[0].name.trim().length > 0
+                ? dealRows[0].name.trim()
+                : null;
+              const companyName = dealName ?? heuristicCompanyName;
+              let evidenceItemCount: number | undefined;
+              try {
+                const evRes = await (pool as any).query<{ count: string }>(
+                  `SELECT COUNT(*)::text AS count FROM evidence_items WHERE deal_id = $1::uuid`,
+                  [deal_id]
+                );
+                const raw = evRes.rows?.[0]?.count;
+                if (raw != null) evidenceItemCount = parseInt(raw, 10);
+              } catch { /* fail-open */ }
+              return compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName, evidenceItemCount });
             });
             logStage('compile.report', compiled.ms, true);
             report = compiled.value;
@@ -2645,7 +3324,15 @@ export async function registerReportRoutes(
           try {
             if (report && typeof report === 'object' && (report as any).structured_summary && segmentedNodes?.nodes) {
               const extras = compileStructuredSummaryExtras({ nodes: segmentedNodes.nodes as any, structured_summary: (report as any).structured_summary });
-              Object.assign((report as any).structured_summary, extras);
+              // RC-S7-PRODUCT-MARKET: do NOT blindly overwrite product/market_summary_v1 with null.
+              // The compiler's applyStructuredSummaryFillIns (compiler-simple.ts) populates these
+              // fields from deal_overview_v2 when promoted facts are absent. Object.assign would
+              // clobber that fill-in when narrative nodes fail to produce a product/market summary.
+              // Rule: extras take precedence when non-null; fall through to fill-in when null.
+              const { product_summary_v1: _eProd, market_summary_v1: _eMkt, ...otherExtras } = extras;
+              Object.assign((report as any).structured_summary, otherExtras);
+              if (_eProd != null) (report as any).structured_summary.product_summary_v1 = _eProd;
+              if (_eMkt != null) (report as any).structured_summary.market_summary_v1 = _eMkt;
             }
           } catch (err) {
             request.log.warn({ event: 'deal.report.structured_summary_extras_failed', deal_id, dio_id: row.dio_id, err }, 'structured_summary extras compilation failed');
@@ -2655,9 +3342,19 @@ export async function registerReportRoutes(
           // - Prefer promoted fact display strings for raise + business_model (when present)
           // - Fall back to Phase1 executive_summary strings when promoted facts are missing
           // - IMPORTANT: do NOT override valuation-structured raises (they are intentionally normalized to amount-only)
+          // - IMPORTANT: do NOT override facts that were rejected by field_authority_guard — the
+          //   guard's decision takes precedence over the raw promoted-fact display string.
           try {
             if (report && typeof report === 'object' && (report as any).structured_summary && typeof (report as any).structured_summary === 'object') {
               const structured = (report as any).structured_summary as any;
+
+              // Build set of fact_types that were explicitly rejected by the field_authority_guard.
+              // Rejected facts must NOT be used to override the compiler's guarded output.
+              const _guardLog = Array.isArray((report as any)?.metadata?.field_authority_guard?.log)
+                ? (report as any).metadata.field_authority_guard.log : [];
+              const _guardRejectedTypes = new Set<string>(
+                _guardLog.filter((e: any) => e?.action === 'reject').map((e: any) => String(e?.fact_type ?? ''))
+              );
 
               const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
               const pickBestFact = (factType: string): any | null => {
@@ -2685,29 +3382,131 @@ export async function registerReportRoutes(
 
               const raiseFact = pickBestFact('raise_terms_v1');
               const raiseValueJson = raiseFact?.content_json?.value_json ?? raiseFact?.content_json?.valueJson ?? null;
-              const raiseDisplay = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              const _raiseDisplayRaw = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              // Filter sentinel "Unknown" — same rule as FPG raise.unknown_sentinel
+              const raiseDisplay = _raiseDisplayRaw && _raiseDisplayRaw.trim().toLowerCase() !== 'unknown' ? _raiseDisplayRaw : null;
               const raiseHasStructuredValuation = Boolean(raiseValueJson && typeof raiseValueJson === 'object' && (raiseValueJson as any).valuation && typeof (raiseValueJson as any).valuation === 'object');
 
               let nextRaiseValue: string | null = null;
-              if (raiseFact) {
+              if (raiseFact && !_guardRejectedTypes.has('raise_terms_v1')) {
                 if (!raiseHasStructuredValuation && raiseDisplay) nextRaiseValue = raiseDisplay;
-              } else if (execRaise) {
+              } else if (!raiseFact && execRaise) {
                 nextRaiseValue = execRaise;
               }
 
-              if (nextRaiseValue) {
+              // Sanitize prose-contaminated raise display: if the fact display is a narrative sentence
+              // and a clean structured amount is available, format it instead (mirrors FPG prose_contaminated rule).
+              if (nextRaiseValue && nextRaiseValue.length > 70 && (/[.!?,]/.test(nextRaiseValue) || nextRaiseValue.split(' ').length > 6)) {
+                const _ssAmt = structured.raise?.value_json?.amount?.amount ?? structured.raise?.value_json?.amount ?? null;
+                const _raiseAmt = typeof _ssAmt === 'number' && Number.isFinite(_ssAmt) && _ssAmt >= 100_000 ? _ssAmt : null;
+                if (_raiseAmt !== null) {
+                  const _x = _raiseAmt >= 1e9 ? `$${Number.isInteger(_raiseAmt/1e9) ? (_raiseAmt/1e9).toFixed(0) : (_raiseAmt/1e9 >= 10 ? (_raiseAmt/1e9).toFixed(0) : (_raiseAmt/1e9).toFixed(1))}B`
+                    : _raiseAmt >= 1e6 ? `$${Number.isInteger(_raiseAmt/1e6) ? (_raiseAmt/1e6).toFixed(0) : (_raiseAmt/1e6 >= 10 ? (_raiseAmt/1e6).toFixed(0) : (_raiseAmt/1e6).toFixed(1))}M`
+                    : `$${Math.round(_raiseAmt / 1000)}K`;
+                  const _rl = typeof structured.raise?.round_label === 'string' && structured.raise.round_label.trim() ? structured.raise.round_label.trim() : null;
+                  nextRaiseValue = _rl ? `${_x} (${_rl})` : _x;
+                }
+              }
+
+              // Do NOT override raise that was nulled or replaced by applyFinalPublishGuard.
+              // Same pattern as the business_model guard below.
+              const _fpgNulledRaise = structured.raise?.nulled_by === 'final_publish_guard';
+              const _fpgReplacedRaise = structured.raise?.replaced_by === 'final_publish_guard';
+              if (nextRaiseValue && !_fpgNulledRaise && !_fpgReplacedRaise) {
                 if (!structured.raise || typeof structured.raise !== 'object') structured.raise = {};
                 structured.raise.value = nextRaiseValue;
               }
 
               const modelFact = pickBestFact('business_model_v1');
               const modelValueJson = modelFact?.content_json?.value_json ?? modelFact?.content_json?.valueJson ?? null;
-              const modelDisplay = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+              const _modelDisplayStored = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+              // Display-time policy-aware guard: re-apply toPolicyAwareBusinessModelDisplay using stored
+              // policy_id and raw label from diagnostics. Corrects false-positive real-estate overrides
+              // for startup-policy deals (e.g. Carmoola) without requiring a re-analysis run.
+              let modelDisplay = _modelDisplayStored;
+              if (_modelDisplayStored && modelValueJson?.diagnostics) {
+                const _diagPolicyId: string | null = modelValueJson.diagnostics?.policy_id ?? null;
+                const _diagRawLabel: string | null = modelValueJson.display_label_raw ?? modelValueJson.primary_label ?? null;
+                if (_diagRawLabel) {
+                  try {
+                    const _bmPolicyAware = toPolicyAwareBusinessModelDisplay({
+                      policyId: _diagPolicyId,
+                      rawLabel: _diagRawLabel,
+                      hasRealEstateSignals: Boolean(modelValueJson.diagnostics?.has_real_estate_signals),
+                      hasFundSignals: Boolean(modelValueJson.diagnostics?.has_fund_signals),
+                      isPreferredEquity: Boolean(modelValueJson.diagnostics?.is_preferred_equity),
+                    });
+                    if (_bmPolicyAware.display) modelDisplay = _bmPolicyAware.display;
+                  } catch { /* fail-open */ }
+                }
+              }
 
-              const nextBusinessModelValue = modelFact ? modelDisplay : execModel;
-              if (nextBusinessModelValue) {
+              const nextBusinessModelValue = (modelFact && !_guardRejectedTypes.has('business_model_v1'))
+                ? modelDisplay
+                : (!modelFact ? execModel : null);
+              // Only apply back-compat override when the compiler (guard+selector pipeline) did not
+              // already set a BM value. If the selector picked a winner, trust it.
+              // CRITICAL: do NOT override a field intentionally nulled by applyFinalPublishGuard.
+              // When FPG nulls business_model (sets value=null + nulled_by='final_publish_guard'),
+              // the back-compat check `!structured.business_model?.value` would be true (null is falsy),
+              // causing the rejected value to be reinstated. The null_rule check prevents this.
+              const _fpgNulledBm = structured.business_model?.nulled_by === 'final_publish_guard';
+              if (nextBusinessModelValue && !structured.business_model?.value && !_fpgNulledBm) {
                 if (!structured.business_model || typeof structured.business_model !== 'object') structured.business_model = {};
                 structured.business_model.value = nextBusinessModelValue;
+                // RC-S6-BM-SOURCES: emit sources when the back-compat override sets a BM value so
+                // that selectAuthoritativeBusinessModelV1's hasEvidenceSources gate can pass.
+                // Two sub-cases:
+                //   (A) modelFact exists but failed the compiler's primary-count check:
+                //       derive {document_id, page_index} from the promoted fact's provenance.
+                //   (B) execModel path (!modelFact): derive {document_id} from exec evidence and
+                //       use page_index: 0 as a document-level citation (first page = safest fallback
+                //       when Phase 1 evidence lacks page-precise citations).
+                // Only applied when the current sources array is empty (compiler emitted no sources).
+                if (!Array.isArray(structured.business_model.sources) || structured.business_model.sources.length === 0) {
+                  if (modelFact && !_guardRejectedTypes.has('business_model_v1')) {
+                    // (A) promoted fact path — derive page citation from provenance
+                    const _mfProv = (modelFact as any)?.content_json?.provenance ?? null;
+                    const _mfDocId: string | null =
+                      (typeof _mfProv?.source_document_id === 'string' && _mfProv.source_document_id.trim()
+                        ? _mfProv.source_document_id.trim()
+                        : null) ??
+                      (typeof (modelFact as any)?.source_document_id === 'string' && (modelFact as any).source_document_id.trim()
+                        ? (modelFact as any).source_document_id.trim()
+                        : null);
+                    const _mfPageIndex: number | null =
+                      typeof _mfProv?.page_index === 'number' && Number.isFinite(_mfProv.page_index)
+                        ? _mfProv.page_index
+                        : null;
+                    if (_mfDocId && _mfPageIndex != null) {
+                      structured.business_model.sources = [{
+                        kind: 'promoted_fact',
+                        fact_type: 'business_model_v1',
+                        source_document_id: _mfDocId,
+                        page_index: _mfPageIndex,
+                        evidence_role: 'primary',
+                      }];
+                    }
+                  } else if (!modelFact) {
+                    // (B) exec_summary path — derive document-level citation from exec evidence.
+                    // page_index: 0 is a document-level fallback reference (first page) used when
+                    // Phase 1 executive_summary_v1 evidence contains document_id but no page index.
+                    const _execEvidence: any[] = Array.isArray(execPhase1?.executive_summary_v1?.evidence)
+                      ? (execPhase1.executive_summary_v1.evidence as any[])
+                      : [];
+                    const _firstDocEntry = _execEvidence.find(
+                      (e: any) => typeof e?.document_id === 'string' && e.document_id.trim(),
+                    );
+                    if (_firstDocEntry) {
+                      structured.business_model.sources = [{
+                        kind: 'phase1.executive_summary_v1',
+                        document_id: (_firstDocEntry.document_id as string).trim(),
+                        page_index: 0,
+                        claim_id: typeof _firstDocEntry.claim_id === 'string' ? _firstDocEntry.claim_id : null,
+                      }];
+                    }
+                  }
+                }
               }
             }
           } catch (err) {
@@ -2718,9 +3517,24 @@ export async function registerReportRoutes(
           // Goal: provide stable hero/overview/deep and citations without overlay drift.
           try {
             if (report && typeof report === 'object' && (report as any).structured_summary && typeof (report as any).structured_summary === 'object') {
+              applyStructuredNumericTrustGates(report);
               const det = buildDeterministicDealSummaryV1FromStructuredSummary({
                 structured_summary: (report as any).structured_summary,
               });
+              // RC-S8-LONG-SUMMARY: populate long_summary from deal_summary_v2.summary.paragraphs.
+              // This is the Phase 1 LLM narrative about the deal and feeds
+              // DealWorkspaceTopSection.dealSummaryLong (slot: topSummary.dealSummary.long).
+              // deal_summary_v1-deterministic.ts does not have access to DIO directly, so we
+              // inject this after the builder returns rather than modifying the compiler.
+              try {
+                const _dsv2 = (row as any)?.dio_data?.dio?.phase1?.deal_summary_v2;
+                const _paras: unknown[] | undefined = _dsv2?.summary?.paragraphs;
+                if (Array.isArray(_paras) && _paras.some((p) => typeof p === 'string' && (p as string).trim())) {
+                  (det as any).long_summary = (_paras as string[])
+                    .filter((p) => typeof p === 'string' && p.trim())
+                    .join('\n\n');
+                }
+              } catch { /* fail-open: long_summary is supplementary, never block deal_summary_v1 */ }
               (report as any).structured_summary.deal_summary_v1 = det;
               // Back-compat: keep the older top-level location too.
               (report as any).deal_summary_v1 = det;
@@ -2749,6 +3563,73 @@ export async function registerReportRoutes(
         
         const payload: any = { ready: true, version: version ?? report?.version ?? 1, artifact };
         payload.deal_summary = dealSummaryV1;
+
+        // Inject challenge_pass from deal_challenge_pass_results so that conviction_v2 scoring
+        // and the Decision Proof Block receive real data. This runs before attachScoreBandAndGuardrailV2
+        // so the verdict_resistance and flag signals are available to attachScoringV2Computed.
+        // The result is written into ingestion_reports cache; cache-hits carry the embedded value.
+        // Fail-open: absence degrades V2 scoring gracefully but never blocks /report.
+        try {
+          if (report && typeof report === 'object') {
+            const _cpResult = await (pool as any).query(
+              `SELECT verdict_resistance_score, verdict_resistance_label,
+                      opposing_case_summary, primary_challenge_reason,
+                      flag_count_critical, flag_count_error, flag_count_warn,
+                      missing_evidence, diligence_gaps, challenge_factors,
+                      overconfident_claims, memory_challenge_used, memory_challenge_summary
+                 FROM deal_challenge_pass_results
+                WHERE deal_id = $1
+                ORDER BY created_at DESC
+                LIMIT 1`,
+              [deal_id]
+            );
+            const _cpRow = _cpResult.rows?.[0] ?? null;
+            if (_cpRow) {
+              (report as any).challenge_pass = {
+                verdict_resistance_score: _cpRow.verdict_resistance_score ?? null,
+                verdict_resistance_label: _cpRow.verdict_resistance_label ?? null,
+                opposing_case: _cpRow.opposing_case_summary ?? null,
+                primary_challenge_reason: _cpRow.primary_challenge_reason ?? null,
+                flag_count_critical: _cpRow.flag_count_critical ?? 0,
+                flag_count_error: _cpRow.flag_count_error ?? 0,
+                flag_count_warn: _cpRow.flag_count_warn ?? 0,
+                missing_evidence: _cpRow.missing_evidence ?? [],
+                diligence_gaps: _cpRow.diligence_gaps ?? [],
+                challenge_factors: _cpRow.challenge_factors ?? [],
+                overconfident_claims: _cpRow.overconfident_claims ?? [],
+                memory_challenge_used: _cpRow.memory_challenge_used ?? false,
+                memory_challenge_summary: _cpRow.memory_challenge_summary ?? null,
+              };
+            }
+          }
+        } catch {
+          // fail-open: challenge_pass is optional enrichment
+        }
+
+        // Derive claim_support_v1 from conviction_v1 + challenge_pass signals.
+        // Runs after challenge_pass is attached so missing_evidence is available.
+        // Fail-open: absence never blocks /report.
+        try {
+          if (report && typeof report === 'object') {
+            const claimSupport = buildClaimSupportV1(report);
+            if (claimSupport) (report as any).claim_support_v1 = claimSupport;
+          }
+        } catch {
+          // fail-open
+        }
+
+        // Inject decision_readiness: deterministic classification layer.
+        // Runs after challenge_pass + conviction_v1 are both available in report.
+        // Fail-open: never blocks /report.
+        try {
+          if (report && typeof report === 'object') {
+            const drInput = buildDecisionReadinessInputFromReport(report);
+            const drResult = classifyDecisionReadiness(drInput);
+            (report as any).decision_readiness = drResult;
+          }
+        } catch {
+          // fail-open
+        }
 
         // Deterministic deck archetype inference (diagnostics only; no enforcement).
         try {
@@ -2956,6 +3837,7 @@ export async function registerReportRoutes(
           try {
             // Ensure excerpt contains the stable deterministic KPI shapes required by the narration guard.
             // These are deterministic, shape-only normalizations and must not change underlying extracted values.
+            applyStructuredNumericTrustGates(report);
             ensureStructuredRevenueSelectionReason(report);
             ensureStructuredSummaryKpis(report);
             // Ensure excerpt sees the deterministic deal_summary_v1 subtree as well.
@@ -2979,6 +3861,7 @@ export async function registerReportRoutes(
         }
 
         if (report && typeof report === 'object') {
+          applyStructuredNumericTrustGates(report);
           ensureStructuredRevenueSelectionReason(report);
           ensureStructuredSummaryKpis(report);
           // Keep deal_summary nested under the compiled report as well.
@@ -2990,6 +3873,7 @@ export async function registerReportRoutes(
             const iaoV2 = buildInvestmentAnalysisOverviewV2({
               dio: row.dio_data as any,
               report,
+              structured_summary: (report as any)?.structured_summary ?? null,
             });
             (nextMetadata as any).investment_analysis_overview_v2 = iaoV2;
             // Also hoist to top-level on report so the canonical DataFlow path
@@ -3065,6 +3949,9 @@ export async function registerReportRoutes(
             // ignore
           }
 
+          try {
+            injectOptionalReportFieldsFromDio(report, (row as any)?.dio_data);
+          } catch { /* fail-open */ }
           payload.report = report;
           // Spread the report into the response for compatibility with older consumers.
           // (Older clients expected the ReportDTO shape directly.)
@@ -3103,6 +3990,10 @@ export async function registerReportRoutes(
           logStage('db.ingestion_reports.upsert', up.ms, true, { cache: 'miss', ok: Boolean(up.value) });
         }
 
+        // Stamp compiler version on the live response (the upsert stamps it in DB; this ensures
+        // fresh-compile responses also carry __compiler_version like cache-hit responses do).
+        (payload as any).__compiler_version = REPORT_COMPILER_VERSION;
+
         return reply.status(200).send(payload);
         
       } catch (error) {
@@ -3139,8 +4030,8 @@ export async function registerReportRoutes(
         }
 
         // 404 only when the deal itself does not exist.
-        const { rows: dealRows } = await pool.query<{ id: string }>(
-          `SELECT id FROM deals WHERE id = $1 AND deleted_at IS NULL`,
+        const { rows: dealRows } = await pool.query<{ id: string; name: string | null }>(
+          `SELECT id, name FROM deals WHERE id = $1 AND deleted_at IS NULL`,
           [deal_id]
         );
         if (dealRows.length === 0) {
@@ -3223,6 +4114,7 @@ export async function registerReportRoutes(
               const freshIaoV2 = buildInvestmentAnalysisOverviewV2({
                 dio: row.dio_data as any,
                 report: cached,
+                structured_summary: (cached as any)?.structured_summary ?? null,
               });
               (cached as any).investment_analysis_overview_v2 = freshIaoV2;
               const meta = { ...((cached as any).metadata && typeof (cached as any).metadata === 'object' ? (cached as any).metadata : {}) };
@@ -3231,6 +4123,17 @@ export async function registerReportRoutes(
               if ((cached as any).report && typeof (cached as any).report === 'object') {
                 (cached as any).report = { ...(cached as any).report, investment_analysis_overview_v2: freshIaoV2 };
               }
+            } catch { /* fail-open */ }
+            // Inject decision_readiness fresh on cache-hit (versioned route) — never persisted.
+            try {
+              const drInput3 = buildDecisionReadinessInputFromReport(cached as any);
+              (cached as any).decision_readiness = classifyDecisionReadiness(drInput3);
+              if ((cached as any).report && typeof (cached as any).report === 'object') {
+                (cached as any).report = { ...(cached as any).report, decision_readiness: (cached as any).decision_readiness };
+              }
+            } catch { /* fail-open */ }
+            try {
+              injectOptionalReportFieldsFromDio(cached, (row as any)?.dio_data);
             } catch { /* fail-open */ }
             // Lazy recompile: when financial_facts_v1 are newer than the DIO's updated_at, trigger a
             // fresh analyze_deal job in the background. Idempotent via dedupe — never blocks response.
@@ -3341,10 +4244,29 @@ export async function registerReportRoutes(
           }
           const financialFacts = await getFinancialFactsForReport(pool as any, deal_id);
           const documents = await getDocumentsForReport(pool as any, deal_id);
-          report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents });
+          const [pageTexts, documentFullTexts, heuristicCompanyName] = await Promise.all([
+            getGoingConcernPageTexts(pool as any, deal_id),
+            getDocumentFullTextForDeal(pool as any, deal_id),
+            getCompanyNameFromDocuments(pool as any, deal_id),
+          ]);
+          const dealName = typeof dealRows[0]?.name === 'string' && dealRows[0].name.trim().length > 0
+            ? dealRows[0].name.trim()
+            : null;
+          const companyName = dealName ?? heuristicCompanyName;
+          let evidenceItemCount: number | undefined;
+          try {
+            const evRes = await (pool as any).query<{ count: string }>(
+              `SELECT COUNT(*)::text AS count FROM evidence_items WHERE deal_id = $1::uuid`,
+              [deal_id]
+            );
+            const raw = evRes.rows?.[0]?.count;
+            if (raw != null) evidenceItemCount = parseInt(raw, 10);
+          } catch { /* fail-open */ }
+          report = compileDIOToReportWithPromotedFacts(row.dio_data, { promotedFacts, financialFacts, documents, pageTexts, documentFullTexts, companyName, evidenceItemCount });
         }
 
         // Backward compatibility: normalize structured KPI shape (order matters).
+        applyStructuredNumericTrustGates(report);
         ensureStructuredRevenueSelectionReason(report);
         ensureStructuredSummaryKpis(report);
 
@@ -3355,7 +4277,12 @@ export async function registerReportRoutes(
               nodes: segmentedNodes!.nodes as any,
               structured_summary: (report as any).structured_summary,
             });
-            Object.assign((report as any).structured_summary, extras);
+            // RC-S7-PRODUCT-MARKET (versioned): same guard as unversioned route.
+            // Do not overwrite compiler fill-ins with null extras.
+            const { product_summary_v1: _eProd2, market_summary_v1: _eMkt2, ...otherExtras2 } = extras;
+            Object.assign((report as any).structured_summary, otherExtras2);
+            if (_eProd2 != null) (report as any).structured_summary.product_summary_v1 = _eProd2;
+            if (_eMkt2 != null) (report as any).structured_summary.market_summary_v1 = _eMkt2;
           }
         } catch (err) {
           request.log.warn(
@@ -3371,8 +4298,17 @@ export async function registerReportRoutes(
             // - Prefer promoted fact display strings for raise + business_model (when present)
             // - Fall back to Phase1 executive_summary strings when promoted facts are missing
             // - IMPORTANT: do NOT override valuation-structured raises (they are intentionally normalized to amount-only)
+            // - IMPORTANT: do NOT override facts that were rejected by field_authority_guard.
             try {
               const structured = (report as any).structured_summary as any;
+
+              // Respect field_authority_guard decisions — rejected fact types must not re-enter via override.
+              const _guardLog2 = Array.isArray((report as any)?.metadata?.field_authority_guard?.log)
+                ? (report as any).metadata.field_authority_guard.log : [];
+              const _guardRejectedTypes2 = new Set<string>(
+                _guardLog2.filter((e: any) => e?.action === 'reject').map((e: any) => String(e?.fact_type ?? ''))
+              );
+
               const factTypeOf = (r: any): string => String(r?.content_json?.fact_type ?? r?.fact_type ?? '').trim();
               const pickBestFact = (factType: string): any | null => {
                 const rows = Array.isArray(promotedFacts) ? promotedFacts : [];
@@ -3399,37 +4335,128 @@ export async function registerReportRoutes(
 
               const raiseFact = pickBestFact('raise_terms_v1');
               const raiseValueJson = raiseFact?.content_json?.value_json ?? raiseFact?.content_json?.valueJson ?? null;
-              const raiseDisplay = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              const _raiseDisplayRaw2 = typeof raiseValueJson?.display === 'string' && raiseValueJson.display.trim() ? raiseValueJson.display.trim() : null;
+              // Filter sentinel "Unknown" — same rule as FPG raise.unknown_sentinel
+              const raiseDisplay = _raiseDisplayRaw2 && _raiseDisplayRaw2.trim().toLowerCase() !== 'unknown' ? _raiseDisplayRaw2 : null;
               const raiseHasStructuredValuation = Boolean(raiseValueJson && typeof raiseValueJson === 'object' && (raiseValueJson as any).valuation && typeof (raiseValueJson as any).valuation === 'object');
 
               let nextRaiseValue: string | null = null;
-              if (raiseFact) {
+              if (raiseFact && !_guardRejectedTypes2.has('raise_terms_v1')) {
                 if (!raiseHasStructuredValuation && raiseDisplay) nextRaiseValue = raiseDisplay;
-              } else if (execRaise) {
+              } else if (!raiseFact && execRaise) {
                 nextRaiseValue = execRaise;
               }
 
-              if (nextRaiseValue) {
+              // Sanitize prose-contaminated raise display string (mirrors FPG prose_contaminated rule).
+              if (nextRaiseValue && nextRaiseValue.length > 70 && (/[.!?,]/.test(nextRaiseValue) || nextRaiseValue.split(' ').length > 6)) {
+                const _ssAmt2 = structured.raise?.value_json?.amount?.amount ?? structured.raise?.value_json?.amount ?? null;
+                const _raiseAmt2 = typeof _ssAmt2 === 'number' && Number.isFinite(_ssAmt2) && _ssAmt2 >= 100_000 ? _ssAmt2 : null;
+                if (_raiseAmt2 !== null) {
+                  const _x2 = _raiseAmt2 >= 1e9 ? `$${Number.isInteger(_raiseAmt2/1e9) ? (_raiseAmt2/1e9).toFixed(0) : (_raiseAmt2/1e9 >= 10 ? (_raiseAmt2/1e9).toFixed(0) : (_raiseAmt2/1e9).toFixed(1))}B`
+                    : _raiseAmt2 >= 1e6 ? `$${Number.isInteger(_raiseAmt2/1e6) ? (_raiseAmt2/1e6).toFixed(0) : (_raiseAmt2/1e6 >= 10 ? (_raiseAmt2/1e6).toFixed(0) : (_raiseAmt2/1e6).toFixed(1))}M`
+                    : `$${Math.round(_raiseAmt2 / 1000)}K`;
+                  const _rl2 = typeof structured.raise?.round_label === 'string' && structured.raise.round_label.trim() ? structured.raise.round_label.trim() : null;
+                  nextRaiseValue = _rl2 ? `${_x2} (${_rl2})` : _x2;
+                }
+              }
+
+              // Do NOT override raise that was nulled or replaced by applyFinalPublishGuard.
+              const _fpgNulledRaise2 = structured.raise?.nulled_by === 'final_publish_guard';
+              const _fpgReplacedRaise2 = structured.raise?.replaced_by === 'final_publish_guard';
+              if (nextRaiseValue && !_fpgNulledRaise2 && !_fpgReplacedRaise2) {
                 if (!structured.raise || typeof structured.raise !== 'object') structured.raise = {};
                 structured.raise.value = nextRaiseValue;
               }
 
               const modelFact = pickBestFact('business_model_v1');
               const modelValueJson = modelFact?.content_json?.value_json ?? modelFact?.content_json?.valueJson ?? null;
-              const modelDisplay = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+              const _modelDisplayStored2 = typeof modelValueJson?.display === 'string' && modelValueJson.display.trim() ? modelValueJson.display.trim() : null;
+              // Display-time policy-aware guard (same as versioned route).
+              let modelDisplay2 = _modelDisplayStored2;
+              if (_modelDisplayStored2 && modelValueJson?.diagnostics) {
+                const _diagPolicyId2: string | null = modelValueJson.diagnostics?.policy_id ?? null;
+                const _diagRawLabel2: string | null = modelValueJson.display_label_raw ?? modelValueJson.primary_label ?? null;
+                if (_diagRawLabel2) {
+                  try {
+                    const _bmPolicyAware2 = toPolicyAwareBusinessModelDisplay({
+                      policyId: _diagPolicyId2,
+                      rawLabel: _diagRawLabel2,
+                      hasRealEstateSignals: Boolean(modelValueJson.diagnostics?.has_real_estate_signals),
+                      hasFundSignals: Boolean(modelValueJson.diagnostics?.has_fund_signals),
+                      isPreferredEquity: Boolean(modelValueJson.diagnostics?.is_preferred_equity),
+                    });
+                    if (_bmPolicyAware2.display) modelDisplay2 = _bmPolicyAware2.display;
+                  } catch { /* fail-open */ }
+                }
+              }
 
-              const nextBusinessModelValue = modelFact ? modelDisplay : execModel;
-              if (nextBusinessModelValue) {
+              const nextBusinessModelValue = (modelFact && !_guardRejectedTypes2.has('business_model_v1'))
+                ? modelDisplay2
+                : (!modelFact ? execModel : null);
+              // Only apply back-compat override when the compiler (guard+selector pipeline) did not
+              // already set a BM value. If the selector picked a winner, trust it.
+              if (nextBusinessModelValue && !structured.business_model?.value) {
                 if (!structured.business_model || typeof structured.business_model !== 'object') structured.business_model = {};
                 structured.business_model.value = nextBusinessModelValue;
+                // RC-S6-BM-SOURCES (versioned route): emit sources matching the unversioned back-compat fix.
+                if (!Array.isArray(structured.business_model.sources) || structured.business_model.sources.length === 0) {
+                  if (modelFact && !_guardRejectedTypes2.has('business_model_v1')) {
+                    const _mfProv2 = (modelFact as any)?.content_json?.provenance ?? null;
+                    const _mfDocId2: string | null =
+                      (typeof _mfProv2?.source_document_id === 'string' && _mfProv2.source_document_id.trim()
+                        ? _mfProv2.source_document_id.trim()
+                        : null) ??
+                      (typeof (modelFact as any)?.source_document_id === 'string' && (modelFact as any).source_document_id.trim()
+                        ? (modelFact as any).source_document_id.trim()
+                        : null);
+                    const _mfPageIndex2: number | null =
+                      typeof _mfProv2?.page_index === 'number' && Number.isFinite(_mfProv2.page_index) ? _mfProv2.page_index : null;
+                    if (_mfDocId2 && _mfPageIndex2 != null) {
+                      structured.business_model.sources = [{
+                        kind: 'promoted_fact',
+                        fact_type: 'business_model_v1',
+                        source_document_id: _mfDocId2,
+                        page_index: _mfPageIndex2,
+                        evidence_role: 'primary',
+                      }];
+                    }
+                  } else if (!modelFact) {
+                    const _execEvidence2: any[] = Array.isArray(execPhase1?.executive_summary_v1?.evidence)
+                      ? (execPhase1.executive_summary_v1.evidence as any[])
+                      : [];
+                    const _firstDocEntry2 = _execEvidence2.find(
+                      (e: any) => typeof e?.document_id === 'string' && e.document_id.trim(),
+                    );
+                    if (_firstDocEntry2) {
+                      structured.business_model.sources = [{
+                        kind: 'phase1.executive_summary_v1',
+                        document_id: (_firstDocEntry2.document_id as string).trim(),
+                        page_index: 0,
+                        claim_id: typeof _firstDocEntry2.claim_id === 'string' ? _firstDocEntry2.claim_id : null,
+                      }];
+                    }
+                  }
+                }
               }
             } catch {
               // ignore
             }
 
+            applyStructuredNumericTrustGates(report);
+
             const det = buildDeterministicDealSummaryV1FromStructuredSummary({
               structured_summary: (report as any).structured_summary,
             });
+            // RC-S8-LONG-SUMMARY (versioned): same as unversioned route.
+            try {
+              const _dsv2_2 = (row as any)?.dio_data?.dio?.phase1?.deal_summary_v2;
+              const _paras2: unknown[] | undefined = _dsv2_2?.summary?.paragraphs;
+              if (Array.isArray(_paras2) && _paras2.some((p) => typeof p === 'string' && (p as string).trim())) {
+                (det as any).long_summary = (_paras2 as string[])
+                  .filter((p) => typeof p === 'string' && p.trim())
+                  .join('\n\n');
+              }
+            } catch { /* fail-open */ }
             (report as any).structured_summary.deal_summary_v1 = det;
             // Back-compat: keep the older top-level location too.
             (report as any).deal_summary_v1 = det;
@@ -3442,6 +4469,65 @@ export async function registerReportRoutes(
         }
 
         // narrateEnabled computed above for cache gating
+
+        // Inject challenge_pass from deal_challenge_pass_results (versioned route — same contract as main route).
+        // Must run before attachScoreBandAndGuardrailV2 so conviction_v2 / flag signals are populated.
+        try {
+          if (report && typeof report === 'object') {
+            const _cpResult2 = await (pool as any).query(
+              `SELECT verdict_resistance_score, verdict_resistance_label,
+                      opposing_case_summary, primary_challenge_reason,
+                      flag_count_critical, flag_count_error, flag_count_warn,
+                      missing_evidence, diligence_gaps, challenge_factors,
+                      overconfident_claims, memory_challenge_used, memory_challenge_summary
+                 FROM deal_challenge_pass_results
+                WHERE deal_id = $1
+                ORDER BY created_at DESC
+                LIMIT 1`,
+              [deal_id]
+            );
+            const _cpRow2 = _cpResult2.rows?.[0] ?? null;
+            if (_cpRow2) {
+              (report as any).challenge_pass = {
+                verdict_resistance_score: _cpRow2.verdict_resistance_score ?? null,
+                verdict_resistance_label: _cpRow2.verdict_resistance_label ?? null,
+                opposing_case: _cpRow2.opposing_case_summary ?? null,
+                primary_challenge_reason: _cpRow2.primary_challenge_reason ?? null,
+                flag_count_critical: _cpRow2.flag_count_critical ?? 0,
+                flag_count_error: _cpRow2.flag_count_error ?? 0,
+                flag_count_warn: _cpRow2.flag_count_warn ?? 0,
+                missing_evidence: _cpRow2.missing_evidence ?? [],
+                diligence_gaps: _cpRow2.diligence_gaps ?? [],
+                challenge_factors: _cpRow2.challenge_factors ?? [],
+                overconfident_claims: _cpRow2.overconfident_claims ?? [],
+                memory_challenge_used: _cpRow2.memory_challenge_used ?? false,
+                memory_challenge_summary: _cpRow2.memory_challenge_summary ?? null,
+              };
+            }
+          }
+        } catch {
+          // fail-open: challenge_pass is optional enrichment
+        }
+
+        // Derive claim_support_v1 (versioned route — same contract as main route).
+        try {
+          if (report && typeof report === 'object') {
+            const claimSupport2 = buildClaimSupportV1(report);
+            if (claimSupport2) (report as any).claim_support_v1 = claimSupport2;
+          }
+        } catch {
+          // fail-open
+        }
+
+        // Inject decision_readiness (versioned route — same contract as main route).
+        try {
+          if (report && typeof report === 'object') {
+            const drInput2 = buildDecisionReadinessInputFromReport(report);
+            (report as any).decision_readiness = classifyDecisionReadiness(drInput2);
+          }
+        } catch {
+          // fail-open
+        }
 
         // Best-effort: attach deterministic deck archetype metadata for versioned reports too.
         try {
@@ -3499,6 +4585,7 @@ export async function registerReportRoutes(
           const iaoV2 = buildInvestmentAnalysisOverviewV2({
             dio: row.dio_data as any,
             report,
+            structured_summary: (report as any)?.structured_summary ?? null,
           });
           (nextMetadata as any).investment_analysis_overview_v2 = iaoV2;
           // Also hoist to top-level on report so the canonical DataFlow path
@@ -3542,6 +4629,9 @@ export async function registerReportRoutes(
         });
 
         const payload: any = { ready: true, version: versionNum, artifact };
+        try {
+          injectOptionalReportFieldsFromDio(report, (row as any)?.dio_data);
+        } catch { /* fail-open */ }
         payload.report = report;
         // Spread the report into the response for compatibility with older consumers.
         Object.assign(payload, report);
@@ -3553,6 +4643,10 @@ export async function registerReportRoutes(
         // Best-effort: inject live staleness flag AFTER upsert (so ingestion_reports row exists).
         // Fresh compiles load current facts → expected false; detects edge cases where facts arrived mid-compile.
         try { payload.financial_snapshot_stale = (await computeReportFinancialSnapshotStale(pool, deal_id, versionNum, { dioUpdatedAt: row.updated_at })).stale; } catch { payload.financial_snapshot_stale = false; }
+
+        // Stamp compiler version on the live response (the upsert stamps it in DB; this ensures
+        // fresh-compile responses also carry __compiler_version like cache-hit responses do).
+        (payload as any).__compiler_version = REPORT_COMPILER_VERSION;
 
         return reply.status(200).send(payload);
         

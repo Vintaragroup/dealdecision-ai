@@ -68,6 +68,8 @@ import {
   type DecisionInputs,
 } from './compute-ors';
 import { computeVCScoringV2, type VCScoringV2Inputs } from '../scoring/vc-scoring-v2';
+import { computeVentureLensV1 } from '../scoring/vc-venture-lens-v1';
+import { resolveCanonicalDecision } from '../scoring/canonical-decision';
 
 // ─── Public type alias ───────────────────────────────────────────────────────
 
@@ -508,6 +510,13 @@ function buildProductProfileV1Segment(rp: OrchestratorRenderPackageInput): Produ
 export function buildOrchestratorReportV1(args: {
   dealId: string;
   renderPackage: OrchestratorRenderPackageInput;
+  /**
+   * Track 1 overall_score from deals.overall_score (analyze_deal pipeline).
+   * Pass this whenever available so the canonical decision resolver can use
+   * it as the primary authoritative score.
+   * When absent, the resolver falls back to ORS (Track 2).
+   */
+  overall_score?: number | null;
 }): OrchestratorReportV1 {
   const { dealId, renderPackage: rp } = args;
   const startMs = Date.now();
@@ -707,6 +716,12 @@ export function buildOrchestratorReportV1(args: {
     dimension_scores: {
       solution_product: null,
       problem_clarity: null,
+      // TODO [G2]: Wire StageWeightedScoringV1.dimensions.team from the DIO pipeline
+      // into the render package so VentureLensV1 team signal is active.
+      // Until then, team defaults to 50 (neutral) in VentureLensV1.
+      // See: packages/core/src/scoring/vc-venture-lens-v1.ts (team null fallback note)
+      //      packages/core/src/scoring/canonical-decision.ts (G2 documentation)
+      //      2026-04-07-intelligence-scoring-discovery-report.md §6.2, G2
       team: null,
       traction: null,
       business_model: null,
@@ -727,8 +742,35 @@ export function buildOrchestratorReportV1(args: {
   };
 
   const vcScoringV2 = computeVCScoringV2(vcScoringV2Inputs);
+  const ventureLensV1 = computeVentureLensV1(vcScoringV2Inputs, vcScoringV2);
 
-  // ─── 11. Assemble report ───────────────────────────────────────────────────
+  // ─── 10b. Canonical Decision ──────────────────────────────────────────────
+  // Resolve all scoring tracks into one authoritative CanonicalDecision.
+  // overall_score (Track 1) is the primary authority when supplied by the caller.
+  // All other scores become supporting/validation signals.
+  const canonicalDecision = resolveCanonicalDecision({
+    overall_score: args.overall_score ?? null,
+    ventureLens: {
+      final_investment_score: ventureLensV1.final_investment_score,
+      final_posture: ventureLensV1.final_posture,
+      venture_score: ventureLensV1.venture_score,
+      conviction_level: ventureLensV1.conviction_level,
+      reasons: ventureLensV1.reasons,
+    },
+    vcScoring: {
+      vc_composite_score: vcScoringV2.vc_composite_score,
+      investment_posture: vcScoringV2.investment_posture,
+    },
+    orchestrator: {
+      ORS: orsResult.ors,
+      DCI: documentConfidence.score,
+      FHC: fhc.score,
+      URSS: urssResult.score,
+      decision_label: decision.label,
+    },
+    drivers: segments.executive_summary.strengths.slice(0, 5),
+    risks: segments.risk_verification.top_risks.map((r) => r.risk).slice(0, 5),
+  });
 
   const composeTotal = Date.now() - startMs;
 
@@ -778,6 +820,8 @@ export function buildOrchestratorReportV1(args: {
     evidence_registry: buildEmptyEvidenceRegistry(),
     diagnostics,
     vc_scoring_v2: vcScoringV2,
+    venture_lens_v1: ventureLensV1,
+    canonical_decision: canonicalDecision,
   };
 }
 

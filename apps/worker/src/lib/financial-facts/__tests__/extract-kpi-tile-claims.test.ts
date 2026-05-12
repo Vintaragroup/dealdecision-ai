@@ -526,6 +526,52 @@ describe("extractKpiTileClaims — market projection suppression", () => {
     const facts = extractKpiTileClaims("85% retention", BASE_OPTS);
     expect(facts[0]?.metric_key).toBe("retention_pct");
   });
+
+  // RC-003: expanded market-size suppression
+  it("RC-003: rejects 'addressable market' revenue segment", () => {
+    const facts = extractKpiTileClaims("$15M addressable market revenue", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("RC-003: rejects 'total addressable market' segment", () => {
+    const facts = extractKpiTileClaims("Total addressable market $90M", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("RC-003: rejects 'market opportunity' revenue segment", () => {
+    const facts = extractKpiTileClaims("Market opportunity $15M revenue", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("RC-003: rejects 'market size' revenue segment", () => {
+    const facts = extractKpiTileClaims("Market size $100M revenue", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("RC-003: rejects 'TAM: $15B' revenue segment", () => {
+    const facts = extractKpiTileClaims("TAM: $15B revenue", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("RC-003: rejects 'SAM: $3B' ARR segment", () => {
+    const facts = extractKpiTileClaims("SAM: $3B ARR", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("RC-003: rejects 'revenue opportunity' segment", () => {
+    const facts = extractKpiTileClaims("$15M revenue opportunity", BASE_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("RC-003: does NOT suppress real traction ARR with no market language", () => {
+    const facts = extractKpiTileClaims("$1.2M ARR", BASE_OPTS);
+    expect(facts.some((f) => f.metric_key === "arr" && f.value === 1_200_000)).toBe(true);
+  });
+
+  it("RC-003: does NOT suppress MRR with no market context", () => {
+    const facts = extractKpiTileClaims("$40K MRR", BASE_OPTS);
+    expect(facts.some((f) => f.metric_key === "mrr" && f.value === 40_000)).toBe(true);
+  });
 });
 
 // ─── Extended raise / cash / runway / valuation patterns ─────────────────────
@@ -684,5 +730,33 @@ describe("extractKpiTileClaims — whitespace-split scale suffix", () => {
     // but the key assertion is that value 3_500_000_000 never appears.
     const facts = extractKpiTileClaims("Rate $3.5 basis points", BASE_OPTS);
     expect(facts.every((f) => f.value !== 3_500_000_000)).toBe(true);
+  });
+});
+
+// ─── Guardrail: product slide suppression (G4) ───────────────────────────────
+
+describe("extractKpiTileClaims — product slide suppression (G4)", () => {
+  const PRODUCT_OPTS = { ...BASE_OPTS, slide_type: "product" };
+
+  it("returns [] for product slide type — suppresses UI screenshot KPIs", () => {
+    const facts = extractKpiTileClaims("$40K MRR", PRODUCT_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("returns [] for product slide even with multiple KPI phrases", () => {
+    const facts = extractKpiTileClaims("$100K ARR\n330K active users", PRODUCT_OPTS);
+    expect(facts).toHaveLength(0);
+  });
+
+  it("still extracts from traction slide when same text appears there", () => {
+    // The classifier would resolve a genuine traction callout as 'traction', not 'product'.
+    // Ensure suppression does not bleed into other slide types.
+    const facts = extractKpiTileClaims("$40K MRR", { ...BASE_OPTS, slide_type: "traction" });
+    expect(facts.length).toBeGreaterThan(0);
+    expect(facts[0]!.metric_key).toBe("mrr");
+  });
+
+  it("'product' is included in the exported SUPPRESSED_SLIDE_TYPES set", () => {
+    expect(SUPPRESSED_SLIDE_TYPES.has("product")).toBe(true);
   });
 });

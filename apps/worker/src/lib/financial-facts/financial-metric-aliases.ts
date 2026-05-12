@@ -32,13 +32,35 @@ export const METRIC_ALIAS_MAP: Record<string, string> = {
   "top line":                           "revenue",
   "top-line":                           "revenue",
   // XLSX financial model variants
-  "total revenue recognized":           "revenue",
-  "revenue recognized":                 "revenue",
-  "subscription revenue recognized":    "revenue",
+  // NOTE: subscription/recurring revenue is generic revenue (no recognition timing)
   "subscription revenue":               "revenue",
   "total subscription revenue":         "revenue",
   "total recurring revenue":            "revenue",
   "recurring revenue":                  "revenue",
+  // Recognized revenue (ASC 606 / IFRS 15) — distinct from generic revenue
+  "total revenue recognized":           "recognized_revenue",
+  "revenue recognized":                 "recognized_revenue",
+  "subscription revenue recognized":    "recognized_revenue",
+  "recognized revenue":                 "recognized_revenue",
+  "revenue recognition":                "recognized_revenue",
+  "ytd recognized revenue":             "recognized_revenue",
+  "ytd revenue recognized":             "recognized_revenue",
+  "channel revenue recognized":         "recognized_revenue",
+  "direct revenue recognized":          "recognized_revenue",
+  // Booked revenue (contracted, not yet recognized) — distinct from generic revenue
+  "booked revenue":                     "booked_revenue",
+  "revenue booked":                     "booked_revenue",
+  "ytd booked revenue":                 "booked_revenue",
+  // Numbered sales rows — payroll/headcount line items in financial models.
+  // These MUST appear before the bare "sales" → "revenue" alias so that e.g.
+  // "Sales 1", "Sales 2" in a headcount table are mapped to opex, not revenue.
+  "sales 1":                            "opex",
+  "sales 2":                            "opex",
+  "sales 3":                            "opex",
+  "sales rep":                          "opex",
+  "sales representative":               "opex",
+  "operations 1":                       "opex",
+  "operations 2":                       "opex",
   // ── COGS ─────────────────────────────────────────────────────────────────
   cogs:                      "cogs",
   "cost of goods sold":      "cogs",

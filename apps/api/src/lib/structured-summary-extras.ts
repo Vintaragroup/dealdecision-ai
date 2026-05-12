@@ -195,11 +195,28 @@ export function compileStructuredSummaryExtras(input: {
 
   const deck_type = detectDeckType(nodes as any);
 
+  // Balance-sheet product-page guard.
+  // A page tagged segment_key="product" by the visual classifier may contain balance-sheet
+  // liability-table data from a misclassified SEC exhibit (e.g. EX-99.5 pro-forma financials).
+  // Such pages must not enter the product or market summary builders because their content
+  // is financial tabular data, not narrative product descriptions.
+  // This mirrors the identical guard in apps/api/src/routes/understanding.ts (BALANCE_SHEET_PAGE_RE).
+  const BALANCE_SHEET_PAGE_RE = /\b(?:term loan\b|net of discounts?|total liabilities|convertible notes? payable\b|derivative warrant|lease liabilities)/i;
+  const narrativeNodes = (nodes as any[]).filter((n: any) => {
+    const seg = String(n.segment_key ?? '').trim().toLowerCase();
+    if (seg !== 'product') return true; // only filter product-tagged pages
+    const body = [
+      ...(Array.isArray(n.bullets) ? n.bullets : []),
+      typeof n.bullets_snippet === 'string' ? n.bullets_snippet : '',
+    ].join(' ');
+    return !BALANCE_SHEET_PAGE_RE.test(body);
+  });
+
   // Canonical deterministic syntheses (node-first, claim-gated).
   // These are the preferred outputs for dashboard inspector traceability.
-  const deal_summary_v1_raw = buildDealSummaryV1({ nodes: nodes as any, structured_summary: structured });
-  const product_summary_v1_raw = buildProductSummaryV1(nodes as any);
-  const market_summary_v1_raw = buildMarketSummaryV1(nodes as any);
+  const deal_summary_v1_raw = buildDealSummaryV1({ nodes: narrativeNodes as any, structured_summary: structured });
+  const product_summary_v1_raw = buildProductSummaryV1(narrativeNodes as any);
+  const market_summary_v1_raw = buildMarketSummaryV1(narrativeNodes as any);
 
   // Browser-friendly contract: include `sources[]` on v1 sections.
   // The dashboard UI can render `supporting_nodes`, while consumers expecting legacy `sources`

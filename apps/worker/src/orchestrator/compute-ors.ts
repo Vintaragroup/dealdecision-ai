@@ -59,6 +59,12 @@ const MARKET_FIELD_WEIGHTS: Record<string, number> = {
 interface SimpleCanonicalField {
   field: string;
   computability: string;
+  /**
+   * Set to true by the truth-state gate (applyTruthGatesV1) when the financial
+   * truth layer has CONFLICT, INSUFFICIENT, or projected_only state for this field.
+   * When true, the field is excluded from market-score computation even if Computable.
+   */
+  truth_gate_blocked?: boolean;
 }
 
 /**
@@ -67,7 +73,9 @@ interface SimpleCanonicalField {
  */
 export function computeMarketScoreRaw(fields: SimpleCanonicalField[]): MarketScoreInputs {
   const computable = new Set(
-    fields.filter((f) => f.computability === "Computable").map((f) => f.field)
+    fields
+      .filter((f) => f.computability === "Computable" && f.truth_gate_blocked !== true)
+      .map((f) => f.field)
   );
 
   let score = 0;

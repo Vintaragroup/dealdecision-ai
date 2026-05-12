@@ -525,11 +525,21 @@ function capsTokenRatio(value: string): number {
 	return capsTokens / tokens.length;
 }
 
+// Edu-bio rejection pattern — shared by both hard-validation gates.
+// Matches biography/education fragments that should never appear as product/ICP copy.
+const EDU_BIO_REJECT_RE =
+	/\b(?:studied\s+at|bachelor[''s]*\s+(?:of|in|degree)|master[''s]*\s+(?:of|in|degree|science|arts)|m\.?b\.?a\.?|ph\.?d\.?\s+(?:from|in)|graduated\s+from|university\s+of|columbia\s+university|harvard\s+(?:university|business\s+school|law\s+school)|stanford\s+(?:university|business\s+school|law\s+school)|notre\s+dame|wharton\s+school|london\s+business\s+school|kellogg\s+school|technical\s+university\s+of|copenhagen\s+business\s+school)\b/i;
+
 function hardValidateProductSolution(value: string): string {
 	const s = sanitizeInlineText(value);
 	if (!s) return "";
 	if (hasSpacedLogoOcrArtifact(s)) return "";
 	if (/^(unknown|n\/?a|none)$/i.test(s.trim())) return "";
+	// Reject bio/education fragments.
+	if (EDU_BIO_REJECT_RE.test(s)) return "";
+	// Policy-only mandates are not product descriptions (e.g., "Medicaid requires...").
+	// Keep these out so downstream fallbacks can prefer actual solution statements.
+	if (/^\s*in\s+addition,\s*medicaid\s+requires\b/i.test(s)) return "";
 
 	// Allow ALL CAPS taglines only if they look verb-like (not a logo/name artifact).
 	if (capsTokenRatio(s) > 0.6) {
@@ -546,6 +556,8 @@ function hardValidateMarketICP(value: string): string {
 	if (hasSpacedLogoOcrArtifact(s)) return "";
 	if (capsTokenRatio(s) > 0.4) return "";
 	if (/^(unknown|n\/?a|none)$/i.test(s.trim())) return "";
+	// Reject bio/education fragments (founder bios, degree lists, school names).
+	if (EDU_BIO_REJECT_RE.test(s)) return "";
 
 	// ICP lines are often noun phrases; allow "for/target/built for" without requiring a business verb.
 	const hasIcpSignal =
@@ -1318,7 +1330,7 @@ function extractWindow(text: string, re: RegExp, maxChars: number): { snippet: s
 	const snippet = takeSentenceish(window, maxChars);
 	if (!snippet.trim()) return null;
 	const strong = /\$\s?\d|\b(raising|seeking|funding|round|terms)\b/i.test(snippet)
-		|| /\b(ICP|target\s+customer|go\s*-?to\s*-?market|\bGTM\b)\b/i.test(snippet);
+		|| /\b(ICP|target\s+customer|go[\s\-]*to[\s\-]*market|\bGTM\b)\b/i.test(snippet);
 	return { snippet, confidence: strong ? 0.75 : 0.6 };
 }
 
@@ -1350,6 +1362,7 @@ export function extractPhase1OverviewFromDocuments(
 	const raiseCands: Candidate[] = [];
 	const gtmCands: Candidate[] = [];
 	const riskCands: Array<{ items: string[]; document_id: string; confidence: number; rawSnippet: string }> = [];
+	const proceduralCollectionRe = /\b(step\s*\d+|requisition\s*form|\bccf\b|custody\s+control\s+form|specimen|swab)\b/i;
 
 	for (const d of docs) {
 		const docId = safeString(d.document_id).trim();
@@ -1364,7 +1377,29 @@ export function extractPhase1OverviewFromDocuments(
 			productCands.push({ value: productAfter, document_id: docId, confidence: 0.85, rawSnippet: productAfter });
 		} else {
 			const win = extractWindow(text, /\b(what\s+we\s+do|we\s+(?:are|re)\s+building|our\s+platform|our\s+product|our\s+solution)\b/i, 220);
-			if (win) productCands.push({ value: win.snippet, document_id: docId, confidence: win.confidence, rawSnippet: win.snippet });
+			if (win) {
+				productCands.push({ value: win.snippet, document_id: docId, confidence: win.confidence, rawSnippet: win.snippet });
+			} else {
+				// Health/testing decks often state the product as solution/benefit copy rather than
+				// startup-style "what we do" phrasing.
+				const healthDescriptorWin = extractWindow(
+					text,
+					/\b(non-?invasive|no\s+needles|oral\s+fluid\s+test(?:ing)?|screening\s+can\s+be\s+performed\s+anywhere)\b/i,
+					220
+				);
+				const healthProductWin = healthDescriptorWin;
+				if (healthProductWin) {
+					const snippet = sanitizeInlineText(healthProductWin.snippet);
+					if (!proceduralCollectionRe.test(snippet)) {
+					productCands.push({
+						value: snippet,
+						document_id: docId,
+						confidence: Math.max(healthProductWin.confidence, 0.75),
+						rawSnippet: snippet,
+					});
+					}
+				}
+			}
 		}
 
 		// Market / ICP
@@ -1374,7 +1409,31 @@ export function extractPhase1OverviewFromDocuments(
 			marketCands.push({ value: marketAfter, document_id: docId, confidence: 0.85, rawSnippet: marketAfter });
 		} else {
 			const win = extractWindow(text, /\b(ICP|ideal\s+customer|target\s+customer|target\s+market|who\s+we\s+serve|buyers?)\b/i, 220);
-			if (win) marketCands.push({ value: win.snippet, document_id: docId, confidence: win.confidence, rawSnippet: win.snippet });
+			if (win) {
+				marketCands.push({ value: win.snippet, document_id: docId, confidence: win.confidence, rawSnippet: win.snippet });
+			} else {
+				// Institutional healthcare/testing decks may describe customers via policy and care channels.
+				const institutionalMarketWin = extractWindow(
+					text,
+					/\b(medicaid|public\s+health|schools?|health\s*care\s+providers?|young\s+children|children)\b[^\n\r]{0,180}\b(test(?:ing|ed)?|screen(?:ing)?)\b/i,
+					220
+				);
+				const policyAudienceWin = institutionalMarketWin
+					? null
+					: extractWindow(text, /\b(medicaid|public\s+health|health\s*care\s+providers?|schools?)\b[^\n\r]{0,180}/i, 220);
+				const marketWin = institutionalMarketWin ?? policyAudienceWin;
+				if (marketWin) {
+					const snippet = sanitizeInlineText(marketWin.snippet);
+					if (!proceduralCollectionRe.test(snippet)) {
+					marketCands.push({
+						value: snippet,
+						document_id: docId,
+						confidence: Math.max(marketWin.confidence, 0.72),
+						rawSnippet: snippet,
+					});
+					}
+				}
+			}
 		}
 
 		// Raise / terms
@@ -1401,8 +1460,57 @@ export function extractPhase1OverviewFromDocuments(
 		if (gtmAfter) {
 			gtmCands.push({ value: gtmAfter, document_id: docId, confidence: 0.85, rawSnippet: gtmAfter });
 		} else {
-			const win = extractWindow(text, /\b(go\s*-?to\s*-?market|\bgtm\b|sales\s+motion|distribution|channels?|pricing|marketing)\b/i, 220);
-			if (win) gtmCands.push({ value: win.snippet, document_id: docId, confidence: win.confidence, rawSnippet: win.snippet });
+			// Try inline heading: "Go-to-market: content on same line" (handles spaced-dash variants like "Go - to - market: ..."
+			// and cases where slide title text precedes the heading on the same line, e.g. "NTHS Go - to - market: Sales Strategy...")
+			// Use ':' only (not '-') to avoid false-matching TOC entries like "Go - to - Market - Sales Strategy . . ."
+			const gtmInlineRe = /\b(?:Go\s*(?:-\s*)?to\s*(?:-\s*)?Market|GTM)\s*:\s+(.{15,})/im;
+			const gtmInlineMatch = text.match(gtmInlineRe);
+			const inlineContent = gtmInlineMatch?.[1]?.trim() ?? "";
+			if (inlineContent.length >= 15) {
+				const snippet = takeSentenceish(inlineContent, 220);
+				gtmCands.push({ value: snippet, document_id: docId, confidence: 0.85, rawSnippet: snippet });
+			} else {
+				// Try "Go to Market Strategy. content" (period separator — common in PPTX OCR output).
+				// Only accept when content has lowercase verbs (not a TOC title-case continuation).
+				// Iterate ALL matches so a TOC occurrence (title-case, no verbs) doesn't
+				// shadow the real Slide content further into the text.
+				const gtmStrategyPeriodRe = /\bGo\s*(?:-\s*)?to\s*(?:-\s*)?Market\s+Strategy[.]\s+([^\n]{15,})/gim;
+				let gtmStrategyMatch: RegExpExecArray | null;
+				let foundGtmByPeriod = false;
+				while ((gtmStrategyMatch = gtmStrategyPeriodRe.exec(text)) !== null) {
+					const strategyContent = (gtmStrategyMatch[1] ?? "").trim();
+					if (strategyContent.length >= 15 && /\b[a-z]{4,}\b/.test(strategyContent.slice(0, 100))) {
+						const snippet = takeSentenceish(strategyContent, 220);
+						gtmCands.push({ value: snippet, document_id: docId, confidence: 0.8, rawSnippet: snippet });
+						foundGtmByPeriod = true;
+						break;
+					}
+				}
+				if (!foundGtmByPeriod) {
+					const win = extractWindow(text, /\b(go\s*-?to\s*-?market|\bgtm\b|sales\s+motion|distribution|channels?|pricing|marketing)\b/i, 220);
+					if (win) {
+						gtmCands.push({ value: win.snippet, document_id: docId, confidence: win.confidence, rawSnippet: win.snippet });
+					} else {
+						// Additional GTM fallback for decks that describe distribution channels without explicit GTM headings.
+						const channelWin = extractWindow(
+							text,
+							/\b(screening\s+can\s+be\s+performed\s+anywhere|schools?\s*,\s*recreation\s+centers?|through\s+schools?|through\s+public\s+health|through\s+health\s*care\s+providers?|medicaid\s+programs?)\b/i,
+							220
+						);
+						if (channelWin) {
+							const snippet = sanitizeInlineText(channelWin.snippet);
+							if (!proceduralCollectionRe.test(snippet)) {
+							gtmCands.push({
+								value: snippet,
+								document_id: docId,
+								confidence: Math.max(channelWin.confidence, 0.7),
+								rawSnippet: snippet,
+							});
+							}
+						}
+					}
+				}
+			}
 		}
 
 		// Risks (prefer explicit headings; pull a few bullet-ish items)
@@ -1762,7 +1870,7 @@ function isLegalBoilerplate(value: string): boolean {
 
 function hasBusinessVerbForModelEvidence(value: string): boolean {
 	const s = sanitizeInlineText(value);
-	return /\b(build|built|building|operate|operates|operating|monetize|monetizes|monetizing|enable|enables|enabling|provide|provides|providing|sell|sells|selling|license|licenses|licensing)\b/i.test(s);
+	return /\b(build|built|building|operate|operates|operating|monetize|monetizes|monetizing|enable|enables|enabling|provide|provides|providing|sell|sells|selling|license|licenses|licensing|test|tests|testing|screen|screens|screening|detect|detects|diagnostic)\b/i.test(s);
 }
 
 function hasValidBusinessModelEvidence(params: {

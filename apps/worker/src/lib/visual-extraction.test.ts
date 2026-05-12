@@ -78,7 +78,7 @@ test("getVisionExtractorConfig defaults are production-safe (disabled)", () => {
 	expect(cfg.maxPages).toBe(10);
 });
 
-test("computeVisionRoutingDecisionV1: office docs are disallowed", () => {
+test("computeVisionRoutingDecisionV1: excel docs are disallowed", () => {
 	const res = computeVisionRoutingDecisionV1({
 		doc_kind: "excel",
 		extraction_metadata: { needsOcr: true, pageOcr: { attempted: true } },
@@ -87,6 +87,30 @@ test("computeVisionRoutingDecisionV1: office docs are disallowed", () => {
 	});
 	expect(res.vision_fallback_allowed).toBe(false);
 	expect(res.reason).toBe("office_disallowed");
+});
+
+test("computeVisionRoutingDecisionV1: powerpoint with sufficient text is disallowed", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "powerpoint",
+		extraction_metadata: {},
+		full_text_len: 5000,
+		min_text_threshold_chars: 800,
+		page_coverage: { pages_with_text: null, total_pages: 20, coverage: null },
+	});
+	expect(res.vision_fallback_allowed).toBe(false);
+	expect(res.reason).toBe("office_disallowed");
+});
+
+test("computeVisionRoutingDecisionV1: image-heavy PPTX (low text/page) is allowed", () => {
+	const res = computeVisionRoutingDecisionV1({
+		doc_kind: "powerpoint",
+		extraction_metadata: {},
+		full_text_len: 699,
+		min_text_threshold_chars: 800,
+		page_coverage: { pages_with_text: null, total_pages: 31, coverage: null },
+	});
+	expect(res.vision_fallback_allowed).toBe(true);
+	expect(res.reason).toBe("office_low_text_allow_extract_visuals");
 });
 
 test("computeVisionRoutingDecisionV1: images are allowed", () => {

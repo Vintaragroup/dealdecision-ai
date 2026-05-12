@@ -53,6 +53,8 @@ import { buildReconciliationSummary } from "../../lib/cross-source-reconciliatio
 import { upsertFinancialFactsV1 } from "../../lib/db/financial-facts-db.js";
 import { buildFinancialCoverageV1 } from "../../lib/financial-facts/build-financial-coverage-v1.js";
 import { detectFinancialFactConflictsV1 } from "../../lib/financial-facts/detect-financial-fact-conflicts-v1.js";
+import { buildFinancialTruthV1, hasXlsxFromTruthMap } from "../../lib/financial-facts/build-financial-truth-v1.js";
+import { detectMentionsInEvidenceText } from "../../lib/deck-financial-signals-v1.js";
 import {
 	computeFinancialCoveragePct,
 	deriveFinancialRiskFlags,
@@ -102,12 +104,15 @@ import {
 	buildGovernedSummarySection,
 	buildGovernedExecutiveSummarySection,
 	buildProductProfileSection,
+	buildKeyFactsSynthesisSection,
 	buildLlmInterpretationSection,
 } from "./stages/stage-3-llm";
 import {
 	buildRenderPackage,
 	persistReport,
+	applyCanonicalDecisionV1,
 } from "./stages/stage-4-render-package";
+import { runIntelligenceStage } from "./stages/stage-5-intelligence";
 import { runDpuOcrBackfillForDeal } from "../../lib/dpu-ocr-backfill-v1";
 import { maybeEnqueueInvestorInsightsAfterOcrImprovement } from "../../lib/ocr-auto-rerun-v1";
 import {
@@ -191,6 +196,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		force_recompute: forceRecompute = false,
 		triggered_by: triggeredBy,
 		mode,
+		override_llm_mode: overrideLlmMode,
 	} = parsed;
 
 	console.log(
@@ -306,9 +312,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		const thesisSection = g3OnlyFail
 			? buildInvestorThesisStubSection(thesisInputsForScoring)
 			: null;
-		const limitedScoringSection = buildLimitedScoringSection(
-			computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs)
-		);
+		const gfLimitedScoringResult = computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs);
+		const limitedScoringSection = buildLimitedScoringSection(gfLimitedScoringResult);
 		const nm = normMetricsFromInputs(insightSlotInputs);
 		const fusionResult = fuseDealCanonicalFacts(
 			insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
@@ -408,10 +413,23 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				reconciliation: insightSlotInputs.financialReconciliation ?? null,
 				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
 				workbookFacts: insightSlotInputs.workbookFacts,
+				existingDbFacts: insightSlotInputs.existingDbFacts,
 			});
 			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 			const fi = await applyFinancialIntelligenceV1(pool, reportId, dealId, factsToUpsert, insightSlotInputs);
+			// ── FTRL: build financial truth map ─────────────────────────────────────
+			const financialTruth = buildFinancialTruthV1({
+				facts: factsToUpsert,
+				deckFinancialSignals: insightSlotInputs.deckFinancialSignals,
+				pipelineB: {
+					revenue_latest: insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null,
+					burn_monthly: insightSlotInputs.cashFlow?.derived?.monthly_burn_from_ops ?? null,
+					runway_months: insightSlotInputs.cashFlow?.derived?.runway_months ?? null,
+					cash_latest: insightSlotInputs.balanceSheet?.derived?.cash_latest ?? null,
+				},
+			});
+			insightSlotInputs.financialTruth = financialTruth;
 			console.log(JSON.stringify({
 				event: "POPULATE_FINANCIAL_FACTS_V1",
 				deal_id: dealId,
@@ -421,6 +439,20 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				financial_conflict_count: fi.conflict_count,
 				financial_risk_flags:     fi.risk_flags,
 				path: "gates_failed",
+				financial_truth: Object.fromEntries(
+					Object.entries(financialTruth).map(([m, r]) => [
+						m,
+						{
+							state: r.state,
+							resolved_value: r.resolved_value,
+							resolved_source_kind: r.resolved_source_kind,
+							resolution_strategy: r.resolution_strategy,
+							disagreement: r.disagreement,
+							disagreement_pct: r.disagreement_pct != null ? Math.round(r.disagreement_pct * 10) / 10 : null,
+							source_count: r.source_count,
+						},
+					])
+				),
 				ts: new Date().toISOString(),
 			}));
 		} catch (factErr) {
@@ -433,11 +465,42 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			}));
 		}
 
+		// Best-effort: persist canonical decision summary (non-blocking).
+		await applyCanonicalDecisionV1(pool, reportId, dealId, validatedPkg);
+
+		// ── Stage 5: Intelligence Pass (guarantee) ───────────────────────────────
+		// Run Stage 5 even in the gate-fail path so every analyzed deal receives
+		// challenge pass + conviction data regardless of gate outcomes.
+		const gfStage5Status = await runStage5WithContext(pool, {
+			dealId,
+			dealName: gfDealName,
+			engineVersion,
+			reportId,
+			evidenceCount: 0, // upstream snapshot not loaded in gate-fail path
+			sectionCount: sections.length,
+			evidenceGatePassed: false,
+			investorInsightsStatus: persistStatus,
+			overrideLlmMode: null,
+			upstreamFingerprint: fallbackFp,
+			insightSlotInputs,
+			limitedScoringResult: gfLimitedScoringResult,
+			fusionResult,
+		});
+		console.log(JSON.stringify({
+			event: "INVESTOR_INSIGHTS_STAGE5_STATUS",
+			deal_id: dealId,
+			path: "gates_failed",
+			persist_status: persistStatus,
+			stage5_status: gfStage5Status,
+			ts: new Date().toISOString(),
+		}));
+
 		return {
 			ok: true,
 			status: persistStatus,
 			report_id: reportId,
 			failed_gates: failedGates.map((g) => g.gate),
+			stage5_status: gfStage5Status,
 		};
 	}
 
@@ -478,26 +541,57 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			);
 			if (rows[0]) {
 				if (rows[0].has_canonical_identity) {
-					// Full dedup hit — cached report already contains canonical_identity.
-					console.log(
-						JSON.stringify({
-							event: "INVESTOR_INSIGHTS_DEDUP_HIT",
-							reason_code: "FP_IDEMPOTENT_HIT_SKIP",
-							v: "CANONICAL_IDENTITY_BUILD_V3",
+					// Bypass dedup when the prior run produced only deterministic output (no LLM
+					// synthesis — typically caused by a missing API key at the time of the original
+					// run).  Re-running when status is "deterministic_only" is safe and cheap;
+					// it ensures interpretation fields are populated on subsequent runs.
+					const isDeterministicOnly = rows[0].status === "deterministic_only";
+					if (isDeterministicOnly) {
+						console.log(
+							JSON.stringify({
+								event: "INVESTOR_INSIGHTS_DEDUP_BYPASS_DETERMINISTIC_ONLY",
+								reason_code: "DETERMINISTIC_ONLY_NEEDS_LLM_RETRY",
+								v: "CANONICAL_IDENTITY_BUILD_V3",
+								deal_id: dealId,
+								engine_version: engineVersion,
+								upstream_fingerprint: upstreamFingerprint,
+								existing_report_id: rows[0].id,
+								existing_status: rows[0].status,
+								ts: new Date().toISOString(),
+							})
+						);
+					} else {
+						// Full dedup hit — cached report already contains canonical_identity.
+						console.log(
+							JSON.stringify({
+								event: "INVESTOR_INSIGHTS_DEDUP_HIT",
+								reason_code: "FP_IDEMPOTENT_HIT_SKIP",
+								v: "CANONICAL_IDENTITY_BUILD_V3",
+								deal_id: dealId,
+								engine_version: engineVersion,
+								upstream_fingerprint: upstreamFingerprint,
+								existing_report_id: rows[0].id,
+								existing_status: rows[0].status,
+								ts: new Date().toISOString(),
+							})
+						);
+						// Stage 5 not run — prior run assumed complete; dedup skips reprocessing.
+						console.log(JSON.stringify({
+							event: "INVESTOR_INSIGHTS_STAGE5_STATUS",
 							deal_id: dealId,
-							engine_version: engineVersion,
-							upstream_fingerprint: upstreamFingerprint,
-							existing_report_id: rows[0].id,
-							existing_status: rows[0].status,
+							path: "dedup_skip",
+							stage5_status: "skipped",
+							reason: "dedup_hit_prior_run_assumed_complete",
 							ts: new Date().toISOString(),
-						})
-					);
-					return {
-						ok: true,
-						status: "dedup_skip",
-						reason_code: "FP_IDEMPOTENT_HIT_SKIP",
-						report_id: rows[0].id,
-					};
+						}));
+						return {
+							ok: true,
+							status: "dedup_skip",
+							reason_code: "FP_IDEMPOTENT_HIT_SKIP",
+							report_id: rows[0].id,
+							stage5_status: "skipped",
+						};
+					}
 				}
 				// Report predates canonical_identity feature — bypass dedup so this
 				// run refreshes the persisted render_package with the new field.
@@ -625,9 +719,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		const phase2Sections = buildPhase2Sections(insightSlotInputs);
 		const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
 		const thesisSection = buildInvestorThesisStubSection(thesisInputsForScoring);
-		const limitedScoringSection = buildLimitedScoringSection(
-			computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs)
-		);
+		const egLimitedScoringResult = computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs);
+		const limitedScoringSection = buildLimitedScoringSection(egLimitedScoringResult);
 		const fusionResult = fuseDealCanonicalFacts(
 			insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
 		);
@@ -770,10 +863,23 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				reconciliation: insightSlotInputs.financialReconciliation ?? null,
 				deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
 				workbookFacts: insightSlotInputs.workbookFacts,
+				existingDbFacts: insightSlotInputs.existingDbFacts,
 			});
 			insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 			const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 			const fi = await applyFinancialIntelligenceV1(pool, egReportId, dealId, factsToUpsert, insightSlotInputs);
+			// ── FTRL: build financial truth map ─────────────────────────────────────
+			const financialTruth = buildFinancialTruthV1({
+				facts: factsToUpsert,
+				deckFinancialSignals: insightSlotInputs.deckFinancialSignals,
+				pipelineB: {
+					revenue_latest: insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null,
+					burn_monthly: insightSlotInputs.cashFlow?.derived?.monthly_burn_from_ops ?? null,
+					runway_months: insightSlotInputs.cashFlow?.derived?.runway_months ?? null,
+					cash_latest: insightSlotInputs.balanceSheet?.derived?.cash_latest ?? null,
+				},
+			});
+			insightSlotInputs.financialTruth = financialTruth;
 			console.log(JSON.stringify({
 				event: "POPULATE_FINANCIAL_FACTS_V1",
 				deal_id: dealId,
@@ -783,6 +889,20 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				financial_conflict_count: fi.conflict_count,
 				financial_risk_flags:     fi.risk_flags,
 				path: "evidence_gate_fail",
+				financial_truth: Object.fromEntries(
+					Object.entries(financialTruth).map(([m, r]) => [
+						m,
+						{
+							state: r.state,
+							resolved_value: r.resolved_value,
+							resolved_source_kind: r.resolved_source_kind,
+							resolution_strategy: r.resolution_strategy,
+							disagreement: r.disagreement,
+							disagreement_pct: r.disagreement_pct != null ? Math.round(r.disagreement_pct * 10) / 10 : null,
+							source_count: r.source_count,
+						},
+					])
+				),
 				ts: new Date().toISOString(),
 			}));
 		} catch (factErr) {
@@ -795,6 +915,28 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			}));
 		}
 
+		// Best-effort: persist canonical decision summary (non-blocking).
+		await applyCanonicalDecisionV1(pool, egReportId, dealId, validatedPkg);
+
+		// ── Stage 5: Intelligence Pass (guarantee) ───────────────────────────────
+		// Run Stage 5 even when the evidence gate blocked LLM stages so every
+		// analyzed deal receives challenge pass + conviction data.
+		const egStage5Status = await runStage5WithContext(pool, {
+			dealId,
+			dealName,
+			engineVersion,
+			reportId: egReportId,
+			evidenceCount: upstream.evidenceCount,
+			sectionCount: sections.length,
+			evidenceGatePassed: false,
+			investorInsightsStatus: "deterministic_only",
+			overrideLlmMode: null,
+			upstreamFingerprint,
+			insightSlotInputs,
+			limitedScoringResult: egLimitedScoringResult,
+			fusionResult,
+		});
+
 		console.log(
 			JSON.stringify({
 				event: "INVESTOR_INSIGHTS_EVIDENCE_GATE_FAIL_COMPLETE",
@@ -803,6 +945,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 				upstream_fingerprint: upstreamFingerprint,
 				report_id: egReportId,
 				blocking_reason: evidenceGate.blocking_reason,
+				stage5_status: egStage5Status,
 				ts: new Date().toISOString(),
 			})
 		);
@@ -845,6 +988,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			report_id: egReportId,
 			upstream_fingerprint: upstreamFingerprint,
 			evidence_gate_passed: false,
+			stage5_status: egStage5Status,
 		};
 	}
 
@@ -874,9 +1018,8 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	const phase2Sections = buildPhase2Sections(insightSlotInputs);
 	const thesisInputsForScoring = buildThesisInputs(insightSlotInputs);
 	const thesisSection = buildInvestorThesisStubSection(thesisInputsForScoring);
-	const limitedScoringSection = buildLimitedScoringSection(
-		computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs)
-	);
+	const limitedScoringResult = computeLimitedScoringV1(thesisInputsForScoring, insightSlotInputs);
+	const limitedScoringSection = buildLimitedScoringSection(limitedScoringResult);
 	const fusionResult = fuseDealCanonicalFacts(
 		insightSlotInputs.dpuPages, insightSlotInputs.evidenceSnippets, previousFusedFacts
 	);
@@ -886,7 +1029,7 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	// WS-B PR20: mutable array to collect governed-stage skip events from all
 	// three LLM builders.  Passed via opts and populated by recordGovernedSkip.
 	const governedSkips: GovernedSkip[] = [];
-	const llmOpts = { governedSkips, deal_id: dealId };
+	const llmOpts = { governedSkips, deal_id: dealId, forceRecompute };
 
 	const governedResult = await buildGovernedSummarySection(
 		insightSlotInputs,
@@ -935,6 +1078,18 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 	}
 	if (productProfileSection) {
 		sections.push(productProfileSection);
+	}
+	// Global Key Facts recovery: synthesize investor-readable narratives for all 4
+	// Key Facts cards from broader evidence. This is the highest-priority UI source.
+	const keyFactsSynthesisSection = await buildKeyFactsSynthesisSection(
+		insightSlotInputs,
+		canonicalFieldsBodyForProfile,
+		productProfileSection?.body ?? null,
+		dealName ?? undefined,
+		llmOpts
+	);
+	if (keyFactsSynthesisSection) {
+		sections.push(keyFactsSynthesisSection);
 	}
 	sections.push(fusionSection);
 	sections.push(limitedScoringSection);
@@ -1078,10 +1233,23 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			reconciliation: insightSlotInputs.financialReconciliation ?? null,
 			deckSignals: insightSlotInputs.deckFinancialSignals ?? null,
 			workbookFacts: insightSlotInputs.workbookFacts,
+			existingDbFacts: insightSlotInputs.existingDbFacts,
 		});
 		insightSlotInputs.crossSourceReconciliation = buildReconciliationSummary(factsToUpsert);
 		const upserted = await upsertFinancialFactsV1(pool, factsToUpsert);
 		const fi = await applyFinancialIntelligenceV1(pool, reportId, dealId, factsToUpsert, insightSlotInputs);
+		// ── FTRL: build financial truth map ───────────────────────────────────────
+		const financialTruth = buildFinancialTruthV1({
+			facts: factsToUpsert,
+			deckFinancialSignals: insightSlotInputs.deckFinancialSignals,
+			pipelineB: {
+				revenue_latest: insightSlotInputs.bestFinancialStatement?.derived?.revenue_latest ?? null,
+				burn_monthly: insightSlotInputs.cashFlow?.derived?.monthly_burn_from_ops ?? null,
+				runway_months: insightSlotInputs.cashFlow?.derived?.runway_months ?? null,
+				cash_latest: insightSlotInputs.balanceSheet?.derived?.cash_latest ?? null,
+			},
+		});
+		insightSlotInputs.financialTruth = financialTruth;
 		console.log(JSON.stringify({
 			event: "POPULATE_FINANCIAL_FACTS_V1",
 			deal_id: dealId,
@@ -1091,6 +1259,20 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			financial_conflict_count: fi.conflict_count,
 			financial_risk_flags:     fi.risk_flags,
 			path: "happy_path",
+			financial_truth: Object.fromEntries(
+				Object.entries(financialTruth).map(([m, r]) => [
+					m,
+					{
+						state: r.state,
+						resolved_value: r.resolved_value,
+						resolved_source_kind: r.resolved_source_kind,
+						resolution_strategy: r.resolution_strategy,
+						disagreement: r.disagreement,
+						disagreement_pct: r.disagreement_pct != null ? Math.round(r.disagreement_pct * 10) / 10 : null,
+						source_count: r.source_count,
+					},
+				])
+			),
 			ts: new Date().toISOString(),
 		}));
 	} catch (factErr) {
@@ -1102,6 +1284,9 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 			ts: new Date().toISOString(),
 		}));
 	}
+
+	// Best-effort: persist canonical decision summary (non-blocking).
+	await applyCanonicalDecisionV1(pool, reportId, dealId, validatedPkg);
 
 	console.log(
 		JSON.stringify({
@@ -1117,12 +1302,308 @@ export async function generateInvestorInsightsProcessor(job: Job): Promise<unkno
 		})
 	);
 
+	// ── 8. Stage 5: Intelligence Pass ───────────────────────────────────────
+	//
+	// Guaranteed to run from all analysis paths via runStage5WithContext.
+	// CONTRACT: non-throwing, non-blocking, observational only.
+	// Gated by DDAI_INTELLIGENCE_LAYER_ENABLED=1.
+	const stage5Status = await runStage5WithContext(pool, {
+		dealId,
+		dealName,
+		engineVersion,
+		reportId,
+		evidenceCount: upstream.evidenceCount,
+		sectionCount: sections.length,
+		evidenceGatePassed: evidenceGate.passed,
+		investorInsightsStatus: overrideLlmMode ? "complete" : "deterministic_only",
+		overrideLlmMode,
+		upstreamFingerprint,
+		insightSlotInputs,
+		limitedScoringResult,
+		fusionResult,
+	});
+	console.log(JSON.stringify({
+		event: "INVESTOR_INSIGHTS_STAGE5_STATUS",
+		deal_id: dealId,
+		path: "full",
+		stage5_status: stage5Status,
+		ts: new Date().toISOString(),
+	}));
+
+	// When override_llm_mode is true and Stage 5 completed successfully, promote
+	// the persisted report status from deterministic_only → complete.
+	if (overrideLlmMode && stage5Status === "completed") {
+		try {
+			await pool.query(
+				`UPDATE public.investor_insight_reports
+				    SET status     = 'complete',
+				        updated_at = NOW()
+				  WHERE id = $1::uuid`,
+				[reportId],
+			);
+			console.log(JSON.stringify({
+				event: "INVESTOR_INSIGHTS_STATUS_PROMOTED",
+				deal_id: dealId,
+				report_id: reportId,
+				from_status: "deterministic_only",
+				to_status: "complete",
+				reason: "override_llm_mode+stage5_completed",
+				ts: new Date().toISOString(),
+			}));
+		} catch (promoteErr) {
+			console.error(JSON.stringify({
+				event: "INVESTOR_INSIGHTS_STATUS_PROMOTE_FAILED",
+				deal_id: dealId,
+				report_id: reportId,
+				error: promoteErr instanceof Error ? promoteErr.message : String(promoteErr),
+				ts: new Date().toISOString(),
+			}));
+		}
+	}
+
 	return {
 		ok: true,
-		status: "deterministic_only",
+		status: overrideLlmMode && stage5Status === "completed" ? "complete" : "deterministic_only",
 		report_id: reportId,
 		upstream_fingerprint: upstreamFingerprint,
+		stage5_status: stage5Status,
 	};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Stage 5 shared execution context
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Shared inputs for runStage5WithContext — passed from any analysis exit path.
+ */
+interface Stage5Context {
+	dealId: string;
+	dealName: string | null;
+	engineVersion: string;
+	reportId: string;
+	/** Evidence count for URSS proxy. Use 0 when upstream snapshot was not loaded. */
+	evidenceCount: number;
+	/** Number of sections in the render package (used in evaluator). */
+	sectionCount: number;
+	evidenceGatePassed: boolean;
+	/** Status of the investor_insights run (e.g. "deterministic_only", "complete", "failed"). */
+	investorInsightsStatus: string;
+	overrideLlmMode: string | null | undefined;
+	upstreamFingerprint: string;
+	insightSlotInputs: InsightSlotInputs;
+	limitedScoringResult: ReturnType<typeof computeLimitedScoringV1>;
+	fusionResult: ReturnType<typeof fuseDealCanonicalFacts>;
+}
+
+/**
+ * Run Stage 5 (Intelligence Pass) from any analysis path.
+ *
+ * Extracts all necessary input proxies from context, calls runIntelligenceStage,
+ * and patches the report_payload with challenge pass output.
+ *
+ * CONTRACT — this function must NEVER:
+ *   • throw an unhandled exception
+ *   • mutate or override any field in the caller's return value
+ *   • gate or block the caller's return
+ *
+ * Returns a stage5_status label:
+ *   "completed" — Stage 5 ran successfully and results were persisted
+ *   "skipped"   — Feature flag disabled (DDAI_INTELLIGENCE_LAYER_ENABLED !== "1")
+ *   "failed"    — Stage 5 ran but encountered an error (stage5_error non-null)
+ */
+async function runStage5WithContext(
+	pool: Pool,
+	ctx: Stage5Context,
+): Promise<"completed" | "skipped" | "failed"> {
+	try {
+		const {
+			dealId,
+			dealName,
+			engineVersion,
+			reportId,
+			evidenceCount,
+			sectionCount,
+			evidenceGatePassed,
+			investorInsightsStatus,
+			upstreamFingerprint,
+			insightSlotInputs,
+			limitedScoringResult,
+			fusionResult,
+		} = ctx;
+
+		const orsProxy = limitedScoringResult.overall_limited_score ?? 50;
+		const dciProxy = limitedScoringResult.completeness_score ?? 50;
+		const fhcProxy = limitedScoringResult.traction_signal_score ?? 50;
+		const urssProxy = Math.min(
+			100,
+			(evidenceCount < 5 ? 40 : 0) +
+			(insightSlotInputs.dpuLoadFailed ? 30 : 0) +
+			(fusionResult.conflicts.length * 10),
+		);
+		const verdictProxy =
+			orsProxy >= 70 && limitedScoringResult.scoring_confidence === "high"
+				? "GO"
+				: orsProxy >= 45
+				? "CONSIDER"
+				: "NO_GO";
+
+		const financialCoveragePct = insightSlotInputs.financialCoverage
+			? computeFinancialCoveragePct(insightSlotInputs.financialCoverage)
+			: 0;
+
+		const ft = insightSlotInputs.financialTruth;
+		const balanceSheet = insightSlotInputs.balanceSheet;
+		const cashFlow = insightSlotInputs.cashFlow;
+
+		const arrStructured: number | null = ft?.arr?.resolved_value ?? null;
+		const burnMonthly: number | null =
+			ft?.burn_rate?.resolved_value ?? cashFlow?.derived?.monthly_burn_from_ops ?? null;
+		const runwayMonths: number | null =
+			ft?.runway_months?.resolved_value ?? cashFlow?.derived?.runway_months ?? null;
+		const cashOnHand: number | null =
+			ft?.cash_on_hand?.resolved_value ?? balanceSheet?.derived?.cash_latest ?? null;
+
+		const arrNarrative: number | null = (() => {
+			const mentions = insightSlotInputs.deckFinancialSignals?.arr_mrr_mentions ?? [];
+			for (const m of mentions) {
+				if (!/\bARR\b|annual\s+recurring/i.test(m.text)) continue;
+				const match = /\$([\d,]+(?:\.\d+)?)\s*([KMBTkmbt]?)/.exec(m.text);
+				if (!match) continue;
+				const raw = parseFloat(match[1]!.replace(/,/g, ""));
+				if (isNaN(raw) || raw <= 0) continue;
+				const multipliers: Record<string, number> = { k: 1e3, m: 1e6, b: 1e9, t: 1e12 };
+				return raw * (multipliers[match[2]!.toLowerCase()] ?? 1);
+			}
+			return null;
+		})();
+
+		const deckSignals = insightSlotInputs.deckFinancialSignals;
+		const evidenceMentions = detectMentionsInEvidenceText(insightSlotInputs.evidenceSnippets);
+		const arrHasNarrativeMention = arrNarrative != null || evidenceMentions.has_arr;
+		const burnHasNarrativeMention =
+			(deckSignals?.has_burn ?? false) ||
+			(deckSignals?.burn_mentions?.length ?? 0) > 0 ||
+			evidenceMentions.has_burn;
+		const runwayHasNarrativeMention =
+			(deckSignals?.has_runway ?? false) ||
+			(deckSignals?.runway_mentions?.length ?? 0) > 0 ||
+			evidenceMentions.has_runway;
+
+		const stage5Result = await runIntelligenceStage(pool, {
+			deal_id: dealId,
+			deal_name: dealName ?? dealId,
+			org_id: null,
+			engine_version: engineVersion,
+			upstream_fingerprint: upstreamFingerprint,
+			ors_score: orsProxy,
+			dci_score: dciProxy,
+			fhc_score: fhcProxy,
+			urss_score: urssProxy,
+			verdict: verdictProxy,
+			scoreband_key: `${verdictProxy.toLowerCase()}_${
+				limitedScoringResult.scoring_confidence === "high" ? "high" :
+				limitedScoringResult.scoring_confidence === "medium" ? "medium" : "low"
+			}`,
+			evidence_count: evidenceCount,
+			contradiction_count: fusionResult.conflicts.length,
+			financial_conflicts: fusionResult.conflicts,
+			section_count: sectionCount,
+			dpu_provenance_missing: insightSlotInputs.dpuLoadFailed,
+			xlsx_extraction_had_llm_fallback: false,
+			evidence_gate_passed: evidenceGatePassed,
+			investor_insights_status: investorInsightsStatus,
+			llm_cache_age_days: null,
+			arr_narrative: arrNarrative,
+			arr_structured: arrStructured,
+			burn_rate_monthly: burnMonthly,
+			runway_months: runwayMonths,
+			cash_on_hand: cashOnHand,
+			financial_completeness_pct: financialCoveragePct,
+			has_xlsx: ft != null
+				? hasXlsxFromTruthMap(ft)
+				: (insightSlotInputs.financialStatements?.length ?? 0) > 0,
+			has_cap_table: insightSlotInputs.capTable != null,
+			financial_truth_states: ft ? {
+				revenue:                      ft.revenue?.state ?? null,
+				arr:                          ft.arr?.state ?? null,
+				burn_rate:                    ft.burn_rate?.state ?? null,
+				runway_months:                ft.runway_months?.state ?? null,
+				cash:                         ft.cash_on_hand?.state ?? null,
+				revenue_resolved_source_kind: ft.revenue?.resolved_source_kind ?? null,
+				arr_resolved_source_kind:     ft.arr?.resolved_source_kind ?? null,
+				burn_resolved_source_kind:    ft.burn_rate?.resolved_source_kind ?? null,
+				cash_resolved_source_kind:    ft.cash_on_hand?.resolved_source_kind ?? null,
+			} : null,
+			arr_has_narrative_mention: arrHasNarrativeMention,
+			burn_has_narrative_mention: burnHasNarrativeMention,
+			runway_has_narrative_mention: runwayHasNarrativeMention,
+			market_presence_score: limitedScoringResult.market_presence_score,
+			traction_signal_score: limitedScoringResult.traction_signal_score,
+			has_saas_kpis: insightSlotInputs.saasKpis != null,
+			has_traction_facts: insightSlotInputs.dealTractionFacts.length > 0,
+		});
+
+		// Feature flag off → run_id is empty string (disabledResult).
+		if (stage5Result.run_id === "") {
+			return "skipped";
+		}
+
+		// Patch report_payload with challenge pass output.
+		if (stage5Result.stage5_error === null) {
+			try {
+				const cp = stage5Result.challenge_pass_result;
+				const financialTruthSummary = ft ? {
+					revenue:       { state: ft.revenue?.state       ?? null, source: ft.revenue?.resolved_source_kind       ?? null, disagreement_pct: ft.revenue?.disagreement_pct       ?? null, has_disagreement: ft.revenue?.disagreement       ?? false },
+					arr:           { state: ft.arr?.state           ?? null, source: ft.arr?.resolved_source_kind           ?? null, disagreement_pct: ft.arr?.disagreement_pct           ?? null, has_disagreement: ft.arr?.disagreement           ?? false },
+					burn_rate:     { state: ft.burn_rate?.state     ?? null, source: ft.burn_rate?.resolved_source_kind     ?? null, disagreement_pct: ft.burn_rate?.disagreement_pct     ?? null, has_disagreement: ft.burn_rate?.disagreement     ?? false },
+					runway_months: { state: ft.runway_months?.state ?? null, source: ft.runway_months?.resolved_source_kind ?? null, disagreement_pct: ft.runway_months?.disagreement_pct ?? null, has_disagreement: ft.runway_months?.disagreement ?? false },
+					cash_on_hand:  { state: ft.cash_on_hand?.state  ?? null, source: ft.cash_on_hand?.resolved_source_kind  ?? null, disagreement_pct: ft.cash_on_hand?.disagreement_pct  ?? null, has_disagreement: ft.cash_on_hand?.disagreement  ?? false },
+				} : null;
+				await pool.query(
+					`UPDATE public.investor_insight_reports
+					   SET report_payload = COALESCE(report_payload, '{}'::jsonb) || $2::jsonb
+					 WHERE id = $1::uuid`,
+					[
+						reportId,
+						JSON.stringify({
+							challenge_pass: {
+								opposing_case:            cp.opposing_case_summary,
+								verdict_resistance_score: cp.verdict_resistance_score,
+								verdict_resistance_label: cp.verdict_resistance_label,
+								flag_count_critical:      cp.flag_count_critical,
+								flag_count_error:         cp.flag_count_error,
+								flag_count_warn:          cp.flag_count_warn,
+								primary_challenge_reason: cp.primary_challenge_reason,
+								missing_evidence:         cp.missing_evidence,
+								diligence_gaps:           cp.diligence_gaps,
+							},
+							financial_truth_summary: financialTruthSummary,
+						}),
+					],
+				);
+			} catch (patchErr) {
+				console.error(JSON.stringify({
+					event: "INVESTOR_INSIGHTS_STAGE5_PATCH_FAILED",
+					deal_id: dealId,
+					error: patchErr instanceof Error ? patchErr.message : String(patchErr),
+					ts: new Date().toISOString(),
+				}));
+			}
+			return "completed";
+		}
+
+		// stage5_error was non-null — Stage 5 ran but failed internally.
+		return "failed";
+	} catch (s5Err) {
+		console.error(JSON.stringify({
+			event: "INVESTOR_INSIGHTS_STAGE5_UNCAUGHT",
+			deal_id: ctx.dealId,
+			error: s5Err instanceof Error ? s5Err.message : String(s5Err),
+			ts: new Date().toISOString(),
+		}));
+		return "failed";
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

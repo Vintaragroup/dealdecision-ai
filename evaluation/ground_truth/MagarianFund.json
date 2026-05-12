@@ -1,0 +1,226 @@
+{
+  "_schema": "ground_truth_v1",
+  "_status": "LIVE — pipeline run 2026-04-08 (DIO created_at 2026-04-08T20:46:00Z)",
+  "_coverage_rationale": "REF-DEAL-FUND-1: Fund / SPV archetype — long-biased concentrated equity hedge fund LP. Two documents: 33-page pitch deck / investor presentation (PDF) and 2-page performance summary (PDF). No XLSX. Tests fund_spv classification, fund_ops stage, AUM-not-as-raise-amount noise guard, and portfolio-company-revenue noise guard. Anchors the fund/LP regression lane.",
+  "_failure_modes_targeted": [
+    "BUG-MFUND-1: revenue = '$4' (amount: 3.6) extracted from a KGC (Kinross Gold) case study on page 18 of the PD PDF. Text: 'Case Study - KGC Amidst Russia's invasion of Ukraine, Kinross faced a 50% sell-off, despite only 10% of revenue coming from Russian operations.' The DPU extracted '10% of revenue' as a revenue signal for the fund. This is a portfolio holding case study — NOT fund revenue. There is no operating revenue for this fund.",
+    "BUG-MFUND-2: funding_stage_v1.funding_stage = 'pre_seed' — incorrect for an operational hedge fund LP that has been running since April 2019 with $222mm+ AUM and a 762% total net return track record. The fund is not a startup. The pre_seed classification fires because the fund has no product/milestone/raise signals matching an operating company, causing the stage model to fall back to 'IDEA' / pre_seed.",
+    "BUG-MFUND-3: business_archetype_v1 from DIO/worker layer is null — the worker does not emit a business_archetype_v1 value for fund deals. The fund_spv classification is correctly captured in investment_analysis_overview_v2.archetype and dio_context.deal_type, but the DIO-layer archetype analyzer produces no output. This is expected current behavior but means fund archetype evidence rules are not populated.",
+    "BUG-MFUND-4: capital_logic_v1.raise.sources references soft-deleted document IDs (93c64280, 2b55cd4c) — duplicate uploads were soft-deleted but their extracted signals were cached and are still referenced in the capital_logic sources list. The active document IDs are fe962646 and 932dd6be."
+  ],
+  "_pipeline_run_date": "2026-04-08",
+  "deal_name": "Magarian Fund",
+  "deal_id": "0e8fa8ae-94fa-4ab7-ab66-39c07651d089",
+  "slots": {
+    "company_description": "Magarian Fund, LP — a long-biased, fundamentals-driven, concentrated equity hedge fund managed by Pine Valley Investments (PVI), an SEC-registered RIA founded in 2015. The fund employs a contrarian value approach with 8–16 high-conviction positions and a 12–24 month investment horizon.",
+    "solution_summary": "Concentrated equity strategy targeting undervalued, publicly traded companies. Uses options-based hedging for downside protection. Targets investment opportunities with 40–50% upside based on fundamental analysis.",
+    "target_customer": "Accredited investors / LPs. Minimum investment $1,000,000. Class A LP structure with GP co-investment.",
+    "product_type": "Hedge fund LP — not a startup or operating company. No product, no ARR, no burn rate.",
+    "delivery_model": "LP fund vehicle. Investors subscribe as limited partners. Management fee + incentive fee structure.",
+    "deal_type": "fund_spv",
+    "stage": "fund_ops",
+    "raise_amount": null,
+    "raise_note": "No traditional startup 'raise'. The fund accepts LP subscriptions on an ongoing basis with a $1,000,000 minimum. There is no declared target raise amount or round label. capital_logic_v1.raise.present = false is correct.",
+    "vertical_domain": "Asset management / hedge fund — pipeline classifies vertical as 'other' (no specific vertical tag for hedge fund strategies)",
+    "aum_total": 222000000,
+    "aum_fund": 57000000,
+    "aum_legacy_sma": 165000000,
+    "aum_note": "Total Strategy AUM: $222mm — $57mm in the Magarian Fund LP + $165mm in Legacy SMA. PVI total AUM: $2.5B.",
+    "management_fee": "1.20% annual",
+    "incentive_fee": "15% (6% hurdle rate, high water mark)",
+    "min_investment": 1000000,
+    "track_record_since": "2019-04-01",
+    "track_record_return_total": "762.05% net return since inception (April 2019)",
+    "track_record_vs_sp500": "vs S&P 500 151.71% — 610.34% outperformance",
+    "track_record_annualized": "39.29% net annualized return (5-year)",
+    "track_record_ytd_2025": "74.35% YTD 2025",
+    "fund_manager": "Pine Valley Investments (PVI), SEC-registered RIA. RIA managing $2.5B total AUM.",
+    "portfolio_construction": "8–16 positions, concentrated value, contrarian, 12–24 month horizon, options-based hedging"
+  },
+  "financials": {
+    "_note": "No XLSX. No startup-style financials. The fund does not have ARR, burn rate, CAC, or LTV. Financial metrics are fund-performance metrics (AUM, returns, fees). financial_breakdown_v1.data_quality = 'missing' is the correct expected state — there are no P&L or cash flow statements for the fund itself.",
+    "_currency_note": "All monetary values in USD.",
+    "current_state": {
+      "aum": {
+        "value": 222000000,
+        "source_kind": "deck",
+        "evidence": "PD PDF page 1: 'Total Strategy AUM: $222 million- $57m in the Magarian Fund and $165m…'. This is verified across the existing deal_understanding GT and the DPU source content.",
+        "confidence": "high",
+        "is_provisional": false
+      },
+      "raise": {
+        "value": null,
+        "evidence": "No startup raise present. Fund accepts LP subscriptions; no disclosed target raise amount. structured_summary.kpis.raise.value = 'Unknown' is correct. capital_logic_v1.raise.present = false is correct."
+      },
+      "revenue": {
+        "value": null,
+        "evidence": "Fund has no operating revenue. structured_summary.kpis.revenue should not have a valid amount. Any extracted revenue value is noise from portfolio company case studies or markting materials (see BUG-MFUND-1)."
+      }
+    },
+    "known_issues": {
+      "portfolio_revenue_as_fund_revenue_BUG_MFUND_1": {
+        "pipeline_selected_value": 3.6,
+        "pipeline_selected_raw": "$4",
+        "correct_value": null,
+        "evidence": "structured_summary.kpis.revenue.candidates[0].amount = 3.6 (raw: '$4', confidence: 0.66), sourced from doc:fe962646:page:18. Source snippet: 'Case Study - KGC Amidst Russia's invasion of Ukraine, Kinross faced a 50% sell-off, despite only 10% of revenue coming from Russian operations.' The text 'revenue' appears in a portfolio holding case study — the DPU extracted it as a fund revenue signal. A hedge fund LP has no operating revenue.",
+        "severity": "high"
+      },
+      "wrong_funding_stage_BUG_MFUND_2": {
+        "pipeline_value": "pre_seed",
+        "correct_value": "fund_ops or N/A",
+        "evidence": "funding_stage_v1.funding_stage = 'pre_seed' (signal: company_phase_label:pre_seed, weight 0.6, confidence 0.6). The fund has been in operation since April 2019 with $222mm+ AUM and 762% total net return. It is not in a pre-seed startup stage. The pre_seed classification fires because the fund has no product/milestone/raise signals that match operating company stage models.",
+        "severity": "medium"
+      },
+      "null_worker_archetype_BUG_MFUND_3": {
+        "pipeline_value": null,
+        "correct_value": "fund_spv (expected from worker layer)",
+        "evidence": "business_archetype_v1 in DIO analyzer_results is absent/null. The fund_spv classification is correctly surfaced in investment_analysis_overview_v2.archetype (value: 'fund_spv', confidence: 0.57) and dio_context.deal_type. But the worker-layer archetype analyzer does not emit evidence rules for fund_spv. This means there are no archetype evidence rule hits to validate against, unlike startup archetypes.",
+        "severity": "low"
+      },
+      "stale_capital_sources_BUG_MFUND_4": {
+        "pipeline_value": "capital_logic_v1.raise.sources contains doc IDs 93c64280, 2b55cd4c",
+        "correct_value": "sources should reference fe962646 and 932dd6be only",
+        "evidence": "The capital_logic_v1 raise sources array contains references to soft-deleted duplicate document IDs (93c64280, 2b55cd4c). These were duplicate uploads that were soft-deleted via the admin API. The active documents are fe962646 (PD, 33pp) and 932dd6be (Financials, 2pp). Stale references indicate cache invalidation on soft-delete is incomplete.",
+        "severity": "low"
+      }
+    },
+    "validation": {
+      "extraction_checks": [],
+      "noise_checks": [
+        {
+          "label": "AUM must not appear as raise_amount",
+          "report_path": ["structured_summary", "kpis", "raise", "value"],
+          "expected_string": "Unknown",
+          "failure_layer": "compiler",
+          "note": "Fund AUM is $222mm. This figure must not be extracted or promoted as a startup raise amount. structured_summary.kpis.raise.value = 'Unknown' is the correct expected state. Any non-Unknown raise value for this deal is noise from AUM/performance data."
+        },
+        {
+          "label": "capital_logic raise must be absent (fund, not startup raise)",
+          "report_path": ["capital_logic_v1", "raise", "present"],
+          "expected_value": false,
+          "failure_layer": "compiler",
+          "note": "No startup raise exists. Hedge fund LP subscriptions are not equivalent to startup equity rounds. capital_logic_v1.raise.present = false is the correct expected state."
+        },
+        {
+          "label": "Revenue value must not exist (no fund operating revenue)",
+          "report_path": ["financial_breakdown_v1", "current_state", "revenue"],
+          "expected_value": null,
+          "failure_layer": "compiler",
+          "note": "BUG-MFUND-1 noise guard: The fund has no operating revenue. financial_breakdown_v1.current_state.revenue should be null. Revenue extracted from portfolio company case studies (e.g., KGC Kinross Gold) is noise. Checks financial_breakdown, not structured_summary.kpis (which has the noisy $3.6 value from the DPU)."
+        },
+        {
+          "label": "Promoted facts count must be <= 2 (fund produces minimal promotable facts)",
+          "report_path": ["promoted_facts"],
+          "expected_max_count": 2,
+          "failure_layer": "compiler",
+          "note": "Fund pipeline currently promotes 2 facts: business_model_v1 and revenue_v1 (noisy). The revenue_v1 promoted fact is itself a noise artifact (BUG-MFUND-1). If promoted_facts count increases above 2, a new extraction is being promoted that warrants review."
+        }
+      ],
+      "report_checks": [
+        {
+          "label": "deal_type must be fund_spv",
+          "report_path": ["metadata", "score_explanation", "context", "deal_type"],
+          "expected_string": "fund_spv",
+          "failure_layer": "compiler",
+          "note": "Core classification is correct. Magarian Fund is a hedge fund LP — fund_spv is the correct deal_type. Must not regress to startup_raise, de_spac, or real_estate."
+        },
+        {
+          "label": "stage must be fund_ops",
+          "report_path": ["metadata", "score_explanation", "context", "stage"],
+          "expected_string": "fund_ops",
+          "failure_layer": "compiler",
+          "note": "Operational fund since April 2019 with $222mm+ AUM. stage = fund_ops is the correct expected state. Must not regress to seed, series_a, or growth_stage."
+        },
+        {
+          "label": "business_model must be Fund / SPV investment vehicle",
+          "report_path": ["structured_summary", "kpis", "business_model", "value"],
+          "expected_string": "Fund / SPV investment vehicle",
+          "failure_layer": "compiler",
+          "note": "The policy guard 'startup_operating_label_suppressed_for_fund' correctly overrides DTC Ecommerce (the raw label, triggered by email/sms mention in a subscription email footer). The fund_spv policy label assignment produces 'Fund / SPV investment vehicle' as the display. This guard must remain active."
+        },
+        {
+          "label": "deal_summary_v1 hero must be Fund / SPV investment vehicle",
+          "report_path": ["deal_summary_v1", "tiers", "hero"],
+          "expected_string": "Fund / SPV investment vehicle",
+          "failure_layer": "compiler",
+          "note": "The hero label propagated from business_model classification. Must not show a startup-class hero label (e.g., 'SaaS platform', 'B2B software') for this fund."
+        },
+        {
+          "label": "context confidence must be >= 0.70",
+          "report_path": ["metadata", "score_explanation", "context", "confidence"],
+          "expected_min": 0.70,
+          "failure_layer": "compiler",
+          "note": "Current confidence is 0.7125. The fund_spv classification has moderate confidence — if this drops below 0.70, the fund signals are weakening and the classification may be at risk of misclassifying into another archetype."
+        },
+        {
+          "label": "financial_breakdown data_quality must be missing",
+          "report_path": ["financial_breakdown_v1", "current_state", "data_quality"],
+          "expected_string": "missing",
+          "failure_layer": "compiler",
+          "note": "No XLSX, no structured financial model exists for this fund. data_quality = 'missing' is the correct expected state. If this changes to 'partial' or 'full', a document was incorrectly classified as a financial model."
+        },
+        {
+          "label": "financial_breakdown has_xlsx must be false",
+          "report_path": ["financial_breakdown_v1", "has_xlsx"],
+          "expected_value": false,
+          "failure_layer": "compiler",
+          "note": "No XLSX present. Both docs are PDFs (fund presentation + performance summary). has_xlsx = false must be stable."
+        }
+      ],
+      "dio_checks": [
+        {
+          "label": "dio_context.deal_type must be fund_spv",
+          "dio_path": ["dio_context", "deal_type"],
+          "expected_string": "fund_spv",
+          "failure_layer": "worker",
+          "note": "Worker-layer DIO context correctly identifies fund_spv. This is the upstream classification that the compiler propagates."
+        },
+        {
+          "label": "dio_context.stage must be fund_ops",
+          "dio_path": ["dio_context", "stage"],
+          "expected_string": "fund_ops",
+          "failure_layer": "worker",
+          "note": "Worker-layer stage classification must be fund_ops. If this changes, the core stage classification will also change."
+        },
+        {
+          "label": "investment_analysis_overview_v2 archetype value must be fund_spv",
+          "report_path": ["investment_analysis_overview_v2", "archetype", "value"],
+          "expected_string": "fund_spv",
+          "failure_layer": "compiler",
+          "note": "investment_analysis_overview_v2.archetype.value = 'fund_spv' (confidence 0.57). This is the only archetype signal visible at the report layer (business_archetype_v1 is null at the worker layer per BUG-MFUND-3). Must remain fund_spv."
+        },
+        {
+          "label": "business_archetype_v1 from DIO must be fund_spv",
+          "dio_path": ["phase1", "business_archetype_v1", "value"],
+          "expected_string": "fund_spv",
+          "failure_layer": "worker",
+          "note": "BUG-MFUND-3 RESOLVED. Worker now correctly emits business_archetype_v1 = 'fund_spv' for this LP fund deal (confidence 0.57, evidence rules fund:lp_gp and fund:carry_fees). If this regresses to null, the archetype analyzer has stopped producing output for fund deals. If it changes to consumer_product or de_spac, that is a classification regression."
+        }
+      ],
+      "evidence_checks": [
+        {
+          "label": "business_model_v1 has_fund_signals must be true",
+          "report_path": ["promoted_facts"],
+          "fact_type": "business_model_v1",
+          "expected_diagnostic": {
+            "path": ["value_json", "diagnostics", "has_fund_signals"],
+            "expected_value": true
+          },
+          "failure_layer": "worker",
+          "note": "The promoted business_model_v1 fact must have diagnostics.has_fund_signals = true. This is the signal that triggers the fund_spv policy guard and suppresses incorrect startup labels. If has_fund_signals = false, the guard will not fire and the fund may be misclassified as DTC Ecommerce."
+        },
+        {
+          "label": "business_model_v1 startup guard must be applied",
+          "report_path": ["promoted_facts"],
+          "fact_type": "business_model_v1",
+          "expected_diagnostic": {
+            "path": ["value_json", "diagnostics", "applied_guards"],
+            "expected_contains": "startup_operating_label_suppressed_for_fund"
+          },
+          "failure_layer": "worker",
+          "note": "The 'startup_operating_label_suppressed_for_fund' guard must appear in the applied_guards array of the business_model_v1 promoted fact. This guard is what converts the raw DTC-Ecommerce label to 'Fund / SPV investment vehicle'. If this guard disappears, fund classification degrades."
+        }
+      ]
+    }
+  }
+}

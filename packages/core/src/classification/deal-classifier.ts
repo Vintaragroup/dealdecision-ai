@@ -366,6 +366,43 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
     { id: "term_sheet", re: /term\s+sheet/, weight: 0.15, reason: "Mentions term sheet" },
   ];
 
+  // Infrastructure / energy / climate-tech project finance (domain) signals.
+  const infrastructureEnergyRules: SignalRule[] = [
+    { id: "infra:iegs",        re: /\biegs\b/,                                                   weight: 0.9,  reason: "IEGS identifier" },
+    { id: "infra:green_ammonia", re: /\bgreen\s+ammonia\b/,                                      weight: 0.85, reason: "Green ammonia" },
+    { id: "infra:ppa_offtake", re: /\b(ppa|power\s+purchase\s+agreement|offtake\s+agreement)\b/, weight: 0.8,  reason: "PPA / offtake" },
+    { id: "infra:project_finance", re: /\bproject\s+financ(e|ing)\b/,                            weight: 0.75, reason: "Project finance" },
+    { id: "infra:capex",       re: /\bcapex\b|\bcapital\s+expenditure\b/,                        weight: 0.5,  reason: "CAPEX" },
+    { id: "infra:megawatt",    re: /\b(megawatt[s]?|gigawatt[s]?|(?<!\w)mw\b|(?<!\w)gw\b)/,     weight: 0.5,  reason: "MW / GW capacity" },
+    { id: "infra:climate_tech", re: /\b(green\s+hydrogen|net[\s-]?zero|decarboni[sz]ation|carbon\s+(?:reduction|capture))\b/, weight: 0.45, reason: "Climate tech" },
+    { id: "infra:energy_storage", re: /\b(energy\s+storage|battery\s+storage|solar\s+booster|renewable\s+energy|clean\s+energy)\b/, weight: 0.4, reason: "Energy storage / renewables" },
+    { id: "infra:project_vehicle", re: /\b(project\s+vehicle|spv\s+per\s+site|per[-\s]?site\s+(cost|deployment))\b/, weight: 0.4, reason: "Per-site project vehicle" },
+  ];
+
+  // Hard-clinical-marker test: healthcare_biotech_v1 may only be selected when
+  // at least one of these genuinely clinical signals is present.  Terms like
+  // "burn rate" or "sensitivity analysis" that appear in any financial deck
+  // must NOT drive healthcare domain routing.
+  //
+  // Patterns are intentionally narrow to avoid false positives on infrastructure
+  // and project-finance documents that commonly use "Phase 1/2", "reimbursement",
+  // or acronyms like "IRB" in a non-clinical sense.
+  const hardClinicalMarkers = [
+    /\bind\b|investigational\s+new\s+drug|\bide\b|investigational\s+device/i,
+    /\b(510\(k\)|pma\b|de\s*novo|eua\b|emergency\s+use\s+authorization|fda\s+(?:clearance|approval|submission|filing))/i,
+    // Require clinical/trial context around phase numbers — infrastructure decks use
+    // "Phase 1", "Phase 2" for construction/project stages which must not trigger this gate.
+    /clinical\s+trial|trial\s+phase|phase\s+(?:i|ii|iii|iv|1|2|3|4)\s+(?:clinical|trial|study|cohort)|first[-\s]?in[-\s]?human/i,
+    // Require the full spelled-out form; bare "IRB" acronym appears in many finance contexts
+    // (e.g. Internal Revenue Bond, Internal Rate of Benefit).
+    /institutional\s+review\s+board/i,
+    // Require medical/clinical context for "reimbursement" — the bare word appears commonly
+    // in green bond, grant, and project-finance documents (e.g. "reimbursement of proceeds").
+    /(?:medical|patient|clinical|healthcare|drug|device|therapy|treatment)\s+reimbursement|reimbursement\s+(?:claim|code|schedule|rate\b)|\bcpt\b\s*code|\bdrg\b|icd[-\s]?10|\bmedicare\b|\bmedicaid\b/i,
+    /\bhipaa\b|business\s+associate\s+agreement|\bbaa\b/i,
+  ];
+  const hasHardClinicalMarker = hardClinicalMarkers.some((re) => re.test(textLc));
+
   const realEstate = scoreSignals(textLc, realEstateRules);
   const fund = scoreSignals(textLc, fundRules);
   const acquisition = scoreSignals(textLc, acquisitionRules);
@@ -376,6 +413,16 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
   const consumerEcommerce = scoreSignals(textLc, consumerEcommerceRules);
   const consumerFintech = scoreSignals(textLc, consumerFintechRules);
   const healthcareBiotech = scoreSignals(textLc, healthcareBiotechRules);
+  const infraEnergy = scoreSignals(textLc, infrastructureEnergyRules);
+  // Healthcare domain requires at least one hard clinical marker (IND, FDA filing,
+  // clinical trial, IRB, reimbursement, HIPAA).  Without it, generic terms like
+  // "sensitivity analysis" and "burn rate" must not drive policy routing.
+  // Additionally, suppress healthcare routing when strong infrastructure/energy signals
+  // are present — infra decks commonly share terminology with biotech (project phases,
+  // regulatory approvals) and must not be misclassified as healthcare deals.
+  const healthcareBiotechEffective = hasHardClinicalMarker && infraEnergy.score === 0
+    ? healthcareBiotech
+    : { score: 0, signals: [] as string[] };
   const enterpriseSaas = scoreSignals(textLc, enterpriseSaasRules);
   const mediaIp = scoreSignals(textLc, mediaIpRules);
   const physicalCpgSpirits = scoreSignals(textLc, physicalCpgSpiritsRules);
@@ -484,8 +531,16 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
     domainCandidates.push({ policyId: "consumer_ecommerce_brand_v1", confidence: consumerEcommerce.score, signals: consumerEcommerce.signals });
   }
 
-  if (healthcareBiotech.score > 0) {
-    domainCandidates.push({ policyId: "healthcare_biotech_v1", confidence: healthcareBiotech.score, signals: healthcareBiotech.signals });
+  // Infrastructure / energy domain — uses real_estate_underwriting as the closest
+  // available policy until a dedicated infra policy is created.
+  if (infraEnergy.score > 0) {
+    domainCandidates.push({ policyId: "real_estate_underwriting", confidence: clamp01(infraEnergy.score + 0.1), signals: infraEnergy.signals });
+  }
+
+  // Healthcare domain is gated on at least one hard clinical marker to prevent
+  // false positives from financial documents (sensitivity analysis, burn rate, PhDs).
+  if (healthcareBiotechEffective.score > 0) {
+    domainCandidates.push({ policyId: "healthcare_biotech_v1", confidence: healthcareBiotechEffective.score, signals: healthcareBiotechEffective.signals });
   }
 
   if (enterpriseSaas.score > 0) {
@@ -571,15 +626,30 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
   }
 
   // Domain-only candidates (broad routing) when we don't have a stronger sub-policy match.
-  if (healthcareBiotech.score >= 0.6) {
+  // Infrastructure/energy: add as explicit candidate when strongly indicated.
+  if (infraEnergy.score >= 0.6) {
+    candidates.push(
+      mkCandidate(
+        "operating_company",
+        "equity_raise",
+        "real_estate_underwriting",
+        "real_estate_underwriting",
+        clamp01(infraEnergy.score + 0.1),
+        infraEnergy.signals
+      )
+    );
+  }
+
+  // Healthcare domain gated on hard clinical markers (see healthcareBiotechEffective).
+  if (healthcareBiotechEffective.score >= 0.6) {
     candidates.push(
       mkCandidate(
         "operating_company",
         "equity_raise",
         "healthcare_biotech_v1",
         "healthcare_biotech_v1",
-        healthcareBiotech.score,
-        healthcareBiotech.signals
+        healthcareBiotechEffective.score,
+        healthcareBiotechEffective.signals
       )
     );
   }
@@ -664,8 +734,12 @@ export function classifyDealV1(input: TextInputs): DealClassificationResult {
   if (domainCandidates.length === 0 && consumerEcommerce.score > 0) {
     domainCandidates.push({ policyId: "consumer_ecommerce_brand_v1", confidence: consumerEcommerce.score, signals: consumerEcommerce.signals });
   }
-  if (domainCandidates.length === 0 && healthcareBiotech.score > 0) {
-    domainCandidates.push({ policyId: "healthcare_biotech_v1", confidence: healthcareBiotech.score, signals: healthcareBiotech.signals });
+  if (domainCandidates.length === 0 && infraEnergy.score > 0) {
+    domainCandidates.push({ policyId: "real_estate_underwriting", confidence: clamp01(infraEnergy.score + 0.1), signals: infraEnergy.signals });
+  }
+  // Healthcare fallback gated on hard clinical markers.
+  if (domainCandidates.length === 0 && healthcareBiotechEffective.score > 0) {
+    domainCandidates.push({ policyId: "healthcare_biotech_v1", confidence: healthcareBiotechEffective.score, signals: healthcareBiotechEffective.signals });
   }
   if (domainCandidates.length === 0 && enterpriseSaas.score > 0) {
     domainCandidates.push({ policyId: "enterprise_saas_b2b_v1", confidence: enterpriseSaas.score, signals: enterpriseSaas.signals });

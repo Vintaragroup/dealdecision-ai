@@ -47,12 +47,20 @@ export default defineConfig({
     // Make network timeline useful
     actionTimeout: 30_000,
     navigationTimeout: 30_000,
-    // NOTE: storageState removed — no auth required for interactive inspection.
-    // Re-add when Clerk session caching is needed: storageState: 'playwright/.auth/user.json'
+    // Load saved Clerk session when present; gracefully absent before first login.
+    storageState: require('fs').existsSync('playwright/.auth/user.json')
+      ? 'playwright/.auth/user.json'
+      : undefined,
   },
 
   projects: [
-    // ── Single Chromium project — no auth dependency ────────────────────────
+    // ── Auth setup (run once: pnpm test:ui:login) ───────────────────────────
+    {
+      name: 'setup',
+      testMatch: /auth\.setup\.ts/,
+      use: { ...devices['Desktop Chrome'], headless: false, storageState: undefined },
+    },
+    // ── Main Chromium project — uses saved auth when available ──────────────
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },

@@ -43,6 +43,12 @@ export async function computeAndPersistVisionRoutingV1(params: {
 		fullTextLen = typeof rows?.[0]?.full_text_len === "number" ? rows[0].full_text_len : 0;
 		docKind = deduceDocKind({ extraction_metadata: extractionMetadata, type: docType });
 
+		// For non-PDF office docs, surface the document page_count as total_pages for the routing function.
+		// (Coverage and pagesWithText are not applicable for office docs.)
+		if (docKind !== "pdf" && pageCount != null) {
+			totalPages = pageCount;
+		}
+
 		// Compute page-level text coverage for PDFs. Prefer stored full_content pages so hybrid OCR merges are reflected.
 		if (docKind === "pdf") {
 			const fc = fullContent && typeof fullContent === "object" ? fullContent : null;

@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { detectFinancialTables, detectUnitScale } from "../table-detector.js";
+import { detectFinancialTables, detectUnitScale, isStructuralColumnHeader } from "../table-detector.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -302,5 +302,150 @@ describe("detectFinancialTables — unit_scale_factor (excel_sheet)", () => {
     const [t] = detectFinancialTables(payload);
     expect(t!.unit_scale_factor ?? 1).toBe(1);
     expect(t!.unit_scale_source_text ?? null).toBeNull();
+  });
+});
+
+// ─── isStructuralColumnHeader ─────────────────────────────────────────────────
+
+describe("isStructuralColumnHeader — pure function", () => {
+  it("identifies col_A … col_Z as structural", () => {
+    for (const h of ["col_A", "col_B", "col_C", "col_M", "col_Z"]) {
+      expect(isStructuralColumnHeader(h)).toBe(true);
+    }
+  });
+
+  it("identifies multi-letter col_ placeholders as structural", () => {
+    for (const h of ["col_AA", "col_BC", "col_AZ"]) {
+      expect(isStructuralColumnHeader(h)).toBe(true);
+    }
+  });
+
+  it("identifies $000 denomination markers as structural", () => {
+    for (const h of ["$000", "$000s", "000s", "000", "£000s", "€000"]) {
+      expect(isStructuralColumnHeader(h)).toBe(true);
+    }
+  });
+
+  it("identifies parenthesised denomination markers as structural", () => {
+    for (const h of ["($000)", "(000s)", "(£000s)"]) {
+      expect(isStructuralColumnHeader(h)).toBe(true);
+    }
+  });
+
+  it("identifies scale abbreviations ($M $MM $K $B) as structural", () => {
+    for (const h of ["$M", "$MM", "€M", "£M", "$K", "$B"]) {
+      expect(isStructuralColumnHeader(h)).toBe(true);
+    }
+  });
+
+  it("identifies empty/whitespace headers as structural", () => {
+    expect(isStructuralColumnHeader("")).toBe(true);
+    expect(isStructuralColumnHeader("   ")).toBe(true);
+  });
+
+  it("does NOT suppress year strings", () => {
+    for (const h of ["2024", "2025", "2023", "2026E", "FY2025"]) {
+      expect(isStructuralColumnHeader(h)).toBe(false);
+    }
+  });
+
+  it("does NOT suppress period labels (Q1, TTM, months)", () => {
+    for (const h of ["Q1 2024", "TTM", "January", "Sep", "1Q25"]) {
+      expect(isStructuralColumnHeader(h)).toBe(false);
+    }
+  });
+
+  it("does NOT suppress scenario labels", () => {
+    for (const h of ["Base", "Upside", "Downside", "Bear Case", "Bull Case"]) {
+      expect(isStructuralColumnHeader(h)).toBe(false);
+    }
+  });
+
+  it("does NOT suppress ordinal year labels", () => {
+    for (const h of ["Year 1", "Year 2", "Year 10", "Yr 3"]) {
+      expect(isStructuralColumnHeader(h)).toBe(false);
+    }
+  });
+});
+
+// ─── Structural column noise suppression — StackFactor patterns ───────────────
+
+describe("detectFinancialTables — structural col_X noise suppression (StackFactor / Fix 12)", () => {
+  it("returns [] for excel_range salary schedule with col_X column placeholders (Fallback 2 guard)", () => {
+    // No period header row — only raw numeric rows with col_C/col_D/col_E keys.
+    // Fallback 2 would assign period labels col_C, col_D, col_E — all structural.
+    const salaryRows: Record<string, unknown>[] = [
+      { col_A: "Employee 1",   col_C: 85_000, col_D: 87_500, col_E: 90_000 },
+      { col_A: "Employee 2",   col_C: 70_000, col_D: 72_000, col_E: 74_000 },
+      { col_A: "Total Salary", col_C: 155_000, col_D: 159_500, col_E: 164_000 },
+    ];
+    const payload = makeExcelRangePayload("Salary Schedule", salaryRows);
+    expect(detectFinancialTables(payload)).toHaveLength(0);
+  });
+
+  it("returns [] for excel_range cap-table allocation sheet with col_X columns", () => {
+    const capRows: Record<string, unknown>[] = [
+      { col_A: "Founder A",   col_C: 5_000_000, col_D: 4_800_000, col_E: 4_600_000 },
+      { col_A: "Investor B",  col_C: 2_000_000, col_D: 2_000_000, col_E: 2_000_000 },
+      { col_A: "Option Pool", col_C: 1_000_000, col_D: 1_200_000, col_E: 1_400_000 },
+    ];
+    const payload = makeExcelRangePayload("Cap Table", capRows);
+    expect(detectFinancialTables(payload)).toHaveLength(0);
+  });
+
+  it("does NOT suppress a valid financial table that correctly uses year-integer headers", () => {
+    // Year-header row: all data columns are year integers → Step 1 fires (no Fallback 2).
+    const validRows: Record<string, unknown>[] = [
+      { col_A: null,       col_C: 2024,       col_D: 2025 },
+      { col_A: "Revenue",  col_C: 1_000_000,  col_D: 2_000_000 },
+      { col_A: "EBITDA",   col_C:   50_000,   col_D:  150_000 },
+    ];
+    const payload = makeExcelRangePayload("P&L", validRows);
+    const tables = detectFinancialTables(payload);
+    expect(tables).toHaveLength(1);
+    expect(tables[0]!.column_headers).toContain("2024");
+    expect(tables[0]!.column_headers).toContain("2025");
+  });
+
+  it("returns [] for excel_sheet with only $000 denomination headers (no period columns)", () => {
+    // DPU produces headers: ["Label", "$000", "$000", "$000"] — all value cols structural.
+    const headers = ["Label", "$000", "$000s", "000s"];
+    const rows: Record<string, unknown>[] = [
+      { Label: "Revenue",   "$000": 1_200, "$000s": 1_500, "000s": 1_800 },
+      { Label: "EBITDA",    "$000":   100, "$000s":   150, "000s":   200 },
+    ];
+    const payload = makeExcelSheetPayload("Denomination Sheet", headers, rows);
+    expect(detectFinancialTables(payload)).toHaveLength(0);
+  });
+
+  it("returns a table for excel_sheet when some structural headers are mixed with valid period headers", () => {
+    // Headers: ["Metric", "$000", "2024", "2025"] — $000 is filtered, 2024/2025 survive.
+    const headers = ["Metric", "$000", "2024", "2025"];
+    const rows: Record<string, unknown>[] = [
+      { Metric: "Revenue",   "$000": 1_200_000, "2024": 1_200_000, "2025": 1_500_000 },
+      { Metric: "Net Income","$000":   100_000, "2024":   100_000, "2025":   150_000 },
+    ];
+    const payload = makeExcelSheetPayload("P&L ($000)", headers, rows);
+    const tables = detectFinancialTables(payload);
+    expect(tables).toHaveLength(1);
+    // $000 column filtered; only 2024 and 2025 survive
+    expect(tables[0]!.column_headers).not.toContain("$000");
+    expect(tables[0]!.column_headers).toContain("2024");
+    expect(tables[0]!.column_headers).toContain("2025");
+  });
+
+  it("unit scale detection still works when $000 header is in headers but filtered from valueCols", () => {
+    // The $000 header feeds unit-scale detection via scaleScanTexts=[sheetTitle, ...headers].
+    // Even after filtering from column_headers, the scale multiplier should apply.
+    const headers = ["Metric", "$000", "2024", "2025"];
+    const rows: Record<string, unknown>[] = [
+      { Metric: "Revenue",    "$000": 5, "2024": 5, "2025": 7 },
+      { Metric: "Net Income", "$000": 1, "2024": 1, "2025": 2 },
+    ];
+    const payload = makeExcelSheetPayload("P&L in $000s", headers, rows);
+    const tables = detectFinancialTables(payload);
+    // $000 in header name should trigger 1000x scale factor
+    expect(tables).toHaveLength(1);
+    expect(tables[0]!.unit_scale_factor).toBe(1_000);
   });
 });

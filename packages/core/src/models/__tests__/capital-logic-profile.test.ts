@@ -16,6 +16,7 @@ describe('inferCapitalLogicProfileV1', () => {
 		});
 
 		expect(res.raise.present).toBe(true);
+		expect(res.prior_funding.present).toBe(false);
 		expect(res.use_of_funds.present).toBe(true);
 		expect(res.milestones.present).toBe(true);
 		expect(res.coherence.appears_coherent).toBe(true);
@@ -31,6 +32,7 @@ describe('inferCapitalLogicProfileV1', () => {
 		});
 
 		expect(res.raise.present).toBe(true);
+		expect(res.prior_funding.present).toBe(false);
 		expect(res.use_of_funds.present).toBe(false);
 		expect(res.milestones.present).toBe(false);
 		expect(res.coherence.appears_coherent).toBe(false);
@@ -48,6 +50,7 @@ describe('inferCapitalLogicProfileV1', () => {
 		});
 
 		expect(res.raise.present).toBe(true);
+		expect(res.prior_funding.present).toBe(false);
 		expect(res.use_of_funds.present).toBe(true);
 		expect(res.milestones.present).toBe(false);
 		expect(res.coherence.appears_coherent).toBe(false);
@@ -63,7 +66,111 @@ describe('inferCapitalLogicProfileV1', () => {
 		});
 
 		expect(res.raise.present).toBe(false);
+		expect(res.prior_funding.present).toBe(false);
 		expect(res.use_of_funds.present).toBe(true);
 		expect(res.confidence).toBe('low');
+	});
+
+	test('use_of_funds can be inferred from page_texts when structured/promoted facts are missing', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 2_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			page_texts: [
+				'Capital raise details and assumptions',
+				'Use of Funds: 45% product, 35% GTM, 20% operations',
+			],
+		});
+
+		expect(res.raise.present).toBe(true);
+		expect(res.use_of_funds.present).toBe(true);
+		expect(res.use_of_funds.sources?.[0]?.source_path).toContain('dpu:page_text:1');
+		expect(res.confidence).toBe('medium');
+	});
+
+	test('prior_funding can be inferred from historical raise language in page_texts', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 2_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			page_texts: [
+				'The company has already raised $425K in a pre-seed round and is now raising $2M.',
+			],
+		});
+
+		expect(res.raise.present).toBe(true);
+		expect(res.raise.amount).toBe(2_000_000);
+		expect(res.prior_funding.present).toBe(true);
+		expect(res.prior_funding.amount).toBe(425_000);
+		expect(res.prior_funding.sources?.[0]?.source_path).toContain('dpu:page_text:0');
+	});
+
+	test('prior_funding is not inferred from valuation-only raise context', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 2_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			page_texts: [
+				'What we are seeking: to raise $2M pre-seed at a $4.5M pre-money valuation.',
+			],
+		});
+
+		expect(res.prior_funding.present).toBe(false);
+	});
+
+	test('RC-S6-005: prior_funding detected presence-only from "Raised Pre-seed Round" without dollar amount', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 3_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			page_texts: ['Raised Pre-seed Round TODAY Key Achievements-To-Date'],
+		});
+
+		expect(res.prior_funding.present).toBe(true);
+		expect(res.prior_funding.presence_only).toBe(true);
+		expect(res.prior_funding.amount).toBeUndefined();
+		expect(res.prior_funding.sources?.[0]?.source_path).toContain('presence_signal');
+	});
+
+	test('RC-S6-005: prior_funding detected presence-only from "Past: Pre-Seed Round" label pattern', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 5_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			document_full_texts: ['Past: Pre-Seed Round (SAFEs) provides the company 18 months of runway'],
+		});
+
+		expect(res.prior_funding.present).toBe(true);
+		expect(res.prior_funding.presence_only).toBe(true);
+	});
+
+	test('RC-S6-006: use_of_funds detected from Climatic "Close Debt Deals" fund deployment language', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 25_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			document_full_texts: ['Close Debt Deals $375M+ board-approved and ready Team & Pipeline Legal & Custody SPV Creation'],
+		});
+
+		expect(res.use_of_funds.present).toBe(true);
+		expect(res.use_of_funds.sources?.[0]?.source_path).toContain('uof_signal');
+	});
+
+	test('RC-S6-006: use_of_funds detected from "The Raise" heading in document full_text', () => {
+		const res = inferCapitalLogicProfileV1({
+			structured_summary: {
+				raise: { value_json: { amount: { amount: 10_000_000 } }, sources: [{ document_id: 'doc-1', page_index: 0 }] },
+			},
+			promoted_facts: [],
+			document_full_texts: ['THE RAISE Seeking $25M Base Capital Legal & Custody Entity and custody structure setup'],
+		});
+
+		expect(res.use_of_funds.present).toBe(true);
 	});
 });

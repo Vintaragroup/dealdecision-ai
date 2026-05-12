@@ -1,0 +1,20 @@
+{
+  "fetchedAt": "2026-04-06T13:45:17.124Z",
+  "requestUrl": "http://localhost:9001/api/v1/deals/bcd59d33-7887-41cd-80b9-742bc5ba945a/understanding",
+  "ok": true,
+  "status": 200,
+  "statusText": "OK",
+  "body": {
+    "understanding": {
+      "what_company_does": "Functional Ingredients that elevate mood, detoxify the body, and provide everyday vitality.",
+      "business_model": "consumer_product",
+      "revenue_model": "Omnichannel (DTC + Wholesale/Retail)",
+      "go_to_market": "Sales Strategy 11 $ 4M Pre - sales From 27 LOIs s On - Premise Retailers That Take Others 5 Years+ to Close • Q1 25 9 retailers on - boarded $100k run - rate highest velocity non - carbonated mixer in category 04 02 01….",
+      "target_customer": "n - boarded $100k run - rate highest velocity non - carbonated mixer in category 04 02 01 Buyers Journey > > Cold in - person engagement or Warm - intro to main operator or food & beverage director through our network….",
+      "traction_summary": "Revenue mentioned; Customers mentioned",
+      "market_positioning": "The deal centers around a startup that provides functional ingredients designed to elevate mood, detoxify the body, and enhance everyday vitality. The company operates under an omnichannel business model, combining direct-to-consumer (DTC) sales with wholesale and retail distribution. The proposed raise is set at $375 million through a SAFE agreement, indicating a significant capital requirement to support its growth and market penetration.",
+      "competitive_differentiation": "Functional Ingredients that elevate mood, detoxify the body, and provide everyday vitality.",
+      "investment_signals": "C E L E B R A T E T O M O R R O W ' S D R E A M S SEED DECK V1.5 | © 2025 Verse Co. | All Rights Reserved Confidential & Proprietary DO NOT share or duplicate without explicit permission from the founding team Confidential & Proprietary DO NOT share or duplicate without explicit; C E L E B R A T E T O M O R R O W ' S D R E A M S SEED DECK V1.5 | © 2025 Verse Co. | All Rights Reserved Confidential & Proprietary DO NOT share or duplicate without explicit permission from the founding team Confidential & Proprietary DO NOT share or duplicate without explicit This appears early-stage with initial traction but limited realized revenue scale, so repeat-demand and channel execution risk remain central. Unit economics, gross margins, and path to profitability should be validated before underwriting scaled growth assumptions."
+    }
+  }
+}

@@ -1,5 +1,7 @@
 import type { Pool } from "pg";
 import { segmentDpuPage } from "./segment-dpu-page";
+import { classifyDocumentFamily, isForbiddenFamily } from '@dealdecision/core';
+import type { DocumentMeta } from '@dealdecision/core';
 
 type DpuRow = {
 	document_id: string;
@@ -63,6 +65,37 @@ const asNonEmptyString = (v: unknown): string | null =>
 	typeof v === "string" && v.trim() ? v.trim() : null;
 
 const normalizeText = (raw: string): string => raw.replace(/\s+/g, " ").trim();
+
+/**
+ * Upstream entity-scope classifier for DPU-derived revenue candidates.
+ * Runs at parse time so case-study / illustrative slides are excluded
+ * before they reach the compiler score() gate.
+ *
+ * Inputs: pre-lowercased slide context (page_text + title + bullets) built
+ * by parseRevenueFromSlides.
+ */
+type UpstreamEntityScope = 'company' | 'customer' | 'case_study' | 'illustrative' | 'unknown';
+
+function detectEntityScopeFromSlideContext(slideContextLower: string): UpstreamEntityScope {
+  if (!slideContextLower) return 'unknown';
+  // Case-study / client-example slides.
+  if (
+    /use\s+case\s+(?:solution|study)|case\s+stud[yi]|case\s+solution|client\s+hq|retail\s+locations?\s+mrr|reseller.*?mrr/.test(
+      slideContextLower
+    )
+  ) {
+    return 'case_study';
+  }
+  // Illustrative / hypothetical slides.
+  if (/\b(?:illustrative|hypothetical|sample\s+deployment|per\s+location)\b/.test(slideContextLower)) {
+    return 'illustrative';
+  }
+  // Per-customer metrics.
+  if (/\b(?:pilot\s+client|per\s+customer|per\s+merchant|per\s+user)\b/.test(slideContextLower)) {
+    return 'customer';
+  }
+  return 'unknown';
+}
 
 function extractSlideNumberFromPayload(payload: any): number | null {
 	const structured = payload?.structured ?? null;
@@ -240,7 +273,11 @@ function classifyBusinessModelEvidence(input: {
 		"channels",
 		"pricing",
 	];
-	const hasPrimaryTitleKeyword = primaryTitleKeywords.some((k) => titleLower.includes(k));
+	// For PDF-processed pitch decks, slide_title is null — the slide title is embedded at the start
+	// of page_text. Fall back to checking the first 120 chars of text when there is no explicit title.
+	const hasPrimaryTitleKeyword =
+		primaryTitleKeywords.some((k) => titleLower.includes(k)) ||
+		(titleLower === '' && primaryTitleKeywords.some((k) => textLower.slice(0, 120).includes(k)));
 
 	const primarySegmentKeys = new Set(["business_model", "go_to_market", "distribution", "pricing"]);
 	const hasPrimarySegmentKey = seg ? primarySegmentKeys.has(seg) : false;
@@ -319,9 +356,36 @@ function hasRevenueTokenNearAmount(bullet: string, amountIndex: number, windowTo
 	const start = Math.max(0, amountIndex - windowTokens);
 	const end = Math.min(tokens.length, amountIndex + windowTokens + 1);
 	for (let i = start; i < end; i++) {
-		if (tokens[i] === 'revenue') return true;
+		if (tokens[i] === 'revenue' || tokens[i] === 'arr' || tokens[i] === 'mrr' || tokens[i] === 'sales' || tokens[i] === 'gmv') return true;
 	}
 	return false;
+}
+
+function hasRevenueSignal(text: string): boolean {
+	const t = String(text ?? '').toLowerCase();
+	return /\b(revenue|arr|mrr|sales|gmv)\b/.test(t);
+}
+
+function isExternalContractMoneyContext(text: string): boolean {
+	const t = String(text ?? '').toLowerCase();
+	if (!t) return false;
+	return /\b(cost\s+to\s+acquire|fully\s+guaranteed|draft\s+picks?|game\s+suspension|contract\s+value|contract)\b/.test(t);
+}
+
+function isPackagingOrUnitMoneyContext(text: string): boolean {
+	const t = String(text ?? '').toLowerCase();
+	if (!t) return false;
+	if (/\b\d{2,4}\s*(ml|oz|fl\s*oz|g|kg|lb|lbs)\b/.test(t)) return true;
+	if (/\b(cans?|bottles?|packs?)\b/.test(t) && /\b(ml|oz|fl\s*oz)\b/.test(t)) return true;
+	return false;
+}
+
+function isHypotheticalMarketShareMoneyContext(text: string): boolean {
+	const t = String(text ?? '').toLowerCase();
+	if (!t) return false;
+	const hasQuestioning = /\?|\b(help\s+me\s+understand|what\s+if|would|could|assum(?:e|ing|ption|ptions)|imply)\b/.test(t);
+	const hasMarketSizing = /\b(tam|sam|som|market\s+share|users?|annual\s+recurring\s+revenue|arr)\b/.test(t);
+	return hasQuestioning && hasMarketSizing;
 }
 
 function isOpportunityStyle(text: string): boolean {
@@ -386,7 +450,7 @@ function extractYearNearIndex(text: string, index: number): number | null {
 	return Number.isFinite(year) ? year : null;
 }
 
-function parseRevenueFromSlides(rows: SlideRow[]): Array<{
+function parseRevenueFromSlides(rows: SlideRow[], docMetas?: DocumentMeta[]): Array<{
 	subtype: 'annual' | 'attributed' | 'forecast';
 	display: string;
 	amount: number;
@@ -395,6 +459,7 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 	channel?: 'email_sms' | null;
 	typing_reason?: string | null;
 	note_snippet: string | null;
+	entity_scope: UpstreamEntityScope;
 	primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null };
 }> {
 	const currentYear = new Date().getFullYear();
@@ -450,7 +515,7 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 		const uniq = Array.from(new Set(tokens)).sort((a, b) => a.localeCompare(b));
 		return { channel, typing_reason: `marketing_attributed_revenue_v1: tokens=[${uniq.join(', ')}]` };
 	};
-	const prefer = (c: { subtype: string; slideTitle: string | null; slideText: string; year: number | null; segment_key: string | null }): number => {
+	const prefer = (c: { subtype: string; slideTitle: string | null; slideText: string; year: number | null; segment_key: string | null; amount: number }): number => {
 		const title = String(c.slideTitle ?? '').toLowerCase();
 		const t = c.slideText.toLowerCase();
 		const seg = normalizeSegmentKey(c.segment_key);
@@ -466,6 +531,11 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 		if (t.includes('revenue')) score += 2;
 		if (t.includes('arr') || t.includes('sales')) score += 1;
 		if (typeof c.year === 'number' && c.year >= currentYear) score += 2;
+		// Prefer larger amounts: operating revenue should substantially exceed noise such as
+		// revenue-delta values ("decreased $2M"), per-share prices, or accrual line items.
+		if (c.amount >= 100_000) score += 1;
+		if (c.amount >= 1_000_000) score += 2;
+		if (c.amount >= 5_000_000) score += 2;
 		return score;
 	};
 
@@ -478,12 +548,16 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 		channel?: 'email_sms' | null;
 		typing_reason?: string | null;
 		note_snippet: string | null;
+		entity_scope: UpstreamEntityScope;
 		slideTitle: string | null;
 		slideText: string;
 		primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null };
 	}> = [];
 
 	for (const r of rows) {
+		// Skip pages from forbidden document families (pro forma combined statements, SPAC financials).
+		// These contain merger adjustments and transaction entries, not operating revenue.
+		if (docMetas && isForbiddenFamily(classifyDocumentFamily(r.row.document_id, docMetas))) continue;
 		const seg = normalizeSegmentKey(r.segment_key);
 		const titleLower = String(r.slideTitle ?? '').toLowerCase();
 		const titleIsFinancialOrPerformance = titleLower.includes('financial') || titleLower.includes('performance');
@@ -497,6 +571,12 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 			.filter((v) => v.length > 0)
 			.join(' ')
 			.toLowerCase();
+
+		// Slide-level entity scope gate: skip slides whose full context identifies them as
+		// case-study / illustrative examples rather than company-level revenue.
+		const slideEntityScope = detectEntityScopeFromSlideContext(slideContextLower);
+		if (slideEntityScope === 'case_study' || slideEntityScope === 'illustrative') continue;
+
 		for (const bulletRaw of bullets) {
 			const bullet = String(bulletRaw ?? '').trim();
 			if (!bullet || !bullet.includes('$')) continue;
@@ -527,14 +607,24 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 					titleLower.includes('projections') ||
 					(typeof year === 'number' && year >= currentYear);
 
-				// Intent gating for revenue_v1: Financial/Performance title, OR revenue token near the amount.
-				// Allow forecast slides to contribute forecast subtype even if revenue token is absent (used for growth_outlook_v1).
-				const hasRevenueNear = amountTokenIndex >= 0 ? hasRevenueTokenNearAmount(bullet, amountTokenIndex, 10) : bulletLower.includes('revenue');
-				const revenueAllowed = titleIsFinancialOrPerformance || hasRevenueNear || (isForecast && titleLower.includes('forecast'));
+				const hasRevenueInBullet = hasRevenueSignal(bulletLower);
+				const hasRevenueNear = amountTokenIndex >= 0
+					? hasRevenueTokenNearAmount(bullet, amountTokenIndex, 10)
+					: hasRevenueInBullet;
+
+				// Intent gating for revenue_v1: require the revenue signal to be near the amount token.
+				// Do NOT fall back to page-wide hasRevenueInBullet — on long PDF pages, a revenue
+				// mention far away (e.g., "revenue thresholds" in a debt covenant) would otherwise
+				// allow every dollar amount on the page to pass the gate.
+				const revenueAllowed = hasRevenueNear;
 				if (!revenueAllowed) continue;
 
-				// Proximity rule: require "revenue" in the same bullet as the amount unless it's explicitly a Financials/Performance slide.
-				if (!titleIsFinancialOrPerformance && !bulletLower.includes('revenue') && !isForecast) continue;
+				// Keep forecast tagging only when revenue signal is present, never as a free pass.
+				if (isForecast && !hasRevenueNear) continue;
+
+				if (isExternalContractMoneyContext(bulletLower) && !hasRevenueInBullet) continue;
+				if (isPackagingOrUnitMoneyContext(bulletLower) && !hasRevenueInBullet) continue;
+				if (isHypotheticalMarketShareMoneyContext(bulletLower) && !titleIsFinancialOrPerformance) continue;
 
 				const attribution = detectMarketingAttribution(bulletLower, slideContextLower);
 				const isAttributed = attribution != null;
@@ -554,6 +644,7 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 					amount,
 					year: subtype === 'forecast' ? year : null,
 					note_snippet,
+					entity_scope: slideEntityScope,
 					slideTitle: r.slideTitle,
 					slideText: bullet,
 					primary: {
@@ -577,8 +668,8 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 			bestBySubtype.set(c.subtype, c);
 			continue;
 		}
-		const a = prefer({ subtype: c.subtype, slideTitle: c.slideTitle, slideText: c.slideText, year: c.year, segment_key: c.primary.segment_key });
-		const b = prefer({ subtype: prev.subtype, slideTitle: prev.slideTitle, slideText: prev.slideText, year: prev.year, segment_key: prev.primary.segment_key });
+		const a = prefer({ subtype: c.subtype, slideTitle: c.slideTitle, slideText: c.slideText, year: c.year, segment_key: c.primary.segment_key, amount: c.amount });
+		const b = prefer({ subtype: prev.subtype, slideTitle: prev.slideTitle, slideText: prev.slideText, year: prev.year, segment_key: prev.primary.segment_key, amount: prev.amount });
 		if (a > b || (a === b && c.primary.page_index > prev.primary.page_index)) {
 			bestBySubtype.set(c.subtype, c);
 		}
@@ -598,11 +689,12 @@ function parseRevenueFromSlides(rows: SlideRow[]): Array<{
 			amount: c!.amount,
 			year: c!.year,
 			note_snippet: c!.note_snippet,
+			entity_scope: c!.entity_scope,
 			primary: c!.primary,
 		}));
 }
 
-function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: number): Array<{
+function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: number, docMetas?: DocumentMeta[]): Array<{
 	subtype: 'annual' | 'forecast' | 'ytd';
 	year_kind: 'completed' | 'forecast' | 'ytd';
 	year_label_raw: string;
@@ -613,6 +705,7 @@ function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: num
 	year: number;
 	scope: RevenueScope;
 	note_snippet: string | null;
+	entity_scope: UpstreamEntityScope;
 	primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null; slide_number: number | null };
 }> {
 	// Heuristic parser for slides that contain a revenue row with year columns.
@@ -651,14 +744,22 @@ function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: num
 		year: number;
 		scope: RevenueScope;
 		note_snippet: string | null;
+		entity_scope: UpstreamEntityScope;
 		primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null; slide_number: number | null };
 	}> = [];
 
 	for (const r of rows) {
+		// Skip pages from forbidden document families (pro forma combined statements, SPAC financials).
+		if (docMetas && isForbiddenFamily(classifyDocumentFamily(r.row.document_id, docMetas))) continue;
 		const titleLower = String(r.slideTitle ?? '').toLowerCase();
 		const seg = normalizeSegmentKey(r.segment_key);
 		const maybeFinancial = titleLower.includes('financial') || titleLower.includes('income statement') || titleLower.includes('p&l') || seg === 'financials';
 		if (!maybeFinancial) continue;
+
+		// Entity-scope gate: skip case-study / illustrative slides.
+		const tableSlideContextLower = [r.slideTitle, r.slideText].map((v) => String(v ?? '').trim()).join(' ').toLowerCase();
+		const tableSlideEntityScope = detectEntityScopeFromSlideContext(tableSlideContextLower);
+		if (tableSlideEntityScope === 'case_study' || tableSlideEntityScope === 'illustrative') continue;
 
 		const candidatesText = Array.isArray(r.bullets) && r.bullets.length > 0 ? r.bullets : [r.slideText];
 		for (const lineRaw of candidatesText) {
@@ -722,6 +823,7 @@ function parseRevenueFromFinancialTableSlides(rows: SlideRow[], currentYear: num
 					year: label.year,
 					scope: 'company_financials_table',
 					note_snippet: asNonEmptyString(line.slice(0, 240)),
+					entity_scope: tableSlideEntityScope,
 					primary: {
 						document_id: r.row.document_id,
 						page_index: r.row.page_index,
@@ -932,6 +1034,11 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 } | null {
 	// DTC detection: allow broad channel language, but do NOT treat generic "ecommerce" as mechanics.
 	const dtcRe = /\b(direct\s*to\s*consumer|\bdtc\b|d2c|e-?commerce|shopify|online\s+store|direct\s+via\s+website|website\s+sales)\b/i;
+	const dtcKeywordRe = /\b(direct\s*to\s*consumer|\bdtc\b|d2c|direct\s+via\s+website|website\s+sales)\b/i;
+	// RaaS detection: Robot-as-a-Service and hardware leasing models
+	const raasRe = /\b(robot\s+as\s+a\s+service|raas\b|hardware\s+as\s+a\s+service|haas\b|customers?\s+lease\s+(?:robots?|hardware|assets?)|lease\s+(?:humanoid\s+)?robots?|own\s+and\s+manage\s+the\s+asset|per-?robot\s+fee|per-?unit\s+fee|equipment\s+leasing|equipment\s+rental)\b/i;
+	// Enterprise tech guard: suppress DTC when enterprise signals dominate with only OCR noise
+	const enterpriseTechRe = /\b(enterprise\s+ai|sovereign\s+ai|quantum\s+(?:computing|technology)?|government\s+tech|deep[-\s]?tech|b2b\s+enterprise|data\s+center\s+ai)\b/i;
 	const ecomMechanicsSignals: Array<{ rx: RegExp; neg: RegExp; kind: string }> = [
 		{ rx: /\bcheckout\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?checkout\b/i, kind: 'checkout' },
 		{ rx: /\bcart\b/i, neg: /\b(?:not|no|without)\s+(?:an?\s+)?cart\b/i, kind: 'cart' },
@@ -945,6 +1052,8 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 	const wholesaleRe = /\b(wholesale|retail|brick\s*(?:&|and)\s*mortar|retailer|retailers|golf\s*courses|pro\s*shops|stores?)\b/i;
 	// Treat media rights explicitly as licensing-like.
 	const licensingRe = /\b(licens\w*|media\s+rights?)\b/i;
+	// B2B2C / healthcare channel: medical-device companies that sell through HCPs/clinics to patients.
+	const b2b2cRe = /\b(b2b2c|b-?2-?b-?2-?c|healthcare\s+provider[s]?|hcp[s]?|physician[s]?|clinician[s]?|provider\s+channel)\b/i;
 	const mediaSignals: Array<{ rx: RegExp; kind: string }> = [
 		{ rx: /\btitle\s+sponsorship\b/i, kind: 'title_sponsorship' },
 		{ rx: /\bsponsorship\b/i, kind: 'sponsorship' },
@@ -987,10 +1096,14 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 		const mechanics_hits = collectEcomMechanicsHits(t);
 		return {
 			dtc: dtcRe.test(t),
+			dtc_keyword: dtcKeywordRe.test(t),
 			ecom_mechanics: mechanics_hits.length > 0,
 			mechanics_hits,
 			wholesale: wholesaleRe.test(t),
 			licensing: licensingRe.test(t),
+			raas: raasRe.test(t) || raasRe.test(String(r.slideTitle ?? '')),
+			fund_or_spv: /\b(spvs?|special\s+purpose\s+vehicle|fund\s+vehicle|co-?investment|non-?dilutive|carried\s+interest|general\s+partner|limited\s+partner)\b/i.test(t),
+			b2b2c: b2b2cRe.test(t) || b2b2cRe.test(String(r.slideTitle ?? '')),
 			media_like: mediaLikeRe.test(t) || mediaLikeRe.test(String(r.slideTitle ?? '')),
 			media_hits: Array.from(new Set([...collectMediaHits(t), ...collectMediaHits(String(r.slideTitle ?? ''))])),
 			row: r,
@@ -1002,8 +1115,12 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 	const excludedHits = assessed.filter((h) => h.assessment.role === "excluded");
 
 	const hasDtc = hits.some((h) => h.dtc);
+	const hasDtcKeyword = hits.some((h) => h.dtc_keyword);
 	const hasWholesale = hits.some((h) => h.wholesale);
 	const hasLicensing = hits.some((h) => h.licensing);
+	const hasRaas = hits.some((h) => h.raas) || assessed.some((h) => h.raas);
+	const hasFundOrSpvSignals = hits.some((h) => h.fund_or_spv) || assessed.some((h) => h.fund_or_spv);
+	const hasB2B2C = hits.some((h) => h.b2b2c) || assessed.some((h) => h.b2b2c);
 	const hasMediaLike = hits.some((h) => h.media_like) || assessed.some((h) => h.media_like);
 	const hasEcomMechanics = hits.some((h) => h.ecom_mechanics) || assessed.some((h) => h.ecom_mechanics);
 	const ecom_mechanics_hits = Array.from(new Set(assessed.flatMap((h) => h.mechanics_hits ?? []))).slice().sort().slice(0, 24);
@@ -1011,25 +1128,37 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 	const dtc_hits = Array.from(new Set(assessed.flatMap((h) => (h.dtc ? ['dtc_channel_language'] : [])))).slice().sort();
 	const applied_guards: string[] = [];
 
-	if (!hasDtc && !hasWholesale && !hasLicensing) return null;
+	if (!hasDtc && !hasWholesale && !hasLicensing && !hasB2B2C && !hasRaas) return null;
 
 	// Hard exclusion: media/sponsorship + no ecommerce mechanics => never infer DTC.
 	const dtcAllowed = !(hasMediaLike && !hasEcomMechanics);
 	if (!dtcAllowed) applied_guards.push('media_blocks_dtc_without_ecom_mechanics');
 
 	// If the only signal was DTC channel language and it's blocked by the media guard, return null.
-	if (!dtcAllowed && hasDtc && !hasWholesale && !hasLicensing) return null;
+	if (!dtcAllowed && hasDtc && !hasWholesale && !hasLicensing && !hasB2B2C && !hasRaas) return null;
 
-	const label = (dtcAllowed && hasDtc) && hasWholesale
-		? "Omnichannel (DTC + Wholesale/Retail)"
-		: hasWholesale
-			? "Wholesale/Retail"
-			: (dtcAllowed && hasDtc)
-				? "DTC Ecommerce"
-				: "Licensing";
+	// SPV/fund guard: if slides are dominated by fund/SPV language and no explicit DTC keyword is present,
+	// suppress DTC inference (Weavstra: slides describe fund vehicles, not consumer commerce).
+	const dtcAllowedForFund = !(hasFundOrSpvSignals && !hasDtcKeyword);
+	if (!dtcAllowedForFund) applied_guards.push('fund_spv_blocks_dtc_without_explicit_dtc_keyword');
+
+	const label = hasRaas && !hasB2B2C
+		? "Robot-as-a-Service (RaaS)"  // hardware-leasing / RaaS takes priority over generic licensing
+		: hasB2B2C
+			? "B2B2C"  // B2B2C = explicit pitch-deck self-identification; takes priority
+			: (dtcAllowed && dtcAllowedForFund && hasDtc) && hasWholesale
+				? "Omnichannel (DTC + Wholesale/Retail)"
+				: hasWholesale
+					? "Wholesale/Retail"
+					: (dtcAllowed && dtcAllowedForFund && hasDtc)
+						? "DTC Ecommerce"
+						: hasLicensing
+							? "Licensing"
+							: "Licensing";
 
 	const secondary_tags: string[] = [];
 	if (hasLicensing && label !== "Licensing") secondary_tags.push("Licensing");
+	if (hasB2B2C && label !== "B2B2C") secondary_tags.push("B2B2C");
 
 	// Pick a primary source: must be primary-role evidence (strict).
 	const primaryCandidates = hits.filter((h) => h.assessment.role === "primary");
@@ -1042,7 +1171,9 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 	const prefer = (h: (typeof hits)[number]): number => {
 		const title = String(h.row.slideTitle ?? "").toLowerCase();
 		let score = 0;
-		if (label === "Omnichannel (DTC + Wholesale/Retail)") {
+		if (label === "B2B2C") {
+			if (h.b2b2c) score += 3;
+		} else if (label === "Omnichannel (DTC + Wholesale/Retail)") {
 			if (h.dtc) score += 2;
 			if (h.wholesale) score += 2;
 		} else if (label === "DTC Ecommerce") {
@@ -1069,7 +1200,7 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 	const supporting: BusinessModelEvidenceRef[] = [];
 	for (const h of supportingCandidates) {
 		// Supporting allowed only if channel-referential; we already enforce that in classifier.
-		if ((hasDtc && h.dtc) || (hasWholesale && h.wholesale) || (hasLicensing && h.licensing)) {
+		if ((hasB2B2C && h.b2b2c) || (hasDtc && h.dtc) || (hasWholesale && h.wholesale) || (hasLicensing && h.licensing)) {
 			supporting.push({
 				document_id: h.row.row.document_id,
 				page_index: h.row.row.page_index,
@@ -1112,17 +1243,33 @@ function inferBusinessModelLabel(rows: Array<{ row: DpuRow; slideText: string; s
 			dtc_hits,
 			media_hits,
 			applied_guards,
-			decision_reason: `media=${hasMediaLike ? 1 : 0} mechanics=${hasEcomMechanics ? 1 : 0} dtcAllowed=${dtcAllowed ? 1 : 0} label=${label}`,
+			decision_reason: `media=${hasMediaLike ? 1 : 0} mechanics=${hasEcomMechanics ? 1 : 0} dtcAllowed=${dtcAllowed ? 1 : 0} b2b2c=${hasB2B2C ? 1 : 0} label=${label}`,
 		},
 	};
 }
 
-function parseRaiseFromSlides(rows: Array<{ row: DpuRow; slideText: string; slideTitle: string | null; segment_key: string | null }>): {
+function parseRaiseFromSlides(rows: Array<{ row: DpuRow; slideText: string; slideTitle: string | null; segment_key: string | null }>, docMetas?: DocumentMeta[]): {
 	display: string;
 	amount: number;
 	valuation: number | null;
 	primary: { document_id: string; page_index: number; slide_title: string | null; segment_key: string | null };
 } | null {
+	const hasRaiseIntent = (text: string): boolean =>
+		/\b(raise|raising|fundrais(?:e|ing)|funding|financing|capital\s+raise|seeking\s+(?:capital|investment)|the\s+ask|we\s+are\s+raising)\b|\b(?:seed|pre[-\s]?seed|series\s*[a-z]|funding|financing)\s+round\b/i.test(text);
+
+	const hasFinancingAnchor = (text: string): boolean =>
+		/\b(seed|pre[-\s]?seed|series\s*[a-z]|safe|convertible|equity|dilution|pre[-\s]?money|post[-\s]?money|valuation|financing)\b|\b(?:seed|pre[-\s]?seed|series\s*[a-z]|funding|financing)\s+round\b/i.test(text);
+
+	const isSportsTransactionContext = (text: string): boolean =>
+		/\b(cost\s+to\s+acquire|fully\s+guaranteed|draft\s+picks?|game\s+suspension|trade|sportsbook)\b/i.test(text);
+
+	const isHypotheticalArrContext = (text: string): boolean => {
+		const lower = String(text ?? '').toLowerCase();
+		const hasQuestioning = /\?|\b(help\s+me\s+understand|what\s+if|would|could|assum(?:e|ing|ption|ptions)|imply)\b/.test(lower);
+		const hasMarketSizing = /\b(arr|annual\s+recurring\s+revenue|tam|sam|som|market\s+share|users?)\b/.test(lower);
+		return hasQuestioning && hasMarketSizing;
+	};
+
 	const preference = (r: { slideTitle: string | null; slideText: string }): number => {
 		const title = String(r.slideTitle ?? "").toLowerCase();
 		let score = 0;
@@ -1133,13 +1280,24 @@ function parseRaiseFromSlides(rows: Array<{ row: DpuRow; slideText: string; slid
 	};
 
 	const candidates = rows
+		.filter((r) => {
+			// Skip pages from forbidden document families (pro forma combined statements, SPAC financials).
+			// Pro forma raise amounts are merger adjustments, not actual capital raised.
+			if (docMetas && isForbiddenFamily(classifyDocumentFamily(r.row.document_id, docMetas))) return false;
+			return true;
+		})
 		.map((r) => {
 			const text = r.slideText;
 			const lower = text.toLowerCase();
-			if (!lower.includes("raise") && !lower.includes("fund") && !lower.includes("valuation") && !lower.includes("$")) return null;
+			const titleLower = String(r.slideTitle ?? '').toLowerCase();
+			if (!text.includes('$')) return null;
+			if (!hasRaiseIntent(`${titleLower} ${lower}`)) return null;
+			if (isSportsTransactionContext(`${titleLower} ${lower}`)) return null;
+			if (isHypotheticalArrContext(`${titleLower} ${lower}`) && !hasFinancingAnchor(`${titleLower} ${lower}`)) return null;
 
 			// Prefer the money token closest to the word "raise" if present.
 			let amount: number | null = null;
+			let bestMoneyHitIndex: number | null = null;
 			const raiseIx = lower.includes("raise") ? lower.indexOf("raise") : -1;
 			const moneyRe = /\$\s*\d+(?:\.\d+)?\s*(?:mm|m|million|mn|bn|b|k|thousand)?/gi;
 			const moneyHits: Array<{ token: string; index: number }> = [];
@@ -1149,12 +1307,35 @@ function parseRaiseFromSlides(rows: Array<{ row: DpuRow; slideText: string; slid
 				if (token && index >= 0) moneyHits.push({ token, index });
 			}
 			if (moneyHits.length === 0) return null;
-			if (raiseIx >= 0) {
-				moneyHits.sort((a, b) => Math.abs(a.index - raiseIx) - Math.abs(b.index - raiseIx));
-				amount = parseMoneyToken(moneyHits[0].token);
-			} else {
-				amount = parseMoneyToken(moneyHits[0].token);
-			}
+
+			const scoredMoneyHits = moneyHits
+				.map((hit) => {
+					const windowStart = Math.max(0, hit.index - 70);
+					const windowEnd = Math.min(text.length, hit.index + 100);
+					const windowText = text.slice(windowStart, windowEnd);
+					const windowLower = windowText.toLowerCase();
+
+					let score = 0;
+					if (raiseIx >= 0) score += Math.max(0, 8 - Math.min(8, Math.floor(Math.abs(hit.index - raiseIx) / 18)));
+					if (hasRaiseIntent(windowLower)) score += 8;
+					if (hasFinancingAnchor(windowLower)) score += 3;
+					if (windowLower.includes('valuation')) score += 1;
+					if (/\b(use\s+of\s+funds|allocation)\b/.test(windowLower)) score -= 2;
+					if (/\b(arr|annual\s+recurring\s+revenue|revenue|tam|sam|som|market\s+share|users?)\b/.test(windowLower)) score -= 7;
+					if (/\?|\b(help\s+me\s+understand|what\s+if|would|could|assum(?:e|ing|ption|ptions)|imply)\b/.test(windowLower)) score -= 7;
+
+					return { hit, score, amount: parseMoneyToken(hit.token), windowLower };
+				})
+				.filter((x) => typeof x.amount === 'number' && Number.isFinite(x.amount) && x.amount! > 0)
+				.sort((a, b) => b.score - a.score || a.hit.index - b.hit.index);
+
+			const bestHit = scoredMoneyHits[0];
+			if (!bestHit) return null;
+			if (bestHit.score < 4) return null;
+			if (!hasRaiseIntent(bestHit.windowLower)) return null;
+
+			amount = bestHit.amount;
+			bestMoneyHitIndex = bestHit.hit.index;
 			if (!amount) return null;
 			let valuation: number | null = null;
 			// Look for valuation amount immediately adjacent to the word "valuation".
@@ -1162,6 +1343,14 @@ function parseRaiseFromSlides(rows: Array<{ row: DpuRow; slideText: string; slid
 			const after = text.match(/\bvaluation\b[^$]{0,20}(\$\s*\d+(?:\.\d+)?\s*(?:mm|m|million|mn|bn|b|k|thousand)?)/i);
 			if (before?.[1]) valuation = parseMoneyToken(before[1]);
 			else if (after?.[1]) valuation = parseMoneyToken(after[1]);
+
+			if (bestMoneyHitIndex != null) {
+				const contextStart = Math.max(0, bestMoneyHitIndex - 80);
+				const contextEnd = Math.min(text.length, bestMoneyHitIndex + 120);
+				const context = text.slice(contextStart, contextEnd).toLowerCase();
+				if (isHypotheticalArrContext(context) && !hasFinancingAnchor(context)) return null;
+			}
+
 			return {
 				amount,
 				valuation,
@@ -1221,6 +1410,28 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 		return [];
 	}
 
+	// Fetch document metadata so parseRevenueFromSlides can skip forbidden doc families
+	// (pro forma combined statements, SPAC financials) as revenue candidates.
+	let docMetas: DocumentMeta[] = [];
+	try {
+		const docRes = await pool.query<{ document_id: string; filename: string | null; kind: string | null }>(
+			`SELECT d.id AS document_id,
+			        df.file_name AS filename,
+			        d.type AS kind
+			   FROM documents d
+			   LEFT JOIN document_files df ON df.document_id = d.id
+			  WHERE d.deal_id = $1 AND d.deleted_at IS NULL`,
+			[id]
+		);
+		docMetas = (docRes.rows ?? []).map((r: any) => ({
+			document_id: String(r.document_id ?? ''),
+			filename: r.filename ?? null,
+			kind: r.kind ?? null,
+		}));
+	} catch {
+		// Non-fatal: document family classification falls back to 'unknown'
+	}
+
 	const slideRows: SlideRow[] = rows
 		.map((row) => {
 			const built = buildSlideTextFromPayload(row.payload);
@@ -1263,7 +1474,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 
 	const out: DerivedPromotedFactRow[] = [];
 
-	const raise = parseRaiseFromSlides(slideRows);
+	const raise = parseRaiseFromSlides(slideRows, docMetas);
 	if (raise) {
 		const seg = segmentMetaFor(raise.primary.document_id, raise.primary.page_index);
 		const valuationNote = raise.valuation ? `on ${formatUsdShort(raise.valuation)} valuation` : null;
@@ -1357,7 +1568,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 
 	// KPI fallbacks (Option A): deterministic, labeled facts from DPU.
 	const nowYear = new Date().getFullYear();
-	const tableRevenueFacts = parseRevenueFromFinancialTableSlides(slideRows, nowYear);
+	const tableRevenueFacts = parseRevenueFromFinancialTableSlides(slideRows, nowYear, docMetas);
 	for (const rev of tableRevenueFacts) {
 		const seg = segmentMetaFor(rev.primary.document_id, rev.primary.page_index);
 		out.push({
@@ -1380,6 +1591,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 					row_name: rev.row_name,
 					value_raw: rev.value_raw,
 					note_snippet: rev.note_snippet,
+					entity_scope: rev.entity_scope,
 					amount: { amount: rev.amount, currency: 'USD' },
 				},
 				provenance: {
@@ -1417,7 +1629,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 		});
 	}
 
-	const revenueFacts = parseRevenueFromSlides(slideRows);
+	const revenueFacts = parseRevenueFromSlides(slideRows, docMetas);
 	for (const rev of revenueFacts) {
 		const seg = segmentMetaFor(rev.primary.document_id, rev.primary.page_index);
 		const fact_type = rev.subtype === 'attributed' ? 'marketing_attributed_revenue_v1' : 'revenue_v1';
@@ -1441,6 +1653,7 @@ export async function derivePromotedFactsFromDpuForDeal(pool: Pool, dealId: stri
 					...(channel ? { channel } : {}),
 					...(typing_reason ? { typing_reason } : {}),
 					note_snippet: rev.note_snippet,
+					entity_scope: rev.entity_scope,
 					amount: { amount: rev.amount, currency: "USD" },
 				},
 				provenance: {

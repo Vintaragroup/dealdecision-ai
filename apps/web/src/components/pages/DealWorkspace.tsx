@@ -14,7 +14,7 @@ import { DealFormData } from '../Modal_Legacy/NewDealModal';
 import { AnimatedCounter } from '../AnimatedCounter';
 import { ExportReportModal } from '../ExportReportModal';
 import { TemplateExportModal } from '../TemplateExportModal';
-import { AnalysisTab } from '../workspace/AnalysisTab';
+import { AnalysisTab } from '../workspace/AnalysisTab_v1';
 import { DataTab } from '../workspace/DataTab';
 import { DealAnalystTab } from '../deals/tabs/DealAnalystTab';
 import { InvestorInsightsTab } from '../workspace/investor-insights/InvestorInsightsTab';
@@ -27,6 +27,13 @@ import { AIDealAssistant } from '../workspace/AIDealAssistant';
 import { DealWorkspaceHeader } from '../workspace/DealWorkspaceTopSection';
 import { DealOverviewTab } from '../workspace/DealWorkspace_overviewTab_v3';
 import { DealDeepDiveTab } from '../workspace/DealDeepDiveTab';
+import { IntelligenceTab } from '../workspace/IntelligenceTab';
+import { WorkspaceRedesignedShell } from '../workspace/WorkspaceRedesignedShell';
+import { selectWorkspaceRedesignedShellProps } from '../../lib/selectors/selectWorkspaceRedesignedShellProps';
+import { DealWorkspaceV4, type RerunAnalysisProgress } from '../workspace/DealWorkspaceV4';
+import { WorkbenchDeepDiveSummary } from '../workspace/WorkbenchDeepDiveSummary';
+import { WorkbenchInsightsSummary } from '../workspace/WorkbenchInsightsSummary';
+import { WorkbenchEvidenceSummary } from '../workspace/WorkbenchEvidenceSummary';
 import { FinancialCoveragePanel } from '../workspace/FinancialCoveragePanel';
 import UploadDocModal from '../upload_doc_modal';
 import { selectDealWorkspaceHeader } from '../../lib/selectDealWorkspaceHeader';
@@ -43,7 +50,7 @@ import { selectAuthoritativeRunwayV1 } from '../../lib/selectors/selectAuthorita
 import { selectDealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
 import { selectDeterministicOverviewSlotsV1 } from '../../lib/selectors/selectDeterministicOverviewSlotsV1';
 import { EvidencePanel, type ScoreSectionKey, type ScoreEvidencePayload } from '../evidence/EvidencePanel';
-import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDealDeepDive, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type DealDeepDiveResponse, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot } from '../../lib/apiClient';
+import { apiAutoProfileDeal, apiConfirmDealProfile, apiGetDeal, apiUpdateDeal, apiAutoProgressDeal, apiPostAnalyze, apiPostAnalyzeWithStatus, apiGetDealReadiness, apiPostExtractVisuals, apiPostReextractDocuments, apiGetJob, apiGetDealJobs, apiFetchEvidence, apiGetEvidence, apiGetDealReport, apiGetDealAnalysisDiagnostics, apiGetDealDeepDive, apiGetDealIntelligence, apiGetDocuments, apiResolveEvidence, subscribeToEvents, makeClientRequestId, type AutoProfileResponse, type DealReport, type DealReportEnvelope, type DealDeepDiveResponse, type EvidenceResolveResult, type JobUpdatedEvent, type ProposedDealProfile, type DealJobRowV2, type PageUnderstandingReadiness, type DealAnalysisDiagnosticsSnapshot, type DecisionReadinessResult } from '../../lib/apiClient';
 import { useGovernedLlmOverview } from '../../hooks/useGovernedLlmOverview';
 import { useInvestorInsights } from '../../hooks/useInvestorInsights';
 import { useOrchestratorReport } from '../../hooks/useOrchestratorReport';
@@ -55,7 +62,6 @@ import { derivePhaseBInsights } from '../../lib/phaseb-findings';
 import { buildOverlayViewModel } from '../../lib/overlay/overlayViewModel';
 import { buildWorkspaceMirrorOverviewVM } from '../../lib/workspaceMirrorPr2ViewModel';
 import { deterministicIsDisplayable } from '../../lib/deterministicDisplayPolicy';
-import { chooseGovernedKeyFact } from '../../lib/chooseGovernedKeyFact';
 import { applyPolicyAwareAdvisoryAsks, getRealEstateDealStructureFallback, selectBestRealEstateSemanticField } from '../../lib/realEstatePolicyRefinement';
 import { CanonicalIdentityRenameBanner } from '../deal/CanonicalIdentityRenameBanner';
 import { deriveGatingState, shouldSuppressNeedsReview } from '../../lib/badgePolicy';
@@ -67,6 +73,7 @@ import { filterMismatchedScoreItems, stripScoreFractions, stripScoreFractionsFro
 import { buildWorkspaceViewModel } from '../workspace/builders/buildWorkspaceViewModel';
 import type { WorkspaceViewModelInputs } from '../workspace/builders/buildWorkspaceViewModel';
 import { WorkspaceDebugPanel } from '../workspace/WorkspaceDebugPanel';
+import { Stage5IntelPanel } from '../workspace/Stage5IntelPanel';
 import {
   PolarAngleAxis,
   PolarGrid,
@@ -111,7 +118,8 @@ import {
   Link2,
   MoreVertical,
   Edit,
-  Terminal
+  Terminal,
+  Layers,
 } from 'lucide-react';
 
 interface DealWorkspaceProps {
@@ -146,7 +154,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // AnalysisTab maintains its own independent call for the deeper analysis panel.
   const { data: headerOrchData } = useOrchestratorReport(dealId);
   const dealDataExt = dealData as DealFormDataExtras | null | undefined;
-  const [activeTab, setActiveTab] = useState('overview');
 
   const workspaceDebugEnabled = useMemo(() => {
     try {
@@ -160,26 +167,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     }
   }, []);
 
-  const buildStamp = import.meta.env.VITE_BUILD_STAMP ?? 'dev';
-
   // reportBandScore: cached score_band_v2.overall_score from the analytical pipeline report.
   // Set in loadReport() via resolveCanonicalScore. NOT related to limited_scoring_v1 (Investor Insights).
   const [reportBandScore, setReportBandScore] = useState(0);
   const [analyzing, setAnalyzing] = useState(false);
-  const { toasts, push: _pushToast, dismiss: removeToast } = useToastQueue();
-  const [showExportModal, setShowExportModal] = useState(false);
-  const [showTemplateExportModal, setShowTemplateExportModal] = useState(false);
-  const [showShareModal, setShowShareModal] = useState(false);
-  const [showCommentsPanel, setShowCommentsPanel] = useState(false);
-  const [comments, setComments] = useState<Array<{ id: string; user: string; message: string; timestamp: Date }>>([]);
-  const [showMoreActions, setShowMoreActions] = useState(false);
-  const [showUploadDocModal, setShowUploadDocModal] = useState(false);
-  const [showDebugPanel, setShowDebugPanel] = useState(false);
-  const [showScoreBreakdown, setShowScoreBreakdown] = useState(false);
-  const [showScoreTraceDebug, setShowScoreTraceDebug] = useState(false);
-  const [showAllMissingChips, setShowAllMissingChips] = useState(false);
-  const [showAIAssistant, setShowAIAssistant] = useState(false);
-  const [stageActionLoading, setStageActionLoading] = useState(false);
+  const { push: _pushToast } = useToastQueue();
   const [dioMeta, setDioMeta] = useState<{ dioVersionId?: string; dioStatus?: string; lastAnalyzedAt?: string; dioRunCount?: number; dioAnalysisVersion?: number } | null>(null);
   const [jobId, setJobId] = useState<string | null>(null);
   const [jobStatus, setJobStatus] = useState<string | null>(null);
@@ -198,6 +190,15 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     lastError: string | null;
   }>({ status: 'connected', consecutiveFailures: 0, lastError: null });
   const [jobPollNonce, setJobPollNonce] = useState(0);
+  const [rerunTrackedJobId, setRerunTrackedJobId] = useState<string | null>(null);
+  const [rerunStartedAtMs, setRerunStartedAtMs] = useState<number | null>(null);
+  const [rerunElapsedSeconds, setRerunElapsedSeconds] = useState(0);
+  const [rerunNotice, setRerunNotice] = useState<{
+    kind: 'success' | 'error';
+    message: string;
+    jobId: string | null;
+    atMs: number;
+  } | null>(null);
   const [dealJobs, setDealJobs] = useState<DealJobRowV2[]>([]);
   const [dealJobsError, setDealJobsError] = useState<string | null>(null);
   type FullProcessStepKey = 'reextract_documents' | 'extract_visuals' | 'analyze_deal';
@@ -243,6 +244,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const [deepDiveLoading, setDeepDiveLoading] = useState(false);
   const [deepDiveError, setDeepDiveError] = useState<string | null>(null);
   const deepDiveLoadedDealIdRef = useRef<string | null>(null);
+  const [activePanel, setActivePanel] = useState<'deep-dive' | 'insights' | 'evidence' | 'intelligence' | null>(null);
   const [analystReloadKey, setAnalystReloadKey] = useState(0);
   const [analystFocusNodeId, setAnalystFocusNodeId] = useState<string | null>(null);
   const [documentsReloadKey, setDocumentsReloadKey] = useState(0);
@@ -265,6 +267,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const lastEventIdRef = useRef<string | undefined>(undefined);
   const handledTerminalJobKeysRef = useRef<Set<string>>(new Set());
   const fullProcessInFlightRef = useRef(false);
+  const rerunStartInFlightRef = useRef(false);
+  const rerunNoticeTimerRef = useRef<number | null>(null);
   const fullProcessRequestIdRef = useRef<string | null>(null);
   const lastDiagnosticsAttemptAtRef = useRef<number>(0);
 
@@ -518,6 +522,64 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [dealJobs, derivedAnalyzeForRun.job, fullProcessRunExtractJobId, isFullProcessActive, jobId, pinnedIsAnalyze, pinnedJobRow]);
 
   const activeJobId = pinnedIsAnalyze ? (selectedAnalyzeJobForPinned?.job_id ?? jobId) : jobId;
+
+  useEffect(() => {
+    return () => {
+      if (rerunNoticeTimerRef.current != null) {
+        window.clearTimeout(rerunNoticeTimerRef.current);
+        rerunNoticeTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!rerunStartedAtMs || !analyzing) {
+      setRerunElapsedSeconds(0);
+      return;
+    }
+
+    const updateElapsed = () => {
+      setRerunElapsedSeconds(Math.max(0, Math.floor((Date.now() - rerunStartedAtMs) / 1000)));
+    };
+    updateElapsed();
+    const id = window.setInterval(updateElapsed, 1000);
+
+    return () => {
+      window.clearInterval(id);
+    };
+  }, [analyzing, rerunStartedAtMs]);
+
+  useEffect(() => {
+    if (!rerunTrackedJobId || !activeJobId) return;
+    if (activeJobId !== rerunTrackedJobId && jobId !== rerunTrackedJobId) return;
+
+    const status = normalizeJobStatus(jobStatus);
+    if (status !== 'succeeded' && status !== 'succeeded_with_warnings' && status !== 'failed' && status !== 'cancelled') return;
+
+    if (rerunNoticeTimerRef.current != null) {
+      window.clearTimeout(rerunNoticeTimerRef.current);
+      rerunNoticeTimerRef.current = null;
+    }
+
+    const failed = status === 'failed' || status === 'cancelled';
+    setRerunNotice({
+      kind: failed ? 'error' : 'success',
+      message: failed
+        ? 'Analysis rerun failed. Your previous analysis is still visible. Try again.'
+        : 'Analysis rerun complete. Workspace results have been refreshed.',
+      jobId: activeJobId,
+      atMs: Date.now(),
+    });
+    setRerunTrackedJobId(null);
+    setRerunStartedAtMs(null);
+
+    if (!failed) {
+      rerunNoticeTimerRef.current = window.setTimeout(() => {
+        setRerunNotice(null);
+        rerunNoticeTimerRef.current = null;
+      }, 8000);
+    }
+  }, [activeJobId, jobId, jobStatus, rerunTrackedJobId]);
 
   useEffect(() => {
     if (!pinnedIsAnalyze) return;
@@ -1541,23 +1603,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return derivedScoreEvidenceFromBreakdown;
   })();
 
-  if (import.meta.env.DEV) {
-    // eslint-disable-next-line no-console
-    console.debug('Evidence tab score evidence source', {
-      providedSections: Array.isArray((phase1ScoreEvidence as any)?.sections)
-        ? (phase1ScoreEvidence as any).sections.length
-        : null,
-      breakdownSections: scoreBreakdownSections.length,
-      derivedSections: derivedScoreEvidenceFromBreakdown?.sections?.length ?? 0,
-      source: phase1ScoreEvidenceForPanel === phase1ScoreEvidence
-        ? 'phase1_score_evidence'
-        : derivedScoreEvidenceFromBreakdown
-          ? 'score_breakdown_v1'
-          : 'none',
-    });
-  }
-
-
   const recommendationRaw = typeof phase1Signals?.recommendation === 'string' ? phase1Signals.recommendation : null;
   const normalizedRecommendation = recommendationRaw ? recommendationRaw.toLowerCase().trim() : null;
   const phase1Score = typeof phase1Signals?.score === 'number' && Number.isFinite(phase1Signals.score)
@@ -1584,7 +1629,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   // [VERDICT-CONTRACT] Single canonical workspace verdict — resolveWorkspaceVerdict
   // encapsulates the full priority chain so DealWorkspace has one decision path.
+  // orchReport: headerOrchData already fetched at workspace level for the header tiles.
+  // Passing it here wires canonical_decision (step 0) into the verdict resolver.
   const _workspaceVerdict = resolveWorkspaceVerdict({
+    orchReport: headerOrchData ?? null,
     report: reportFromApi,
     score: fundamentalsScore0_100,
     phase1Signals: hasPhase1Signals
@@ -1659,8 +1707,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       setSelectedScoreSectionKey(null);
       setHighlightedEvidenceIds([]);
       setSelectedScoreSectionMismatch(false);
-      setActiveTab('evidence');
-      setShowScoreBreakdown(true);
+      setActivePanel('evidence');
       return;
     }
     const primaryIds = Array.isArray(section?.evidence_ids_linked)
@@ -1676,8 +1723,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setHighlightedEvidenceIds(ids);
     setSelectedScoreSectionMismatch(mismatch);
     setScoreTraceModeOverride(null);
-    setActiveTab('evidence');
-    setShowScoreBreakdown(true);
+    setActivePanel('evidence');
   };
 
   const handleScoreTraceDebugTrace = (section: any, fallbackKey?: string | null) => {
@@ -1702,12 +1748,11 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     setHighlightedEvidenceIds(ids);
     setSelectedScoreSectionMismatch(mismatch);
     setScoreTraceModeOverride('trace');
-    setActiveTab('evidence');
-    setShowScoreBreakdown(true);
+    setActivePanel('evidence');
   };
   const decisionAccent = decisionLabel === 'FUND'
     ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
-    : decisionLabel === 'CONSIDER'
+    : (decisionLabel === 'CONSIDER' || decisionLabel === 'INVESTIGATE')
       ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
       : (decisionLabel === 'PASS' || decisionLabel === 'HARD_PASS')
         ? 'bg-red-500/10 border-red-500/40 text-red-200'
@@ -1749,7 +1794,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     decisionTileScore0_100 != null ? _workspaceVerdict.verdict : '—';
   const decisionTileAccent = decisionTileLabel === 'FUND'
     ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-200'
-    : decisionTileLabel === 'CONSIDER'
+    : (decisionTileLabel === 'CONSIDER' || decisionTileLabel === 'INVESTIGATE')
       ? 'bg-amber-500/10 border-amber-500/40 text-amber-200'
       : (decisionTileLabel === 'PASS' || decisionTileLabel === 'HARD_PASS')
         ? 'bg-red-500/10 border-red-500/40 text-red-200'
@@ -2195,14 +2240,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return `${prefix}${rounded}${opts?.isPercent ? '%' : ''}`;
   };
 
-  // Use dealInfo if available, otherwise fall back to dealData
-  const displayName = dealInfo?.name || dealData?.name || 'Unnamed Deal';
-  const displayType = dealInfo?.type || dealData?.type || 'series-a';
-  const displayScore: number | null = displayScoreSourceV1 === 'fundability_v1'
-    ? (fundabilityScore0_100 != null ? Math.round(fundabilityScore0_100) : null)
-    : fundamentalsScore0_100;
-  const displayScoreLabel = displayScoreSourceV1 === 'fundability_v1' ? 'Fundability score' : 'Fundamentals score';
-
   const safeText = (value: unknown): string => {
     if (typeof value !== 'string') return '';
     const s = value.replace(/\s+/g, ' ').trim();
@@ -2223,6 +2260,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (isProbablyOcrJunk(collapsedForOcr)) return '';
     return normalized;
   };
+
+  // Company identity: structured summary first, then evidence-backed canonical identity, else placeholder.
+  const canonicalIdentity = investorInsights.report?.render_package?.canonical_identity;
+  const overlayCompanyName = safeText(canonicalIdentity?.canonical_company_name) || safeText(canonicalIdentity?.entered_name);
+  const structuredCompanyName = safeText((reportFromApi as any)?.structured_summary?.company_name);
+  const displayName = structuredCompanyName || overlayCompanyName || 'Unnamed Deal';
+  const displayType = dealInfo?.type || dealData?.type || 'series-a';
+  const displayScore: number | null = displayScoreSourceV1 === 'fundability_v1'
+    ? (fundabilityScore0_100 != null ? Math.round(fundabilityScore0_100) : null)
+    : fundamentalsScore0_100;
+  const displayScoreLabel = displayScoreSourceV1 === 'fundability_v1' ? 'Fundability score' : 'Fundamentals score';
 
   const formatMoneyAmountOnly = (amount: number): string => {
     const v = typeof amount === 'number' && Number.isFinite(amount) ? amount : NaN;
@@ -2443,6 +2491,65 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // Used as a last-resort fallback when authoritative governed/structured-summary values are absent.
   const deterministicOverviewSlots = useMemo(() => {
     return selectDeterministicOverviewSlotsV1(investorInsights.report ?? null);
+  }, [investorInsights.report]);
+
+  // LLM synthesis slots: company_description and solution_summary from product_profile_v1 section.
+  // This is the highest-priority source for Key Facts — entity-aware, LLM-synthesized, governed.
+  const llmSynthesisSlots = useMemo(() => {
+    const sections = investorInsights.report?.render_package?.sections;
+    const nullResult = { product: null, market: null, businessModel: null, raiseTerms: null };
+    if (!Array.isArray(sections)) return nullResult;
+
+    // Primary: read from key_facts_synthesis_v1 — global recovery synthesis for all 4 fields
+    const kfSection = sections.find((s) => s.key === 'key_facts_synthesis_v1');
+    if (kfSection?.body) {
+      try {
+        const kf = JSON.parse(kfSection.body) as Record<string, unknown>;
+        const PLACEHOLDER_RE = /not described in provided materials/i;
+        const strOrNull = (v: unknown): string | null => {
+          if (typeof v !== 'string') return null;
+          const t = v.trim();
+          return PLACEHOLDER_RE.test(t) ? null : (t || null);
+        };
+        const product = strOrNull(kf.product_narrative);
+        const market = strOrNull(kf.market_narrative);
+        const businessModel = strOrNull(kf.business_model_narrative);
+        const raiseTerms = strOrNull(kf.raise_terms_narrative);
+        // At least one field synthesized → use this section
+        if (product || market || businessModel || raiseTerms) {
+          return { product, market, businessModel, raiseTerms };
+        }
+      } catch {
+        // JSON parse failure → fall through to product_profile_v1
+      }
+    }
+
+    // Fallback: read product only from product_profile_v1 (legacy path)
+    const ppSection = sections.find((s) => s.key === 'product_profile_v1');
+    if (!ppSection?.body) return nullResult;
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(ppSection.body);
+    } catch {
+      return nullResult;
+    }
+
+    const companyDescription = typeof parsed.company_description === 'string'
+      ? parsed.company_description.trim()
+      : '';
+    const solutionSummary = typeof parsed.solution_summary === 'string'
+      ? parsed.solution_summary.trim()
+      : '';
+
+    // Combine company_description + solution_summary for a richer product key fact.
+    // Exclude placeholder text emitted when the LLM had nothing to say.
+    const PLACEHOLDER_RE = /not described in provided materials/i;
+    const productText = PLACEHOLDER_RE.test(companyDescription)
+      ? (PLACEHOLDER_RE.test(solutionSummary) ? '' : solutionSummary)
+      : companyDescription;
+
+    return { product: productText || null, market: null, businessModel: null, raiseTerms: null };
   }, [investorInsights.report]);
 
   const canonicalTiers = canonicalDealSummaryReady && (canonicalDealSummaryV1 as any)?.tiers && typeof (canonicalDealSummaryV1 as any).tiers === 'object'
@@ -2796,20 +2903,6 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       policyFamily,
       asks: uniq(diligence).slice(0, 12),
     });
-
-    if (import.meta.env.DEV) {
-      console.log('HERO_BINDING_DEBUG', {
-        deal_id: dealId ?? null,
-        selected_policy_id: selectedPolicyId ?? null,
-        deal_type: dealTypeRaw || null,
-        fields: {
-          product: { sourcePath: productPick.sourcePath, value: productSolutionHero || null },
-          market: { sourcePath: marketPick.sourcePath, value: marketIcpHero || null },
-          business_model: { sourcePath: businessModelPick.sourcePath, value: businessModel || null },
-          raise: { sourcePath: raisePick.sourcePath, value: raise || null, hidden: localHasMalformedNumericPlaceholder(raisePick.value || '') },
-        },
-      });
-    }
 
     return {
       snapshot: snapshot || 'Company snapshot is pending: structured facts were not extracted from the materials.',
@@ -3429,11 +3522,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   // canonicalScoreView: single score truth shared by ALL score-bearing UI surfaces
   // (TopSection gauge AND Overview tab). score0_100 is null when report is not yet applied
   // so we never show a stale DB number in the Overview tile.
-  const canonicalScoreView = {
+  // Memoized so referential stability prevents score-contract useEffects from re-running
+  // on every render cycle when reportView has not actually changed.
+  const canonicalScoreView = useMemo(() => ({
     score0_100: reportView.applied ? reportView.score : null,
     scoreSource: reportView.scoreSource,
     reportApplied: reportView.applied,
-  } as const;
+  }), [reportView]);
 
   // [SCORE-SANITIZER] Canonical reference for stripping mismatched NN/100 phrases from copy.
   // Only active when a report is applied (we have a real canonical score to compare against).
@@ -3962,48 +4057,113 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const overlayBusinessModel = overlayVM.facts.business_model || overviewBusinessModelCanonical;
   const overlayRaiseTerms = overlayVM.facts.raise_terms || overviewRaiseTermsCanonical;
 
+  const structuredTeamHighlights = (structuredSummaryRoot as any)?.team_highlights ?? null;
+  const structuredUseOfFunds = (structuredSummaryRoot as any)?.use_of_funds_breakdown ?? null;
+  const structuredProjectPipeline = (structuredSummaryRoot as any)?.project_pipeline ?? null;
+  const structuredRevenueModel = (structuredSummaryRoot as any)?.revenue_model ?? null;
+
   const workspaceOverviewModel = useMemo(() => {
+    const rcS6Input = structuredSummaryRoot
+      ? {
+          team_highlights: structuredTeamHighlights,
+          use_of_funds_breakdown: structuredUseOfFunds,
+          project_pipeline: structuredProjectPipeline,
+          revenue_model: {
+            structured: { value: structuredRevenueModel ?? null },
+          },
+        }
+      : undefined;
+
     return selectDealWorkspaceOverviewModel({
-      deterministic: {
-        summaries: {
-          short: { value: overviewDealOneLinerCanonical || null },
-          long: { value: null },
-          longParagraphsFallback: overviewDealSummaryParagraphsCanonical,
+      summaries: {
+        short: {
+          structured: { value: canonicalTierOverview || canonicalTierHero || canonicalDealOneLiner || null },
+          deal_summary_v1: { value: canonicalDealOneLiner || null },
+          overlay: { value: overlayVM.hero_summary || null },
+          phase1: { value: overviewDealOneLiner || null },
         },
-        keyFacts: {
-          product: { value: overviewProductCanonical || null },
-          market: { value: overviewMarketIcpCanonical || null },
-          business_model: { value: overviewBusinessModelCanonical || null },
-          raise_terms: { value: overviewRaiseTermsCanonical || null },
-        },
-      },
-      overlay: {
-        summaries: {
-          short: { value: overlayVM.hero_summary || null },
-          longParagraphs: overlayVM.deal_summary_paragraphs,
-        },
-        keyFacts: {
-          product: { value: overlayVM.facts.product || null },
-          market: { value: overlayVM.facts.market_icp || null },
-          business_model: { value: overlayVM.facts.business_model || null },
-          raise_terms: { value: overlayVM.facts.raise_terms || null },
+        long: {
+          structured: { value: canonicalTierDeep || null, paragraphs: canonicalParagraphs },
+          deal_summary_v1: { value: canonicalTierDeep || null, paragraphs: canonicalParagraphs },
+          deterministicSlot: { value: overviewDealSummaryParagraphsCanonical.join('\n\n'), paragraphs: overviewDealSummaryParagraphsCanonical },
+          overlay: { value: overlayParagraphs.join('\n\n'), paragraphs: overlayParagraphs },
+          phase1: { value: overviewDealSummaryParagraphs.join('\n\n'), paragraphs: overviewDealSummaryParagraphs },
         },
       },
+      keyFacts: {
+        product: {
+          llm_synthesis: { value: llmSynthesisSlots.product || null },
+          structured: { value: authoritativeProductTextV1 || null },
+          deal_summary_v1: { value: canonicalProduct || null },
+          deterministicSlot: { value: deterministicOverviewSlots.product?.value ?? null },
+          overlay: { value: overlayProduct || null },
+          phase1: { value: overviewProduct || null },
+        },
+        market: {
+          llm_synthesis: { value: llmSynthesisSlots.market || null },
+          structured: { value: authoritativeMarketTextV1 || null },
+          deal_summary_v1: { value: canonicalMarket || null },
+          deterministicSlot: { value: deterministicOverviewSlots.market?.value ?? null },
+          overlay: { value: overlayMarketIcp || null },
+          phase1: { value: overviewMarketIcp || null },
+        },
+        business_model: {
+          llm_synthesis: { value: llmSynthesisSlots.businessModel || null },
+          structured: { value: authoritativeBusinessModel.value || null },
+          deal_summary_v1: { value: overviewBusinessModelCanonical || null },
+          deterministicSlot: { value: deterministicOverviewSlots.business_model?.value ?? null },
+          overlay: { value: overlayBusinessModel || null },
+          phase1: { value: overviewBusinessModel || null },
+        },
+        raise_terms: {
+          llm_synthesis: { value: llmSynthesisSlots.raiseTerms || null },
+          structured: { value: reportStructuredRaise || null },
+          deal_summary_v1: { value: overviewRaiseTermsCanonical || null },
+          overlay: { value: overlayRaiseTerms || null },
+          phase1: { value: overviewRaiseTerms || null },
+        },
+      },
+      rcS6: rcS6Input,
     });
   }, [
-    overviewDealOneLinerCanonical,
+    authoritativeBusinessModel.value,
+    authoritativeMarketTextV1,
+    authoritativeProductTextV1,
+    canonicalDealOneLiner,
+    canonicalParagraphs,
+    canonicalProduct,
+    canonicalMarket,
+    canonicalTierDeep,
+    canonicalTierHero,
+    canonicalTierOverview,
+    deterministicOverviewSlots.product?.value,
+    deterministicOverviewSlots.market?.value,
+    deterministicOverviewSlots.business_model?.value,
+    llmSynthesisSlots.product,
+    llmSynthesisSlots.market,
+    llmSynthesisSlots.businessModel,
+    llmSynthesisSlots.raiseTerms,
+    overviewDealOneLiner,
+    overviewDealSummaryParagraphs,
     overviewDealSummaryParagraphsCanonical,
-    overviewProductCanonical,
-    overviewMarketIcpCanonical,
-    overviewBusinessModelCanonical,
-    overviewRaiseTermsCanonical,
+    overlayParagraphs,
+    overlayProduct,
+    overlayMarketIcp,
+    overlayBusinessModel,
+    overlayRaiseTerms,
+    reportStructuredRaise,
+    overviewRaiseTerms,
+    overviewProduct,
+    overviewMarketIcp,
+    overviewBusinessModel,
     overlayVM.hero_summary,
     overlayVM.deal_summary_paragraphs,
-    overlayVM.facts.product,
-    overlayVM.facts.market_icp,
-    overlayVM.facts.business_model,
-    overlayVM.facts.raise_terms,
-    governedInterpretationText,
+    deterministicOverviewSlots,
+    structuredSummaryRoot,
+    structuredTeamHighlights,
+    structuredUseOfFunds,
+    structuredProjectPipeline,
+    structuredRevenueModel,
   ]);
 
   const overviewInsightsData = useMemo(() => {
@@ -4066,70 +4226,10 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return s;
   };
 
-  const chooseKeyFact = (opts: {
-    det: unknown;
-    overlay: { value: unknown; quality: 'promoted' | 'fallback' | 'unknown' } | null;
-  }): { value: string; provenance: KeyFactProvenance } => {
-    const det = normalizeKeyFactText(opts.det);
-    if (det) {
-      return { value: det, provenance: { source: 'deterministic' } };
-    }
-
-    const overlayValue = normalizeKeyFactText(opts.overlay?.value);
-    const overlayQuality = opts.overlay?.quality ?? 'unknown';
-    const overlayUsable = Boolean(overlayValue);
-
-    if (overlayUsable) {
-      return {
-        value: overlayValue as string,
-        provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' },
-      };
-    }
-
-    return { value: keyFactMissingText, provenance: { source: 'missing' } };
-  };
-
-  const chooseKeyFactDisplayPolicy = (opts: {
-    det: unknown;
-    overlay: { value: unknown; quality: 'promoted' | 'fallback' | 'unknown' } | null;
-  }): { value: string; provenance: KeyFactProvenance } => {
-    const overlayValue = normalizeKeyFactText(opts.overlay?.value);
-    const overlayQuality = opts.overlay?.quality ?? 'unknown';
-    const overlayUsable = Boolean(overlayValue);
-
-    const detValue = normalizeKeyFactText(opts.det);
-    const detDisplayable = detValue ? deterministicIsDisplayable(detValue) : false;
-
-    // Preferred display text: PR2 overlay phrasing.
-    if (overlayUsable && !detDisplayable) {
-      return {
-        value: overlayValue as string,
-        provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' },
-      };
-    }
-
-    // Deterministic may override PR2 only when it looks display-safe.
-    if (detValue && detDisplayable) {
-      return { value: detValue, provenance: { source: 'deterministic' } };
-    }
-
-    if (overlayUsable) {
-      return {
-        value: overlayValue as string,
-        provenance: { source: 'governed', needsReview: overlayQuality === 'fallback' },
-      };
-    }
-
-    return { value: keyFactMissingText, provenance: { source: 'missing' } };
-  };
-
   const governedKeyFacts = useMemo(() => {
     const ovMissing = workspaceMirrorVM.missing;
     const ovFacts = ovMissing ? null : (workspaceMirrorVM.facts as any);
 
-    // Derive report gating state for badge suppression.
-    // When the evidence gate blocked LLM stages from running, "Needs review"
-    // is misleading — there is nothing governed to review.
     const reportGating = deriveGatingState({
       reportStatus: investorInsights.report?.status,
       evidenceGate:
@@ -4138,46 +4238,33 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     });
     const suppressNeedsReview = shouldSuppressNeedsReview(reportGating);
 
-    const asClean = (v: unknown): string => {
-      const s = typeof v === 'string' ? v.trim() : '';
-      return s && s !== '—' ? s : '';
+    const overviewKeyFacts = workspaceOverviewModel.keyFacts;
+    const buildFactFromOverview = (
+      field: typeof overviewKeyFacts.product,
+      overlayNode: { quality?: string } | null,
+    ) => {
+      const normalized = safeText(field?.value ?? '');
+      const hasValue = Boolean(normalized);
+      const fromOverlay = field?.source === 'overlay';
+      const provenanceSource: 'deterministic' | 'governed' | 'missing' = hasValue
+        ? (fromOverlay ? 'governed' : 'deterministic')
+        : 'missing';
+      const needsReview = fromOverlay && overlayNode?.quality === 'fallback' && !suppressNeedsReview;
+      return {
+        value: hasValue ? normalized : keyFactMissingText,
+        provenance: needsReview
+          ? { source: provenanceSource, needsReview: true as const }
+          : { source: provenanceSource },
+        fromOverlay,
+        trust: field?.trust ?? 'not_extracted',
+        conflict: field?.conflict ?? null,
+      };
     };
 
-    const chooseGovernedFirst = (opts: {
-      deterministic: string;
-      overlay?: { value: string | null; quality?: string; source?: 'governed' | 'deterministic' | 'missing' } | null;
-      preferDeterministic?: boolean;
-    }): { value: string; provenance: { source: 'deterministic' | 'governed' | 'missing'; needsReview?: boolean }; fromOverlay: boolean } =>
-      chooseGovernedKeyFact({
-        ...opts,
-        suppressNeedsReview,
-        missingText: keyFactMissingText,
-        isDisplayable: deterministicIsDisplayable,
-      });
-
-    const product = chooseGovernedFirst({
-      deterministic: overviewProductCanonical,
-      overlay: ovFacts ? { value: ovFacts.product_solution?.value ?? null, quality: ovFacts.product_solution?.quality, source: ovFacts.product_solution?.source } : null,
-      preferDeterministic: Boolean(authoritativeProductTextV1),
-    });
-    const market = chooseGovernedFirst({
-      deterministic: overviewMarketIcpCanonical,
-      overlay: ovFacts ? { value: ovFacts.market_icp?.value ?? null, quality: ovFacts.market_icp?.quality, source: ovFacts.market_icp?.source } : null,
-      preferDeterministic: Boolean(authoritativeMarketTextV1),
-    });
-    const businessModel = chooseGovernedFirst({
-      deterministic: overviewBusinessModelCanonical,
-      overlay: ovFacts ? { value: ovFacts.business_model?.value ?? null, quality: ovFacts.business_model?.quality, source: ovFacts.business_model?.source } : null,
-      // Real-estate display is policy-governed first to avoid startup taxonomy leaks.
-      // Startup/fund schemas keep deterministic report-first behavior when ready.
-      preferDeterministic: selectedHeader.ready && !looksRealEstate,
-    });
-    const raise = chooseGovernedFirst({
-      deterministic: overviewRaiseTermsCanonical,
-      overlay: ovFacts ? { value: ovFacts.raise?.value ?? null, quality: ovFacts.raise?.quality, source: ovFacts.raise?.source } : null,
-      // When report is ready, keep Raise terms consistent with /report.
-      preferDeterministic: selectedHeader.ready,
-    });
+    const product = buildFactFromOverview(overviewKeyFacts.product, ovFacts ? ovFacts.product_solution ?? null : null);
+    const market = buildFactFromOverview(overviewKeyFacts.market, ovFacts ? ovFacts.market_icp ?? null : null);
+    const businessModel = buildFactFromOverview(overviewKeyFacts.business_model, ovFacts ? ovFacts.business_model ?? null : null);
+    const raise = buildFactFromOverview(overviewKeyFacts.raise_terms, ovFacts ? ovFacts.raise ?? null : null);
 
     if (!looksRealEstate) {
       return { product, market, businessModel, raise, realEstateSemanticDiagnostics: null };
@@ -4185,6 +4272,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     const assetFacilityCandidates = [
       { value: ovFacts?.product_solution?.value ?? null, source: 'governed_ui_copy.product_solution', lane: 'governed' },
+      { value: overviewKeyFacts.product.value, source: 'overview.structured.product', lane: product.fromOverlay ? 'governed' : 'deterministic' },
       { value: authoritativeProductTextV1, source: 'report.structured_summary.product_summary_v1', lane: 'deterministic' },
       { value: canonicalProduct, source: 'report.deal_summary_v1.product.text', lane: 'deterministic' },
       { value: overviewProductCanonical, source: 'overview.product.canonical', lane: 'deterministic' },
@@ -4195,14 +4283,13 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
     const submarketDemandCandidates = [
       { value: ovFacts?.market_icp?.value ?? null, source: 'governed_ui_copy.market_icp', lane: 'governed' },
+      { value: overviewKeyFacts.market.value, source: 'overview.structured.market', lane: market.fromOverlay ? 'governed' : 'deterministic' },
       { value: authoritativeMarketTextV1, source: 'report.structured_summary.market_summary_v1', lane: 'deterministic' },
       { value: canonicalMarket, source: 'report.deal_summary_v1.market_target.text', lane: 'deterministic' },
       { value: overviewMarketIcpCanonical, source: 'overview.market.canonical', lane: 'deterministic' },
       { value: market.value, source: 'governedKeyFacts.market', lane: market.provenance.source === 'governed' ? 'governed' : 'deterministic' },
     ] as const;
 
-    // Prevent duplicated top-line semantics where Asset/Facility and Submarket/Demand
-    // resolve to the same normalized text.
     const submarketDemandSelection = selectBestRealEstateSemanticField('submarket_demand', [...submarketDemandCandidates], {
       excludeValues: assetFacilitySelection.value ? [assetFacilitySelection.value] : [],
     });
@@ -4210,6 +4297,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const dealStructureSelection = selectBestRealEstateSemanticField('deal_structure', [
       { value: ovFacts?.raise?.value ?? null, source: 'governed_ui_copy.raise', lane: 'governed' },
       { value: ovFacts?.business_model?.value ?? null, source: 'governed_ui_copy.business_model', lane: 'governed' },
+      { value: overviewKeyFacts.business_model.value, source: 'overview.structured.business_model', lane: businessModel.fromOverlay ? 'governed' : 'deterministic' },
       { value: selectedHeader.business_model.value ?? null, source: 'report.header.business_model', lane: 'deterministic' },
       { value: selectedHeader.raise.value ?? null, source: 'report.header.raise', lane: 'deterministic' },
       { value: overviewRaiseTermsCanonical, source: 'overview.raise_terms.canonical', lane: 'deterministic' },
@@ -4279,6 +4367,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     const raiseCandidatesForConcise = [
       selectedHeader.raise.value,
       reportCanonicalRaise.value,
+      overviewKeyFacts.raise_terms.value,
       overviewRaiseTermsCanonical,
       raise.value,
     ];
@@ -4323,7 +4412,24 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
         },
       },
     };
-  }, [workspaceMirrorVM, overviewProductCanonical, overviewMarketIcpCanonical, overviewBusinessModelCanonical, overviewRaiseTermsCanonical, selectedHeader.ready, selectedHeader.business_model.value, selectedHeader.raise.value, authoritativeProductTextV1, authoritativeMarketTextV1, canonicalProduct, canonicalMarket, investorInsights.report, looksRealEstate, reportView.businessModel, reportCanonicalRaise.value]);
+  }, [
+    workspaceMirrorVM,
+    workspaceOverviewModel,
+    overviewProductCanonical,
+    overviewMarketIcpCanonical,
+    overviewBusinessModelCanonical,
+    overviewRaiseTermsCanonical,
+    authoritativeProductTextV1,
+    authoritativeMarketTextV1,
+    canonicalProduct,
+    canonicalMarket,
+    investorInsights.report,
+    looksRealEstate,
+    selectedHeader.business_model.value,
+    selectedHeader.raise.value,
+    reportView.businessModel,
+    reportCanonicalRaise.value,
+  ]);
 
   type HeroFieldRole = 'product' | 'market' | 'business_model' | 'raise';
   type HeroSourceTier =
@@ -5261,11 +5367,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }, [dealId]);
 
   useEffect(() => {
-    if (activeTab !== 'deal-deep-dive') return;
-    if (!dealId) {
-      setDeepDiveError('Deal id is required to load deep-dive analysis.');
-      return;
-    }
+    if (!dealId) return;
     if (deepDiveLoadedDealIdRef.current === dealId && deepDiveResponse) return;
 
     let cancelled = false;
@@ -5292,11 +5394,12 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     return () => {
       cancelled = true;
     };
-  }, [activeTab, dealId, deepDiveResponse]);
+  }, [dealId, deepDiveResponse]);
 
   // Primary tabs always visible in the nav bar.
   const primaryTabs = [
     { id: 'overview', label: 'Overview', icon: <BarChart3 className="w-4 h-4" /> },
+    { id: 'workspace', label: 'Workspace', icon: <Layers className="w-4 h-4" /> },
     { id: 'deal-deep-dive', label: 'Deal Deep Dive', icon: <FileText className="w-4 h-4" /> },
     { id: 'investor-insights', label: 'Investor Insights', icon: <Lightbulb className="w-4 h-4" /> },
     { id: 'financial-audit', label: 'Financial Audit', icon: <Clipboard className="w-4 h-4" /> },
@@ -5369,6 +5472,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   const vmVerdict: WorkspaceViewModelInputs['verdict'] =
     _workspaceVerdict.verdict === 'HARD_PASS' ? 'HARD_PASS'
     : _workspaceVerdict.verdict === 'FUND' ? 'INVEST'
+    : _workspaceVerdict.verdict === 'INVESTIGATE' ? 'INVESTIGATE'
     : _workspaceVerdict.verdict === 'CONSIDER' ? 'CONSIDER'
     : 'PASS';
 
@@ -5378,6 +5482,7 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     : 'Limited';
 
   const vm = useMemo(() => buildWorkspaceViewModel({
+    overviewModel: workspaceOverviewModel,
     displayName,
     dealDescription: governedDealOneLinerDisplay || topSectionScoreDriverOneLiner || (dealInfo as any)?.description || '',
     dealStageLabel,
@@ -5395,20 +5500,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     evidenceCoverage: vmEvidenceCoverage,
     selectedPolicyId,
     governedDealOneLiner: governedDealOneLinerDisplay,
-    governedProduct: heroFieldBindings.product.value || governedKeyFacts.product.value,
-    governedMarket: heroFieldBindings.market.value || governedKeyFacts.market.value,
-    governedBusinessModel: heroFieldBindings.businessModel.value || governedKeyFacts.businessModel.value,
     // [CONTRACT: DataFlow_contract.md §2.4] investmentSnapshotBody from investment_analysis_overview_v2.summary_medium.
-    investmentSnapshotBody: safeText((reportFromApi as any)?.investment_analysis_overview_v2?.summary_medium),
-    // [CONTRACT: DataFlow_contract.md §2.1] governedRaise: structured_summary.raise only.
-    // Forbidden: heroFieldBindings.raise (reads display_facts_v1.raise_terms.text first).
-    governedRaise: (() => {
-      const roundLabel = safeText(reportCanonicalRaise.roundLabel);
-      const amount = safeText(reportCanonicalRaise.value);
-      if (roundLabel && amount) return `${roundLabel}: ${amount}`;
-      if (amount) return amount;
-      if (roundLabel) return roundLabel;
-      return '';
+    investmentSnapshotBody: (() => {
+      const overlayBody = overlayParagraphs.length > 0 ? overlayParagraphs.join('\n\n') : null;
+      if (overlayBody) return overlayBody;
+      const iav2 = (reportFromApi as any)?.investment_analysis_overview_v2 ?? null;
+      const summaryParts = [
+        safeText(iav2?.summary_medium),
+        safeText(iav2?.summary),
+        safeText(iav2?.summary_long),
+      ].filter((s): s is string => Boolean(s));
+      return summaryParts.join('\n\n') || null;
     })(),
     selectedHeaderReady: selectedHeader.ready,
     raiseValue: selectedHeader.ready ? (selectedHeader.raise.value ?? null) : null,
@@ -5585,6 +5687,89 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
       },
     });
   }, [dealId, policyFamily, selectedPolicyId, looksRealEstate, governedKeyFacts, vm.overview, icMemo, topSectionActionRefinement, selectedHeader.ready, selectedHeader.raise.value, topSectionRevenue, topSectionGrowth, topSectionCustomers, heroFieldBindings]);
+
+  // ── TRACE: governed-copy → overviewVM data-flow audit ───────────────────────
+  // Tracks exactly where governed_ui_copy_v1 values are lost between sources.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+
+    const govRaw = (governedOverview.overview as any)?.overview_json;
+    const govJsonParsed = govRaw && typeof govRaw === 'string' ? (() => { try { return JSON.parse(govRaw); } catch { return null; } })() : (govRaw && typeof govRaw === 'object' ? govRaw : null);
+    const govPhase1 = govJsonParsed?.phase1 ?? null;
+    const govCopy = govPhase1?.governed_ui_copy_v1 ?? null;
+    const govCopyOk = govCopy && govCopy.schema_version === 'governed_ui_copy_v1';
+
+    console.group(`[TRACE:DealWorkspace] governed copy → overviewVM flow | dealId=${dealId ?? 'none'}`);
+
+    console.group('1 | useGovernedLlmOverview output');
+    console.log('status:', governedOverview.status);
+    console.log('created_at:', governedOverview.created_at);
+    console.log('input_hash:', governedOverview.input_hash);
+    console.log('overview_json.phase1.governed_ui_copy_v1 present?', govCopyOk);
+    if (govCopyOk) {
+      console.log('  .product_solution:', govCopy.product_solution ?? null);
+      console.log('  .market_icp:      ', govCopy.market_icp ?? null);
+      console.log('  .raise_terms:     ', govCopy.raise_terms ?? null);
+    }
+    console.groupEnd();
+
+    console.group('2 | buildOverlayViewModel output (overlayVM)');
+    console.log('overlayVM.facts.product:    ', overlayVM.facts.product);
+    console.log('overlayVM.facts.market_icp: ', overlayVM.facts.market_icp);
+    console.log('overlayVM.facts.raise_terms:', overlayVM.facts.raise_terms);
+    console.log('NOTE: overlayVM reads deal_overview_v2 directly — ignores governed_ui_copy_v1');
+    console.groupEnd();
+
+    console.group('3 | buildWorkspaceMirrorOverviewVM output (workspaceMirrorVM)');
+    console.log('workspaceMirrorVM.missing:', workspaceMirrorVM.missing);
+    if (!workspaceMirrorVM.missing) {
+      console.log('facts.product_solution:', workspaceMirrorVM.facts.product_solution.value, '| source:', workspaceMirrorVM.facts.product_solution.source);
+      console.log('facts.market_icp:      ', workspaceMirrorVM.facts.market_icp.value, '| source:', workspaceMirrorVM.facts.market_icp.source);
+      console.log('facts.raise:           ', workspaceMirrorVM.facts.raise.value, '| source:', workspaceMirrorVM.facts.raise.source);
+    }
+    console.groupEnd();
+
+    console.group('4 | overlayProduct / overlayMarketIcp fed to selectDealWorkspaceOverviewModel');
+    console.log('overlayProduct   (= overlayVM.facts.product || overviewProductCanonical):', overlayProduct);
+    console.log('overlayMarketIcp (= overlayVM.facts.market_icp || overviewMarketIcpCanonical):', overlayMarketIcp);
+    console.log('overlayRaiseTerms:', overlayRaiseTerms);
+    console.groupEnd();
+
+    console.group('5 | workspaceOverviewModel.keyFacts (selectDealWorkspaceOverviewModel output)');
+    console.log('product.value: ', workspaceOverviewModel.keyFacts.product.value, '| source:', (workspaceOverviewModel.keyFacts.product as any).source ?? 'n/a');
+    console.log('market.value:  ', workspaceOverviewModel.keyFacts.market.value, '| source:', (workspaceOverviewModel.keyFacts.market as any).source ?? 'n/a');
+    console.log('raise.value:   ', workspaceOverviewModel.keyFacts.raise_terms.value, '| source:', (workspaceOverviewModel.keyFacts.raise_terms as any).source ?? 'n/a');
+    console.groupEnd();
+
+    console.group('6 | vm.overview (buildWorkspaceViewModel output) — what selectWorkspaceRedesignedShellProps receives');
+    console.log('investmentSnapshotBody:', vm.overview.investmentSnapshotBody);
+    console.log('productSummary:        ', vm.overview.productSummary);
+    console.log('marketSummary:         ', vm.overview.marketSummary);
+    console.log('raiseTerms:            ', vm.overview.raiseTerms);
+    console.groupEnd();
+
+    console.groupEnd();
+  }, [
+    dealId,
+    governedOverview.status,
+    governedOverview.created_at,
+    governedOverview.input_hash,
+    governedOverview.overview,
+    overlayVM.facts.product,
+    overlayVM.facts.market_icp,
+    overlayVM.facts.raise_terms,
+    workspaceMirrorVM,
+    overlayProduct,
+    overlayMarketIcp,
+    overlayRaiseTerms,
+    workspaceOverviewModel.keyFacts.product.value,
+    workspaceOverviewModel.keyFacts.market.value,
+    workspaceOverviewModel.keyFacts.raise_terms.value,
+    vm.overview.investmentSnapshotBody,
+    vm.overview.productSummary,
+    vm.overview.marketSummary,
+    vm.overview.raiseTerms,
+  ]);
 
   const parseApiErrorMessage = (err: unknown): string => {
     if (err instanceof Error) {
@@ -6003,6 +6188,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           lastPolledAtMs: Date.now(),
           error: 'Still preparing — check worker logs',
         }));
+        setAnalyzing(false);
+        setRerunStartedAtMs(null);
+        setRerunNotice({
+          kind: 'error',
+          message: 'Analysis rerun timed out while preparing documents. Your previous analysis is still visible. Try again.',
+          jobId: null,
+          atMs: Date.now(),
+        });
         return;
       }
 
@@ -6018,6 +6211,14 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
           error: msg,
           lastPolledAtMs: Date.now(),
         }));
+        setAnalyzing(false);
+        setRerunStartedAtMs(null);
+        setRerunNotice({
+          kind: 'error',
+          message: 'Analysis rerun failed before the job started. Your previous analysis is still visible. Try again.',
+          jobId: null,
+          atMs: Date.now(),
+        });
         return;
       }
 
@@ -6049,11 +6250,21 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
             setPageUnderstandingGate((prev) => ({ ...prev, status: 'idle', readiness: null, error: null, minDpuCreatedAt: null }));
             setJobId(job.job_id);
             setJobStatus(job.status);
+            setRerunTrackedJobId(job.job_id);
+            setRerunNotice(null);
             addToast('info', 'Job queued', `Job ${job.job_id}`);
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           setPageUnderstandingGate((prev) => ({ ...prev, status: 'ready', error: msg }));
+          setAnalyzing(false);
+          setRerunStartedAtMs(null);
+          setRerunNotice({
+            kind: 'error',
+            message: 'Analysis rerun failed before the job started. Your previous analysis is still visible. Try again.',
+            jobId: null,
+            atMs: Date.now(),
+          });
           addToast('error', 'Analysis failed to start', msg);
         }
         return;
@@ -6087,6 +6298,8 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     if (job) {
       setJobId(job.job_id);
       setJobStatus(job.status);
+      setRerunTrackedJobId(job.job_id);
+      setRerunNotice(null);
       addToast('info', 'Job queued', `Job ${job.job_id}`);
       return;
     }
@@ -6099,8 +6312,25 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
 
   const runAIAnalysis = async () => {
     if (!dealId) return;
+    const normalizedStatus = normalizeJobStatus(jobStatus);
+    const activeAnalyzeJob =
+      (jobType === 'analyze_deal' || !!rerunTrackedJobId) &&
+      (normalizedStatus === 'queued' || normalizedStatus === 'running' || normalizedStatus === 'retrying' || normalizedStatus === 'blocked');
+
+    if (rerunStartInFlightRef.current || analyzing || activeAnalyzeJob || pageUnderstandingGate.status === 'preparing') {
+      addToast('info', 'Analysis already running', 'Previous analysis remains visible while the current run completes.', `deal-analysis-active:${dealId}`);
+      return;
+    }
+
+    rerunStartInFlightRef.current = true;
+    const startedAtMs = Date.now();
     setAnalyzing(true);
+    setRerunStartedAtMs(startedAtMs);
+    setRerunElapsedSeconds(0);
+    setRerunTrackedJobId(null);
+    setRerunNotice(null);
     setJobProgress(null);
+    setJobProgressSnapshot(null);
     setJobMessage(null);
     setJobUpdatedAt(null);
     setJobCreatedAt(null);
@@ -6115,7 +6345,17 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
     } catch (err) {
       addToast('error', 'Analysis failed to start', err instanceof Error ? err.message : 'Unknown error');
       setAnalyzing(false);
+      setRerunStartedAtMs(null);
+      setRerunNotice({
+        kind: 'error',
+        message: 'Analysis rerun failed. Your previous analysis is still visible. Try again.',
+        jobId: null,
+        atMs: Date.now(),
+      });
+      rerunStartInFlightRef.current = false;
       return;
+    } finally {
+      rerunStartInFlightRef.current = false;
     }
   };
 
@@ -6957,2607 +7197,166 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
   }
 
 
+  const handleBack = () => {
+    if (typeof onViewReport === 'function') {
+      onViewReport();
+      return;
+    }
+    if (typeof window !== 'undefined' && window.history.length > 1) {
+      window.history.back();
+    }
+  };
+
+  const shellProps = selectWorkspaceRedesignedShellProps({
+    report: reportFromApi,
+    overviewVM: vm.overview,
+    lastAnalyzedAt: dioMeta?.lastAnalyzedAt ?? null,
+    blockerCount: vm.header.blockers,
+    deepDiveReady: Boolean(deepDiveResponse && !deepDiveLoading && !deepDiveError),
+    insightsReady: investorInsights.status === 'ready' && !!investorInsights.report,
+    workspaceVerdict: _workspaceVerdict,
+  });
+
+  const normalizedAnalysisJobStatus = normalizeJobStatus(jobStatus);
+  const trackedRerunMatchesActiveJob = Boolean(
+    rerunTrackedJobId &&
+    (activeJobId === rerunTrackedJobId || jobId === rerunTrackedJobId)
+  );
+  const activeRerunStatus =
+    normalizedAnalysisJobStatus === 'queued' ||
+    normalizedAnalysisJobStatus === 'running' ||
+    normalizedAnalysisJobStatus === 'retrying' ||
+    normalizedAnalysisJobStatus === 'blocked';
+  const pageUnderstandingIsActive = pageUnderstandingGate.status === 'preparing';
+  const rerunLifecycleActive = Boolean(rerunStartedAtMs && analyzing);
+  const rerunActive = Boolean(
+    rerunLifecycleActive ||
+    pageUnderstandingIsActive ||
+    (trackedRerunMatchesActiveJob && activeRerunStatus)
+  );
+  const pageUnderstandingMissingTotal =
+    typeof pageUnderstandingGate.readiness?.missing_pages_total === 'number'
+      ? pageUnderstandingGate.readiness.missing_pages_total
+      : null;
+  const pageUnderstandingMessage = pageUnderstandingIsActive
+    ? pageUnderstandingMissingTotal !== null
+      ? `Preparing documents for analysis. Missing ${pageUnderstandingMissingTotal} page${pageUnderstandingMissingTotal === 1 ? '' : 's'} of page understanding.`
+      : 'Preparing documents for analysis.'
+    : null;
+  const rerunWarning =
+    jobPollConnection.status === 'disconnected'
+      ? 'Job polling disconnected. Previous analysis remains visible; retry polling from the Jobs view if needed.'
+      : rerunElapsedSeconds >= 15 * 60 && rerunActive
+        ? 'Analysis is taking longer than usual. Previous analysis remains visible while the job continues.'
+        : null;
+  const analysisProgress: RerunAnalysisProgress | null =
+    rerunActive || rerunNotice
+      ? {
+          active: rerunActive,
+          terminal: rerunNotice?.kind === 'success' ? 'success' : rerunNotice?.kind === 'error' ? 'error' : null,
+          jobId: trackedRerunMatchesActiveJob ? activeJobId : rerunNotice?.jobId ?? rerunTrackedJobId,
+          type: trackedRerunMatchesActiveJob ? jobType : 'analyze_deal',
+          status: rerunNotice?.kind === 'success'
+            ? 'succeeded'
+            : rerunNotice?.kind === 'error'
+              ? 'failed'
+              : pageUnderstandingIsActive
+                ? 'queued'
+                : normalizedAnalysisJobStatus,
+          stage: pageUnderstandingIsActive ? 'preparing_documents' : jobProgressSnapshot?.stage ?? normalizedAnalysisJobStatus,
+          progressPct: pageUnderstandingIsActive ? null : (typeof jobProgressSnapshot?.percent === 'number' ? jobProgressSnapshot.percent : jobProgress),
+          message: rerunNotice?.message ?? pageUnderstandingMessage ?? jobProgressSnapshot?.message ?? jobMessage,
+          error: rerunNotice?.kind === 'error' ? rerunNotice.message : pageUnderstandingGate.status === 'error' || pageUnderstandingGate.status === 'timeout' ? pageUnderstandingGate.error : null,
+          warning: rerunWarning,
+          updatedAt: jobProgressSnapshot?.at ?? jobUpdatedAt,
+          startedAt: jobStartedAt,
+          createdAt: jobCreatedAt,
+          queuedSeconds: jobQueuedSeconds,
+          elapsedSeconds: rerunElapsedSeconds,
+          previousAnalysisVisible: Boolean(reportFromApi || shellProps.convictionScore != null || _workspaceVerdict),
+          pollConnection: jobPollConnection,
+        }
+      : null;
+
   return (
-    <div>
-      {workspaceDebugEnabled ? (
-        <div
-          data-testid="build-stamp"
-          className={`px-4 sm:px-6 pt-2 text-xs opacity-70 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}
-        >
-          Build: {buildStamp}
-        </div>
-      ) : null}
-      <div className="p-4 sm:p-6 flex flex-col gap-4 sm:gap-6">
-        {/* Header Section */}
-        <div className={`backdrop-blur-xl border rounded-2xl p-4 sm:p-6 ${ 
-          darkMode
-            ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-            : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-        }`}>
-          <div className="flex flex-col sm:flex-row items-start justify-between gap-4 sm:gap-4 sm:mb-6">
-            <div className="flex-1">
-              {dealId && (
-                <CanonicalIdentityRenameBanner
-                  dealId={dealId}
-                  currentDealName={displayName}
-                  canonicalIdentity={investorInsights.report?.render_package?.canonical_identity}
-                  darkMode={darkMode}
-                  onRenameSuccess={refreshDealFromApi}
-                />
-              )}
-            </div>
-            
-            {/* Streamlined Action Buttons - 3 Main + More Menu */}
-            <div className="w-full sm:w-auto flex flex-wrap items-center justify-start sm:justify-end gap-2 relative">
-              {(pageUnderstandingGate.status !== 'idle' || pageUnderstandingGate.readiness) && (
-                <div className={`order-3 sm:order-none w-full sm:w-auto sm:mr-2 rounded-2xl border px-3 py-2 text-xs max-w-none sm:max-w-[420px] ${darkMode ? 'border-white/10 bg-white/5 text-gray-200' : 'border-gray-200 bg-gray-50 text-gray-700'}`}>
-                  {(() => {
-                    const readiness = pageUnderstandingGate.readiness;
-                    const ready = !!readiness?.ready;
-                    const blockedReasonRaw = (readiness as any)?.blocked_reason;
-                    const blockedReason = typeof blockedReasonRaw === 'string' && blockedReasonRaw.trim().length > 0 ? blockedReasonRaw.trim() : null;
-                    const showOcrRequiredHint = blockedReason === 'INGEST_PENDING_OCR';
-                    const expectedPagesTotal = typeof readiness?.expected_pages_total === 'number' ? readiness.expected_pages_total : null;
-                    const missingPagesTotal = typeof readiness?.missing_pages_total === 'number' ? readiness.missing_pages_total : null;
-                    const dpuRowsTotal = typeof readiness?.dpu_rows_total === 'number' ? readiness.dpu_rows_total : null;
-
-                    const startedAtMs = pageUnderstandingGate.startedAtMs;
-                    const lastPolledAtMs = pageUnderstandingGate.lastPolledAtMs;
-                    const elapsedMs = typeof startedAtMs === 'number' && typeof lastPolledAtMs === 'number' ? Math.max(0, lastPolledAtMs - startedAtMs) : null;
-                    const elapsedSec = typeof elapsedMs === 'number' ? Math.round(elapsedMs / 1000) : null;
-
-                    const hasExtractVisualsJobSinceGate = (() => {
-                      if (typeof startedAtMs !== 'number') return false;
-                      const sinceMs = startedAtMs - 2_000;
-                      for (const row of dealJobs) {
-                        const t = String(row.type ?? row.queue ?? '').trim().toLowerCase();
-                        if (t !== 'extract_visuals') continue;
-                        const createdMs = parseIsoMs(row.created_at ?? null) ?? parseIsoMs(row.updated_at ?? null);
-                        if (createdMs != null && createdMs >= sinceMs) return true;
-                      }
-                      return false;
-                    })();
-
-                    const showNoExtractHint =
-                      pageUnderstandingGate.status === 'preparing' &&
-                      (missingPagesTotal ?? 0) > 0 &&
-                      typeof elapsedSec === 'number' &&
-                      elapsedSec >= 30 &&
-                      !hasExtractVisualsJobSinceGate &&
-                      !showOcrRequiredHint;
-
-                    const statusLabel =
-                      pageUnderstandingGate.status === 'timeout'
-                        ? 'Still preparing'
-                        : pageUnderstandingGate.status === 'error'
-                          ? 'Error'
-                          : ready
-                            ? 'Ready'
-                            : 'Preparing';
-
-                    return (
-                      <div>
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="font-medium">Page Understanding Status</div>
-                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-xs`}
-                            >
-                              Version: {pageUnderstandingGate.version} · ready: {String(ready)} · {statusLabel}
-                              {typeof elapsedSec === 'number' ? ` · ${elapsedSec}s` : ''}
-                            </div>
-                          </div>
-                          {readiness?.documents?.length ? (
-                            <button
-                              className={`${darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'} underline text-xs`}
-                              onClick={() => setShowPageUnderstandingDetails((v) => !v)}
-                            >
-                              {showPageUnderstandingDetails ? 'Hide' : 'Details'}
-                            </button>
-                          ) : null}
-                        </div>
-
-                        <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-                          <div className={`rounded-lg border px-2 py-1 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>expected</div>
-                            <div className="font-mono">{expectedPagesTotal ?? '—'}</div>
-                          </div>
-                          <div className={`rounded-lg border px-2 py-1 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>missing</div>
-                            <div className={`font-mono ${!ready && (missingPagesTotal ?? 0) > 0 ? (darkMode ? 'text-amber-300' : 'text-amber-700') : ''}`}>{missingPagesTotal ?? '—'}</div>
-                          </div>
-                          <div className={`rounded-lg border px-2 py-1 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>dpu rows</div>
-                            <div className="font-mono">{dpuRowsTotal ?? '—'}</div>
-                          </div>
-                        </div>
-
-                        {showPageUnderstandingDetails && readiness?.documents?.length ? (
-                          <div className="mt-2">
-                            <div className={`${darkMode ? 'text-gray-400' : 'text-gray-500'} text-xs mb-1`}>Per-document</div>
-                            <div className={`rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-                              <div className="max-h-40 overflow-auto">
-                                <table className="w-full text-xs">
-                                  <thead className={`${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                                    <tr className={`${darkMode ? 'bg-white/5' : 'bg-gray-50'}`}>
-                                      <th className="text-left font-medium px-2 py-1">Title</th>
-                                      <th className="text-right font-medium px-2 py-1">Pages</th>
-                                      <th className="text-right font-medium px-2 py-1">DPU</th>
-                                      <th className="text-right font-medium px-2 py-1">Missing</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {readiness.documents.map((d) => {
-                                      const title = typeof d.title === 'string' && d.title.trim().length > 0 ? d.title.trim() : d.document_id;
-                                      const missingCount = Array.isArray(d.missing_pages) ? d.missing_pages.length : 0;
-                                      return (
-                                        <tr key={d.document_id} className={`${darkMode ? 'border-t border-white/10' : 'border-t border-gray-100'}`}>
-                                          <td className="px-2 py-1 max-w-[240px] truncate" title={title}>{title}</td>
-                                          <td className="px-2 py-1 text-right font-mono">{typeof d.page_count === 'number' ? d.page_count : '—'}</td>
-                                          <td className="px-2 py-1 text-right font-mono">{typeof d.dpu_rows === 'number' ? d.dpu_rows : '—'}</td>
-                                          <td className={`px-2 py-1 text-right font-mono ${missingCount > 0 ? (darkMode ? 'text-amber-300' : 'text-amber-700') : ''}`}>{missingCount}</td>
-                                        </tr>
-                                      );
-                                    })}
-                                  </tbody>
-                                </table>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {(pageUnderstandingGate.status === 'timeout' || pageUnderstandingGate.status === 'error') && pageUnderstandingGate.error ? (
-                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-xs`}>{pageUnderstandingGate.error}</div>
-                        ) : null}
-
-                        {showOcrRequiredHint ? (
-                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-xs`}>
-                            OCR required for one or more PDFs. Pages will be rendered and OCR extracted before analysis can start.
-                          </div>
-                        ) : null}
-
-                        {showNoExtractHint ? (
-                          <div className={`mt-2 ${darkMode ? 'text-amber-200' : 'text-amber-800'} text-xs`}>
-                            Missing pages detected but no extract_visuals job observed. Check worker logs for POPULATE_DOCUMENT_PAGE_UNDERSTANDING and Redis connectivity.
-                          </div>
-                        ) : null}
-
-                        {(pageUnderstandingGate.status === 'timeout') && dealId ? (
-                          <div className="mt-2 flex items-center gap-2">
-                            <button
-                              className={`px-2 py-1 rounded-md border text-xs ${darkMode ? 'border-white/10 hover:bg-white/10' : 'border-gray-200 hover:bg-gray-100'}`}
-                              onClick={() => {
-                                runAnalysisWithReadinessGate(dealId, pageUnderstandingGate.version).catch(() => {
-                                  // errors handled by toasts/state
-                                });
-                              }}
-                            >
-                              Retry
-                            </button>
-                          </div>
-                        ) : null}
-
-                        {((pageUnderstandingGate.status === 'ready') || (pageUnderstandingGate.status === 'error')) && !jobId && dealId ? (
-                          <div className="mt-2">
-                            <button
-                              className={`px-2 py-1 rounded-md border text-xs ${darkMode ? 'border-white/10 hover:bg-white/10' : 'border-gray-200 hover:bg-gray-100'}`}
-                              onClick={() => {
-                                runAnalysisWithReadinessGate(dealId, pageUnderstandingGate.version).catch(() => {
-                                  // errors handled by toasts/state
-                                });
-                              }}
-                            >
-                              Continue Analysis
-                            </button>
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
-              {/* AI Assistant Button - New Feature! */}
-              <Button 
-                variant="primary" 
-                darkMode={darkMode}
-                icon={<MessageSquare className="w-4 h-4" />}
-                onClick={() => dioMeta?.dioVersionId ? setShowAIAssistant(true) : addToast('info', 'Deal Assistant needs DIO', 'Run analysis to generate DIO first')}
-                disabled={!dioMeta?.dioVersionId}
-              >
-                Deal Assistant
-              </Button>
-              
-              {/* Main Actions */}
-              <Button 
-                variant="secondary" 
-                darkMode={darkMode}
-                icon={<Sparkles className="w-4 h-4" />}
-                onClick={runAIAnalysis}
-                loading={analyzing}
-                disabled={!dealId || stageActionLoading || fullProcessLocked}
-              >
-                {pageUnderstandingGate.status === 'preparing'
-                  ? 'Preparing documents…'
-                  : pageUnderstandingGate.status === 'timeout'
-                  ? 'Still preparing…'
-                  : analyzing
-                  ? String(fullProcessUi?.steps?.extract_visuals?.status ?? '').toLowerCase() === 'blocked'
-                    ? 'Waiting…'
-                    : 'Running…'
-                  : 'Run Analysis'}
-              </Button>
-
-              {/* More Actions Dropdown */}
-              <div className="relative">
-                <Button 
-                  variant="secondary" 
-                  darkMode={darkMode}
-                  icon={<MoreVertical className="w-4 h-4" />}
-                  onClick={() => setShowMoreActions(!showMoreActions)}
-                >
-                  More
-                </Button>
-
-                {/* Dropdown Menu */}
-                {showMoreActions && (
-                  <>
-                    {/* Backdrop to close dropdown */}
-                    <div 
-                      className="fixed inset-0 z-40" 
-                      onClick={() => setShowMoreActions(false)}
-                    />
-                    
-                    {/* Dropdown Content */}
-                    <div className={`absolute right-0 mt-2 w-56 rounded-xl border shadow-xl z-50 ${
-                      darkMode 
-                        ? 'bg-[#27272a] border-white/10' 
-                        : 'bg-white border-gray-200'
-                    }`}>
-                      <div className="p-2 space-y-1">
-                        <button
-                          onClick={() => {
-                            setShowMoreActions(false);
-                            runFullProcess();
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                            darkMode
-                              ? 'hover:bg-white/10 text-gray-300'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <Sparkles className="w-4 h-4" />
-                          Run Full Process
-                        </button>
-                        <button
-                          onClick={() => {
-                            setShowMoreActions(false);
-                            onViewReport?.();
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                            darkMode
-                              ? 'hover:bg-white/10 text-gray-300'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <Eye className="w-4 h-4" />
-                          View DD Report
-                        </button>
-                        <button
-                          onClick={() => {
-                            setShowMoreActions(false);
-                            setShowTemplateExportModal(true);
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                            darkMode
-                              ? 'hover:bg-white/10 text-gray-300'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <FileCode className="w-4 h-4" />
-                          Export with Template
-                        </button>
-                        <button
-                          onClick={() => {
-                            setShowMoreActions(false);
-                            setShowShareModal(true);
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                            darkMode
-                              ? 'hover:bg-white/10 text-gray-300'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <Share2 className="w-4 h-4" />
-                          Share Deal
-                        </button>
-                        <button
-                          onClick={() => {
-                            setShowMoreActions(false);
-                            setShowUploadDocModal(true);
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                            darkMode
-                              ? 'hover:bg-white/10 text-gray-300'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <Upload className="w-4 h-4" />
-                          Upload Documents
-                        </button>
-
-                        <div className={`h-px my-1 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
-
-                        <button
-                          disabled={!dealId || stageActionLoading}
-                          onClick={async () => {
-                            setShowMoreActions(false);
-                            await handleAutoProgressStage();
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
-                            darkMode
-                              ? 'hover:bg-white/10 text-gray-300'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <ArrowUpRight className="w-4 h-4" />
-                          {stageActionLoading ? 'Working…' : 'Auto progress stage'}
-                        </button>
-
-                        <button
-                          disabled={!dealId || stageActionLoading}
-                          onClick={async () => {
-                            setShowMoreActions(false);
-                            await handleMarkDecisionReady();
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
-                            darkMode
-                              ? 'hover:bg-white/10 text-gray-300'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          {stageActionLoading ? 'Working…' : 'Mark decision-ready'}
-                        </button>
-
-                        <button
-                          disabled={!dealId || stageActionLoading}
-                          onClick={async () => {
-                            setShowMoreActions(false);
-                            await handleMarkPitched();
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-60 disabled:cursor-not-allowed ${
-                            darkMode
-                              ? 'hover:bg-white/10 text-gray-300'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <Presentation className="w-4 h-4" />
-                          {stageActionLoading ? 'Working…' : 'Mark as pitched'}
-                        </button>
-
-                        <div className={`h-px my-1 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
-                        <button
-                          onClick={() => {
-                            setShowMoreActions(false);
-                            addToast('info', 'Copy Link', 'Link copied to clipboard!');
-                          }}
-                          className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                            darkMode
-                              ? 'hover:bg-white/10 text-gray-300'
-                              : 'hover:bg-gray-100 text-gray-700'
-                          }`}
-                        >
-                          <Link2 className="w-4 h-4" />
-                          Copy Link
-                        </button>
-                        {workspaceDebugEnabled && (
-                          <>
-                            <div className={`h-px my-1 ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`} />
-                            <button
-                              onClick={() => {
-                                setShowMoreActions(false);
-                                setShowDebugPanel(true);
-                              }}
-                              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                                darkMode
-                                  ? 'hover:bg-white/10 text-gray-300'
-                                  : 'hover:bg-gray-100 text-gray-700'
-                              }`}
-                            >
-                              <Terminal className="w-4 h-4" />
-                              Debug
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Space below action buttons (analysis progress feed aligns right, does not squeeze title column) */}
-          {(() => {
-            const showFullProcess = !!fullProcessUi && fullProcessUi.ok !== true;
-            const normalized = normalizeJobStatus(jobStatus);
-            const isActive = normalized ? ['queued', 'running', 'retrying', 'blocked'].includes(normalized) : false;
-            const showReadiness = pageUnderstandingGate.status !== 'idle';
-            const show = showFullProcess || analyzing || showReadiness || (!!jobId && isActive);
-            if (!show) return null;
-
-            const statusLabel = (() => {
-              if (showFullProcess) return fullProcessUi?.ok === false ? 'Failed' : 'Running';
-              if (pageUnderstandingGate.status === 'preparing') return 'Preparing';
-              if (pageUnderstandingGate.status === 'timeout') return 'Timed out';
-              if (pageUnderstandingGate.status === 'error') return 'Error';
-              if (!normalized) return analyzing ? 'Running' : 'Idle';
-              if (['succeeded', 'succeeded_with_warnings'].includes(normalized)) return 'Done';
-              if (['failed', 'cancelled'].includes(normalized)) return 'Failed';
-              return isActive ? 'Running' : 'Idle';
-            })();
-
-            const analyzeStatusPill = (() => {
-              if (pageUnderstandingGate.status === 'preparing') return { sev: 'info' as const, label: 'Preparing' };
-              if (pageUnderstandingGate.status === 'timeout') return { sev: 'warning' as const, label: 'Timed out' };
-              if (pageUnderstandingGate.status === 'error') return { sev: 'danger' as const, label: 'Error' };
-              const s = normalized;
-              if (s === 'succeeded') return { sev: 'success' as const, label: 'Done' };
-              if (s === 'succeeded_with_warnings') return { sev: 'warning' as const, label: 'Done (warn)' };
-              if (s === 'failed') return { sev: 'danger' as const, label: 'Failed' };
-              if (s === 'cancelled') return { sev: 'warning' as const, label: 'Cancelled' };
-              if (s === 'blocked') return { sev: 'warning' as const, label: 'Waiting' };
-              if (s === 'queued') return { sev: 'muted' as const, label: 'Queued' };
-              if (s === 'running' || s === 'retrying') return { sev: 'info' as const, label: 'Running' };
-              return { sev: 'muted' as const, label: 'Idle' };
-            })();
-
-            const readinessMissing = typeof pageUnderstandingGate.readiness?.missing_pages_total === 'number'
-              ? pageUnderstandingGate.readiness?.missing_pages_total
-              : null;
-
-            return (
-            <div className="mt-3 flex justify-start sm:justify-end">
-              <div
-                data-testid="analysis-progress-feed"
-                className={`w-full sm:w-[520px] rounded-xl border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}
-              >
-                <div className="flex items-center justify-between gap-3">
-                  <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Analysis progress</div>
-                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                    {statusLabel}
-                  </div>
-                </div>
-
-                {showFullProcess ? (
-                  <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
-                    {(['reextract_documents', 'extract_visuals', 'analyze_deal'] as const).map((k) => {
-                      const step = fullProcessUi.steps[k];
-                      const sev = fullProcessStepSeverity(step?.status);
-                      const status = String(step?.status ?? '').toLowerCase();
-                      const pct = typeof step?.progress_pct === 'number' ? Math.round(step.progress_pct) : null;
-                      const icon =
-                        status === 'succeeded' || status === 'succeeded_with_warnings' ? (
-                          <CheckCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-emerald-300' : 'text-emerald-600'}`} />
-                        ) : status === 'failed' ? (
-                          <XCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-red-300' : 'text-red-600'}`} />
-                        ) : status === 'queued' || status === 'running' || status === 'retrying' ? (
-                          <Loader2 className={`w-3.5 h-3.5 animate-spin ${darkMode ? 'text-amber-300' : 'text-amber-600'}`} />
-                        ) : (
-                          <Clock className={`w-3.5 h-3.5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
-                        );
-
-                      return (
-                        <div
-                          key={k}
-                          className={`rounded-lg border px-2.5 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0 flex items-center gap-1.5">
-                              {icon}
-                              <div className={`text-xs font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{step?.label ?? k}</div>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {pct != null ? (
-                                <span className={`text-[10px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</span>
-                              ) : null}
-                              <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(sev)}`}>{fullProcessStepLabel(step?.status)}</span>
-                            </div>
-                          </div>
-                          {step?.message ? (
-                            <div className="mt-1">
-                              {renderSafeJobMessage(`analysis-progress-feed:${k}`, String(step.message))}
-                            </div>
-                          ) : null}
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <div className="mt-2 grid grid-cols-1 gap-2">
-                    <div className={`rounded-lg border px-2.5 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}>
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0 flex items-center gap-1.5">
-                          {analyzeStatusPill.label === 'Done' ? (
-                            <CheckCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-emerald-300' : 'text-emerald-600'}`} />
-                          ) : analyzeStatusPill.sev === 'danger' ? (
-                            <XCircle className={`w-3.5 h-3.5 ${darkMode ? 'text-red-300' : 'text-red-600'}`} />
-                          ) : analyzeStatusPill.sev === 'warning' ? (
-                            <AlertTriangle className={`w-3.5 h-3.5 ${darkMode ? 'text-amber-300' : 'text-amber-600'}`} />
-                          ) : analyzeStatusPill.sev === 'info' ? (
-                            <Loader2 className={`w-3.5 h-3.5 animate-spin ${darkMode ? 'text-amber-300' : 'text-amber-600'}`} />
-                          ) : (
-                            <Clock className={`w-3.5 h-3.5 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
-                          )}
-                          <div className={`text-xs font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Analyze deal</div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          {typeof progressPercent === 'number' ? (
-                            <span className={`text-[10px] font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{Math.round(progressPercent)}%</span>
-                          ) : null}
-                          <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(analyzeStatusPill.sev)}`}>{analyzeStatusPill.label}</span>
-                        </div>
-                      </div>
-
-                      {pageUnderstandingGate.status === 'preparing' ? (
-                        <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          Preparing documents…{readinessMissing != null ? ` Missing ${readinessMissing} page(s)` : ''}
-                        </div>
-                      ) : null}
-                      {pageUnderstandingGate.status === 'timeout' ? (
-                        <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          Still preparing page understanding — check worker logs.
-                        </div>
-                      ) : null}
-                      {pageUnderstandingGate.status === 'error' ? (
-                        <div className={`mt-1 text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>
-                          {pageUnderstandingGate.error || 'Readiness polling failed'}
-                        </div>
-                      ) : null}
-
-                      {jobId ? (
-                        <div className={`mt-1 text-[10px] font-mono ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                          job {jobId.slice(0, 8)}…
-                        </div>
-                      ) : null}
-
-                      {progressMessage ? (
-                        <div className="mt-1">
-                          {renderSafeJobMessage('analysis-progress-feed:analyze', String(progressMessage))}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                )}
-
-                {typeof progressPercent === 'number' ? (
-                  <div className="mt-2 space-y-2">
-                    <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
-                      <div
-                        className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] transition-all"
-                        style={{ width: `${Math.min(Math.max(progressPercent, 0), 100)}%` }}
-                      />
-                    </div>
-                    <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                      {progressStageLabel ?? 'Working…'} · {progressPercent}%
-                    </div>
-                    {currentlyProcessingLine ? (
-                      <div className="min-w-0">
-                        <div className={`text-xs break-words whitespace-pre-wrap overflow-hidden line-clamp-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          Currently processing: {currentlyProcessingLine}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-            );
-          })()}
-
-          <div className="mt-6">
-            {/* Header fully sourced from WorkspaceViewModel — no inline derivation. */}
-            <DealWorkspaceHeader
-              darkMode={darkMode}
-              dealName={vm.header.dealName}
-              dealDescription={vm.header.dealDescription}
-              stage={vm.header.stage}
-              raiseAmount={vm.header.raiseAmount}
-              industry={vm.header.industry}
-              score={vm.header.score}
-              verdict={vm.header.verdict}
-              primaryIssues={vm.header.primaryIssues}
-              blockers={vm.header.blockers}
-              concerns={vm.header.concerns}
-              icReadiness={vm.header.icReadiness}
-              strengths={vm.header.strengths}
-              metrics={vm.header.metrics}
-              lastUpdated={vm.header.lastUpdated}
-              pipelineStatus={vm.header.pipelineStatus}
-              diligencePhase={vm.header.diligencePhase}
-              evidenceCoverage={vm.header.evidenceCoverage}
-              evidenceConfidence={vm.header.evidenceConfidence}
-              onRefreshInsights={runAIAnalysis}
-              onUploadDocument={() => setShowUploadDocModal(true)}
-              onMoreActions={() => setShowMoreActions(true)}
-              analyzing={vm.header.analyzing}
-              isFounder={false /* no isFounder in useUserRole(); awaiting future role expansion */}
-              signals={vm.header.signals}
-              scoreSummaryText={topSectionScoreDriverOneLiner || vm.header.dealDescription}
-              scoreStrengthBullets={filteredStrengths}
-              scoreWeaknessBullets={[
-                ...filteredWeaknesses,
-                ...stripScoreFractionsFromItems(topSectionActionsToImprove),
-              ]}
-              vcScoringV2={headerOrchData?.report?.vc_scoring_v2 ?? null}
-            />
-          </div>
-
-        </div>
-
-        {dealId ? (
-          <UploadDocModal
-            isOpen={showUploadDocModal}
-            onClose={() => setShowUploadDocModal(false)}
-            dealId={dealId}
-            onUploaded={() => {
-              setDocumentsReloadKey((v) => v + 1);
-              addToast('success', 'Upload complete', 'Document library has been refreshed.');
-            }}
+    <>
+      {activePanel === null && (
+      <DealWorkspaceV4
+        darkMode={darkMode}
+        {...shellProps}
+        keyDrivers={filteredStrengths}
+        onBack={handleBack}
+        onRunAnalysis={runAIAnalysis}
+        analysisProgress={analysisProgress}
+        dealId={dealId ?? undefined}
+        documentsReloadKey={documentsReloadKey}
+        onOpenDeepDive={() => setActivePanel('deep-dive')}
+        onOpenInsights={() => setActivePanel('insights')}
+        onOpenEvidenceExplorer={() => setActivePanel('evidence')}
+        onOpenIntelligence={() => setActivePanel('intelligence')}
+        deepDivePanel={
+          <WorkbenchDeepDiveSummary
+            deepDive={deepDiveResponse?.deep_dive ?? null}
+            loading={deepDiveLoading}
+            error={deepDiveError}
+            darkMode={darkMode}
+            onOpenFull={() => setActivePanel('deep-dive')}
           />
-        ) : null}
+        }
+        insightsPanel={
+          <WorkbenchInsightsSummary
+            convictionHeadline={shellProps.convictionHeadline ?? null}
+            convictionRationale={shellProps.convictionRationale ?? null}
+            convictionPosture={shellProps.convictionPosture ?? null}
+            convictionBand={shellProps.convictionBand ?? null}
+            convictionScore={(shellProps.convictionScore as number | null | undefined) ?? null}
+            topPositiveContributors={shellProps.topPositiveContributors ?? []}
+            topNegativeContributors={shellProps.topNegativeContributors ?? []}
+            requiredNextChecks={shellProps.requiredNextChecks ?? []}
+            insightsReady={investorInsights.status === 'ready' && !!investorInsights.report}
+            darkMode={darkMode}
+            onOpenFull={() => setActivePanel('insights')}
+            primaryChallengeReason={shellProps.primaryChallengeReason ?? null}
+            missingEvidenceItems={shellProps.missingEvidenceItems ?? []}
+            contradictions={shellProps.contradictions ?? []}
+            scoreBreakdownSections={scoreBreakdownSections}
+            claimSupportItems={shellProps.claimSupportItems ?? null}
+            financialTruthBadge={shellProps.financialTruthBadge ?? null}
+          />
+        }
+        evidencePanel={
+          <WorkbenchEvidenceSummary
+            evidence={evidence}
+            evidenceLoading={evidenceLoading}
+            scoreBreakdownSections={scoreBreakdownSections}
+            documentTitles={documentTitles}
+            darkMode={darkMode}
+            onOpenFull={() => setActivePanel('evidence')}
+          />
+        }
+        intelligencePanel={dealId ? <IntelligenceTab dealId={dealId} darkMode={darkMode} financialTiles={shellProps.financialTiles} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null} /> : null}
+        scoreBreakdownSections={scoreBreakdownSections}
+        decisionRationale={(reportFromApi as any)?.llm_decision_rationale_v1 ?? null}
+        investmentInterpretation={(reportFromApi as any)?.investment_interpretation_v1 ?? null}
+        narrativeQualityValidation={(reportFromApi as any)?.narrative_quality_validation_v1 ?? null}
+      />
+      )}
 
-        {/* Tabs Section */}
-
-        <WorkspaceDebugPanel open={showDebugPanel} onOpenChange={setShowDebugPanel} darkMode={darkMode}>
-
-        {workspaceDebugEnabled && (
-          <details
-            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
-              darkMode
-                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-            }`}
-          >
-            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-              Debug → DIO State
-            </summary>
-            <div className={`px-4 pb-4 flex flex-wrap items-center gap-3 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                DIO: {dioMeta?.dioVersionId ? dioMeta.dioVersionId : 'Not generated'}
-              </span>
-              {typeof dioMeta?.dioRunCount === 'number' && (
-                <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                  Runs: {dioMeta.dioRunCount}
-                  {typeof dioMeta.dioAnalysisVersion === 'number' ? ` (latest v${dioMeta.dioAnalysisVersion})` : ''}
-                </span>
-              )}
-              <span className={`px-2 py-1 rounded-full ${darkMode ? 'bg-blue-500/10 text-blue-200' : 'bg-blue-50 text-blue-700'}`}>
-                Status: {dioMeta?.dioStatus ?? 'unknown'}
-              </span>
-              {dealStageRaw && (
-                <span className={`px-2 py-1 rounded-full border ${darkMode ? 'border-white/10 text-gray-200' : 'border-gray-200 text-gray-700'}`}>
-                  Stage: {dealStageLabel}
-                </span>
-              )}
-              {dioMeta?.lastAnalyzedAt && (
-                <span className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  Last analyzed: {new Date(dioMeta.lastAnalyzedAt).toLocaleString()}
-                </span>
-              )}
-              {jobStatus && (
-                <span className={`${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>
-                  Job: {jobStatus}{jobId ? ` (${jobId})` : ''}
-                </span>
-              )}
-            </div>
-          </details>
-        )}
-
-        {workspaceDebugEnabled && debugApiIsEnabled() && (
-          <details
-            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
-              darkMode
-                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-            }`}
-          >
-            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-              Debug → API Map <span className={`${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>({debugApiEntries.length} recent)</span>
-            </summary>
-            <div className={`px-4 pb-4 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              {debugApiEntries.length === 0 ? (
-                <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No calls/events captured yet.</div>
-              ) : (
-                <div className="space-y-2">
-                  {debugApiEntries.map((e, idx) => {
-                    const time = new Date(e.ts).toLocaleTimeString();
-                    if (e.kind === 'api') {
-                      return (
-                        <div
-                          key={`${e.kind}-${e.ts}-${idx}`}
-                          className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                            <div className="font-mono">
-                              {time} · {e.method} {e.path}
-                            </div>
-                            <div>
-                              <span className="font-mono">{e.status}</span> · <span className="font-mono">{e.duration_ms}ms</span>
-                              {e.dealId ? <span> · deal={e.dealId}</span> : null}
-                            </div>
-                          </div>
-                          <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>keys: {e.keys.join(', ') || '—'}{e.error ? ` · error: ${e.error}` : ''}</div>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <div
-                        key={`${e.kind}-${e.ts}-${idx}`}
-                        className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                          <div className="font-mono">
-                            {time} · SSE {e.event}
-                          </div>
-                          <div>
-                            {e.dealId ? <span>deal={e.dealId}</span> : null}
-                          </div>
-                        </div>
-                        <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>
-                          {e.keys ? `keys: ${e.keys.join(', ') || '—'}` : 'keys: —'}
-                          {e.error ? ` · error: ${e.error}` : ''}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </details>
-        )}
-
-        {workspaceDebugEnabled && (
-          <details
-            data-testid="governed-consistency-warnings-panel"
-            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
-              darkMode
-                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-            }`}
-          >
-            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-              Debug → Governed Consistency Warnings
-            </summary>
-            <div className={`px-4 pb-4 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              {(() => {
-                const WARNING_LABELS: Record<string, string> = {
-                  HERO_MISSING_RAISE_CONTEXT: 'Hero summary missing raise context',
-                  BUSINESS_MODEL_NOT_REFLECTED: 'Business model not reflected in governed copy',
-                  TRACTION_NOT_SURFACED: 'Traction signals not surfaced in summary',
-                  ICP_NOT_REFLECTED: 'ICP not reflected in market summary',
-                };
-
-                const raw = (governedOverview.overview as any)?.consistency_warnings;
-                const warnings: string[] = Array.isArray(raw) ? raw.filter((w: unknown) => typeof w === 'string') : [];
-
-                if (warnings.length === 0) {
-                  return (
-                    <div className={`mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>None</div>
-                  );
-                }
-
-                return (
-                  <ul className="mt-1 space-y-1 list-disc list-inside">
-                    {warnings.map((code) => (
-                      <li key={code}>
-                        <span className={`font-mono ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>{code}</span>
-                        {WARNING_LABELS[code] ? (
-                          <span className={`ml-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>— {WARNING_LABELS[code]}</span>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                );
-              })()}
-            </div>
-          </details>
-        )}
-
-        {workspaceDebugEnabled && (
-          <details
-            className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
-              darkMode
-                ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-                : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-            }`}
-          >
-            <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-              Debug → Missing Fields
-            </summary>
-            <div className={`px-4 pb-4 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-              {(() => {
-                type Row = {
-                  key: string;
-                  label: string;
-                  status: 'loading' | 'present' | 'missing';
-                  reason: string | null;
-                };
-
-                const rows: Row[] = [];
-                const notExtracted = 'Not extracted from evidence.';
-
-                const hasText = (value: unknown): boolean => {
-                  if (typeof value !== 'string') return false;
-                  const s = value.trim();
-                  return s.length > 0 && s !== '—';
-                };
-
-                const push = (row: Row) => rows.push(row);
-
-                // Deterministic top-summary slots
-                push({
-                  key: 'header.score.subsummary',
-                  label: 'Header score subsummary (deterministic one-liner)',
-                  status: !reportReady ? 'loading' : hasText(structuredDealSummaryOneLiner) ? 'present' : 'missing',
-                  reason: !reportReady ? 'Waiting for /report.' : hasText(structuredDealSummaryOneLiner) ? null : notExtracted,
-                });
-
-                push({
-                  key: 'topSummary.dealSummary.long',
-                  label: 'Top summary long deal summary (deterministic)',
-                  status: !reportReady ? 'loading' : hasText(structuredDealSummaryLong) ? 'present' : 'missing',
-                  reason: !reportReady ? 'Waiting for /report.' : hasText(structuredDealSummaryLong) ? null : notExtracted,
-                });
-
-                // Header KPI tiles (deterministic)
-                push({
-                  key: 'kpi.raise',
-                  label: 'Raise (header KPI)',
-                  status: !selectedHeader.ready ? 'loading' : hasText(selectedHeader.raise.value) ? 'present' : 'missing',
-                  reason: !selectedHeader.ready
-                    ? 'Waiting for header KPI extraction.'
-                    : hasText(selectedHeader.raise.value)
-                      ? null
-                      : notExtracted,
-                });
-
-                push({
-                  key: 'kpi.revenue',
-                  label: 'Revenue (header KPI)',
-                  status: !selectedHeader.ready
-                    ? 'loading'
-                    : revenueCoveragePolicy.allow && hasText(selectedHeader.revenue.value)
-                      ? 'present'
-                      : 'missing',
-                  reason: !selectedHeader.ready
-                    ? 'Waiting for header KPI extraction.'
-                    : !revenueCoveragePolicy.allow
-                      ? (revenueCoveragePolicy.tooltipOverride ?? notExtracted)
-                      : hasText(selectedHeader.revenue.value)
-                        ? null
-                        : notExtracted,
-                });
-
-                push({
-                  key: 'kpi.burn',
-                  label: 'Burn (header KPI)',
-                  status: !selectedHeader.ready
-                    ? 'loading'
-                    : burnRunwayCoveragePolicy.allowBurn && hasText(burnTileValue)
-                      ? 'present'
-                      : 'missing',
-                  reason: !selectedHeader.ready
-                    ? 'Waiting for header KPI extraction.'
-                    : !burnRunwayCoveragePolicy.allowBurn
-                      ? notExtracted
-                      : hasText(burnTileValue)
-                        ? null
-                        : 'Coverage indicates burn is present, but a numeric value was not parsed.',
-                });
-
-                push({
-                  key: 'kpi.runway',
-                  label: 'Runway (header KPI)',
-                  status: !selectedHeader.ready
-                    ? 'loading'
-                    : burnRunwayCoveragePolicy.allowRunway && hasText(runwayTileValue)
-                      ? 'present'
-                      : 'missing',
-                  reason: !selectedHeader.ready
-                    ? 'Waiting for header KPI extraction.'
-                    : !burnRunwayCoveragePolicy.allowRunway
-                      ? notExtracted
-                      : hasText(runwayTileValue)
-                        ? null
-                        : 'Coverage indicates runway is present, but a numeric value was not parsed.',
-                });
-
-                // Key facts (authoritative deterministic view)
-                const keyFactsProductLabel = looksRealEstate ? 'Asset / Facility (key facts)' : 'Product (key facts)';
-                const keyFactsMarketLabel = looksRealEstate ? 'Submarket / Demand (key facts)' : 'Market / ICP (key facts)';
-
-                push({
-                  key: 'keyFacts.product',
-                  label: keyFactsProductLabel,
-                  status: workspaceOverviewModel.keyFacts.product.origin === 'missing'
-                    ? 'missing'
-                    : hasText(workspaceOverviewModel.keyFacts.product.value)
-                      ? 'present'
-                      : 'missing',
-                  reason: workspaceOverviewModel.keyFacts.product.origin === 'missing'
-                    ? notExtracted
-                    : hasText(workspaceOverviewModel.keyFacts.product.value)
-                      ? null
-                      : notExtracted,
-                });
-
-                push({
-                  key: 'keyFacts.market',
-                  label: keyFactsMarketLabel,
-                  status: workspaceOverviewModel.keyFacts.market.origin === 'missing'
-                    ? 'missing'
-                    : hasText(workspaceOverviewModel.keyFacts.market.value)
-                      ? 'present'
-                      : 'missing',
-                  reason: workspaceOverviewModel.keyFacts.market.origin === 'missing'
-                    ? notExtracted
-                    : hasText(workspaceOverviewModel.keyFacts.market.value)
-                      ? null
-                      : notExtracted,
-                });
-
-                const badgeClass = (status: Row['status']) => {
-                  if (status === 'present') {
-                    return darkMode
-                      ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
-                      : 'bg-emerald-50 border-emerald-200 text-emerald-800';
-                  }
-                  if (status === 'loading') {
-                    return darkMode
-                      ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
-                      : 'bg-amber-50 border-amber-200 text-amber-800';
-                  }
-                  return darkMode
-                    ? 'bg-white/5 border-white/10 text-gray-300'
-                    : 'bg-white border-gray-200 text-gray-700';
-                };
-
-                const statusLabel = (status: Row['status']) => (status === 'present' ? 'Present' : status === 'loading' ? 'Loading' : 'Missing');
-
-                return (
-                  <div className="space-y-2">
-                    {rows.map((r) => (
-                      <div
-                        key={r.key}
-                        className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                          <div className="font-mono">{r.key}</div>
-                          <span className={`px-2 py-0.5 rounded-full border text-xs font-medium ${badgeClass(r.status)}`}>
-                            {statusLabel(r.status)}
-                          </span>
-                        </div>
-                        <div className={`mt-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{r.label}</div>
-                        {r.reason ? (
-                          <div className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} mt-1`}>reason: {r.reason}</div>
-                        ) : null}
-                      </div>
-                    ))}
-                  </div>
-                );
-              })()}
-            </div>
-          </details>
-        )}
-
-        </WorkspaceDebugPanel>
-
-        <div className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
-          darkMode
-            ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-            : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-        }`}>
-          {/* Scrollable tab nav: primary tabs always visible + More dropdown for secondary tabs */}
-          <div className={`overflow-x-auto scrollbar-none border-b ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
-            <div role="tablist" className="flex items-center min-w-max px-3 pt-1 gap-0.5">
-              {primaryTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  role="tab"
-                  aria-selected={activeTab === tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-t ${
-                    activeTab === tab.id
-                      ? darkMode
-                        ? 'border-indigo-400 text-white'
-                        : 'border-gray-900 text-gray-900'
-                      : darkMode
-                      ? 'border-transparent text-gray-400 hover:text-gray-200'
-                      : 'border-transparent text-gray-500 hover:text-gray-800'
-                  }`}
-                >
-                  {tab.icon}
-                  {tab.label}
-                </button>
-              ))}
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    role="tab"
-                    aria-selected={moreTabs.some((t) => t.id === activeTab)}
-                    className={`shrink-0 inline-flex items-center gap-1.5 px-3 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 rounded-t ${
-                      moreTabs.some((t) => t.id === activeTab)
-                        ? darkMode
-                          ? 'border-indigo-400 text-white'
-                          : 'border-gray-900 text-gray-900'
-                        : darkMode
-                        ? 'border-transparent text-gray-400 hover:text-gray-200'
-                        : 'border-transparent text-gray-500 hover:text-gray-800'
-                    }`}
-                  >
-                    <MoreVertical className="w-4 h-4" />
-                    <span>{moreTabs.find((t) => t.id === activeTab)?.label ?? 'More'}</span>
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-[200px]">
-                  {moreTabs.map((tab) => (
-                    <DropdownMenuItem
-                      key={tab.id}
-                      role="tab"
-                      onClick={() => setActiveTab(tab.id)}
-                      className={`flex items-center gap-2 cursor-pointer ${
-                        activeTab === tab.id ? 'font-semibold' : ''
-                      }`}
-                    >
-                      {tab.icon}
-                      {tab.label}
-                    </DropdownMenuItem>
-                  ))}
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+      {activePanel !== null && (
+        <div className={darkMode ? 'bg-[#0d1117]' : 'bg-gray-50'}>
+          <div className={`sticky top-0 z-10 flex items-center gap-3 px-4 py-3 border-b ${darkMode ? 'bg-[#0d1117] border-white/10' : 'bg-white border-gray-200'}`}>
+            <button
+              onClick={() => setActivePanel(null)}
+              className={`flex items-center gap-2 text-sm font-medium transition-colors ${
+                darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+              Back to Workspace
+            </button>
           </div>
-
-          {/* Screen-reader + test accessible tablist for secondary (More) tabs.
-              Visually hidden via sr-only but present in the DOM so role="tab" queries work. */}
-          <div role="tablist" aria-label="more tabs" className="sr-only">
-            {moreTabs.map((tab) => (
-              <button
-                key={tab.id}
-                role="tab"
-                aria-selected={activeTab === tab.id}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="p-6">
-            {/* Jobs Tab */}
-            {activeTab === 'jobs' && (
-              <div className="space-y-6">
-                <div className="w-full max-w-full">
-                  <div
-                    data-testid="job-center"
-                    className={`w-full max-w-full min-w-0 backdrop-blur-xl border rounded-2xl p-4 sm:p-6 ${
-                      darkMode
-                        ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-                        : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-3 min-w-0">
-                      <div className="min-w-0">
-                        <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Job Center</div>
-                        <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          Track analyze jobs and backend progress. Polling runs while a job is active.
-                        </p>
-                        {jobPollConnection.status === 'disconnected' ? (
-                          <div
-                            className={`mt-2 rounded-lg border px-3 py-2 text-xs flex items-center justify-between gap-3 ${
-                              darkMode
-                                ? 'bg-red-500/10 border-red-500/30 text-red-200'
-                                : 'bg-red-50 border-red-200 text-red-800'
-                            }`}
-                          >
-                            <div className="min-w-0">
-                              <div className="font-medium">Disconnected</div>
-                              <div className="opacity-90 truncate">{jobPollConnection.lastError || 'Polling failed repeatedly.'}</div>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant={darkMode ? 'secondary' : 'outline'}
-                              onClick={() => {
-                                setJobPollConnection({ status: 'connected', consecutiveFailures: 0, lastError: null });
-                                setJobPollNonce((v) => v + 1);
-                              }}
-                            >
-                              Retry polling
-                            </Button>
-                          </div>
-                        ) : null}
-                        {reportMissing && (
-                          <p className="text-xs text-amber-600 mt-1">Report not generated yet. Run analysis to create it.</p>
-                        )}
-                      </div>
-                      <div className="flex flex-col items-end gap-1 shrink-0">
-                        <span className={`px-3 py-1 rounded-full border text-xs font-medium ${severityBadgeClass(jobDisplay.severity)}`}>
-                          {jobStatus ? jobDisplay.label : 'Idle'}
-                        </span>
-                        {jobDisplay.sublabel && (
-                          <span className={`text-xs leading-tight ${severityTextClass(jobDisplay.severity)}`}>
-                            {jobDisplay.sublabel}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="mt-3 flex flex-wrap items-center gap-2">
-                      <span
-                        data-testid="stage-badge-extract_visuals"
-                        className={`px-3 py-1 rounded-full border text-xs font-medium ${severityBadgeClass(extractVisualsBadge.severity)}`}
-                        title={extractVisualsBadge.job?.job_id ? `job ${extractVisualsBadge.job.job_id}` : undefined}
-                      >
-                        Extract visuals: {extractVisualsBadge.label}
-                      </span>
-                    </div>
-
-                    <div className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                      <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis Output Status</div>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                        <div>
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last analyze job</div>
-                          <div className={`text-xs font-mono break-all ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                            {lastAnalyzeJob?.job_id ? `${lastAnalyzeJob.job_id} · ${String(lastAnalyzeJob.status ?? 'unknown')}` : 'None yet'}
-                          </div>
-                        </div>
-                        <div>
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis version</div>
-                          <div className={`text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                            {reportVersion != null ? `v${reportVersion}` : '—'}
-                          </div>
-                        </div>
-                        <div>
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Report readiness</div>
-                          <div className={`text-xs font-medium ${reportReady ? (darkMode ? 'text-emerald-200' : 'text-emerald-700') : (darkMode ? 'text-amber-200' : 'text-amber-700')}`}>
-                            {reportReady ? 'Ready' : 'Generating'}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4 w-full max-w-full">
-                      <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                        <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Active job</div>
-                        <div className={`text-sm font-mono break-all overflow-hidden ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                          {jobId || 'None yet'}
-                        </div>
-                      </div>
-
-                      <div className={`p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                        <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Last analyzed</div>
-                        <div className={`text-sm ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                          {dioMeta?.lastAnalyzedAt ? new Date(dioMeta.lastAnalyzedAt).toLocaleString() : 'Not yet run'}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div
-                      className={`mt-4 p-3 rounded-lg border w-full max-w-full min-w-0 ${
-                        darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Status detail</div>
-                        {progressTimestamp && (
-                          <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                            Updated {new Date(progressTimestamp).toLocaleTimeString()}
-                          </div>
-                        )}
-                      </div>
-                      <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                        {progressStageLabel ?? (jobStatus ? jobDisplay.label : 'No active job')}
-                      </div>
-                      {typeof progressPercent === 'number' ? (
-                        <div className="space-y-2">
-                          <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
-                            <div
-                              className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] transition-all"
-                              style={{ width: `${Math.min(Math.max(progressPercent, 0), 100)}%` }}
-                            />
-                          </div>
-                          <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{progressPercent}% complete</div>
-                          {currentlyProcessingLine && (
-                            <div className="min-w-0">
-                              <div
-                                className={`text-xs break-words whitespace-pre-wrap overflow-hidden line-clamp-2 ${
-                                  darkMode ? 'text-gray-400' : 'text-gray-600'
-                                }`}
-                              >
-                                Currently processing: {currentlyProcessingLine}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="min-w-0">
-                          {currentlyProcessingLine ? (
-                            <div
-                              className={`text-xs break-words whitespace-pre-wrap overflow-hidden line-clamp-2 ${
-                                darkMode ? 'text-gray-400' : 'text-gray-600'
-                              }`}
-                            >
-                              Currently processing: {currentlyProcessingLine}
-                            </div>
-                          ) : (
-                            renderSafeJobMessage(
-                              'job-center-status-message',
-                              progressMessage || jobDisplay.sublabel || 'Waiting for worker update...',
-                              {
-                                testId: 'job-center-status-message',
-                              }
-                            )
-                          )}
-                        </div>
-                      )}
-                      {jobStatus === 'queued' && jobQueuedSeconds >= queuedWarningThresholdSec && (
-                        <div
-                          className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
-                            darkMode
-                              ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
-                              : 'bg-amber-50 border-amber-200 text-amber-800'
-                          }`}
-                        >
-                          Still queued after {jobQueuedSeconds}s. If this persists, the worker may not be running or may be pointed at a different
-                          Redis/DB.
-                        </div>
-                      )}
-                    </div>
-
-                    <div
-                      data-testid="analysis-output-panel"
-                      className={`w-full max-w-full min-w-0 backdrop-blur-xl border rounded-2xl p-4 sm:p-6 mt-4 ${
-                        darkMode
-                          ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
-                          : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-3 min-w-0">
-                        <div className="min-w-0">
-                          <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>Analysis Output</div>
-                          <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            Rendered from the persisted report artifact returned by /report.
-                          </p>
-                        </div>
-                        <div className="shrink-0">
-                          {reportReady ? (
-                            <span
-                              className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                darkMode
-                                  ? 'bg-emerald-500/15 text-emerald-200 border border-emerald-500/30'
-                                  : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                              }`}
-                            >
-                              Analysis complete
-                            </span>
-                          ) : (
-                            <span
-                              className={`px-3 py-1 rounded-full text-xs font-medium ${
-                                darkMode
-                                  ? 'bg-amber-500/15 text-amber-200 border border-amber-500/30'
-                                  : 'bg-amber-50 text-amber-800 border border-amber-200'
-                              }`}
-                            >
-                              Preparing analysis…
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      {!reportReady ? (
-                        <div className={`mt-4 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                          Preparing analysis…
-                          <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            This is normal while analysis is running or before the first successful run.
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="mt-4 space-y-4">
-                          <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                            <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Analysis metadata</div>
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                              <div>
-                                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Version</div>
-                                <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  {reportVersion != null ? `v${reportVersion}` : '—'}
-                                </div>
-                              </div>
-                              <div>
-                                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Cycle</div>
-                                <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  {reportCycleNumber != null ? String(reportCycleNumber) : '—'}
-                                </div>
-                              </div>
-                              <div>
-                                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Generated</div>
-                                <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  {typeof (reportFromApi as any)?.generatedAt === 'string'
-                                    ? new Date((reportFromApi as any).generatedAt).toLocaleString()
-                                    : typeof reportArtifact?.updated_at === 'string'
-                                      ? new Date(reportArtifact.updated_at).toLocaleString()
-                                      : '—'}
-                                </div>
-                              </div>
-                            </div>
-                            <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                              {typeof reportArtifact?.dio_id === 'string' ? `Artifact: DIO ${reportArtifact.dio_id}` : 'Artifact: —'}
-                            </div>
-                          </div>
-
-                          {workspaceDebugEnabled ? (
-                            <>
-                              <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                                <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Findings / insights</div>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  {(() => {
-                                    const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
-                                      ? (reportFromApi as any).metadata
-                                      : null;
-
-                                    const decisionLabel = safeText((reportMeta as any)?.decision_v1?.label);
-                                    const legacyRecommendation = safeText((reportMeta as any)?.legacy_recommendation_v0);
-                                    const legacyGrade = safeText((reportMeta as any)?.legacy_grade_v0);
-                                    const showLegacy = Boolean(!decisionLabel && (legacyRecommendation || legacyGrade));
-
-                                    return (
-                                      <>
-                                        {decisionLabel ? (
-                                          <span
-                                            className={`px-2 py-1 rounded-full text-xs border ${
-                                              darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                            }`}
-                                          >
-                                            Decision: {decisionLabel}
-                                          </span>
-                                        ) : null}
-
-                                        {!decisionLabel && typeof (reportFromApi as any)?.recommendation === 'string' ? (
-                                          <span
-                                            className={`px-2 py-1 rounded-full text-xs border ${
-                                              darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                            }`}
-                                          >
-                                            Recommendation: {(reportFromApi as any).recommendation}
-                                          </span>
-                                        ) : null}
-
-                                        {showLegacy ? (
-                                          <details className="px-2 py-1">
-                                            <summary className={`cursor-pointer select-none text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                              Legacy
-                                            </summary>
-                                            <div className={`mt-2 flex flex-wrap items-center gap-2 text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                                              {legacyRecommendation ? (
-                                                <span
-                                                  className={`px-2 py-1 rounded-full text-xs border ${
-                                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                                  }`}
-                                                >
-                                                  Legacy recommendation: {legacyRecommendation}
-                                                </span>
-                                              ) : null}
-                                              {legacyGrade ? (
-                                                <span
-                                                  className={`px-2 py-1 rounded-full text-xs border ${
-                                                    darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                                  }`}
-                                                >
-                                                  Legacy grade: {legacyGrade}
-                                                </span>
-                                              ) : null}
-                                            </div>
-                                          </details>
-                                        ) : null}
-                                      </>
-                                    );
-                                  })()}
-                                  {typeof (reportFromApi as any)?.grade === 'string' ? (
-                                    <span
-                                      className={`px-2 py-1 rounded-full text-xs border ${
-                                        darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                      }`}
-                                    >
-                                      Grade: {(reportFromApi as any).grade}
-                                    </span>
-                                  ) : null}
-                                  {typeof (reportFromApi as any)?.overallScore === 'number' ? (
-                                    <span
-                                      className={`px-2 py-1 rounded-full text-xs border ${
-                                        darkMode ? 'border-white/10 text-gray-200 bg-white/5' : 'border-gray-200 text-gray-800 bg-white'
-                                      }`}
-                                    >
-                                      Score: {Math.round((reportFromApi as any).overallScore)}
-                                    </span>
-                                  ) : null}
-
-                                  {(() => {
-                                    const reportMeta = ((reportFromApi as any)?.metadata && typeof (reportFromApi as any).metadata === 'object')
-                                      ? (reportFromApi as any).metadata
-                                      : null;
-                                    const baseline = reportMeta && typeof reportMeta === 'object'
-                                      ? (reportMeta as any)?.deterministic_score_preview_v1?.baseline
-                                      : null;
-                                    const pinned = Boolean(baseline && typeof baseline === 'object' && (baseline as any).unadjusted_pinned === true);
-                                    if (!pinned) return null;
-                                    const reasonRaw = (baseline && typeof baseline === 'object' && typeof (baseline as any).unadjusted_pin_reason === 'string')
-                                      ? String((baseline as any).unadjusted_pin_reason).trim()
-                                      : '';
-                                    const reason = reasonRaw.length > 0 ? reasonRaw : null;
-                                    const label = (() => {
-                                      if (!reason) return null;
-                                      if (reason === 'low_coverage') return 'coverage_too_low';
-                                      if (reason === 'low_confidence') return 'confidence_too_low';
-                                      return reason;
-                                    })();
-
-                                    return (
-                                      <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                        {label ? `Pinned (${label})` : 'Pinned'}
-                                      </span>
-                                    );
-                                  })()}
-                                </div>
-
-                                {Array.isArray((reportFromApi as any)?.greenFlags) && (reportFromApi as any).greenFlags.length > 0 ? (
-                                  <ul className={`mt-3 list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                    {(reportFromApi as any).greenFlags.slice(0, 8).map((g: any, idx: number) => (
-                                      <li key={`green-${idx}`}>{String(g)}</li>
-                                    ))}
-                                  </ul>
-                                ) : (
-                                  <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No highlights available yet.</div>
-                                )}
-
-                                {Array.isArray((reportFromApi as any)?.sections) && (reportFromApi as any).sections.length > 0 ? (
-                                  <div className="mt-4 space-y-3">
-                                    {(reportFromApi as any).sections.slice(0, 8).map((s: any) => {
-                                      const sectionTitle =
-                                        typeof s?.title === 'string' && s.title.trim().length > 0 ? s.title.trim() : 'Section';
-                                      const decisionLabel = safeText((reportFromApi as any)?.metadata?.decision_v1?.label);
-                                      const rawContent = typeof s?.content === 'string' ? s.content : '';
-                                      const content = decisionLabel ? stripRecommendationLines(rawContent) : rawContent;
-                                      const evidenceIds = Array.isArray(s?.evidence_ids) ? s.evidence_ids : [];
-                                      return (
-                                        <div
-                                          key={String(s?.id ?? sectionTitle)}
-                                          className={`rounded-lg border p-3 ${
-                                            darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'
-                                          }`}
-                                        >
-                                          <div className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>{sectionTitle}</div>
-                                          {content ? (
-                                            <div className={`mt-1 text-sm whitespace-pre-wrap ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{content}</div>
-                                          ) : (
-                                            <div className={`mt-1 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No content.</div>
-                                          )}
-                                          {Array.isArray(evidenceIds) && evidenceIds.length > 0 ? (
-                                            <div className={`mt-2 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                              Evidence IDs: {evidenceIds.slice(0, 6).join(', ')}{evidenceIds.length > 6 ? '…' : ''}
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                ) : null}
-                              </div>
-
-                              <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                                <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Evidence / signals</div>
-                                <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  {reportEvidenceIds.length > 0
-                                    ? `${reportEvidenceIds.length} evidence id(s) referenced`
-                                    : 'No evidence IDs referenced in report sections.'}
-                                </div>
-                                {reportEvidenceIds.length > 0 ? (
-                                  <div className={`mt-2 text-xs font-mono break-all ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                    {reportEvidenceIds.join(' · ')}
-                                  </div>
-                                ) : null}
-                                {Array.isArray((reportFromApi as any)?.redFlags) && (reportFromApi as any).redFlags.length > 0 ? (
-                                  <div className="mt-3">
-                                    <div className={`text-xs mb-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Red flags</div>
-                                    <ul className={`space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                      {(reportFromApi as any).redFlags.slice(0, 6).map((rf: any, idx: number) => (
-                                        <li key={`rf-${idx}`}>
-                                          <span className="font-medium">{String(rf?.severity ?? 'unknown')}</span>: {String(rf?.message ?? '')}
-                                          {rf?.action ? ` (Action: ${String(rf.action)})` : ''}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                ) : null}
-                              </div>
-                            </>
-                          ) : (
-                            <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}>
-                              <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Structured summary</div>
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <div>
-                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Raise</div>
-                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.raise || '—'}</div>
-                                </div>
-                                <div>
-                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Business model</div>
-                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.businessModel || '—'}</div>
-                                </div>
-                                <div>
-                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Revenue</div>
-                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.revenue || '—'}</div>
-                                </div>
-                                <div>
-                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Customers</div>
-                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportView.customers || '—'}</div>
-                                </div>
-                                <div>
-                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Growth</div>
-                                  <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{reportStructuredGrowthValue || topSectionGrowth || '—'}</div>
-                                </div>
-                                <div>
-                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recommendation</div>
-                                  {(() => {
-                                    // [VERDICT-CONTRACT] Use outer canonical decisionLabel (_workspaceVerdict.verdict).
-                                    // Never re-read raw decision_v1.label here — it yields snake_case 6-band keys.
-                                    const recommendation = decisionLabel || null;
-                                    return <div className={`text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{recommendation || '—'}</div>;
-                                  })()}
-                                </div>
-                              </div>
-                              <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                Add <span className="font-mono">?debug=1</span> to view full sections, evidence IDs, and diagnostics.
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    <div
-                      className={`mt-4 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}
-                    >
-                      {dealJobsError ? (
-                        <div className={`p-3 text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{dealJobsError}</div>
-                      ) : (
-                        <Accordion
-                          darkMode={darkMode}
-                          defaultOpenItems={[]}
-                          className="px-3"
-                          items={[
-                            {
-                              id: 'recent_jobs',
-                              title: 'Recent jobs',
-                              badge: (() => {
-                                const totalParents = (dealJobs ?? []).filter((j) => !j?.parent_job_id).length;
-                                const shown = recentParentJobs.length;
-                                const running = recentParentJobs.filter((j) => isRunningStatus(j.status)).length;
-                                const failed = recentParentJobs.filter((j) => String(j.status ?? '').toLowerCase() === 'failed').length;
-                                const done = recentParentJobs.filter((j) => String(j.status ?? '').toLowerCase() === 'succeeded').length;
-                                const base = totalParents > 0 ? `${shown}/${totalParents}` : String(shown);
-                                if (shown === 0) return base;
-                                return `${base}${running ? ` • ${running}R` : ''}${failed ? ` • ${failed}F` : ''}${done ? ` • ${done}D` : ''}`;
-                              })(),
-                              content:
-                                recentParentJobs.length === 0 ? (
-                                  <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No jobs yet.</div>
-                                ) : (
-                                  <div className={`divide-y ${darkMode ? 'divide-white/10' : 'divide-gray-200'}`}>
-                                    {recentParentJobs.map((row) => {
-                                      const children = childrenByParentJobId.get(row.job_id) ?? [];
-                                      const hasChildren = children.length > 0;
-
-                                      const agg = (() => {
-                                        if (!hasChildren) {
-                                          return {
-                                            status: row.status,
-                                            current: row.progress_current,
-                                            total: row.progress_total,
-                                            pct: row.progress_pct,
-                                          };
-                                        }
-
-                                        const totals = children
-                                          .map((c) => ({
-                                            current: typeof c.progress_current === 'number' ? c.progress_current : null,
-                                            total: typeof c.progress_total === 'number' ? c.progress_total : null,
-                                            pct: typeof c.progress_pct === 'number' ? c.progress_pct : null,
-                                            status: c.status,
-                                          }))
-                                          .filter(Boolean);
-
-                                        const currentSum = totals.reduce((acc, t) => acc + (typeof t.current === 'number' ? t.current : 0), 0);
-                                        const totalSum = totals.reduce((acc, t) => acc + (typeof t.total === 'number' ? t.total : 0), 0);
-
-                                        const status = (() => {
-                                          const st = totals
-                                            .map((t) => normalizeJobStatus(String(t.status ?? '')) ?? String(t.status ?? '').toLowerCase())
-                                            .filter(Boolean);
-                                          const hasFailed = st.some((s) => s === 'failed');
-                                          const hasSucceeded = st.some((s) => s === 'succeeded');
-                                          const hasWarnings = st.some((s) => s === 'succeeded_with_warnings');
-                                          if (st.length > 0 && st.every((s) => s === 'succeeded' || s === 'succeeded_with_warnings')) {
-                                            return hasWarnings ? 'succeeded_with_warnings' : 'succeeded';
-                                          }
-                                          // Key semantics: any successful chunk + any failed chunk => overall warnings, not failed.
-                                          if (hasFailed && (hasSucceeded || hasWarnings)) return 'succeeded_with_warnings';
-                                          if (hasFailed) return 'failed';
-                                          if (st.some((s) => s === 'running' || s === 'retrying')) return 'running';
-                                          if (st.some((s) => s === 'queued')) return 'queued';
-                                          return row.status;
-                                        })();
-
-                                        return {
-                                          status,
-                                          current: totalSum > 0 ? currentSum : undefined,
-                                          total: totalSum > 0 ? totalSum : undefined,
-                                          pct: totalSum > 0 ? undefined : row.progress_pct,
-                                        };
-                                      })();
-
-                                      const title = formatJobTitle(row);
-                                      const stage = formatJobStage(row);
-                                      const pct = computePct(agg.current, agg.total, agg.pct);
-                                      const sev = jobSeverityFromStatus(agg.status);
-                                      const ts = formatJobTimestamp(row);
-                                      const detail = row.error || row.message;
-                                      const running = isRunningStatus(agg.status);
-
-                                      return (
-                                        <div key={row.job_id} className="py-2.5">
-                                          <div className="flex items-center justify-between gap-3">
-                                            <div className="min-w-0">
-                                              <div
-                                                className={`text-xs font-medium truncate ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}
-                                              >
-                                                {title}
-                                              </div>
-                                              <div className={`text-xs truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                                {stage}
-                                                {hasChildren ? ` • ${children.length} chunk(s)` : ''}
-                                              </div>
-                                            </div>
-                                            <div className="flex items-center gap-2 shrink-0">
-                                              {ts ? (
-                                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{ts}</div>
-                                              ) : null}
-                                              <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(sev)}`}>
-                                                {agg.status && String(agg.status).toLowerCase() === 'succeeded'
-                                                  ? 'Done'
-                                                  : agg.status && String(agg.status).toLowerCase() === 'succeeded_with_warnings'
-                                                    ? 'Done (warn)'
-                                                    : agg.status && String(agg.status).toLowerCase() === 'failed'
-                                                      ? 'Failed'
-                                                      : running
-                                                        ? 'Running'
-                                                        : fullProcessStepLabel(agg.status)}
-                                              </span>
-                                              {running && pct != null ? (
-                                                <div className={`text-xs font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{pct}%</div>
-                                              ) : null}
-                                            </div>
-                                          </div>
-
-                                          {running && pct != null ? (
-                                            <div className="mt-2">
-                                              <div className={`h-2 rounded-full overflow-hidden ${darkMode ? 'bg-white/10' : 'bg-gray-200'}`}>
-                                                <div
-                                                  className="h-full bg-gradient-to-r from-[#6366f1] to-[#8b5cf6] transition-all"
-                                                  style={{ width: `${pct}%` }}
-                                                />
-                                              </div>
-                                            </div>
-                                          ) : null}
-
-                                          {detail ? (
-                                            <div className="mt-1">{renderSafeJobMessage(`recent-job:${row.job_id}`, String(detail))}</div>
-                                          ) : null}
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                ),
-                            },
-                          ]}
-                        />
-                      )}
-                    </div>
-
-                    {fullProcessUi && (
-                      <div
-                        className={`mt-4 p-3 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/70 border-gray-200'}`}
-                      >
-                        {(() => {
-                          const extractJobIdForRun = fullProcessRunExtractJobId;
-                          const window = extractJobIdForRun ? getFullProcessRunWindowMs() : null;
-                          const derivedAnalyze = window ? derivedAnalyzeForRun.job : null;
-                          const treatAnalyzeAsPending = !!derivedAnalyze && derivedAnalyzeForRun.treatFailedAsPending;
-                          const extractStep = fullProcessUi.steps.extract_visuals;
-                          const extractStatus = String(extractStep?.status ?? '').toLowerCase();
-                          const extractionInProgress = extractStatus === 'queued' || extractStatus === 'running' || extractStatus === 'retrying';
-                          const derivedOk =
-                            fullProcessUi.ok === false && treatAnalyzeAsPending
-                              ? undefined
-                              : fullProcessUi.ok === false && derivedAnalyze && isSucceededJobStatus(derivedAnalyze.status)
-                                ? true
-                                : fullProcessUi.ok;
-                          const derivedError = derivedOk === true || treatAnalyzeAsPending ? null : fullProcessUi.error;
-
-                          return (
-                            <>
-                              <div className="flex items-center justify-between gap-3">
-                                <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Full process</div>
-                                <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                                  {derivedOk === true ? 'Completed' : derivedOk === false ? 'Failed' : 'Running'}
-                                </div>
-                              </div>
-                              <div className="mt-3 space-y-2">
-                                {(['reextract_documents', 'extract_visuals', 'analyze_deal'] as const).map((k) => {
-                                  const baseStep = fullProcessUi.steps[k];
-                                  const step =
-                                    k === 'analyze_deal' && derivedAnalyze
-                                      ? treatAnalyzeAsPending
-                                        ? {
-                                            ...baseStep,
-                                            status: 'pending' as any,
-                                            job_id: null,
-                                            progress_pct: null,
-                                            message: 'Preparing analysis…',
-                                            updated_at: derivedAnalyze.updated_at ?? baseStep.updated_at ?? null,
-                                          }
-                                        : {
-                                            ...baseStep,
-                                            status: String(derivedAnalyze.status ?? baseStep.status) as any,
-                                            job_id: derivedAnalyze.job_id,
-                                            progress_pct:
-                                              typeof derivedAnalyze.progress_pct === 'number'
-                                                ? derivedAnalyze.progress_pct
-                                                : typeof baseStep.progress_pct === 'number'
-                                                  ? baseStep.progress_pct
-                                                  : null,
-                                            message: (derivedAnalyze.message ?? derivedAnalyze.error ?? baseStep.message ?? null) as any,
-                                            updated_at: derivedAnalyze.updated_at ?? baseStep.updated_at ?? null,
-                                          }
-                                      : k === 'analyze_deal' && !derivedAnalyze && extractionInProgress
-                                        ? {
-                                            ...baseStep,
-                                            status: 'pending' as any,
-                                            job_id: baseStep.job_id ?? null,
-                                            progress_pct: null,
-                                            message: 'Waiting for extraction to finalize…',
-                                          }
-                                        : baseStep;
-                                  const sev = fullProcessStepSeverity(step?.status);
-                                  const pct = typeof step?.progress_pct === 'number' ? step.progress_pct : null;
-                                  return (
-                                    <div
-                                      key={k}
-                                      data-testid={`full-process-step-${k}`}
-                                      className={`rounded-lg border px-3 py-2 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
-                                    >
-                                      <div className="flex items-center justify-between gap-3">
-                                        <div className={`text-xs font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{step?.label ?? k}</div>
-                                        <span className={`px-2 py-0.5 rounded-full border text-xs ${severityBadgeClass(sev)}`}>
-                                          {fullProcessStepLabel(step?.status)}
-                                        </span>
-                                      </div>
-                                      <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-                                        <div className={`text-xs font-mono ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                                          {step?.job_id ? `job ${step.job_id}` : 'job —'}
-                                        </div>
-                                        {pct != null ? (
-                                          <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{Math.round(pct)}%</div>
-                                        ) : null}
-                                      </div>
-                                      {step?.message ? (
-                                        <div className="mt-1">{renderSafeJobMessage(`full-process:${k}`, String(step.message))}</div>
-                                      ) : null}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                              {derivedError ? <div className={`mt-3 text-xs ${darkMode ? 'text-red-300' : 'text-red-700'}`}>{derivedError}</div> : null}
-                            </>
-                          );
-                        })()}
-                      </div>
-                    )}
-
-                    <div className="flex flex-wrap gap-2 mt-4">
-                      {stageChips.map((stage) => (
-                        <span key={stage.id} className={`px-3 py-1 rounded-full border text-xs ${severityBadgeClass(stage.severity)}`}>
-                          {stage.label}
-                        </span>
-                      ))}
-                    </div>
-
-                    {jobStatus ? (
-                      <div className="mt-3">
-                        <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          Auto-polling while a job is active (2–10s). Status updates when the job finishes.
-                        </span>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Overview Tab — fully sourced from WorkspaceViewModel. */}
-            {activeTab === 'overview' && (
-              <div className="w-full max-w-none space-y-6">
-                <div className="w-full max-w-none">
-                  <DealOverviewTab
-                    darkMode={darkMode}
-                    companyName={vm.overview.companyName}
-                    companyDescription={vm.overview.companyDescription}
-                    snapshotFactLabels={vm.overview.snapshotFactLabels}
-                    snapshotFacts={vm.overview.snapshotFacts}
-                    signals={vm.overview.signalData}
-                    financials={vm.overview.financials}
-                    traction={vm.overview.traction}
-                    deal={vm.overview.deal}
-                    businessModel={vm.overview.businessModel}
-                    evidenceLabels={vm.overview.evidenceLabels}
-                    productSummary={vm.overview.productSummary}
-                    marketSummary={vm.overview.marketSummary}
-                    businessModelSummary={vm.overview.businessModelSummary}
-                    raiseTerms={vm.overview.raiseTerms}
-                    insightsScore={vm.overview.insightsScore}
-                    insightsConfidence={vm.overview.insightsConfidence}
-                    investmentSnapshotBody={vm.overview.investmentSnapshotBody}
-                    onOpenInsights={() => setActiveTab('investor-insights')}
-                  />
-                </div>
-
-                <section
-                  data-testid="conviction-panel"
-                  className={`rounded-xl border p-5 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white border-gray-200'}`}
-                >
-                  <h2 className={`text-sm uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Conviction Summary</h2>
-
-                  {!convictionV1 ? (
-                    <div className={`mt-3 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Conviction is unavailable for this report payload.
-                    </div>
-                  ) : (
-                    <div className="mt-4 space-y-5">
-                      <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Score</div>
-                          <div className={`text-lg font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>{convictionScore(convictionV1.conviction_score_0_100)}</div>
-                        </div>
-                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Band</div>
-                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{String(convictionV1.conviction_band ?? '—')}</div>
-                        </div>
-                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Recommendation</div>
-                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{String(convictionV1.recommendation_posture ?? '—')}</div>
-                        </div>
-                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Confidence</div>
-                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{convictionPct(convictionV1.confidence_0_1)}</div>
-                        </div>
-                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage</div>
-                          <div className={`text-sm font-medium ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{convictionPct(convictionV1.coverage_ratio_0_1)}</div>
-                        </div>
-                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Policy</div>
-                          <div className={`text-sm font-medium break-words ${darkMode ? 'text-gray-100' : 'text-gray-900'}`}>{String(convictionV1.selected_policy_id ?? '—')}</div>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                          <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Why This Score</h3>
-                          <div className="space-y-3">
-                            <div>
-                              <div className={`text-xs mb-1 ${darkMode ? 'text-emerald-300' : 'text-emerald-700'}`}>Top Positive Contributors</div>
-                              {Array.isArray(convictionV1.top_positive_contributors) && convictionV1.top_positive_contributors.length > 0 ? (
-                                <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  {convictionV1.top_positive_contributors.map((item: any, idx: number) => (
-                                    <li key={`conv-pos-${idx}`}>{String(item?.label ?? item?.key ?? 'signal')} ({convictionDelta(item?.score_delta_0_100)})</li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No positive contributors listed.</div>
-                              )}
-                            </div>
-                            <div>
-                              <div className={`text-xs mb-1 ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>Top Negative Contributors</div>
-                              {Array.isArray(convictionV1.top_negative_contributors) && convictionV1.top_negative_contributors.length > 0 ? (
-                                <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  {convictionV1.top_negative_contributors.map((item: any, idx: number) => (
-                                    <li key={`conv-neg-${idx}`}>{String(item?.label ?? item?.key ?? 'signal')} ({convictionDelta(item?.score_delta_0_100)})</li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No negative contributors listed.</div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                          <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>What Needs to Be Proven</h3>
-                          <div className="space-y-3">
-                            <div>
-                              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Unknowns</div>
-                              {Array.isArray(convictionV1.unknowns) && convictionV1.unknowns.length > 0 ? (
-                                <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  {convictionV1.unknowns.map((item: any, idx: number) => (
-                                    <li key={`conv-unk-${idx}`}>{String(item?.text ?? item?.code ?? 'Unknown signal')}</li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No unknowns currently listed.</div>
-                              )}
-                            </div>
-                            <div>
-                              <div className={`text-xs mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>Required Next Checks</div>
-                              {Array.isArray(convictionV1.required_next_checks) && convictionV1.required_next_checks.length > 0 ? (
-                                <ul className={`list-disc pl-5 space-y-1 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                                  {convictionV1.required_next_checks.map((item: any, idx: number) => (
-                                    <li key={`conv-next-${idx}`}>{String(item?.text ?? 'Follow-up required')}</li>
-                                  ))}
-                                </ul>
-                              ) : (
-                                <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No required checks currently listed.</div>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className={`rounded-lg border p-3 ${darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'}`}>
-                        <h3 className={`text-xs uppercase tracking-wide mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Risk / Contradictions</h3>
-                        {Array.isArray(convictionV1.contradictions) && convictionV1.contradictions.length > 0 ? (
-                          <ul className={`space-y-2 text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                            {convictionV1.contradictions.map((item: any, idx: number) => (
-                              <li key={`conv-contr-${idx}`} className={`rounded-lg border px-3 py-2 ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-                                <span className={`text-xs font-medium mr-2 ${darkMode ? 'text-amber-300' : 'text-amber-700'}`}>[{String(item?.severity ?? 'unknown').toUpperCase()}]</span>
-                                <span>{String(item?.text ?? 'Contradiction detected')}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>No contradictions currently listed.</div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </section>
-              </div>
-            )}
-
-            {/* Documents Tab */}
-            {activeTab === 'documents' && (
-              <DocumentsTab dealId={dealId || 'demo'} darkMode={darkMode} reloadKey={documentsReloadKey} />
-            )}
-
-            {/* Evidence Tab */}
-            {activeTab === 'evidence' && (
-              <div className="space-y-6">
-                {/* Coverage & readiness (moved from header) */}
-                <div
-                  className={`backdrop-blur-xl border rounded-xl p-6 w-full ${darkMode ? 'bg-white/5 border-white/10' : 'bg-white/80 border-gray-200/50'}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Coverage & readiness</div>
-                      <div className={`mt-1 text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                        {executiveSummaryV2 || executiveSummaryV1 ? 'Coverage by category and open items' : 'Run analysis to populate coverage and readiness.'}
-                      </div>
-                    </div>
-                  </div>
-
-                  {isAnalyst && scoreBreakdownSections.length > 0 ? (() => {
-                    const sections = scoreBreakdownSections as any[];
-                    let linkedTotal = 0;
-                    let linkedNodeBacked = 0;
-                    for (const s of sections) {
-                      const linked = Array.isArray(s?.evidence_ids_linked) ? s.evidence_ids_linked.filter((x: any) => typeof x === 'string' && x.trim().length > 0) : [];
-                      if (linked.length === 0) continue;
-                      linkedTotal += linked.length;
-                      const nodeCount = typeof s?.node_evidence_count_linked === 'number' ? Math.max(0, Math.min(linked.length, Math.floor(s.node_evidence_count_linked))) : 0;
-                      linkedNodeBacked += nodeCount;
-                    }
-                    if (linkedTotal <= 0) return null;
-                    const pct = Math.round((linkedNodeBacked / linkedTotal) * 100);
-                    const status = pct >= 80 ? 'OK' : pct >= 50 ? 'WARN' : 'BLOCK';
-                    const tone = status === 'OK'
-                      ? (darkMode ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200' : 'border-emerald-200 bg-emerald-50 text-emerald-800')
-                      : status === 'WARN'
-                        ? (darkMode ? 'border-amber-500/30 bg-amber-500/10 text-amber-200' : 'border-amber-200 bg-amber-50 text-amber-800')
-                        : (darkMode ? 'border-rose-500/30 bg-rose-500/10 text-rose-200' : 'border-rose-200 bg-rose-50 text-rose-800');
-
-                    return (
-                      <div className={`mt-4 rounded-lg border px-3 py-2 flex items-start gap-2 ${tone}`}>
-                        <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                        <div className="text-xs leading-relaxed">
-                          <div className="font-medium">Node-backed scoring: {status} ({pct}% of linked score evidence is node-locatable)</div>
-                          <div className={darkMode ? 'text-gray-300' : 'text-gray-700'}>
-                            Path A requires scored claims to trace back to extracted nodes; link remaining score evidence to visual nodes to make decisions defensible.
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })() : null}
-
-                  {(executiveSummaryV2 || executiveSummaryV1) ? (
-                    <>
-                      <div className={`mt-4 rounded-lg border overflow-hidden ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50'}`}>
-                        <div className="overflow-x-auto">
-                          <div
-                            className="grid h-3"
-                            style={{
-                              gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))`,
-                              minWidth: `${categories.length * 110}px`,
-                            }}
-                          >
-                            {categories.map((c, idx) => {
-                              const band = getBandForCategory(c.key);
-                              return (
-                                <div
-                                  key={c.key}
-                                  className={`h-full w-full ${bandToClasses(band)} ${idx > 0 ? (darkMode ? 'border-l border-white/10' : 'border-l border-gray-200') : ''}`}
-                                  title={`${c.label}: ${band}`}
-                                />
-                              );
-                            })}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="mt-3 overflow-x-auto">
-                        <div
-                          className="grid gap-x-2 gap-y-1"
-                          style={{
-                            gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))`,
-                            minWidth: `${categories.length * 110}px`,
-                          }}
-                        >
-                          {categories.map((c) => {
-                            const band = getBandForCategory(c.key);
-                            const bandLabel = band === 'low' ? 'Low' : band === 'med' ? 'Med' : band === 'high' ? 'High' : String(band);
-                            return (
-                              <div
-                                key={`${c.key}-legend`}
-                                className={`${isAnalyst ? 'cursor-pointer' : ''} flex flex-col items-center justify-center gap-0.5 select-none`}
-                                title={`${c.label}: ${bandLabel}`}
-                                onClick={() => {
-                                  if (!isAnalyst) return;
-                                  setShowScoreBreakdown(true);
-                                  setTimeout(() => {
-                                    scoreBreakdownAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                                  }, 0);
-                                }}
-                                role={isAnalyst ? 'button' : undefined}
-                                tabIndex={isAnalyst ? 0 : undefined}
-                                onKeyDown={(e) => {
-                                  if (!isAnalyst) return;
-                                  if (e.key !== 'Enter' && e.key !== ' ') return;
-                                  e.preventDefault();
-                                  setShowScoreBreakdown(true);
-                                  setTimeout(() => {
-                                    scoreBreakdownAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                                  }, 0);
-                                }}
-                              >
-                                <div className="flex items-center justify-center gap-2">
-                                  <span className={`inline-block w-2.5 h-2.5 rounded-sm ${bandToClasses(band)}`} />
-                                  <span className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>{c.label}</span>
-                                </div>
-                                {isAnalyst && (
-                                  <div className={`text-xs ${darkMode ? 'text-gray-500' : 'text-gray-500'}`}>{bandLabel}</div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {scoreBreakdownSections.length > 0 && (() => {
-                        const counts = { supported: 0, weak: 0, missing: 0 };
-                        for (const section of scoreBreakdownSections as any[]) {
-                          const status = typeof section?.support_status === 'string' ? section.support_status : 'weak';
-                          if (status === 'supported') counts.supported += 1;
-                          else if (status === 'missing') counts.missing += 1;
-                          else counts.weak += 1;
-                        }
-                        return (
-                          <div className={`mt-3 text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            Supported: {counts.supported} · Weak: {counts.weak} · Missing: {counts.missing}
-                            {isAnalyst ? ' · Click a category to jump to breakdown' : ''}
-                          </div>
-                        );
-                      })()}
-
-                      <div className="mt-4">
-                        <div className={`text-xs mb-2 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Open items (detail)</div>
-                        {missingChips.length > 0 ? (
-                          <>
-                            <div className="flex flex-wrap gap-2">
-                              {(isAnalyst ? missingChips : (showAllMissingChips ? missingChips : missingChips.slice(0, 3))).map((chip) => {
-                                const labelMap: Record<string, string> = {
-                                  product_solution: 'Product solution',
-                                  market_icp: 'Market / ICP',
-                                  key_risks_detected: 'Key risks',
-                                  coverage_missing_sections: 'Missing sections',
-                                  raise: 'Raise',
-                                  business_model: getPolicyScoreSectionLabel(selectedPolicyId, 'business_model'),
-                                  traction: getPolicyScoreSectionLabel(selectedPolicyId, 'traction'),
-                                  team: 'Team',
-                                  terms: 'Terms',
-                                };
-                                const human = labelMap[chip]
-                                  ?? chip
-                                    .replace(/_/g, ' ')
-                                    .replace(/\b\w/g, (m: string) => m.toUpperCase());
-                                return (
-                                  <span
-                                    key={chip}
-                                    title={chip}
-                                    className={`px-2 py-1 rounded-full border text-xs ${darkMode ? 'bg-amber-500/10 border-amber-500/30 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-800'}`}
-                                  >
-                                    {human}
-                                  </span>
-                                );
-                              })}
-                            </div>
-                            {!isAnalyst && missingChips.length > 3 && (
-                              <button
-                                type="button"
-                                onClick={() => setShowAllMissingChips((prev) => !prev)}
-                                className={`mt-2 text-xs font-medium ${darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}
-                              >
-                                {showAllMissingChips ? 'Show less' : `+${missingChips.length - 3} more`}
-                              </button>
-                            )}
-                          </>
-                        ) : (
-                          <div className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>No open items flagged.</div>
-                        )}
-                      </div>
-
-                      {isAnalyst && scoreBreakdownSections.length > 0 && (
-                        <>
-                          <div className="mt-6" ref={scoreBreakdownAnchorRef}>
-                            <div className="flex items-center justify-between gap-3">
-                              <div className={`text-xs uppercase tracking-wider ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                Score breakdown
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => setShowScoreBreakdown((prev) => !prev)}
-                                className={`flex items-center gap-1 text-xs font-medium ${darkMode ? 'text-gray-300 hover:text-white' : 'text-gray-700 hover:text-gray-900'}`}
-                              >
-                                {showScoreBreakdown ? 'Hide' : 'Show'}
-                                {showScoreBreakdown ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                              </button>
-                            </div>
-
-                            {showScoreBreakdown && (
-                              <div className={`mt-3 rounded-lg border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-                                <ul className={`divide-y ${darkMode ? 'divide-white/10' : 'divide-gray-200'}`}>
-                                  {scoreBreakdownSections.map((section: any, idx: number) => {
-                                    const sectionKey = typeof section?.key === 'string'
-                                      ? section.key
-                                      : typeof section?.section_key === 'string'
-                                        ? section.section_key
-                                        : null;
-                                    const displayKey = sectionKey ?? `section-${idx}`;
-                                    const status = (section?.support_status as string) ?? 'weak';
-                                    const evidenceCount = typeof section?.evidence_count === 'number' ? section.evidence_count : 0;
-                                    const evidenceCountTotal = typeof section?.evidence_count_total === 'number' ? section.evidence_count_total : evidenceCount;
-                                    const evidenceCountLinked = typeof section?.evidence_count_linked === 'number'
-                                      ? section.evidence_count_linked
-                                      : Array.isArray(section?.evidence_ids)
-                                        ? section.evidence_ids.length
-                                        : evidenceCount;
-                                    const supportReason = typeof section?.support_reason === 'string' ? section.support_reason : null;
-                                    const truncatedSupportReason = supportReason
-                                      ? (supportReason.length > 140 ? `${supportReason.slice(0, 137)}...` : supportReason)
-                                      : null;
-                                    const coveragePct = evidenceCountTotal > 0
-                                      ? Math.round(
-                                          Math.min(
-                                            1,
-                                            typeof section?.coverage_pct === 'number'
-                                              ? section.coverage_pct / 100
-                                              : typeof section?.trace_coverage_pct === 'number'
-                                                ? section.trace_coverage_pct
-                                                : evidenceCountLinked / evidenceCountTotal
-                                          ) * 100
-                                        )
-                                      : null;
-                                    const missingReasons = Array.isArray(section?.missing_reasons) ? section.missing_reasons : [];
-                                    const hint = typeof section?.hint === 'string' ? section.hint : null;
-                                    const labelMap: Record<string, string> = {
-                                      market: getPolicyScoreSectionLabel(selectedPolicyId, 'market'),
-                                      product: 'Product',
-                                      business_model: getPolicyScoreSectionLabel(selectedPolicyId, 'business_model'),
-                                      traction: getPolicyScoreSectionLabel(selectedPolicyId, 'traction'),
-                                      risks: 'Risks',
-                                      team: 'Team',
-                                    };
-                                    const badgeClass = (() => {
-                                      if (status === 'supported') return darkMode ? 'bg-emerald-500/10 text-emerald-200 border-emerald-400/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
-                                      if (status === 'weak') return darkMode ? 'bg-amber-500/10 text-amber-200 border-amber-400/40' : 'bg-amber-50 text-amber-800 border-amber-200';
-                                      return darkMode ? 'bg-red-500/10 text-red-200 border-red-400/40' : 'bg-red-50 text-red-700 border-red-200';
-                                    })();
-                                    return (
-                                      <li
-                                        key={`score-breakdown-${displayKey}`}
-                                        className={`px-3 py-3 cursor-pointer ${darkMode ? 'hover:bg-white/5' : 'hover:bg-gray-50'}`}
-                                        onClick={() => handleScoreBreakdownClick(section, sectionKey)}
-                                      >
-                                        <div className="flex items-start justify-between gap-3">
-                                          <div>
-                                            <div className="flex items-center gap-2">
-                                              <div className={`text-sm font-medium ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                                                {labelMap[displayKey] ?? displayKey}
-                                              </div>
-                                              {truncatedSupportReason && (
-                                                <span
-                                                  className={`text-xs px-2 py-0.5 rounded-full border ${darkMode ? 'border-white/10 text-gray-300' : 'border-gray-200 text-gray-700'}`}
-                                                  title={truncatedSupportReason}
-                                                >
-                                                  Why
-                                                </span>
-                                              )}
-                                            </div>
-                                            <div className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                              Trace coverage: {evidenceCountLinked}/{evidenceCountTotal ?? '—'}{coveragePct != null ? ` (${coveragePct}%)` : ''}
-                                            </div>
-                                            {missingReasons.length > 0 && (
-                                              <div className={`text-xs mt-1 ${darkMode ? 'text-red-200' : 'text-red-700'}`}>
-                                                Missing: {missingReasons.join(' · ')}
-                                              </div>
-                                            )}
-                                            {hint && (
-                                              <div className={`text-xs mt-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                                                {hint}
-                                              </div>
-                                            )}
-                                          </div>
-                                          <div className="flex items-center gap-2">
-                                            {section?.mismatch && (
-                                              <span className={`px-2 py-1 rounded-full border text-xs font-medium ${darkMode ? 'border-amber-400/60 text-amber-200' : 'border-amber-300 text-amber-700'}`}>
-                                                Mismatch
-                                              </span>
-                                            )}
-                                            <span className={`px-2 py-1 rounded-full border text-xs font-medium ${badgeClass}`}>
-                                              {status === 'supported' ? 'Supported' : status === 'weak' ? 'Weak' : 'Missing'}
-                                            </span>
-                                          </div>
-                                        </div>
-                                      </li>
-                                    );
-                                  })}
-                                </ul>
-                              </div>
-                            )}
-                          </div>
-
-                          {import.meta.env.DEV && isAnalyst && (
-                            <div className={`mt-4 rounded-lg border ${darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-white'}`}>
-                              <div className="flex items-center justify-between gap-3 p-3">
-                                <div>
-                                  <div className={`text-xs uppercase tracking-wide ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                    Dev only · Score trace debug
-                                  </div>
-                                  <div className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                                    Sections: {scoreBreakdownSections.length}
-                                  </div>
-                                </div>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <Button
-                                    variant="secondary"
-                                    darkMode={darkMode}
-                                    size="sm"
-                                    icon={<Clipboard className="w-4 h-4" />}
-                                    onClick={copyScoreTraceDebug}
-                                  >
-                                    Copy JSON
-                                  </Button>
-                                  <Button
-                                    variant="secondary"
-                                    darkMode={darkMode}
-                                    size="sm"
-                                    icon={showScoreTraceDebug ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-                                    onClick={() => setShowScoreTraceDebug((prev) => !prev)}
-                                  >
-                                    {showScoreTraceDebug ? 'Hide debug' : 'Show debug'}
-                                  </Button>
-                                </div>
-                              </div>
-                              {showScoreTraceDebug && (
-                                <div className={`border-t ${darkMode ? 'border-white/10' : 'border-gray-200'}`}>
-                                  <div className={`grid grid-cols-[1.2fr_1fr_0.9fr_1fr_0.9fr_1.6fr_0.8fr] gap-2 px-3 py-2 text-xs font-semibold ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                                    <div>Section</div>
-                                    <div>Status</div>
-                                    <div>Mismatch</div>
-                                    <div>Linked / Total</div>
-                                    <div>Coverage</div>
-                                    <div>Missing reasons</div>
-                                    <div>Actions</div>
-                                  </div>
-                                  <div className={darkMode ? 'divide-white/10 divide-y' : 'divide-gray-200 divide-y'}>
-                                    {scoreBreakdownSections.map((section: any, idx: number) => {
-                                      const sectionKey = typeof section?.section_key === 'string'
-                                        ? section.section_key
-                                        : typeof section?.key === 'string'
-                                          ? section.key
-                                          : `section-${idx}`;
-                                      const statusRaw = typeof section?.support_status === 'string' ? section.support_status : 'unknown';
-                                      const status = ['supported', 'weak', 'missing', 'unknown'].includes(statusRaw) ? statusRaw : 'unknown';
-                                      const mismatch = Boolean(section?.mismatch);
-                                      const linked = typeof section?.evidence_count_linked === 'number'
-                                        ? section.evidence_count_linked
-                                        : Array.isArray(section?.evidence_ids_linked)
-                                          ? section.evidence_ids_linked.length
-                                          : Array.isArray(section?.evidence_ids)
-                                            ? section.evidence_ids.length
-                                            : Array.isArray(section?.evidence_ids_sample)
-                                              ? section.evidence_ids_sample.length
-                                              : 0;
-                                      const totalRaw = typeof section?.evidence_count_total === 'number'
-                                        ? section.evidence_count_total
-                                        : typeof section?.evidence_count === 'number'
-                                          ? section.evidence_count
-                                          : linked;
-                                      const total = Number.isFinite(totalRaw) ? Math.max(0, totalRaw) : 0;
-                                      const coveragePctRaw = typeof section?.coverage_pct === 'number'
-                                        ? section.coverage_pct
-                                        : typeof section?.trace_coverage_pct === 'number'
-                                          ? section.trace_coverage_pct * 100
-                                          : total > 0
-                                            ? (linked / total) * 100
-                                            : 0;
-                                      const coveragePct = Math.min(100, Math.max(0, Math.round(coveragePctRaw)));
-                                      const missingReasons = Array.isArray(section?.missing_link_reasons)
-                                        ? section.missing_link_reasons
-                                        : Array.isArray(section?.missing_reasons)
-                                          ? section.missing_reasons
-                                          : [];
-                                      const missingDisplay = missingReasons
-                                        .filter((r: unknown): r is string => typeof r === 'string' && r.trim().length > 0)
-                                        .map((r: string) => r.trim())
-                                        .filter((r: string, i: number, arr: string[]) => arr.indexOf(r) === i)
-                                        .slice(0, 3)
-                                        .join(' · ');
-                                      const truncatedMissing = missingDisplay.length > 120 ? `${missingDisplay.slice(0, 117)}...` : missingDisplay;
-                                      const idsPreview = (section?.evidence_ids_linked ?? section?.evidence_ids ?? section?.evidence_ids_sample ?? [])
-                                        .filter((id: unknown): id is string => typeof id === 'string' && id.trim().length > 0)
-                                        .slice(0, 3)
-                                        .join(', ');
-                                      const idsLabel = idsPreview || '—';
-                                      const badgeClass = (() => {
-                                        if (status === 'supported') return darkMode ? 'bg-emerald-500/10 text-emerald-200 border-emerald-400/40' : 'bg-emerald-50 text-emerald-700 border-emerald-200';
-                                        if (status === 'weak') return darkMode ? 'bg-amber-500/10 text-amber-200 border-amber-400/40' : 'bg-amber-50 text-amber-800 border-amber-200';
-                                        if (status === 'missing') return darkMode ? 'bg-red-500/10 text-red-200 border-red-400/40' : 'bg-red-50 text-red-700 border-red-200';
-                                        return darkMode ? 'bg-gray-500/10 text-gray-200 border-gray-400/40' : 'bg-gray-50 text-gray-700 border-gray-200';
-                                      })();
-
-                                      return (
-                                        <div
-                                          key={`score-trace-debug-${sectionKey}-${idx}`}
-                                          className={`grid grid-cols-[1.2fr_1fr_0.9fr_1fr_0.9fr_1.6fr_0.8fr] gap-2 px-3 py-2 text-xs ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}
-                                        >
-                                          <div className="flex flex-col gap-1 min-w-0">
-                                            <div className="font-semibold truncate">{sectionKey}</div>
-                                            <div className={`text-xs truncate ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                              IDs: {idsLabel}
-                                            </div>
-                                          </div>
-                                          <div className="flex items-center">
-                                            <span className={`px-2 py-1 rounded-full border text-xs font-medium ${badgeClass}`}>
-                                              {status === 'supported' ? 'Supported' : status === 'weak' ? 'Weak' : status === 'missing' ? 'Missing' : 'Unknown'}
-                                            </span>
-                                          </div>
-                                          <div className="flex items-center">
-                                            {mismatch ? (
-                                              <span className={`px-2 py-1 rounded-full border text-xs font-medium ${darkMode ? 'border-amber-400/60 text-amber-200' : 'border-amber-300 text-amber-700'}`}>
-                                                Mismatch
-                                              </span>
-                                            ) : (
-                                              <span className={`text-xs ${darkMode ? 'text-emerald-200' : 'text-emerald-700'}`}>Aligned</span>
-                                            )}
-                                          </div>
-                                          <div className="flex flex-col text-sm">
-                                            <span className="font-semibold">{linked}/{total}</span>
-                                            <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>linked / counted</span>
-                                          </div>
-                                          <div className="text-sm font-semibold">{coveragePct}%</div>
-                                          <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                                            {truncatedMissing || '—'}
-                                          </div>
-                                          <div className="flex items-center gap-2">
-                                            <Button
-                                              variant="ghost"
-                                              size="sm"
-                                              darkMode={darkMode}
-                                              onClick={() => handleScoreTraceDebugTrace(section, sectionKey)}
-                                            >
-                                              Trace
-                                            </Button>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </>
-                      )}
-                    </>
-                  ) : (
-                    <div className={`mt-4 p-4 rounded-lg border ${darkMode ? 'bg-white/5 border-white/10 text-gray-400' : 'bg-gray-50 border-gray-200 text-gray-600'}`}>
-                      Run analysis to populate score drivers.
-                    </div>
-                  )}
-                </div>
-
-                <EvidencePanel
-                  darkMode={darkMode}
-                  evidence={evidence}
-                  loading={evidenceLoading}
-                  lastUpdated={lastEvidenceRefresh}
-                  onRefresh={loadEvidence}
-                  onFetchEvidence={handleFetchEvidence}
-                  onLocateVisualEvidenceNode={(visualAssetId) => {
-                    const safeId = String(visualAssetId ?? '').trim();
-                    if (!safeId) return;
-                    setAnalystFocusNodeId(`evidence:${safeId}`);
-                    setActiveTab('analyst');
-                  }}
-                  reportSections={Array.isArray(reportFromApi?.sections) ? reportFromApi!.sections!.map((s) => ({ title: s.title, evidence_ids: s.evidence_ids })) : []}
-                  documentTitles={documentTitles}
-                  scoreEvidence={phase1ScoreEvidenceForPanel}
-                  selectedScoreSectionKey={selectedScoreSectionKey}
-                  scoreBreakdownSections={scoreBreakdownSections}
-                  highlightedEvidenceIds={highlightedEvidenceIds}
-                  selectedScoreSectionMismatch={selectedScoreSectionMismatch}
-                  resolvedEvidence={resolvedEvidence}
-                  externalTraceMode={scoreTraceModeOverride}
-                  scoreTraceAudit={scoreTraceAudit}
-                />
-              </div>
-            )}
-
-            {/* Analyst Mode Tab */}
-            {activeTab === 'analyst' && (
-              <DealAnalystTab
-                key={analystReloadKey}
-                dealId={dealId || 'demo'}
-                darkMode={darkMode}
-                focusNodeId={analystFocusNodeId}
-              />
-            )}
-
-            {/* AI Analysis Tab */}
-            {activeTab === 'analysis' && (
-              <AnalysisTab 
-                dealId={dealId ?? undefined}
-                dealData={dealData || {
-                  id: 'deal-fallback',
-                  name: 'TechVision AI Platform',
-                  company: 'TechVision AI',
-                  type: 'series-a',
-                  stage: 'Series A',
-                  investmentAmount: 5000000,
-                  industry: 'Enterprise SaaS',
-                  targetMarket: 'Enterprise companies using AI',
-                  fundingAmount: '$5M',
-                  revenue: '$850,000',
-                  customers: '15',
-                  teamSize: '8',
-                  description: 'Building next-gen AI infrastructure',
-                  estimatedSavings: { money: 18500, hours: 85 }
-                }} 
-                darkMode={darkMode}
-                onRunAnalysis={runAIAnalysis}
-                isAnalyzing={analyzing}
-                financialIntegrityV1={authoritativeFinancialIntegrityV1.value ?? null}
-                financialBreakdownV1={authoritativeFinancialBreakdownV1.value ?? null}
-                underwritingReadinessV1={authoritativeUnderwritingReadinessV1.value ?? null}
-                financialSnapshotStale={financialSnapshotStale}
-                workspaceScore={decisionTileScore0_100}
-                workspaceVerdict={decisionTileScore0_100 != null ? _workspaceVerdict.verdict : null}
-              />
-            )}
-
-            {/* Due Diligence Tab */}
-            {activeTab === 'diligence' && (
-              dueDiligenceItems.length > 0 ? (
-                <Accordion
-                  items={dueDiligenceItems}
-                  defaultOpenItems={['market']}
-                  allowMultiple={true}
-                  darkMode={darkMode}
-                />
-              ) : (
-                <div className={`text-center py-12 rounded-lg border-2 border-dashed ${
-                  darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'
-                }`}>
-                  <Shield className={`w-12 h-12 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
-                  <h3 className={`text-base mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>No diligence items yet</h3>
-                  <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                    Run analysis to generate a report with diligence sections
-                  </p>
-                </div>
-              )
-            )}
-
-            {/* Feedback Tab */}
-            {activeTab === 'feedback' && (
-              <div>
-                {feedbackItems.length > 0 ? (
-                  <div className="space-y-3">
-                    {feedbackItems.map((item, i) => (
-                      <div key={i} className={`p-4 rounded-lg border ${
-                        darkMode ? 'bg-white/5 border-white/10' : 'bg-gray-50 border-gray-200'
-                      }`}>
-                        <div className="flex items-start justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <Lightbulb className={`w-4 h-4 ${darkMode ? 'text-[#6366f1]' : 'text-[#6366f1]'}`} />
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${
-                              darkMode ? 'bg-white/10 text-gray-400' : 'bg-gray-200 text-gray-600'
-                            }`}>
-                              {item.category}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className={`text-xs px-2 py-0.5 rounded-full ${
-                              item.priority === 'high'
-                                ? 'bg-red-500/20 text-red-400'
-                                : item.priority === 'medium'
-                                  ? 'bg-amber-500/20 text-amber-400'
-                                  : 'bg-blue-500/20 text-blue-400'
-                            }`}>
-                              {item.priority}
-                            </span>
-                            <span className="text-xs text-emerald-400">{item.impact}</span>
-                          </div>
-                        </div>
-                        <p className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>{item.issue}</p>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className={`text-center py-12 rounded-lg border-2 border-dashed ${
-                    darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'
-                  }`}>
-                    <Lightbulb className={`w-12 h-12 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
-                    <h3 className={`text-base mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>No feedback yet</h3>
-                    <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'}`}>
-                      Feedback will appear here after investor or stakeholder reviews
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Data Tab */}
-            {activeTab === 'data' && (
-              <DataTab dealId={dealId || 'demo'} darkMode={darkMode} />
-            )}
-
-            {/* Investor Insights Tab */}
-            {activeTab === 'deal-deep-dive' && (
+          <div className="p-4">
+            {activePanel === 'deep-dive' && (
               <DealDeepDiveTab
                 deepDiveResponse={deepDiveResponse}
                 loading={deepDiveLoading}
@@ -9566,133 +7365,39 @@ export function DealWorkspace({ darkMode, onViewReport, dealData, dealId }: Deal
                 debugEnabled={workspaceDebugEnabled}
               />
             )}
-
-            {/* Investor Insights Tab */}
-            {activeTab === 'investor-insights' && (
-              <InvestorInsightsTab dealId={dealId || 'demo'} dealName={displayName} darkMode={darkMode} />
-            )}
-
-            {/* Financial Audit Tab */}
-            {activeTab === 'financial-audit' && (
-              <FinancialAuditTab
-                financialBreakdownV1={authoritativeFinancialBreakdownV1.value ?? null}
-                underwritingReadinessV1={authoritativeUnderwritingReadinessV1.value ?? null}
-                financialIntegrityV1={authoritativeFinancialIntegrityV1.value ?? null}
-                financialCoverageV1={authoritativeFinancialCoverageV1.value ?? null}
-                financialSnapshotStale={financialSnapshotStale}
+            {activePanel === 'insights' && dealId && (
+              <InvestorInsightsTab
+                dealId={dealId}
                 darkMode={darkMode}
+                dealName={displayName}
               />
             )}
-
-            {/* Reports Generated Tab */}
-            {activeTab === 'reports' && (
-              <div>
-                <div className="flex items-center justify-between mb-6">
-                  <div>
-                    <h3 className={`text-lg mb-1 ${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                      Generated Reports
-                    </h3>
-                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Generated due diligence reports will appear here
-                    </p>
-                  </div>
-                </div>
-
-                <div className={`text-center py-12 rounded-lg border-2 border-dashed ${
-                  darkMode ? 'border-white/10 bg-white/5' : 'border-gray-200 bg-gray-50/50'
-                }`}>
-                  <FileCode className={`w-12 h-12 mx-auto mb-3 opacity-40 ${darkMode ? 'text-gray-400' : 'text-gray-400'}`} />
-                  <h3 className={`text-base mb-1 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>No reports generated yet</h3>
-                  <p className={`text-sm ${darkMode ? 'text-gray-500' : 'text-gray-600'} mb-4`}>
-                    Run an analysis to generate a comprehensive due diligence report
-                  </p>
-                  <Button
-                    variant="primary"
-                    darkMode={darkMode}
-                    icon={<Sparkles className="w-4 h-4" />}
-                    onClick={runAIAnalysis}
-                    loading={analyzing}
-                  >
-                    {analyzing ? 'Generating...' : 'Generate Report'}
-                  </Button>
-                </div>
-              </div>
+            {activePanel === 'intelligence' && dealId && (
+              <IntelligenceTab dealId={dealId} darkMode={darkMode} decisionReadiness={(reportFromApi as any)?.decision_readiness as DecisionReadinessResult | null | undefined} lastAnalyzedAt={dioMeta?.lastAnalyzedAt ?? null} />
+            )}
+            {activePanel === 'evidence' && (
+              <EvidencePanel
+                darkMode={darkMode}
+                evidence={evidence}
+                loading={evidenceLoading}
+                lastUpdated={lastEvidenceRefresh}
+                onRefresh={loadEvidence}
+                onFetchEvidence={handleFetchEvidence}
+                onLocateVisualEvidenceNode={(visualAssetId) => setAnalystFocusNodeId(visualAssetId)}
+                documentTitles={documentTitles}
+                scoreEvidence={phase1ScoreEvidenceForPanel}
+                selectedScoreSectionKey={selectedScoreSectionKey}
+                scoreBreakdownSections={scoreBreakdownSections}
+                highlightedEvidenceIds={highlightedEvidenceIds}
+                selectedScoreSectionMismatch={selectedScoreSectionMismatch}
+                externalTraceMode={scoreTraceModeOverride}
+                scoreTraceAudit={scoreTraceAudit}
+                resolvedEvidence={resolvedEvidence}
+              />
             )}
           </div>
         </div>
-
-      {/* Toast Container */}
-      <ToastContainer
-        toasts={toasts}
-        onClose={removeToast}
-        darkMode={darkMode}
-      />
-
-      {/* Export Report Modal */}
-      <ExportReportModal
-        isOpen={showExportModal}
-        darkMode={darkMode}
-        dealName={displayName}
-        dealId={dealId}
-        onClose={() => setShowExportModal(false)}
-      />
-
-      {/* Template Export Modal */}
-      <TemplateExportModal
-        isOpen={showTemplateExportModal}
-        darkMode={darkMode}
-        dealData={dealData ?? null}
-        onClose={() => setShowTemplateExportModal(false)}
-      />
-
-      {/* Share Modal */}
-      {showShareModal && (
-        <ShareModal
-          darkMode={darkMode}
-          onClose={() => setShowShareModal(false)}
-          itemName={dealData?.name || 'TechVision AI Platform'}
-          itemType="deal"
-        />
       )}
-
-      {/* Comments Panel */}
-      {showCommentsPanel && (
-        <CommentsPanel
-          darkMode={darkMode}
-          dealId="1"
-          onClose={() => setShowCommentsPanel(false)}
-        />
-      )}
-
-      {/* AI Deal Assistant - NEW! */}
-      <AIDealAssistant
-        darkMode={darkMode}
-        isOpen={showAIAssistant}
-        onClose={() => setShowAIAssistant(false)}
-        dealData={dealData || {
-          id: 'deal-fallback',
-          name: 'TechVision AI Platform',
-          company: 'TechVision AI',
-          type: 'series-a',
-          stage: 'Series A',
-          investmentAmount: 5000000,
-          industry: 'Enterprise SaaS',
-          targetMarket: 'Enterprise companies using AI',
-          fundingAmount: '$5M',
-          revenue: '$850,000',
-          customers: '15',
-          teamSize: '8',
-          description: 'Building next-gen AI infrastructure',
-          estimatedSavings: { money: 18500, hours: 85 }
-        }}
-        dealId={dealId || 'demo'}
-        dioVersionId={dioMeta?.dioVersionId}
-        onRunAnalysis={runAIAnalysis}
-        onFetchEvidence={handleFetchEvidence}
-        onOpenFullReport={onViewReport ? () => { setShowAIAssistant(false); onViewReport(); } : undefined}
-        onOpenExportPdf={() => { setShowAIAssistant(false); setShowExportModal(true); }}
-      />
-      </div>
-    </div>
+    </>
   );
 }

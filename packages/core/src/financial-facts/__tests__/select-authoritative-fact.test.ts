@@ -158,6 +158,50 @@ describe('isCorruptedFact', () => {
       expect(isCorruptedFact(f).corrupted).toBe(false);
     });
   });
+
+  // ── Guard 4 — column-index period label ─────────────────────────────────
+
+  describe('column-index period label guard (Guard 4)', () => {
+    test.each([
+      ['col_M', 13715.34],
+      ['col_A', 5000],
+      ['col_Z', 9999],
+      ['col_13', 7500],
+      ['column_4', 1000],
+    ] as const)('period_label=%s → corrupted with reason invalid_column_index_period', (label, value) => {
+      const f = fact('revenue', value, { period_label: label, period_type: 'unknown' });
+      expect(isCorruptedFact(f).corrupted).toBe(true);
+      expect(isCorruptedFact(f).reason).toBe('invalid_column_index_period');
+    });
+
+    test('col_M fact is removed by filterCorruptedFacts', () => {
+      const good = fact('revenue', 461_000, { period_label: '2026', period_type: 'annual' });
+      const bad = fact('revenue', 13_715, { period_label: 'col_M', period_type: 'unknown' });
+      expect(filterCorruptedFacts([good, bad])).toEqual([good]);
+    });
+
+    test('selectAuthoritativeFact never returns a col_M fact', () => {
+      const colFact = fact('revenue', 13_715, { period_label: 'col_M', period_type: 'unknown' });
+      expect(selectAuthoritativeFact('revenue', [colFact])).toBeUndefined();
+    });
+
+    test('col_M is rejected even when it is the only candidate', () => {
+      const f = fact('revenue', 99_000, { period_label: 'col_M', period_type: 'unknown' });
+      expect(selectAuthoritativeFact(['revenue', 'arr', 'mrr'], [f])).toBeUndefined();
+    });
+
+    // Negative: valid labels must NOT be flagged as column-index artefacts
+    test.each([
+      ['current', 500_000],
+      ['FY2024', 1_000_000],
+      ['2026', 3_337_000],
+      ['TTM', 800_000],
+      ['September', 8_000],
+    ] as const)('valid period_label=%s is NOT flagged as column-index', (label, value) => {
+      const f = fact('revenue', value, { period_label: label });
+      expect(isCorruptedFact(f).reason).not.toBe('invalid_column_index_period');
+    });
+  });
 });
 
 // ─── selectAuthoritativeFact: corrupted data rejection ───────────────────────
@@ -440,5 +484,41 @@ describe('isProjectedFact', () => {
   test('fact with past year in period_label is not projected', () => {
     const f = fact('revenue', 500_000, { period_label: 'FY2023' });
     expect(isProjectedFact(f)).toBe(false);
+  });
+
+  test('ordinal Year N label ("Year 12") is projected even without temporal_scope', () => {
+    const f = fact('burn_rate', 484_333, { period_label: 'Year 12' });
+    expect(isProjectedFact(f)).toBe(true);
+  });
+
+  test('ordinal Year 1 label is projected', () => {
+    const f = fact('burn_rate', 100_000, { period_label: 'Year 1' });
+    expect(isProjectedFact(f)).toBe(true);
+  });
+
+  test('ordinal Year N labels are projected for n = 1..15', () => {
+    for (const n of [1, 2, 3, 5, 8, 10, 12, 15]) {
+      const f = fact('burn_rate', 100_000, { period_label: `Year ${n}` });
+      expect(isProjectedFact(f)).toBe(true);
+    }
+  });
+
+  test('"Year 12" burn_rate with no temporal_scope is filtered by requireNonProjected', () => {
+    // Simulates the StackFactor orphan fact: burn_rate=484333, period_label="Year 12", no temporal_scope
+    const orphanBurn = fact('burn_rate', 484_333, { period_label: 'Year 12', source_kind: 'unknown' });
+    const historicalBurn = fact('burn_rate', 200_000, { period_label: 'FY2024', temporal_scope: 'historical' });
+    const result = selectAuthoritativeFact(['burn_rate'], [orphanBurn, historicalBurn], { requireNonProjected: true });
+    // Orphan Year 12 must be excluded; historical FY2024 must win
+    expect(result?.value).toBe(200_000);
+    expect(result?.period_label).toBe('FY2024');
+  });
+
+  test('non-Year-N labels like "Jan 2024" or "Q1 2024" are not projected', () => {
+    const jan = fact('burn_rate', 100_000, { period_label: 'Jan 2024' });
+    const q1  = fact('burn_rate', 100_000, { period_label: 'Q1 2024' });
+    const fy  = fact('burn_rate', 100_000, { period_label: 'FY2024' });
+    expect(isProjectedFact(jan)).toBe(false);
+    expect(isProjectedFact(q1)).toBe(false);
+    expect(isProjectedFact(fy)).toBe(false);
   });
 });

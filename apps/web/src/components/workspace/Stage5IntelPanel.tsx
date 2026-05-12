@@ -1,0 +1,407 @@
+/**
+ * Stage5IntelPanel — Internal debug section for Stage 5 intelligence output.
+ *
+ * INTERNAL ONLY. Rendered inside WorkspaceDebugPanel, gated behind
+ * `workspaceDebugEnabled`. Never exposed to end users.
+ *
+ * Reviewer note: Memory influence is a secondary signal. It does not change
+ * ORS or overwrite verdicts.
+ */
+
+import { useState, useEffect } from 'react';
+import {
+  apiGetIntelligenceDebug,
+  type IntelligenceDebugPayload,
+  type IntelligenceDebugChallengeFactor,
+  type IntelligenceDebugPenalty,
+} from '../../lib/apiClient';
+
+interface Stage5IntelPanelProps {
+  dealId: string;
+  darkMode: boolean;
+}
+
+// ─── Label helpers ────────────────────────────────────────────────────────────
+
+function fmtNum(v: number | null | undefined, fallback = '—'): string {
+  if (v == null) return fallback;
+  return String(v);
+}
+
+function fmtPct(v: number | null | undefined): string {
+  if (v == null) return '—';
+  return `${Math.round(v)}%`;
+}
+
+function fmtBool(v: boolean | null | undefined): string {
+  if (v == null) return '—';
+  return v ? 'Yes' : 'No';
+}
+
+function signBadge(adj: number | null): { label: string; color: string } {
+  if (adj == null) return { label: '—', color: 'text-gray-400' };
+  if (adj > 0) return { label: `+${adj}`, color: 'text-emerald-500' };
+  if (adj < 0) return { label: String(adj), color: 'text-red-400' };
+  return { label: '0', color: 'text-gray-400' };
+}
+
+function bandColor(band: string | null, darkMode: boolean): string {
+  if (!band) return darkMode ? 'text-gray-400' : 'text-gray-500';
+  const b = band.toLowerCase();
+  if (b === 'high') return 'text-emerald-500';
+  if (b === 'medium') return darkMode ? 'text-amber-300' : 'text-amber-600';
+  if (b === 'low') return 'text-red-400';
+  return darkMode ? 'text-gray-300' : 'text-gray-700';
+}
+
+function severityBadgeClass(severity: string, darkMode: boolean): string {
+  switch (severity) {
+    case 'Critical': return 'bg-red-500/20 text-red-400 border border-red-500/30';
+    case 'High':     return 'bg-orange-500/20 text-orange-400 border border-orange-500/30';
+    case 'Medium':   return darkMode
+      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+      : 'bg-amber-100 text-amber-700 border border-amber-300';
+    case 'Low':      return darkMode
+      ? 'bg-gray-700 text-gray-400 border border-gray-600'
+      : 'bg-gray-100 text-gray-500 border border-gray-300';
+    default:         return darkMode ? 'text-gray-400' : 'text-gray-500';
+  }
+}
+
+// ─── Row helper ───────────────────────────────────────────────────────────────
+
+function Row({
+  label,
+  value,
+  valueClass,
+  darkMode,
+  multiline = false,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+  darkMode: boolean;
+  multiline?: boolean;
+}) {
+  return (
+    <div className={`flex ${multiline ? 'flex-col gap-0.5' : 'items-baseline justify-between gap-2'}`}>
+      <span className={`shrink-0 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{label}</span>
+      {multiline ? (
+        <span className={`text-xs leading-relaxed break-words ${valueClass ?? (darkMode ? 'text-gray-200' : 'text-gray-800')}`}>
+          {value}
+        </span>
+      ) : (
+        <span className={`font-medium truncate ${valueClass ?? (darkMode ? 'text-gray-200' : 'text-gray-800')}`}>
+          {value}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ─── Sub-sections ─────────────────────────────────────────────────────────────
+
+function SubSection({
+  title,
+  darkMode,
+  children,
+}: {
+  title: string;
+  darkMode: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className={`text-[10px] font-semibold uppercase tracking-widest ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+        {title}
+      </div>
+      <div className="space-y-1">{children}</div>
+    </div>
+  );
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
+export function Stage5IntelPanel({ dealId, darkMode }: Stage5IntelPanelProps) {
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [data, setData] = useState<IntelligenceDebugPayload | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Lazy fetch — only fires when the <details> are opened
+  const load = () => {
+    if (status !== 'idle') return;
+    setStatus('loading');
+    apiGetIntelligenceDebug(dealId)
+      .then((d) => { setData(d); setStatus('ready'); })
+      .catch((e) => { setErrorMsg(e instanceof Error ? e.message : String(e)); setStatus('error'); });
+  };
+
+  const c = data?.confidence ?? null;
+  const ch = data?.challenge ?? null;
+  const mem = data?.memory ?? null;
+
+  const adjBadge = signBadge(typeof c?.memory_adjustment === 'number' ? c.memory_adjustment : null);
+  const totalFlags = (ch?.flag_count_critical ?? 0) + (ch?.flag_count_error ?? 0) + (ch?.flag_count_warn ?? 0);
+
+  const memSignalLabel = (() => {
+    if (!mem) return '—';
+    if (mem.memory_fragility_signal) return 'Fragility ⚠';
+    if (mem.memory_support_signal) return 'Support ✓';
+    return 'None';
+  })();
+  const memSignalClass = (() => {
+    if (!mem) return '';
+    if (mem.memory_fragility_signal) return 'text-red-400';
+    if (mem.memory_support_signal) return 'text-emerald-500';
+    return darkMode ? 'text-gray-400' : 'text-gray-500';
+  })();
+
+  return (
+    <details
+      className={`backdrop-blur-xl border rounded-2xl overflow-hidden ${
+        darkMode
+          ? 'bg-gradient-to-br from-[#18181b]/80 to-[#27272a]/80 border-white/5'
+          : 'bg-gradient-to-br from-white/80 to-gray-50/80 border-gray-200/50'
+      }`}
+      onToggle={(e) => { if ((e.target as HTMLDetailsElement).open) load(); }}
+    >
+      <summary className={`px-4 py-3 cursor-pointer select-none text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+        Debug → Stage 5 Intelligence{' '}
+        {status === 'loading' && (
+          <span className={`text-[10px] ml-1 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>loading…</span>
+        )}
+        {status === 'ready' && c?.overall_confidence_band && (
+          <span className={`text-[10px] ml-1 font-normal ${bandColor(c.overall_confidence_band, darkMode)}`}>
+            {c.overall_confidence_band} confidence
+          </span>
+        )}
+      </summary>
+
+      <div className={`px-4 pb-4 text-xs space-y-4 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+
+        {/* Reviewer note */}
+        <div className={`text-[10px] italic border-l-2 pl-2 ${darkMode ? 'border-white/10 text-gray-500' : 'border-gray-200 text-gray-400'}`}>
+          Memory influence is a secondary signal. It does not change ORS or overwrite verdicts.
+        </div>
+
+        {status === 'error' && (
+          <div className="text-red-400">{errorMsg ?? 'Failed to load intelligence data.'}</div>
+        )}
+
+        {status === 'loading' && (
+          <div className={`${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>Loading…</div>
+        )}
+
+        {status === 'idle' && (
+          <div className={`${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>Open to load.</div>
+        )}
+
+        {status === 'ready' && !data?.confidence && (
+          <div className={`${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+            No Stage 5 run found for this deal.
+            {!data?._meta?.has_confidence_table && ' (deal_confidence_assessments table not found)'}
+          </div>
+        )}
+
+        {status === 'ready' && c && (
+          <>
+            {/* Run header */}
+            <div className={`font-mono text-[9px] ${darkMode ? 'text-gray-600' : 'text-gray-400'}`}>
+              run {data?.run_id ?? '—'}
+            </div>
+
+            {/* Confidence section */}
+            <SubSection title="Confidence" darkMode={darkMode}>
+              <Row
+                label="Score"
+                value={c.overall_confidence_score != null ? String(c.overall_confidence_score) : '—'}
+                darkMode={darkMode}
+              />
+              <Row
+                label="Band"
+                value={c.overall_confidence_band ?? '—'}
+                valueClass={bandColor(c.overall_confidence_band ?? null, darkMode)}
+                darkMode={darkMode}
+              />
+              <Row
+                label="Memory adjustment"
+                value={adjBadge.label}
+                valueClass={adjBadge.color}
+                darkMode={darkMode}
+              />
+              {c.memory_adjustment_reason && (
+                <Row
+                  label="Reason"
+                  value={c.memory_adjustment_reason}
+                  darkMode={darkMode}
+                  multiline
+                />
+              )}
+              {(c.penalty_count != null || c.total_penalty != null) && (
+                <div>
+                  <Row
+                    label="Penalties"
+                    value={`${fmtNum(c.penalty_count)} factors, −${fmtNum(c.total_penalty)} pts`}
+                    darkMode={darkMode}
+                  />
+                  {Array.isArray(c.penalties_applied) && c.penalties_applied.length > 0 && (
+                    <details className="mt-1">
+                      <summary className={`cursor-pointer text-[10px] select-none ${darkMode ? 'text-gray-500 hover:text-gray-400' : 'text-gray-400 hover:text-gray-500'}`}>
+                        Show penalties ({c.penalties_applied.length})
+                      </summary>
+                      <div className="mt-1 space-y-1">
+                        {(c.penalties_applied as IntelligenceDebugPenalty[]).map((p, i) => (
+                          <div key={i} className="flex items-start justify-between gap-2">
+                            <span className={`text-[10px] leading-snug ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{p.reason}</span>
+                            <span className="shrink-0 font-mono text-[10px] text-red-400">−{Math.abs(p.penalty)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                </div>
+              )}
+            </SubSection>
+
+            {/* Memory section */}
+            <SubSection title="Memory" darkMode={darkMode}>
+              {mem === null ? (
+                <div className={`text-[10px] italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                  No memory snapshot yet — re-run Stage 5 to populate.
+                  {c?.memory_adjustment_reason && (
+                    <span className="block mt-0.5 not-italic">{c.memory_adjustment_reason}</span>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <Row label="Similar deals" value={fmtNum(mem.similar_deal_count as number ?? null)} darkMode={darkMode} />
+                  <Row label="Avg similarity" value={fmtPct(mem.avg_similarity_pct as number ?? null)} darkMode={darkMode} />
+                  <Row
+                    label="Signal"
+                    value={memSignalLabel}
+                    valueClass={memSignalClass}
+                    darkMode={darkMode}
+                  />
+                  {mem.verdict_agreement_fraction != null && (
+                    <Row
+                      label="Agreement"
+                      value={fmtPct((mem.verdict_agreement_fraction as number) * 100)}
+                      darkMode={darkMode}
+                    />
+                  )}
+                  <Row
+                    label="Confidence adj"
+                    value={adjBadge.label}
+                    valueClass={adjBadge.color}
+                    darkMode={darkMode}
+                  />
+                </>
+              )}
+            </SubSection>
+
+            {/* Challenge section */}
+            {(() => {
+              const isChallengeStale =
+                !ch ||
+                (!ch.primary_challenge_reason &&
+                  (!ch.challenge_factors || ch.challenge_factors.length === 0));
+
+              if (isChallengeStale) {
+                return (
+                  <div className="space-y-1.5">
+                    <div className={`text-[10px] font-semibold uppercase tracking-widest ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                      Challenge Pass{' '}
+                      <span className="normal-case tracking-normal font-normal text-yellow-600">(stale)</span>
+                    </div>
+                    <div className={`rounded-lg border p-3 text-sm ${darkMode ? 'border-yellow-500/30 bg-yellow-500/10 text-yellow-300' : 'border-yellow-300 bg-yellow-50 text-yellow-900'}`}>
+                      <strong>Challenge analysis not yet generated for this run.</strong>
+                      <div className="mt-1 text-xs opacity-80">
+                        Re-run Stage 5 to populate updated challenge outputs.
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <>
+                  {/* Why challenge this verdict? */}
+                  {ch.primary_challenge_reason && (
+                    <SubSection title="Why challenge this verdict?" darkMode={darkMode}>
+                      <div className={`text-xs leading-relaxed break-words ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                        {ch.primary_challenge_reason}
+                      </div>
+                    </SubSection>
+                  )}
+
+                  {/* Challenge factors — deterministic_only is separated out as a system context note */}
+                  {Array.isArray(ch.challenge_factors) && ch.challenge_factors.length > 0 && (() => {
+                    const allFactors = ch.challenge_factors as IntelligenceDebugChallengeFactor[];
+                    const mainFactors = allFactors.filter((f) => f.code !== "deterministic_only").slice(0, 3);
+                    const hasDeterministicOnly = allFactors.some((f) => f.code === "deterministic_only");
+                    return (
+                      <SubSection title="Challenge Factors" darkMode={darkMode}>
+                        <div className="space-y-1.5">
+                          {mainFactors.map((f, i) => (
+                            <div key={i} className="space-y-0.5">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`inline-block rounded px-1 py-0 text-[9px] font-semibold ${severityBadgeClass(f.severity, darkMode)}`}>
+                                  {f.severity}
+                                </span>
+                                <span className={`text-[11px] font-medium ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>{f.title}</span>
+                              </div>
+                              <div className={`text-[10px] leading-snug ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{f.explanation}</div>
+                            </div>
+                          ))}
+                          {hasDeterministicOnly && (
+                            <div className={`mt-1 text-[10px] italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                              Analysis ran in deterministic-only mode; LLM enrichment was not used.
+                            </div>
+                          )}
+                        </div>
+                      </SubSection>
+                    );
+                  })()}
+
+                  <SubSection title="Challenge Pass" darkMode={darkMode}>
+                    <Row label="Verdict resistance" value={`${fmtNum(ch.verdict_resistance_score)} — ${ch.verdict_resistance_label ?? '—'}`} darkMode={darkMode} />
+                    <Row
+                      label="Flags"
+                      value={`${totalFlags} total (${fmtNum(ch.flag_count_critical)} critical / ${fmtNum(ch.flag_count_error)} error / ${fmtNum(ch.flag_count_warn)} warn)`}
+                      darkMode={darkMode}
+                    />
+                    <Row label="Missing evidence items" value={fmtNum(ch.missing_evidence_count)} darkMode={darkMode} />
+                    <Row label="Diligence gaps" value={fmtNum(ch.diligence_gaps_count)} darkMode={darkMode} />
+                    <Row
+                      label="Memory challenge used"
+                      value={fmtBool(ch.memory_challenge_used)}
+                      valueClass={
+                        ch.memory_challenge_used
+                          ? 'text-amber-400'
+                          : (darkMode ? 'text-gray-400' : 'text-gray-500')
+                      }
+                      darkMode={darkMode}
+                    />
+                    {ch.memory_challenge_used && ch.memory_challenge_summary && (
+                      <Row
+                        label="Memory challenge summary"
+                        value={ch.memory_challenge_summary}
+                        darkMode={darkMode}
+                        multiline
+                      />
+                    )}
+                    {!ch.memory_challenge_used && (
+                      <div className={`text-[10px] ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                        No memory challenge context applied to challenge pass.
+                      </div>
+                    )}
+                  </SubSection>
+                </>
+              );
+            })()}
+          </>
+        )}
+      </div>
+    </details>
+  );
+}

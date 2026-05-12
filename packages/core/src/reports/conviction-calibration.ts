@@ -1,4 +1,4 @@
-export type ConvictionFundingStage = "pre_seed" | "seed" | "series_a" | "growth" | "unknown";
+export type ConvictionFundingStage = "pre_seed" | "seed" | "series_a" | "growth" | "ipo" | "public_company" | "unknown";
 
 type StageBucket = "early" | "standard" | "strict";
 

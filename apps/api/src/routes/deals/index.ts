@@ -22,6 +22,7 @@ import { registerDealSegmentsRoutes } from "./deal-segments.routes";
 import { registerDealIngestionRoutes } from "./deal-ingestion.routes";
 import { registerDealCoreRoutes } from "./deal-core.routes";
 import { registerDealOperationsRoutes } from "./deal-operations.routes";
+import { registerIntelligenceRoutes } from "./intelligence.routes";
 
 // ── Main entry point ──────────────────────────────────────────────────────────
 
@@ -46,4 +47,5 @@ export async function registerDealRoutes(
   await registerDealIngestionRoutes(app, pool, enqueue, r2, debugRoutesEnabled, deps);
   await registerDealCoreRoutes(app, pool, enqueue, r2, debugRoutesEnabled, deps);
   await registerDealOperationsRoutes(app, pool, enqueue, r2, debugRoutesEnabled, deps);
+  await registerIntelligenceRoutes(app, pool);
 }

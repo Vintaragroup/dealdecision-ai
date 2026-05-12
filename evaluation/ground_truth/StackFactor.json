@@ -11,15 +11,156 @@
     "product_type": "SaaS",
     "delivery_model": "B2B SaaS",
     "product_maturity": "MVP",
-    "core_workflow": ["Manage organizational transitions", "Staff projects with validated proficiency"],
-    "core_features": ["Capability intelligence integration", "Project staffing management", "Organizational transition support"],
-    "differentiation_claims": ["Trusted by Wipro", "Global alliance and reseller partner"],
-    "integrations_or_dependencies": ["WEGA delivery platform"],
+    "core_workflow": [
+      "Manage organizational transitions",
+      "Staff projects with validated proficiency"
+    ],
+    "core_features": [
+      "Capability intelligence integration",
+      "Project staffing management",
+      "Organizational transition support"
+    ],
+    "differentiation_claims": [
+      "Trusted by Wipro",
+      "Global alliance and reseller partner"
+    ],
+    "integrations_or_dependencies": [
+      "WEGA delivery platform"
+    ],
     "ai_claims_present": false,
     "ai_usage_type": "none",
     "ai_evidence_strength": "none"
   },
   "financials": {
-    "revenue": 0
-  }
+    "_note": "Updated 2026-04-04 per source-doc audit. Docs: SF Financial Model 25FEB2026.xlsx, SF CapTable 25FEB2026.xlsx, StackFactor-Investor-Deck-final-Feb4-2026.pdf",
+    "current_state": {
+      "revenue": {
+        "value": 23000,
+        "source_kind": "kpi_tile",
+        "evidence": "Deck KPI tile \u2014 '$23K ARR' (live, beta product)"
+      },
+      "cash": {
+        "value": 44000,
+        "source_kind": "kpi_tile",
+        "evidence": "Deck KPI tile \u2014 '$44K cash'"
+      },
+      "burn_rate": {
+        "value": null,
+        "evidence": "No actual burn data in source docs \u2014 only Year 12 XLSX projection available"
+      },
+      "runway_months": {
+        "value": null,
+        "evidence": "Derived from projected values only \u2014 not a current-state signal"
+      }
+    },
+    "valid_projections": {
+      "booked_revenue_2026": {
+        "value": 1100000,
+        "source": "deck",
+        "evidence": "Deck 'PROJECTED FINANCIALS' slide \u2014 Booked Revenue 2026"
+      },
+      "booked_revenue_2027": {
+        "value": 4200000,
+        "source": "deck",
+        "evidence": "Deck 'PROJECTED FINANCIALS' slide \u2014 Booked Revenue 2027"
+      },
+      "recognized_revenue_2026": {
+        "value": 461000,
+        "source": "deck",
+        "evidence": "Deck 'PROJECTED FINANCIALS' slide \u2014 Recognized Revenue 2026"
+      }
+    },
+    "raise": {
+      "value": 2500000,
+      "instrument": "SAFE",
+      "discount_pct": 20,
+      "evidence": "$2.5M Pre-Seed SAFE, 20% discount"
+    },
+    "validation": {
+      "extraction_checks": [
+        {
+          "metric_key": "revenue",
+          "expected_value": 23000,
+          "tolerance_pct": 15,
+          "allowed_source_kinds": [
+            "kpi_tile"
+          ],
+          "note": "KPI tile ARR must be extracted. BUG-SF-1: XLSX Year 11 projection ($20K, high confidence) defeats kpi_tile current ARR ($23K, medium confidence)."
+        },
+        {
+          "metric_key": "cash",
+          "expected_value": 44000,
+          "tolerance_pct": 15,
+          "allowed_source_kinds": [
+            "kpi_tile"
+          ],
+          "note": "KPI tile cash must be extracted. BUG-SF-1: XLSX Year 12 projection ($7.8M, high confidence) defeats kpi_tile current cash ($44K, medium confidence)."
+        }
+      ],
+      "noise_checks": [
+        {
+          "label": "col_X revenue noise",
+          "sql_filter": "metric_key = 'revenue' AND period_label ~ '^col_[A-Za-z]+$'",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "fix_ref": "Fix 12"
+        },
+        {
+          "label": "$000 denomination noise",
+          "sql_filter": "metric_key = 'revenue' AND period_label ~ '^\\$?0{2,}s?$'",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "fix_ref": "Fix 12"
+        },
+        {
+          "label": "cap_table revenue facts",
+          "sql_filter": "metric_key = 'revenue' AND sheet_name ILIKE '%cap%table%'",
+          "expected_count": 0,
+          "failure_layer": "extraction",
+          "fix_ref": "Fix 12"
+        }
+      ],
+      "report_checks": [
+        {
+          "label": "current_state.revenue",
+          "report_path": [
+            "financial_breakdown_v1",
+            "current_state",
+            "revenue"
+          ],
+          "expected_value": 23000,
+          "tolerance_pct": 15
+        },
+        {
+          "label": "current_state.burn_rate should be null",
+          "report_path": [
+            "financial_breakdown_v1",
+            "current_state",
+            "burn_rate"
+          ],
+          "expected_value": null
+        },
+        {
+          "label": "current_state.cash",
+          "report_path": [
+            "financial_breakdown_v1",
+            "current_state",
+            "cash"
+          ],
+          "expected_value": 44000,
+          "tolerance_pct": 15
+        }
+      ]
+    },
+    "known_issues": {
+      "xlsx_projection_confidence_beats_kpi_tile_BUG_SF_1": {
+        "description": "XLSX projection rows for Year 11/12 have high confidence and win over kpi_tile current actuals (medium confidence). Revenue kpi_tile=$23K; XLSX Year 11 projection=$20K (close but wrong source). Cash kpi_tile=$44K; XLSX Year 12=$7.8M (radically different).",
+        "impact": "extraction:revenue and extraction:cash pick XLSX rows instead of kpi_tile",
+        "status": "open"
+      }
+    }
+  },
+  "_failure_modes_targeted": [
+    "BUG-SF-1: XLSX multi-year projections assigned high confidence, defeating kpi_tile current actuals (medium confidence). For seed-stage deals the KPI tile reflects reality; XLSX Year 11/12 forecasts are speculative projections."
+  ]
 }

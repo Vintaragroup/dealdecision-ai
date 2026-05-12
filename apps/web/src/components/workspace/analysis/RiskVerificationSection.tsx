@@ -122,7 +122,7 @@ function ScorePanel({
         <p className={`text-xs font-semibold uppercase tracking-wide mb-0.5 ${
           darkMode ? 'text-zinc-400' : 'text-slate-500'
         }`}>
-          Verification Risk Score
+          Evidence Integrity Risk
         </p>
         <p className={`text-base font-semibold ${darkMode ? 'text-zinc-100' : 'text-slate-800'}`}>
           {pct} / 100
@@ -824,10 +824,13 @@ export function RiskVerificationSection({
 
   return (
     <div className="space-y-6" data-testid="rv-analysis-card">
-      {/* Sub-header */}
+      {/* Sub-header: role in decision hierarchy */}
       <div>
         <p className={`text-xs ${darkMode ? 'text-zinc-400' : 'text-slate-500'}`}>
-          Gate results, disclosure completeness, data conflicts, and coverage quality
+          Gate results, disclosure completeness, data conflicts, and coverage quality.
+        </p>
+        <p className={`text-xs mt-1 ${darkMode ? 'text-zinc-500' : 'text-slate-400'}`}>
+          This section is a supporting lens — it explains risk factors relevant to the Decision Status, not a separate verdict.
         </p>
       </div>
 

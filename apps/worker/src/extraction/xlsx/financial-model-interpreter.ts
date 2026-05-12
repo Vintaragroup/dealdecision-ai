@@ -42,9 +42,25 @@ const ROW_LABEL_RULES: Array<{ pattern: RegExp; field_type: FieldTypeV1 }> = [
   // ARR / MRR (must precede revenue rule to avoid "arr revenue" mapping wrong)
   { pattern: /\barr\b|annual recurring rev/i,                     field_type: "arr_v1" },
   { pattern: /\bmrr\b|monthly recurring rev/i,                    field_type: "mrr_v1" },
+  // Revenue subtypes — MUST precede the generic revenue/sales catch-all
+  // -----------------------------------------------------------------
+  // Forward-looking / projected revenue rows (captures "Revenue Projections"
+  // which would otherwise fall through to revenue_canonical_v1)
+  { pattern: /\bforecast(?:ed)?\s+rev|\bprojected\s+rev|\brevenue\s+projections?\b/i, field_type: "forecast_revenue_v1" },
+  // Sales-expense rows: must precede \bsales\b to prevent "Total Sales Expense"
+  // or compensation rows from being misclassified as revenue.
+  { pattern: /\bsales\s+(?:expense|cost|spend|salary|bonus|commission|comp(?:ensation)?|incentive|travel)\b/i, field_type: "opex_v1" },
+  { pattern: /\btotal\s+sales\s+(?:expense|cost)\b/i,             field_type: "opex_v1" },  // Numbered sales rows (e.g. "Sales 1", "Sales 2") are payroll/headcount line
+  // items in many startup financial models.  Must precede the broad \bsales\b
+  // revenue rule so they are not misclassified as revenue.
+  { pattern: /\bsales\s+\d+\b/i,                                  field_type: "opex_v1" },  // Recognized revenue rows (ASC 606) — must precede revenue to avoid collapse
+  { pattern: /\brecognized\s+rev|\brev(?:enue)?\s+rec(?:ognized)?\b/i, field_type: "recognized_revenue_v1" },
+  // Handles "YTD Revenue Recognized", "Channel Revenue Recognized", etc.
+  { pattern: /\b(?:ytd|channel|direct|subscription|booked)\s+(?:revenue\s+recognized|recognized\s+revenue)\b/i, field_type: "recognized_revenue_v1" },
+  // Booked revenue rows (contracted, not yet recognized) — must precede revenue
+  { pattern: /\bbooked\s+(?:revenue|sales|orders?)\b|\brev(?:enue)?\s+booked\b/i, field_type: "booked_revenue_v1" },
   // Revenue
   { pattern: /\brevenue\b|\bsales\b|\btop[ -]?line\b/i,           field_type: "revenue_canonical_v1" },
-  { pattern: /\bforecast(?:ed)?\s+rev|\bprojected\s+rev/i,        field_type: "forecast_revenue_v1" },
   // Market sizing
   { pattern: /\btam\b|total addr/i,                                field_type: "tam_v1" },
   { pattern: /\bsam\b|serviceable addr/i,                         field_type: "sam_v1" },
@@ -64,7 +80,9 @@ const ROW_LABEL_RULES: Array<{ pattern: RegExp; field_type: FieldTypeV1 }> = [
   { pattern: /\bcogs\b|\bcost\s+of\s+(?:goods|revenue|sales)\b/i, field_type: "cogs_v1" },
   { pattern: /\bop(?:erating)?\s+exp(?:enses?)?\b|\bopex\b/i,     field_type: "opex_v1" },
   { pattern: /\bexpenses?\s+(?:fixed|variable)\b/i,               field_type: "opex_v1" },
-  { pattern: /\bpayroll\b|\bsalaries\b|\bwages\b/i,               field_type: "opex_v1" },
+  { pattern: /\bpayroll\b|\bsalaries\b|\bwages\b|\bsalary\b|\bcompensation\b|\bcomp\s+expense\b/i, field_type: "opex_v1" },
+  // Headcount / personnel rows (salary schedule sheets). Must precede catch-all.
+  { pattern: /\bheadcount\b|\bemployee\s+(?:cost|name|salary|compensation|count|fte)\b|\bpersonnel\b|\bstaff(?:ing)?\s+(?:cost|expense)\b/i, field_type: "opex_v1" },
   // Catch-all
   { pattern: /.*/,                                                  field_type: "other_metric_v1" },
 ];
@@ -146,6 +164,21 @@ function buildColumnMeta(
     }
 
     const info = parsePeriodLabel(header);
+
+    // Future-quarter guard: when a column belongs to the current calendar year
+    // but its quarter number is strictly after the current quarter, the column
+    // represents a forward-looking forecast period, not a realized current-period
+    // figure. Override scope_context so that classifyTemporalScope() returns
+    // "projected" rather than "current" for these columns.
+    //
+    // Example (evaluated in Q2 2026): "3Q2026" → quarter=3 > currentQ=2 → projected.
+    //                                  "2Q2026" → quarter=2 == currentQ → not overridden (current).
+    const currentQ = Math.ceil((new Date().getMonth() + 1) / 3);
+    const isFutureQuarterInCurrentYear =
+      info.year === currentYear &&
+      info.quarter !== null &&
+      info.quarter > currentQ;
+
     return {
       label: header,
       normalized_label: info.normalized || header,
@@ -155,7 +188,9 @@ function buildColumnMeta(
       scenario: null,
       // scope_context from parsePeriodLabel covers projected and TTM signals.
       // classifyTemporalScope() falls back to year-vs-currentYear when it is "".
-      temporal_scope_context: info.scope_context,
+      // Future-quarter override: force "projected" scope_context so downstream
+      // classifyTemporalScope() does not treat Q3/Q4 of the current year as "current".
+      temporal_scope_context: isFutureQuarterInCurrentYear ? "projected" : info.scope_context,
     };
   });
 }
@@ -185,6 +220,52 @@ export interface ParseFinancialTableOptions {
 }
 
 /**
+ * Revenue / income / burn field types that should NOT be emitted from a
+ * cap-table sheet. Cap tables track equity ownership, share classes, and
+ * dilution — they do not carry operating P&L metrics. When the sheet
+ * classifier correctly identifies a table as `cap_table`, suppress these
+ * field types to prevent share-count or vesting rows from polluting the
+ * revenue fact pool.
+ */
+const CAP_TABLE_SUPPRESSED_FIELDS = new Set<FieldTypeV1>([
+  "revenue_canonical_v1",
+  "forecast_revenue_v1",
+  "booked_revenue_v1",
+  "recognized_revenue_v1",
+  "arr_v1",
+  "mrr_v1",
+  "ebitda_v1",
+  "burn_rate_v1",
+  "runway_months_v1",
+  "total_expenses_v1",
+]);
+
+/**
+ * Revenue-like field types that should NOT be emitted from an employee /
+ * payroll / headcount sheet. These sheets detail salary schedules and
+ * headcount plans; bare "Sales" or "Revenue" row labels in them represent
+ * the sales-team headcount or compensation cost, not top-line revenue.
+ *
+ * Deliberately excludes opex_v1 so that total compensation expense rows
+ * (legitimately an operating cost) are still captured.
+ */
+const EMPLOYEE_SHEET_SUPPRESSED_FIELDS = new Set<FieldTypeV1>([
+  "revenue_canonical_v1",
+  "forecast_revenue_v1",
+  "booked_revenue_v1",
+  "recognized_revenue_v1",
+  "arr_v1",
+  "mrr_v1",
+]);
+
+/**
+ * Pattern that identifies employee / payroll / headcount sheet names.
+ * Matched case-insensitively against opts.slide_title (= sheet name).
+ */
+const EMPLOYEE_SHEET_RE =
+  /\b(employee|headcount|payroll|salar(y|ies)|compensation|comp|staff(ing)?|hiring|personnel|workforce|hires?|org\s*chart)\b/i;
+
+/**
  * Convert a `FinancialTable` into typed metrics.
  *
  * Each non-null cell in the table produces at most one TypedMetric.
@@ -211,6 +292,10 @@ export function parseFinancialTable(
 
   const colMeta = buildColumnMeta(table.column_headers, currentYear);
 
+  // Detect employee/payroll sheets once per table, outside the row loop.
+  const isEmployeeSheet =
+    typeof opts.slide_title === "string" && EMPLOYEE_SHEET_RE.test(opts.slide_title);
+
   const evidence: EvidenceRef = {
     source_document_id: opts.document_id ?? opts.deal_id,
     page_index: opts.page_index ?? null,
@@ -226,9 +311,28 @@ export function parseFinancialTable(
     const { field_type, typing_reason, typing_confidence } = resolveFieldType(rowLabel);
     if (typing_confidence < minConf) continue;
 
+    // Cap-table sheets must not emit P&L / operating metrics. Equity schedules,
+    // vesting tables, and share-class rows produce numeric values that can match
+    // revenue / EBITDA patterns — suppress them at the sheet-kind boundary.
+    if (table.table_kind === "cap_table" && CAP_TABLE_SUPPRESSED_FIELDS.has(field_type)) continue;
+
+    // Employee/payroll/headcount sheets must not emit revenue-like metrics.
+    // Row labels such as bare "Sales" in a salary schedule represent the
+    // sales-team headcount or compensation cost, not top-line revenue.
+    // opex_v1 is intentionally not in EMPLOYEE_SHEET_SUPPRESSED_FIELDS so
+    // total compensation/salary rows continue to be captured as opex facts.
+    if (isEmployeeSheet && EMPLOYEE_SHEET_SUPPRESSED_FIELDS.has(field_type)) continue;
+
     for (let colIdx = 0; colIdx < colMeta.length; colIdx++) {
       const cellValue = row[colIdx];
       if (cellValue === null || cellValue === undefined) continue;
+
+      // Year-label suppression: a raw (pre-scale) integer in the calendar-year
+      // range 2020–2040 is almost always a year value inadvertently placed in a
+      // data cell (e.g. a "Target Year" or "Launch Year" row), not a financial
+      // figure.  Suppress before any scale-factor multiplication to prevent
+      // e.g. 2025 × 1000 = $2,025,000 from appearing as a revenue metric.
+      if (Number.isInteger(cellValue) && cellValue >= 2020 && cellValue <= 2040) continue;
 
       const col = colMeta[colIdx]!;
 

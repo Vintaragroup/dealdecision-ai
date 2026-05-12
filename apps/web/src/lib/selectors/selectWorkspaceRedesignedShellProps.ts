@@ -1,0 +1,865 @@
+/**
+ * selectWorkspaceRedesignedShellProps
+ *
+ * Assembles WorkspaceRedesignedShellProps from the compiled /report payload +
+ * existing workspace view model inputs.
+ *
+ * Selector contract (deterministic-first):
+ *   company_name     → report.structured_summary.company_name
+ *   deal_type        → report.metadata.score_explanation.context.deal_type
+ *   stage            → report.funding_stage_v1.funding_stage
+ *   raise            → report.structured_summary.raise.value (with null_rule)
+ *   product/market   → WorkspaceOverviewVM keyFacts (already arbitrated upstream)
+ *   team_highlights  → report.structured_summary.team_highlights[]
+ *   use_of_funds     → report.structured_summary.use_of_funds_breakdown[]
+ *   project_pipeline → report.structured_summary.project_pipeline[]
+ *   revenue_model    → report.structured_summary.revenue_model
+ *   financial tiles  → report.financial_breakdown_v1 (via existing selectors)
+ *   redFlags         → report.redFlags[]
+ *   conviction       → report.structured_summary.conviction_v1
+ */
+
+import type { WorkspaceOverviewVM } from '../components/workspace/contracts/workspaceViewModel';
+import type { WorkspaceRedesignedShellProps, FinancialTile, RedFlag } from '../components/workspace/WorkspaceRedesignedShell';
+import { deriveSignalTension } from '../deriveSignalTension';
+import type { SignalTensionResult } from '../deriveSignalTension';
+
+function asNES(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const s = v.trim();
+  return s.length > 0 ? s : null;
+}
+
+/**
+ * Returns true for financial summary strings that are null-state placeholders produced by
+ * the deterministic sub-models when input data is absent. These must not be rendered as
+ * insight prose to the investor.
+ */
+function isNullStateSummary(s: string): boolean {
+  return /no financial data|not available|unavailable|no data|cannot be determined/i.test(s);
+}
+
+/**
+ * Post-processes LLM-generated narrative strings before they reach the UI.
+ *
+ * Handles:
+ *   1. Overconfident "sufficient for underwriting" phrasing — replace with qualified language
+ *      (Req 4: financial snapshot tone fix)
+ *   2. System-internal labels that sometimes leak through generated text
+ *      (Req 5: global leakage removal — verdict: X, ORS: N, "For a CONSIDER deal", etc.)
+ */
+function sanitizeFinancialProse(s: string): string {
+  return s
+    // Req 4: most specific phrase first — avoids "is provides" grammar breakage
+    .replace(/\bfinancial package is sufficient for underwriting\b/gi,
+      'financial package provides directional insight but key figures should be independently verified')
+    // Req 4: "is sufficient for underwriting" without preceding "financial package"
+    .replace(/\bis sufficient for underwriting\b/gi,
+      'provides directional insight — key figures should be independently verified')
+    // Req 4: "sufficient for underwriting" without any preceding verb
+    .replace(/\bsufficient for underwriting\b/gi,
+      'sufficient to provide directional insight — key figures should be independently verified')
+    // Req 4: "financial package is sufficient" without "for underwriting" trailing
+    .replace(/\bfinancial package is sufficient\b/gi,
+      'financial package provides directional insight but should be independently verified')
+    // Req 5: strip internal system labels
+    .replace(/\bverdict:\s*(GO|CONSIDER|NO_GO)\b\.?/gi, '')
+    .replace(/\bORS\s*[:=]?\s*\d+\b\.?/gi, '')
+    .replace(/\bfor a (GO|CONSIDER|NO_GO) deal\b[^.]*\.?\s*/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+/**
+ * Known internal dimension / field-name tokens that can surface from machine-generated
+ * diligence item sources (score_explanation.understanding_v1.diligence_open_items and
+ * score_explanation.totals.unadjusted_missing_inputs). These are system labels, not
+ * investor-readable questions.
+ */
+const INTERNAL_DILIGENCE_TOKENS: ReadonlySet<string> = new Set([
+  'key_risks_detected', 'business_model', 'product_or_asset_quality', 'external_corroboration',
+  'financial_truth', 'capital_structure', 'traction_validation', 'market_demand', 'team_execution',
+  'risk_dependencies', 'evidence_quality', 'coverage', 'traction', 'revenue', 'team', 'market',
+  'product', 'raise', 'exit', 'financials', 'contradictions',
+]);
+
+/**
+ * Returns true for a diligence item that is an internal system token rather than a
+ * real investor-facing question. Filters:
+ *   - Bare snake_case identifiers (e.g. "key_risks_detected")
+ *   - Known internal dimension labels (case-insensitive exact match)
+ *   - Fewer than 4 whitespace-separated words (too shallow to be a meaningful question)
+ */
+function isMechanicalDiligenceItem(s: string): boolean {
+  const t = s.trim();
+  // Bare snake_case: all lowercase letters, digits, underscores — at least one underscore
+  if (/^[a-z][a-z0-9_]+$/.test(t) && t.includes('_')) return true;
+  // Known internal token (case-insensitive, whole-string match)
+  if (INTERNAL_DILIGENCE_TOKENS.has(t.toLowerCase())) return true;
+  // Too short — fewer than 4 words is a field label, not a diligence question
+  if (t.split(/\s+/).length < 4) return true;
+  return false;
+}
+
+function asFinite(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  return v;
+}
+
+export type FinancialTruthBadgeTier = 'verified' | 'directional' | 'unverified' | 'conflicted';
+export interface FinancialTruthBadge { tier: FinancialTruthBadgeTier; text: string; }
+
+/**
+ * Derives a first-class Financial Truth badge from financial_truth_summary.
+ * Used to render the dedicated Financial Truth status block in the UI.
+ * Returns null when summary is absent (pre-deployment cached reports).
+ */
+function deriveFinancialTruthBadge(fts: unknown): FinancialTruthBadge | null {
+  if (!fts || typeof fts !== 'object') return null;
+  const f = fts as any;
+  const revState  = (f.revenue?.state  ?? f.arr?.state)  as string | null | undefined;
+  const revSource = (f.revenue?.source ?? f.arr?.source) as string | null | undefined;
+
+  if (revState === 'CONFIRMED') {
+    if (revSource === 'xlsx' || revSource === 'pdf_table' || revSource === 'kpi_tile')
+      return { tier: 'verified',    text: 'Structured financial evidence is present and decision-grade.' };
+    if (revSource === 'structured_derived')
+      return { tier: 'directional', text: 'Financial model supports directional analysis, but some figures are derived or projected.' };
+    if (revSource === 'deck')
+      return { tier: 'unverified',  text: 'Financial figures are present in the materials, but are not independently verified.' };
+    // CONFIRMED but unknown source — treat as directional
+    return { tier: 'directional', text: 'Financial model supports directional analysis, but some figures are derived or projected.' };
+  }
+  if (revState === 'CONFLICT')
+    return { tier: 'conflicted', text: 'Financial sources disagree materially and require reconciliation before reliance.' };
+  if (revState === 'INSUFFICIENT')
+    return { tier: 'unverified',  text: 'Financial figures are present in the materials, but are not independently verified.' };
+  return null;
+}
+
+/**
+ * Derives a short, investor-facing label for the financial_truth positive contributor.
+ * Used in Key Drivers, Opportunity Signal paragraph, and Positive Drivers panels.
+ * Deliberately concise — the Financial Truth badge block carries the full explanation.
+ * Based on financial_truth_summary written by Stage 5 processor FTRL wiring pass.
+ * Returns null ONLY when summary is truly absent (pre-deployment cached reports).
+ */
+function deriveFinancialTruthDriverLabel(fts: unknown): string | null {
+  if (!fts || typeof fts !== 'object') return null;
+  const f = fts as any;
+  const revState  = (f.revenue?.state  ?? f.arr?.state)  as string | null | undefined;
+  const revSource = (f.revenue?.source ?? f.arr?.source) as string | null | undefined;
+  const burnState = f.burn_rate?.state as string | null | undefined;
+
+  if (revState === 'CONFIRMED') {
+    if (revSource === 'xlsx' || revSource === 'pdf_table' || revSource === 'kpi_tile')
+      return 'Verified financial evidence';
+    if (revSource === 'structured_derived')
+      return 'Directional financial model support';
+    if (revSource === 'deck')
+      return 'Unverified financial claims';
+    // CONFIRMED but unknown source
+    return 'Directional financial model support';
+  }
+  if (revState === 'CONFLICT')
+    return 'Conflicting financial sources';
+  if (revState === 'INSUFFICIENT') {
+    if (burnState === 'CONFIRMED') return 'Structured operational data';
+    return 'Unverified financial claims';
+  }
+  // fts is present but in an unrecognised state — use a neutral, non-misleading label.
+  return 'Financial evidence present';
+}
+
+/**
+ * Derives a short negative-contributor label for financial_truth.
+ * Used when financial_truth appears in topNegativeContributors.
+ * Returns null when fts is absent (caller preserves backend label as fallback).
+ */
+function deriveFinancialTruthNegativeLabel(fts: unknown): string | null {
+  if (!fts || typeof fts !== 'object') return null;
+  const f = fts as any;
+  const revState = (f.revenue?.state ?? f.arr?.state) as string | null | undefined;
+  const revSource = (f.revenue?.source ?? f.arr?.source) as string | null | undefined;
+
+  if (revState === 'CONFLICT') return 'Conflicting financial sources';
+  if (revState === 'INSUFFICIENT') return 'Insufficient financial evidence';
+  if (revState === 'CONFIRMED' && revSource === 'deck') return 'Unverified financial claims';
+  if (revState === 'CONFIRMED') return 'Financial evidence quality concerns';
+  return 'Financial evidence gap';
+}
+
+function formatMetricValue(metric: unknown): string {
+  if (!metric || typeof metric !== 'object') return '—';
+  const m = metric as any;
+  if (m.value == null) return '—';
+  const num = asFinite(m.value);
+  if (num == null) return '—';
+  // Normalize currency prefix: 'USD' → '$', any other value is used verbatim.
+  const rawCurrency = asNES(m.currency) ?? '';
+  const currencySymbol = rawCurrency === 'USD' || rawCurrency === 'usd' ? '$' : rawCurrency;
+  const unit = asNES(m.unit) ?? '';
+  const period = asNES(m.period_label);
+  const sourceKind = asNES(m.source_kind);
+  const periodType = asNES(m.period_type);
+  const temporalScope = asNES(m.temporal_scope);
+  const isProvisional = m.is_provisional === true;
+
+  let formatted = '';
+  if (Math.abs(num) >= 1_000_000_000) {
+    formatted = `${currencySymbol}${(num / 1_000_000_000).toFixed(1)}B`;
+  } else if (Math.abs(num) >= 1_000_000) {
+    formatted = `${currencySymbol}${(num / 1_000_000).toFixed(1)}M`;
+  } else if (Math.abs(num) >= 1_000) {
+    formatted = `${currencySymbol}${(num / 1_000).toFixed(0)}K`;
+  } else {
+    formatted = `${currencySymbol}${num}`;
+  }
+
+  // Unit display: skip type-descriptor tokens and map known machine suffixes to human labels.
+  const SKIP_UNITS = new Set(['$', 'USD', 'usd', 'number', 'currency', 'Currency', 'dollars', 'dollar']);
+  const UNIT_LABELS: Record<string, string> = {
+    moproj: 'mo. projected',
+    'mo.proj': 'mo. projected',
+    mo_proj: 'mo. projected',
+    'months projected': 'mo. projected',
+    months: 'mo.',
+    mo: 'mo.',
+  };
+  if (unit && !SKIP_UNITS.has(unit)) {
+    formatted += ` ${UNIT_LABELS[unit] ?? unit}`;
+  }
+
+  // Append a projected suffix for provisional/projected metrics, but only once.
+  // Check the formatted string itself (not just the unit) to prevent proj.proj. duplication.
+  const suppressPeriod =
+    (sourceKind === 'structured_derived' && periodType === 'monthly') ||
+    temporalScope === 'projected' ||
+    isProvisional;
+  if (period && !suppressPeriod) {
+    formatted += ` (${period})`;
+  } else if ((temporalScope === 'projected' || isProvisional) && !formatted.toLowerCase().includes('projected')) {
+    formatted += ' projected';
+  }
+  return formatted;
+}
+
+/**
+ * Normalise a runway metric object for display: replace a missing or type-descriptor unit
+ * ('number') with 'mo' so the value renders as "65 mo" rather than a bare integer.
+ */
+function toRunwayMetric(m: unknown): unknown {
+  if (!m || typeof m !== 'object') return m;
+  const raw = m as any;
+  const u = asNES(raw.unit);
+  return (!u || u === 'number') ? { ...raw, unit: 'mo' } : raw;
+}
+
+export type SelectWorkspaceRedesignedShellInput = {
+  /** Raw compiled /report payload */
+  report: unknown;
+  /** Pre-built overview VM (already contains arbitrated keyFacts + rcS6) */
+  overviewVM: WorkspaceOverviewVM;
+  /** ISO string from deal info */
+  lastAnalyzedAt: string | null;
+  /** Live blocker count from workspace state */
+  blockerCount: number;
+  /** Whether the deep dive endpoint has data */
+  deepDiveReady: boolean;
+  /** Whether investor insights have been run */
+  insightsReady: boolean;
+  /**
+   * Canonical workspace verdict from resolveWorkspaceVerdict().
+   * Primary recommendation source (score-governance-v1 policy).
+   * Always drives the displayed recommendation — conviction_v1 posture is explanation-only.
+   */
+  workspaceVerdict?: { verdict: string; source: string } | null;
+};
+
+export function selectWorkspaceRedesignedShellProps(
+  input: SelectWorkspaceRedesignedShellInput
+): Omit<WorkspaceRedesignedShellProps, 'darkMode' | 'onRunAnalysis' | 'onOpenDeepDive' | 'onOpenInsights' | 'onOpenEvidenceExplorer'> {
+  const { report, overviewVM, lastAnalyzedAt, blockerCount, deepDiveReady, insightsReady, workspaceVerdict } = input;
+  const rpt = (report && typeof report === 'object') ? report as any : {};
+  const ss = (rpt.structured_summary && typeof rpt.structured_summary === 'object') ? rpt.structured_summary as any : {};
+  const meta = (rpt.metadata && typeof rpt.metadata === 'object') ? rpt.metadata as any : {};
+
+  // ── TRACE: what overviewVM delivers at selector boundary ────────────────────
+  if (import.meta.env.DEV) {
+    console.group('[TRACE:selectWorkspaceRedesignedShellProps] overviewVM keyFacts at selector entry');
+    console.log('overviewVM.keyFacts.product.value: ', overviewVM.keyFacts.product?.value);
+    console.log('overviewVM.keyFacts.market.value:  ', overviewVM.keyFacts.market?.value);
+    console.log('overviewVM.keyFacts.raise_terms.value:', overviewVM.keyFacts.raise_terms?.value);
+    console.log('overviewVM.investmentSnapshotBody: ', overviewVM.investmentSnapshotBody);
+    console.groupEnd();
+  }
+
+  // ── Identity Strip ────────────────────────────────────────────────────────
+  const companyName = asNES(ss.company_name);
+
+  const dealType = asNES(meta?.score_explanation?.context?.deal_type)
+    ?? asNES(rpt.metadata?.deal_type)
+    ?? null;
+
+  const stage = asNES(rpt.funding_stage_v1?.funding_stage) ?? null;
+
+  const rawRaise = ss.raise;
+  const raise = (rawRaise && typeof rawRaise === 'object')
+    ? asNES(rawRaise.value)
+    : asNES(rawRaise);
+  const raiseNullRule = (rawRaise && typeof rawRaise === 'object')
+    ? asNES(rawRaise.null_rule)
+    : null;
+
+  // ── Conviction Column — delegate to overviewVM keyFacts + rcS6 ───────────
+  const { product, market, businessModel: bm, raise: raiseTerms } = overviewVM.keyFacts;
+
+  // ── Score + Recommendation source arbitration ────────────────────────────
+  // Score governance policy (score-governance-v1):
+  //   Displayed score  → score_band_v2.overall_score  (primary)
+  //                    → conviction_v1 score           (only when band score absent)
+  //
+  // Recommendation policy (score-governance-v1):
+  //   Displayed verdict → workspaceVerdict / decision_v1  (primary — always)
+  //                     → conviction_v1 posture            (only when decision_v1 absent)
+  //
+  // conviction_v1 is used for explanation only:
+  //   top_positive_contributors, top_negative_contributors,
+  //   required_next_checks, summary.rationale, summary.headline
+  // It does NOT drive the primary displayed score or recommendation.
+
+  const convictionV1: any = ss.conviction_v1 ?? rpt.conviction_v1 ?? null;
+  const convictionV1Present = convictionV1 != null;
+
+  // Score: always use score_band_v2.overall_score as the displayed number.
+  // conviction_v1 score is retained for internal reference but is not the primary display value.
+  const _convictionRawScore = asFinite(convictionV1?.conviction_score_0_100);
+  const _bqV2Score = asFinite(meta?.business_quality_v2?.score);
+  const _bandFallbackScore = asFinite(meta?.score_band_v2?.overall_score)
+    ?? asFinite(meta?.score_explanation?.totals?.overall_score);
+  const convictionScore = _bqV2Score ?? _bandFallbackScore ?? _convictionRawScore;
+  const convictionScoreSource: 'business_quality_v2' | 'score_band_v2' | 'conviction_v1' | 'none' =
+    _bqV2Score != null ? 'business_quality_v2'
+    : _bandFallbackScore != null ? 'score_band_v2'
+    : _convictionRawScore != null ? 'conviction_v1'
+    : 'none';
+
+  const convictionBand = asNES(convictionV1?.conviction_band);
+
+  // V2 Phase 1: evidence quality label from evidence_quality_v2 stub
+  const evidenceQualityLabel = asNES(meta?.evidence_quality_v2?.label) ?? null;
+
+  // Recommendation: always use workspaceVerdict (decision_v1 path) as the primary displayed verdict.
+  // conviction_v1 posture is available for explanation only — never overrides decision_v1 for primary display.
+  const _convictionRawPosture = asNES(convictionV1?.recommendation_posture);
+  const _verdictPosture: string | null = (() => {
+    if (!workspaceVerdict?.verdict) return null;
+    // Map WorkspaceVerdict → posture format expected by mapPosture() in DealWorkspaceV4
+    switch (workspaceVerdict.verdict) {
+      case 'FUND':        return 'INVEST';
+      case 'INVESTIGATE': return 'INVESTIGATE';
+      case 'CONSIDER':    return 'CONSIDER';
+      case 'PASS':        return 'PASS';
+      case 'HARD_PASS':   return 'HARD_PASS';
+      default:           return null;
+    }
+  })();
+  const convictionPosture = _verdictPosture ?? _convictionRawPosture;
+  const convictionPostureSource: 'workspace_verdict' | 'conviction_v1' | 'none' =
+    _verdictPosture != null ? 'workspace_verdict'
+    : _convictionRawPosture != null ? 'conviction_v1'
+    : 'none';
+
+  // DEV trace: score + recommendation source arbitration
+  if (import.meta.env.DEV) {
+    console.group('[TRACE:selectWorkspaceRedesignedShellProps] score + recommendation source');
+    console.log('conviction_v1 present?', convictionV1Present);
+    console.log('convictionScore:', convictionScore, '| source:', convictionScoreSource, '| bqV2:', _bqV2Score, '| band_score:', _bandFallbackScore, '| conviction_raw:', _convictionRawScore);
+    console.log('convictionPosture:', convictionPosture, '| source:', convictionPostureSource);
+    console.log('workspaceVerdict:', workspaceVerdict?.verdict ?? null, '(source:', workspaceVerdict?.source ?? 'none', ')');
+    console.log('evidenceQualityLabel (V2):', evidenceQualityLabel, '| evidence_quality_v2:', (meta as any)?.evidence_quality_v2?.label ?? null);
+    console.log('canonical_decision_v2.verdict:', (meta as any)?.canonical_decision_v2?.verdict ?? null, '| conflict_detected:', Boolean((meta as any)?.canonical_decision_v2?.conflict_detected));
+    // Model tension: log when decision_v1 and conviction_v1 yield different verdicts.
+    // This measures how often the two scoring models disagree — do not suppress.
+    if (_verdictPosture && _convictionRawPosture) {
+      const _cvVerdict =
+        (_convictionRawPosture === 'strong_yes' || _convictionRawPosture === 'yes') ? 'FUND'
+        : _convictionRawPosture === 'consider' ? 'CONSIDER'
+        : _convictionRawPosture === 'pass' ? 'PASS'
+        : null;
+      // V2: use conflict_detected field from canonical_decision_v2 stub to detect model tension.
+      const _v2ConflictDetected = Boolean(meta?.canonical_decision_v2?.conflict_detected);
+      if (_v2ConflictDetected) {
+        console.log(
+          '[SCORE-GOVERNANCE] V2 conflict_detected=true (decision_v1 vs conviction_v1 disagree):',
+          {
+            decision_v1_verdict: workspaceVerdict?.verdict,
+            decision_v1_rec_key: (meta?.decision_v1 as any)?.recommendation_key,
+            v2_verdict: (meta?.canonical_decision_v2 as any)?.verdict,
+            conviction_v1_posture: _convictionRawPosture,
+          },
+        );
+      } else if (_cvVerdict && _cvVerdict !== workspaceVerdict?.verdict) {
+        // Legacy tension log: V2 stub absent for this cached report.
+        console.log(
+          '[SCORE-GOVERNANCE] Model tension (pre-V2) — decision_v1 and conviction_v1 disagree:',
+          {
+            decision_v1_verdict: workspaceVerdict?.verdict,
+            conviction_v1_posture: _convictionRawPosture,
+            band_score: _bandFallbackScore,
+            conviction_score: _convictionRawScore,
+          },
+        );
+      }
+    }
+    console.groupEnd();
+  }
+
+  // Conviction narrative fields (headline, rationale, provisional flag)
+  const convictionSummaryRaw: any = convictionV1?.summary ?? null;
+  const convictionHeadline = asNES(convictionSummaryRaw?.headline);
+  const convictionRationale = asNES(convictionSummaryRaw?.rationale);
+  const convictionProvisional = convictionSummaryRaw?.provisional === true;
+
+  // Top positive contributors (conviction-backed strength signals)
+  // key is the internal snake_case dimension used for presentation-layer mapping
+  // V2: prefer conviction_v2.top_positive_contributors when present
+  const topPositiveContributors: { key: string; label: string; scoreDelta: number | null; evidence_refs: string[] }[] = (() => {
+    const v2items = meta?.conviction_v2?.top_positive_contributors;
+    const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.top_positive_contributors;
+    if (!Array.isArray(items)) return [];
+    const rawContributors = items
+      .map((c: any) => ({
+        key: asNES(c?.key) ?? '',
+        label: asNES(c?.label) ?? '',
+        scoreDelta: asFinite(c?.score_delta_0_100),
+        evidence_refs: Array.isArray(c?.evidence_refs) ? c.evidence_refs.filter((r: any) => typeof r === 'string') : [],
+      }))
+      .filter((c) => c.label.length > 0)
+      .slice(0, 5);
+
+    // Override the financial_truth contributor's label with truth-state-aware text.
+    // financial_truth_summary is written by the worker's Stage 5 processor.
+    // For older cached reports (pre-deployment) this will be null — fallback applies.
+    const fts: any = rpt.financial_truth_summary ?? null;
+    return rawContributors.map((c) => {
+      if (c.key !== 'financial_truth') return c;
+      const label = deriveFinancialTruthDriverLabel(fts);
+      // Only fall back to the generic string when financial_truth_summary is truly absent
+      // (pre-deployment cached reports that pre-date the FTRL wiring pass).
+      // When fts is present, deriveFinancialTruthDriverLabel always returns a non-null label.
+      return { ...c, label: label ?? 'Financial data supports this analysis' };
+    });
+  })();
+
+  // Top negative contributors (conviction-backed risk signals)
+  // V2: prefer conviction_v2.top_negative_contributors when present
+  const topNegativeContributors: { key: string; label: string; scoreDelta: number | null; evidence_refs: string[] }[] = (() => {
+    const v2items = meta?.conviction_v2?.top_negative_contributors;
+    const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.top_negative_contributors;
+    if (!Array.isArray(items)) return [];
+    const rawNeg = items
+      .map((c: any) => ({
+        key: asNES(c?.key) ?? '',
+        label: asNES(c?.label) ?? '',
+        scoreDelta: asFinite(c?.score_delta_0_100),
+        evidence_refs: Array.isArray(c?.evidence_refs) ? c.evidence_refs.filter((r: any) => typeof r === 'string') : [],
+      }))
+      .filter((c) => c.label.length > 0)
+      .slice(0, 5);
+
+    // Mirror the positive-contributor truth-aware override for negative contributors.
+    // Negative financial_truth signals need the same short, investor-facing copy.
+    const fts: any = rpt.financial_truth_summary ?? null;
+    return rawNeg.map((c) => {
+      if (c.key !== 'financial_truth') return c;
+      const label = deriveFinancialTruthNegativeLabel(fts);
+      return { ...c, label: label ?? c.label };
+    });
+  })();
+
+  // Required next checks (diligence checklist from conviction)
+  // V2: prefer conviction_v2.key_unknowns when present (stub field mapping)
+  const requiredNextChecks: string[] = (() => {
+    const v2items = meta?.conviction_v2?.key_unknowns;
+    const items = (Array.isArray(v2items) && v2items.length > 0) ? v2items : convictionV1?.required_next_checks;
+    if (!Array.isArray(items)) return [];
+    return items
+      .map((c: any) => asNES(typeof c === 'string' ? c : c?.text))
+      .filter((s): s is string => s !== null)
+      .slice(0, 5);
+  })();
+
+  // Investment snapshot: combine all three iav2 summary fields for a fuller narrative.
+  // summary         = deal_summary_v2.summary.one_liner (crisper context-setter)
+  // summary_medium  = paragraphs[0] (main descriptive paragraph)
+  // summary_long    = paragraphs[1]+[2] joined (additional depth when present)
+  // Deduplicate: skip any part that is wholly contained within a longer part already collected.
+  const iav2: any = rpt.investment_analysis_overview_v2 ?? null;
+  const investmentSnapshotBody = (() => {
+    const overlayBody = asNES(overviewVM.investmentSnapshotBody);
+    if (overlayBody) return overlayBody;
+    const parts: string[] = [
+      asNES(iav2?.summary),
+      asNES(iav2?.summary_medium),
+      asNES(iav2?.summary_long),
+    ].filter((s): s is string => s !== null);
+    const deduped = parts.reduce<string[]>((acc, s) => {
+      if (!acc.some((prev) => prev.includes(s))) acc.push(s);
+      return acc;
+    }, []);
+    const combined = deduped.join('\n\n');
+    return combined.length > 0 ? combined : null;
+  })();
+
+  // ── Financial Column ──────────────────────────────────────────────────────
+  const fb: any = rpt.financial_breakdown_v1 ?? null;
+  // Financial narrative: investor-readable overview from financial_breakdown_v1 (deterministic)
+  const financialNarrative = (() => {
+    const s = asNES(fb?.narrative);
+    return s ? sanitizeFinancialProse(s) : null;
+  })();
+  const cs: any = fb?.current_state ?? null;
+  const br: any = fb?.burn_runway ?? null;
+  const ur: any = rpt.underwriting_readiness_v1 ?? null;
+  const fc: any = rpt.financial_coverage_v1 ?? null;
+  // More specific financial summaries — plain-English prose from deterministic sub-models.
+  // Null-state strings ("not available", "no financial data", etc.) are suppressed so they
+  // do not render as insight prose when underlying data is absent.
+  const financialCurrentStateSummary = (() => {
+    const s = asNES(cs?.summary);
+    if (!s || isNullStateSummary(s)) return null;
+    return sanitizeFinancialProse(s);
+  })();
+  const financialBurnRunwaySummary = (() => {
+    const s = asNES(br?.summary);
+    if (!s || isNullStateSummary(s)) return null;
+    return sanitizeFinancialProse(s);
+  })();
+  const underwritingNarrative = (() => {
+    const s = asNES(ur?.narrative);
+    return s ? sanitizeFinancialProse(s) : null;
+  })();
+
+  const financialTiles: FinancialTile[] = [];
+
+  const pushTile = (label: string, metricOrValue: unknown) => {
+    const v = formatMetricValue(metricOrValue);
+    const m = (metricOrValue && typeof metricOrValue === 'object') ? metricOrValue as any : null;
+
+    // Patch C: derive trust from source quality so TrustBadge renders where it adds meaning.
+    //   xlsx high-confidence  → 'structured'       (no badge — confirmed structured fact)
+    //   kpi_tile              → 'structured'       (no badge — tile-derived but reliable)
+    //   structured_derived    → 'interim_extraction' (Interim badge — computed from raw signals)
+    //   provisional/projected → 'interim_extraction' (Interim badge — unconfirmed forecast)
+    //   other / unknown       → 'structured'       (silent default)
+    const derivedTrust = ((): FinancialTile['trust'] => {
+      if (!m) return 'structured';
+      const sk = asNES(m.source_kind);
+      if (sk === 'structured_derived') return 'interim_extraction';
+      if (m.is_provisional === true || asNES(m.temporal_scope) === 'projected') return 'interim_extraction';
+      return 'structured';
+    })();
+
+    // Patch B: flag projected/provisional metrics so rendering layers can show a "proj." marker.
+    const isProjected = m != null && (m.is_provisional === true || asNES(m.temporal_scope) === 'projected');
+
+    financialTiles.push({
+      label,
+      value: v,
+      trust: v !== '—' ? derivedTrust : 'not_extracted',
+      nullReason: v === '—' ? 'Not extracted' : null,
+      isProjected: isProjected || undefined,
+    });
+  };
+
+  pushTile('Revenue / ARR', cs?.revenue);
+  pushTile('Monthly Burn', br?.monthly_burn ?? cs?.burn_rate ?? br?.alternative_burn_fact);
+  pushTile('Runway', toRunwayMetric(br?.runway_months ?? cs?.runway_months));
+  pushTile('Cash', br?.cash ?? cs?.cash);
+  pushTile('Gross Margin', cs?.gross_margin_pct);
+
+  // Coverage: prefer coverage_ratio from financial_coverage_v1, then compute from boolean coverage fields.
+  // Do NOT fall back to overall_score — it is the deal quality score, not financial data coverage.
+  const financialCoverage = (() => {
+    if (fc?.coverage_ratio != null) return asFinite(fc.coverage_ratio * 100);
+    const cov = fc?.coverage as Record<string, boolean> | null | undefined;
+    if (cov && typeof cov === 'object') {
+      const keys = Object.keys(cov);
+      if (keys.length > 0) {
+        const present = keys.filter((k) => cov[k] === true).length;
+        return Math.round((present / keys.length) * 100);
+      }
+    }
+    return null;
+  })();
+
+  // Underwriting readiness: score_0_100 field
+  const underwritingReadiness = asFinite(ur?.score_0_100);
+
+  // Integrity
+  const integrity = rpt.financial_integrity_v1 ?? null;
+  const financialIntegrityStatus: WorkspaceRedesignedShellProps['financialIntegrityStatus'] = (() => {
+    const s = asNES((integrity as any)?.status);
+    if (!s) return null;
+    if (s === 'validated' || s === 'clean') return 'validated';
+    if (s === 'partial') return 'partial';
+    if (s === 'unvalidated' || s === 'flagged') return 'unvalidated';
+    return null;
+  })();
+
+  // ── Risk Strip ────────────────────────────────────────────────────────────
+  const redFlagsRaw: any[] = Array.isArray(rpt.redFlags) ? rpt.redFlags : [];
+  const redFlags: RedFlag[] = redFlagsRaw.map((rf: any) => ({
+    severity: (['high', 'medium', 'low'].includes(rf?.severity) ? rf.severity : 'low') as RedFlag['severity'],
+    message: asNES(rf?.message) ?? 'Unknown risk',
+    action: asNES(rf?.action) ?? undefined,
+  }));
+
+  // Open questions: prefer investment_analysis_overview_v2.open_items.items[] (most compiled),
+  // fall back to decision_summary_v1.open_questions, then diligence_open_items.
+  // Mechanical items (bare snake_case tokens, known internal labels, fewer than 4 words)
+  // are filtered out before the slice so they don't surface as investor-facing questions.
+  const diligenceItems: string[] = (() => {
+    const iav2Items = iav2?.open_items?.items;
+    const raw = (Array.isArray(iav2Items) && iav2Items.length > 0)
+      ? iav2Items
+      : ss?.decision_summary_v1?.open_questions
+        ?? meta?.score_explanation?.understanding_v1?.diligence_open_items
+        ?? [];
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((i: any) => asNES(typeof i === 'string' ? i : i?.text))
+      .filter((s): s is string => s !== null && !isMechanicalDiligenceItem(s))
+      .slice(0, 5);
+  })();
+
+  // Contradictions from conviction_v1 only.
+  // conviction_v2.opposing_case is a challenge diagnostic (system text with verdict/ORS labels),
+  // not a user-facing contradiction — it must NOT appear in the contradiction renderer.
+  const contradictionsRaw: string[] = (() => {
+    const items = convictionV1?.contradictions ?? [];
+    if (!Array.isArray(items)) return [];
+    return items
+      .map((c: any) => asNES(typeof c === 'string' ? c : c?.description ?? c?.text))
+      .filter((s): s is string => s !== null)
+      .slice(0, 5);
+  })();
+
+  // Structured contradictions — preserve severity + evidence_refs for Phase 4B evidence tracing.
+  // diagnostic_type classifies each item as a 'risk' (execution/regulatory uncertainty) or
+  // 'contradiction' (two incompatible claims). Items with red_flag_* codes or risk keywords
+  // are risks — they must not be labelled as contradictions in the UI.
+  const structuredContradictions: Array<{ text: string; severity: string; evidence_refs: string[]; diagnostic_type: 'risk' | 'contradiction' }> = (() => {
+    const items = convictionV1?.contradictions ?? [];
+    const base: unknown[] = Array.isArray(items) ? items : [];
+    return base
+      .map((c: any) => {
+        const text = asNES(typeof c === 'string' ? c : c?.description ?? c?.text);
+        if (!text) return null;
+        const code = asNES(c?.code) ?? '';
+        const isRisk =
+          code.startsWith('red_flag') ||
+          /risk|regulatory|approval|timeline|uncertain|compliance|permit/i.test(code) ||
+          /risk|regulatory|approval|timeline|uncertain|compliance|permit/i.test(text);
+        return {
+          text,
+          severity: asNES(c?.severity) ?? 'low',
+          evidence_refs: Array.isArray(c?.evidence_refs) ? c.evidence_refs.filter((r: any) => typeof r === 'string') : [],
+          diagnostic_type: isRisk ? 'risk' : 'contradiction' as const,
+        };
+      })
+      .filter((c): c is { text: string; severity: string; evidence_refs: string[]; diagnostic_type: 'risk' | 'contradiction' } => c !== null)
+      .slice(0, 5);
+  })();
+
+  // Financial coverage field breakdown — investor-facing label + present/missing status.
+  // Derived from financial_coverage_v1.coverage boolean map.
+  const financialCoverageBreakdown: Array<{ field: string; label: string; present: boolean }> = (() => {
+    const cov = fc?.coverage as Record<string, boolean> | null | undefined;
+    if (!cov || typeof cov !== 'object') return [];
+    const FIELD_LABELS: Record<string, string> = {
+      historical_revenue_present:  'Historical Revenue',
+      burn_rate_present:           'Burn Rate',
+      runway_present:              'Runway',
+      cap_table_present:           'Cap Table',
+      cash_balance_present:        'Cash Balance',
+      audited_financials_present:  'Audited Financials',
+      customer_contracts_present:  'Customer Contracts',
+      cohort_retention_present:    'Cohort / Retention Data',
+    };
+    return Object.entries(cov).map(([field, present]) => ({
+      field,
+      label: FIELD_LABELS[field] ?? field.replace(/_present$/i, '').replace(/_/g, ' '),
+      present: present === true,
+    }));
+  })();
+
+  // Decision Proof Block inputs — from Stage 5 challenge_pass in report_payload
+  const challengePass: any = rpt.challenge_pass ?? null;
+  const primaryChallengeReason = asNES(challengePass?.primary_challenge_reason) ?? null;
+  const verdictResistanceScore = asFinite(challengePass?.verdict_resistance_score) ?? null;
+  const verdictResistanceLabel = asNES(challengePass?.verdict_resistance_label) ?? null;
+  const missingEvidenceItems: Array<{
+    evidence_type: string;
+    description: string;
+    verdict_sensitivity: string;
+    diligence_question: string;
+  }> = (() => {
+    const raw = challengePass?.missing_evidence;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((m: any) => m && asNES(m?.description))
+      .map((m: any) => ({
+        evidence_type: asNES(m?.evidence_type) ?? '',
+        description: asNES(m?.description) ?? '',
+        verdict_sensitivity: asNES(m?.verdict_sensitivity) ?? 'Medium',
+        diligence_question: asNES(m?.diligence_question) ?? '',
+      }));
+  })();
+
+  // claim_support_v1 items — primary source for Decision Proof Block.
+  // Extracted directly from report_payload; challenge_pass above is the fallback.
+  const claimSupportItems: Array<{
+    claim: string;
+    category: string;
+    status: 'supported' | 'incomplete' | 'missing' | 'contradicted';
+    reasons: string[];
+    evidence_refs: string[];
+  }> | null = (() => {
+    const raw = rpt.claim_support_v1?.items;
+    if (!Array.isArray(raw) || raw.length === 0) return null;
+    return raw
+      .filter((i: any) => i && asNES(i?.claim) && asNES(i?.status))
+      .map((i: any) => ({
+        claim: asNES(i.claim) ?? '',
+        category: asNES(i.category) ?? '',
+        status: i.status as 'supported' | 'incomplete' | 'missing' | 'contradicted',
+        reasons: Array.isArray(i.reasons) ? i.reasons.filter((r: any) => typeof r === 'string' && r.trim().length > 0) : [],
+        evidence_refs: Array.isArray(i.evidence_refs) ? i.evidence_refs.filter((r: any) => typeof r === 'string') : [],
+      }));
+  })();
+
+  // ── Signal Tension v1 ─────────────────────────────────────────────────────────
+  // All inputs are already resolved above — this is a pure composition step.
+  const _financialTruthBadge = deriveFinancialTruthBadge(rpt.financial_truth_summary ?? null);
+
+  const _conflictDetected = Boolean((meta as any)?.canonical_decision_v2?.conflict_detected);
+
+  const _narrativeContradictionCount = (() => {
+    const bundle = rpt.narrative_contradiction_bundle;
+    if (!bundle || typeof bundle !== 'object') return 0;
+    const TOPIC_KEYS = [
+      'product_differentiation',
+      'go_to_market_strategy',
+      'market_position',
+      'financial_outlook',
+      'capital_and_raise',
+      'traction',
+      'business_quality',
+    ] as const;
+    return TOPIC_KEYS.reduce((count, key) => {
+      const topic = (bundle as any)[key];
+      if (topic && (topic.status === 'conflicting' || topic.status === 'mixed')) return count + 1;
+      return count;
+    }, 0);
+  })();
+
+  const _missingCriticalCount = Array.isArray((integrity as any)?.missing_critical)
+    ? (integrity as any).missing_critical.length
+    : 0;
+
+  const _coverageRatioRaw = asFinite(fc?.coverage_ratio) ?? null;
+
+  const _contradictionIndex = asFinite(convictionV1?.contradiction_index_0_1) ?? null;
+
+  const _postureIsAdvancing = (() => {
+    if (!convictionPosture) return false;
+    const p = convictionPosture.toUpperCase();
+    return p !== 'PASS' && p !== 'HARD_PASS';
+  })();
+
+  const signalTension: SignalTensionResult | null = deriveSignalTension({
+    financialTruthTier:          _financialTruthBadge?.tier ?? null,
+    conflictDetected:            _conflictDetected,
+    verdictResistanceLabel:      verdictResistanceLabel,
+    verdictResistanceScore:      verdictResistanceScore,
+    contradictionIndex:          _contradictionIndex,
+    coverageRatio:               _coverageRatioRaw,
+    missingCriticalCount:        _missingCriticalCount,
+    narrativeContradictionCount: _narrativeContradictionCount,
+    postureIsAdvancing:          _postureIsAdvancing,
+  });
+
+  // ── TRACE: final resolved props at selector exit ─────────────────────────────
+  if (import.meta.env.DEV) {
+    console.group('[TRACE:selectWorkspaceRedesignedShellProps] final resolved props (selector exit)');
+    console.log('product (overviewVM.keyFacts.product):', product?.value ?? product);
+    console.log('market  (overviewVM.keyFacts.market): ', market?.value ?? market);
+    console.log('raiseTerms:', raiseTerms?.value ?? raiseTerms);
+    console.log('investmentSnapshotBody:', investmentSnapshotBody);
+    console.log('[V2] evidenceQualityLabel:', evidenceQualityLabel);
+    console.log('[V2] convictionScoreSource:', convictionScoreSource, '| bqV2Score:', _bqV2Score);
+    console.log('[V2] canonical_decision_v2:', (meta as any)?.canonical_decision_v2 ?? null);
+    console.groupEnd();
+  }
+
+  return {
+    // identity
+    companyName,
+    dealType,
+    stage,
+    raise,
+    raiseNullRule,
+    lastAnalyzedAt,
+
+    // conviction
+    investmentSnapshotBody,
+    product,
+    market,
+    businessModel: bm,
+    raiseTerms,
+    teamHighlights: overviewVM.rcS6.teamHighlights,
+    useOfFunds: overviewVM.rcS6.useOfFunds,
+    projectPipeline: overviewVM.rcS6.projectPipeline,
+    revenueModel: overviewVM.rcS6.revenueModel,
+    convictionScore,
+    convictionBand,
+    convictionPosture,
+    convictionHeadline,
+    convictionRationale,
+    convictionProvisional,
+    topPositiveContributors,
+    topNegativeContributors,
+    requiredNextChecks,
+    financialNarrative,
+    financialCurrentStateSummary,
+    financialBurnRunwaySummary,
+    underwritingNarrative,
+
+    // financial
+    financialTruthBadge: _financialTruthBadge,
+    signalTension,
+    financialTiles,
+    financialCoverage,
+    underwritingReadiness,
+    financialIntegrityStatus,
+
+    // risk
+    redFlags,
+    blockerCount,
+    openQuestions: diligenceItems,
+    contradictions: contradictionsRaw,
+    structuredContradictions,
+    financialCoverageBreakdown,
+
+    // workbench
+    deepDiveReady,
+    insightsReady,
+    primaryChallengeReason,
+    verdictResistanceScore,
+    verdictResistanceLabel,
+    missingEvidenceItems,
+    claimSupportItems,
+  };
+}

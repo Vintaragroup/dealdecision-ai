@@ -27,6 +27,13 @@ export * from './scoring/scoring-input-v0';
 export * from './scoring/score-bands-v2';
 export * from './scoring/decision-v1';
 export * from './scoring/vc-scoring-v2';
+export * from './scoring/vc-venture-lens-v1';
+export * from './scoring/canonical-decision';
+export * from './models/scoring-v2-stubs';
+// Phase 2: fully-computed V2 scoring modules
+export * from './scoring/business-quality-v2';
+export * from './scoring/evidence-quality-v2';
+export * from './scoring/conviction-v2';
 export * from './classification/content-archetypes';
 export * from './classification/business-model-arbitrator';
 export * from './classification/policy-aware-schema';
@@ -157,6 +164,19 @@ export * from "./services/purge-deal-cascade";
 
 // Reports
 export { compileDIOToReport, compileDIOToReportWithPromotedFacts } from "./reports/compiler-simple";
+export {
+  applyFieldAuthorityGuards,
+  applyStructuredSummaryFillIns,
+} from "./reports/field-authority-guard";
+export type {
+  FieldAuthorityGuardContext,
+  FieldAuthorityGuardResult,
+  GuardDecision,
+  GuardRejectionReason,
+  GuardAuthorityTier,
+} from "./reports/field-authority-guard";
+export { classifyDocumentFamily, isForbiddenFamily } from "./reports/document-authority-tiers";
+export type { DocumentFamily, DocumentMeta } from "./reports/document-authority-tiers";
 export { buildConvictionV1 } from "./reports/conviction-v1";
 export { detectFinancialSnapshotStaleness } from "./reports/financial-snapshot-staleness";
 export type { FinancialSnapshotStalenessResult } from "./reports/financial-snapshot-staleness";
@@ -170,8 +190,26 @@ export type {
   ConvictionRequiredCheckV1,
   ConvictionLineageV1,
 } from "./models/conviction-v1";
+export type {
+  InvestmentInterpretationV1,
+  InvestmentInterpretationSectionV1,
+  InvestmentInterpretationSectionId,
+  InvestmentInterpretationConfidence,
+  InvestmentInterpretationSourceQuality,
+  InvestmentInterpretationStatus,
+  SectionEvidenceFit,
+  SectionEvidenceContaminationFlag,
+  SectionEvidenceHygieneV1,
+} from './models/investment-interpretation-v1';
+export type {
+  NarrativeQualityValidationV1,
+  NarrativeQualityCheckResult,
+  NarrativeQualityValidationStatus,
+} from './models/narrative-quality-validation-v1';
 export { buildDeterministicDealSummaryV1FromStructuredSummary } from "./reports/deal-summary-v1-deterministic";
 export { buildInvestmentAnalysisOverviewV2 } from "./reports/investment-analysis-overview-v2";
+export { buildClaimSupportV1 } from "./reports/claim-support-v1";
+export type { ClaimSupportV1, ClaimSupportItemV1, ClaimSupportCategory, ClaimSupportStatus } from "./reports/claim-support-v1";
 export {
   buildDealDeepDiveV1,
   generateDeepDiveDiscoverySectionV1,

@@ -81,6 +81,13 @@ export const FinancialIntegrityV1Schema = z.object({
   completeness_score: z.number().min(0).max(100).nullable(),
 
   /**
+   * Normalized 0–100 score for uniform module scoring interface.
+   * Alias for completeness_score. null when facts are insufficient.
+   * Used by the report compiler to blend financial data quality into overallScore.
+   */
+  score: z.number().min(0).max(100).nullable().optional(),
+
+  /**
    * Critical fact_types that are absent from financial_facts_v1.
    * Missing critical facts have a high impact on completeness_score.
    * Examples: 'total_revenue', 'burn_rate', 'cash_on_hand'

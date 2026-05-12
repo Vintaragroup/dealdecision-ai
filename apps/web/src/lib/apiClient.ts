@@ -1578,6 +1578,8 @@ export type DealReport = {
   financial_breakdown_v1?: Record<string, unknown> | null;
   /** Underwriting readiness v1: status, score (0-100), gaps, narrative. null when not computed. */
   underwriting_readiness_v1?: Record<string, unknown> | null;
+  /** Decision readiness classification: deterministic investment-readiness bucket. */
+  decision_readiness?: DecisionReadinessResult | null;
 };
 
 export type DealReportEnvelope =
@@ -1630,6 +1632,36 @@ export async function apiGetDealReportNarrated(
   opts?: { version?: number | null }
 ): Promise<DealReportEnvelope> {
   return apiGetDealReportInternal(dealId, { narrate: true, version: opts?.version ?? null });
+}
+
+export type EvidenceResolveResult = {
+  id: string;
+  ok: boolean;
+  resolvable?: boolean;
+  document_id?: string;
+  document_title?: string;
+  page?: number;
+  snippet?: string;
+};
+
+/**
+ * Resolve evidence IDs to citations (document, page, snippet) via the backend.
+ * Calls GET /api/v1/evidence/resolve?ids=...
+ * Silently returns empty results on error so the drawer degrades gracefully.
+ */
+export async function apiResolveEvidenceIds(
+  ids: string[]
+): Promise<EvidenceResolveResult[]> {
+  if (!ids || ids.length === 0) return [];
+  const unique = Array.from(new Set(ids)).slice(0, 100);
+  try {
+    const result = await request<{ results: EvidenceResolveResult[] }>(
+      `/api/v1/evidence/resolve?ids=${encodeURIComponent(unique.join(','))}`
+    );
+    return Array.isArray(result?.results) ? result.results : [];
+  } catch {
+    return [];
+  }
 }
 
 export type PersistedGovernedOverlayOverview = {
@@ -1869,6 +1901,37 @@ export async function apiGetDealAnalysisDiagnostics(
 
 export async function apiGetDealDeepDive(dealId: string): Promise<DealDeepDiveResponse> {
   return request<DealDeepDiveResponse>(`/api/v1/deals/${dealId}/deep-dive`);
+}
+
+export interface DealIntelligenceRecord {
+  id: string;
+  deal_id: string;
+  intelligence_run_id: string;
+  verdict: string | null;
+  verdict_resistance_score: number;
+  verdict_resistance_label: string;
+  primary_challenge_reason: string;
+  opposing_case_summary: string;
+  challenge_factors: unknown[];
+  overconfident_claims: unknown[];
+  missing_evidence: unknown[];
+  diligence_gaps: unknown[];
+  flag_count_critical: number;
+  flag_count_error: number;
+  flag_count_warn: number;
+  memory_challenge_used: boolean;
+  memory_challenge_summary: string | null;
+  contradiction_explanations: unknown[];
+  created_at: string;
+  updated_at: string;
+}
+
+export async function apiGetDealIntelligence(
+  dealId: string
+): Promise<{ data: DealIntelligenceRecord[]; count: number }> {
+  return request<{ data: DealIntelligenceRecord[]; count: number }>(
+    `/api/v1/deals/${dealId}/intelligence`
+  );
 }
 
 const inFlightDealReportRequests = new Map<string, Promise<DealReportEnvelope>>();
@@ -2577,6 +2640,37 @@ export async function apiGetInvestorInsights(dealId: string): Promise<InvestorIn
  * Minimal web-side type for the ddai_orchestrator_report_v1 JSON contract.
  * Mirrors packages/core OrchestratorReportV1 without a direct import dependency.
  */
+
+// ─── Canonical Decision (mirrors packages/core CanonicalDecision) ────────────
+
+/** 5-band canonical verdict — source of truth for all user-facing decision displays. */
+export type CanonicalVerdictWeb =
+  | 'strong_yes'
+  | 'yes'
+  | 'watch'
+  | 'pass'
+  | 'strong_pass';
+
+/**
+ * Unified decision output from resolveCanonicalDecision().
+ * Absent on cached reports generated before this field was added.
+ */
+export type CanonicalDecisionWeb = {
+  score: number;
+  verdict: CanonicalVerdictWeb;
+  confidence: number;
+  drivers: string[];
+  risks: string[];
+  conflict_detected: boolean;
+  resolver_note: string;
+  source_breakdown: {
+    overall_score?: number | null;
+    ORS?: number | null;
+    venture_lens?: number | null;
+    vc_composite?: number | null;
+  };
+};
+
 export type OrchestratorReportDecision = {
   label: 'GO' | 'CONSIDER' | 'NO_GO';
   confidence_band: 'High' | 'Medium' | 'Low';
@@ -2655,6 +2749,32 @@ export type OrchestratorReportV1 = {
   diagnostics: {
     warnings: string[];
     inputs_present: Record<string, boolean>;
+  };
+  /**
+   * Canonical Decision — unified resolver output from resolveCanonicalDecision().
+   * This is the primary source of truth for all user-facing score/verdict displays.
+   * Absent on older cached reports; UI must fall back to decision.label / scores.
+   */
+  canonical_decision?: CanonicalDecisionWeb | null;
+  /**
+   * Venture Lens V1 — conviction scoring layer on top of V2.
+   * Five venture dimensions: Team · Market · Product · Traction · Upside.
+   * Optional: absent on older cached reports compiled before this field was added.
+   */
+  venture_lens_v1?: {
+    venture_score: number;
+    conviction_level: 'LOW' | 'MEDIUM' | 'HIGH';
+    adjustment: number;
+    final_investment_score: number;
+    final_posture: 'PASS' | 'MONITOR' | 'INVESTIGATE' | 'HIGH_PRIORITY_DILIGENCE' | 'INVESTABLE';
+    reasons: string[];
+    breakdown: {
+      team: number;
+      market: number;
+      product: number;
+      traction: number;
+      upside: number;
+    };
   };
   /**
    * VC Scoring V2 — parallel investment posture track.
@@ -3708,5 +3828,154 @@ export async function apiGetProfileStats(): Promise<{ dealCount: number; documen
   if (!res.ok) throw new Error(`profile/stats ${res.status}`);
   return res.json();
 }
+
+// ─── Stage 5 Intelligence Debug ──────────────────────────────────────────────
+// Internal-only. Returned by GET /api/v1/debug/deals/:dealId/intelligence.
+// Gated on debugRoutesEnabled server-side and workspaceDebugEnabled client-side.
+// Memory influence is a secondary signal — it does not change ORS or overwrite verdicts.
+
+export type IntelligenceDebugPenalty = {
+  reason: string;
+  penalty: number;
+  code?: string;
+};
+
+export type IntelligenceDebugConfidence = {
+  intelligence_run_id: string;
+  overall_confidence_score: number | null;
+  overall_confidence_band: string | null;
+  memory_adjustment: number | null;
+  memory_adjustment_reason: string | null;
+  penalty_count: number | null;
+  total_penalty: number | null;
+  penalties_applied: IntelligenceDebugPenalty[] | null;
+  created_at: string | null;
+};
+
+export type IntelligenceDebugChallengeFactor = {
+  code: string;
+  severity: 'Critical' | 'High' | 'Medium' | 'Low';
+  title: string;
+  explanation: string;
+};
+
+export type IntelligenceDebugChallenge = {
+  intelligence_run_id: string;
+  verdict_resistance_score: number | null;
+  verdict_resistance_label: string | null;
+  flag_count_critical: number | null;
+  flag_count_error: number | null;
+  flag_count_warn: number | null;
+  missing_evidence_count: number | null;
+  diligence_gaps_count: number | null;
+  memory_challenge_used: boolean | null;
+  memory_challenge_summary: string | null;
+  primary_challenge_reason: string | null;
+  challenge_factors: IntelligenceDebugChallengeFactor[] | null;
+  created_at: string | null;
+};
+
+export type IntelligenceDebugMemory = {
+  similar_deal_count: number | null;
+  avg_similarity_pct: number | null;
+  memory_support_signal: boolean | null;
+  memory_fragility_signal: boolean | null;
+  verdict_agreement_fraction: number | null;
+  neighbor_snapshots: unknown[] | null;
+};
+
+export type IntelligenceDebugPayload = {
+  deal_id: string;
+  run_id: string | null;
+  confidence: IntelligenceDebugConfidence | null;
+  challenge: IntelligenceDebugChallenge | null;
+  memory: IntelligenceDebugMemory | null;
+  _meta: {
+    has_confidence_table: boolean;
+    has_challenge_table: boolean;
+  };
+};
+
+export async function apiGetIntelligenceDebug(dealId: string): Promise<IntelligenceDebugPayload> {
+  return request<IntelligenceDebugPayload>(`/api/v1/debug/deals/${dealId}/intelligence`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Admin — Cross-Deal Intelligence Patterns
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type DecisionReadiness = 'NOT_INVESTABLE' | 'NOT_READY' | 'CONDITIONAL' | 'INVESTABLE';
+
+export type DecisionReadinessResult = {
+  readiness: DecisionReadiness;
+  reason: string;
+  signals: string[];
+  next_actions: string[];
+};
+
+export type CrossDealPatternEntry = {
+  code: string;
+  label: string;
+  deal_count: number;
+  severity: string | null;
+  example_deals: { id: string; name: string; score: number | null }[];
+  why_it_matters: string;
+};
+
+export type CrossDealFragileDeal = {
+  deal_id: string;
+  deal_name: string;
+  score: number | null;
+  conviction_score: number | null;
+  conviction_band: string | null;
+  confidence: number | null;
+  resistance_label: string | null;
+  top_reason: string | null;
+  fragility_signals: string[];
+  readiness: DecisionReadiness | null;
+};
+
+export type CommonNextActionEntry = {
+  action: string;
+  deal_count: number;
+  example_deal_names: string[];
+};
+
+export type CommonNextActionsForBucket = {
+  readiness: DecisionReadiness;
+  actions: CommonNextActionEntry[];
+};
+
+export type CrossDealPatternsPayload = {
+  generated_at: string;
+  total_deals_in_portfolio: number;
+  deals_with_reports: number;
+  deals_with_challenge_data: number;
+  fragile_deal_count: number;
+  patterns: {
+    top_contradictions: CrossDealPatternEntry[];
+    top_contradiction_explanations: CrossDealPatternEntry[];
+    top_missing_evidence: CrossDealPatternEntry[];
+    top_confidence_asks: CrossDealPatternEntry[];
+    top_challenge_factors: CrossDealPatternEntry[];
+    top_unknowns: CrossDealPatternEntry[];
+  };
+  fragile_deals: CrossDealFragileDeal[];
+  conviction_band_distribution: { band: string; count: number; pct: number }[];
+  verdict_distribution: { verdict: string; count: number; pct: number }[];
+  readiness_distribution: { readiness: DecisionReadiness; count: number; pct: number }[];
+  common_next_actions_by_bucket: CommonNextActionsForBucket[];
+  narrative: {
+    most_common_blocker: string;
+    most_common_missing: string;
+    most_common_contradiction: string;
+    portfolio_health_summary: string;
+  };
+};
+
+export async function apiAdminGetCrossDealPatterns(): Promise<CrossDealPatternsPayload> {
+  return request<CrossDealPatternsPayload>('/api/v1/admin/cross-deal/patterns');
+}
+
 
 export type { Deal };

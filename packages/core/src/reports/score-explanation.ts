@@ -2131,6 +2131,23 @@ const getAnalyzerNumericScore = (key: ScoreComponentKey, results: any): number |
 export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): ScoreExplanation {
   const results: any = (dio as any).analyzer_results || {};
   const ctx = (dio as any).dio_context;
+  // RC-DEALTYPE-CORRECT: fix stale dio_context.deal_type by preferring phase1 authoritative value.
+  // dio_context is persisted at ingestion time and can carry wrong classifications (e.g. fund_spv
+  // on a startup pitch). Phase 1 deal_overview_v2.deal_type / executive_summary_v1.deal_type are
+  // extracted directly from the document and reflect the actual deal structure.
+  // Applied only to context (display + policy routing) — scoring weights already use
+  // deal_classification_v1 policy when present and are unaffected.
+  const _phase1DealType =
+    (dio as any)?.dio?.phase1?.deal_overview_v2?.deal_type ??
+    (dio as any)?.dio?.phase1?.executive_summary_v1?.deal_type ?? null;
+  const _ctxCorrected =
+    _phase1DealType &&
+    typeof _phase1DealType === 'string' &&
+    _phase1DealType.toLowerCase() !== 'unknown' &&
+    ctx && typeof ctx === 'object' &&
+    (ctx as any).deal_type !== _phase1DealType
+      ? { ...(ctx as any), deal_type: _phase1DealType }
+      : ctx;
   const docInventory = buildDocInventory(dio);
 
   const inputDocuments: any[] = Array.isArray((dio as any)?.inputs?.documents) ? (dio as any).inputs.documents : [];
@@ -2760,7 +2777,7 @@ export function buildScoreExplanationFromDIO(dio: DealIntelligenceObject): Score
   };
 
   const baseExplanation: ScoreExplanation = {
-    context: ctx,
+    context: _ctxCorrected,
     understanding_v1: undefined,
     aggregation: {
       method: "weighted_mean",

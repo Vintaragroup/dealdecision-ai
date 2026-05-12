@@ -37,7 +37,6 @@ import {
 	getDocumentsForDealWithAnalysis,
 	getEvidenceDocumentIds,
 	updateDocumentVerification,
-	saveIngestionReport,
 	getDocumentsByIds,
 	getDocumentsForDealWithVerification,
 	insertDocumentExtractionAudit,
@@ -82,7 +81,6 @@ import { normalizeToCanonical } from "./lib/normalization";
 import { processDocument } from "./lib/processors";
 import { verifyDocumentExtraction } from "./lib/verification";
 import { remediateStructuredData } from "./lib/remediation";
-import { persistPdfV2TextRegionAssetsV1Shadow } from "./lib/pdf_v2/pdf-text-region-assets-v1";
 import os from "os";
 import { loadOriginalBytesFromDocumentStorage } from "./lib/ingest/from-storage";
 import { assertProductionStorageContract, getDocumentStorageMode, getR2BucketIfEnabled, resolveR2Endpoint } from "./lib/document-storage-mode";
@@ -162,8 +160,6 @@ let isShuttingDown = false;
 let handlersRegistered = false;
 
 import { computeAndPersistVisionRoutingV1 } from "./lib/vision-routing";
-import { persistPdfPageUnderstandingV1Shadow } from "./lib/pdf_v2/page-understanding-v1";
-import { applySlideUnderstandingV1Shadow } from "./lib/pdf_v2/slide-understanding-v1";
 import { parseIngestDocumentsJobData, validateIngestDocumentsPayload } from "./lib/ingest/ingest-payload";
 import { buildPhase1DealOverviewV2, buildPhase1DealUnderstandingV1, buildPhase1UpdateReportV1 } from "./lib/phase1/dealOverviewV2";
 import { computeVisualQualityAuditForDeal } from "./lib/visual-quality-audit";
@@ -351,60 +347,6 @@ function computeCompleteness(analysis: DocumentAnalysis) {
 
 	const reason = `summary=${summaryLen} chars, headings=${headings}, metrics=${metrics}, score=${score.toFixed(2)}`;
 	return { score, reason, summaryLen, headings, metrics };
-}
-
-function safeJsonParseObject(raw: string): Record<string, unknown> | null {
-	const trimmed = (raw ?? "").trim();
-	if (!trimmed) return null;
-	try {
-		const parsed = JSON.parse(trimmed);
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-	} catch {
-		// Best-effort recovery: extract first {...} block.
-		const start = trimmed.indexOf("{");
-		const end = trimmed.lastIndexOf("}");
-		if (start >= 0 && end > start) {
-			const candidate = trimmed.slice(start, end + 1);
-			try {
-				const parsed = JSON.parse(candidate);
-				return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-			} catch {
-				return null;
-			}
-		}
-		return null;
-	}
-}
-
-async function failLatestIngestJob(documentId: string) {
-	const pool = getPool();
-	try {
-		const { rows } = await pool.query<{ job_id: string }>(
-			`SELECT job_id
-			   FROM jobs
-			  WHERE status <> 'succeeded'
-			    AND (status_detail->'progress'->>'document_id') = $1
-			  ORDER BY updated_at DESC
-			  LIMIT 1`,
-			[sanitizeText(documentId)]
-		);
-		const jobId = rows?.[0]?.job_id;
-		if (!jobId) return;
-		await pool.query(
-			`UPDATE jobs
-				SET status = 'failed',
-				    message = 'reconciled_pdf_ingest_restart',
-				    updated_at = now()
-			 WHERE job_id = $1`,
-			[sanitizeText(jobId)]
-		);
-	} catch (err) {
-		console.warn(
-			`[reconcile_ingest] failLatestIngestJob skipped doc=${documentId}: ${
-				err instanceof Error ? err.message : String(err)
-			}`
-		);
-	}
 }
 
 async function ensureNeedsOcrFlowEnqueued(params: {
@@ -1705,128 +1647,6 @@ function assertRequiredQueuesRegistered() {
 	}
 }
 
-registerWorker("reconcile_ingest", async (job: Job) => {
-	const data = (job.data ?? {}) as { deal_id?: string; document_ids?: string[] };
-	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
-	const limitToDocs = Array.isArray(data.document_ids)
-		? data.document_ids.filter((d) => typeof d === "string" && d.trim().length > 0)
-		: [];
-
-	if (!dealId) {
-		await updateJob(job, "failed", "Missing deal_id");
-		return { ok: false, reason: "missing_deal_id" };
-	}
-
-	await updateJob(job, "running", "Reconciling PDF ingest", 5);
-
-	const pool = getPool();
-	const candidates: Array<{
-		id: string;
-		deal_id: string;
-		title: string | null;
-		type: string | null;
-		status: string | null;
-		page_count: number | null;
-		extraction_metadata: unknown | null;
-		file_name: string | null;
-		mime_type: string | null;
-		has_bytes: boolean;
-	}> = [];
-
-	try {
-		const { rows } = await pool.query(
-			`SELECT d.id,
-			        d.deal_id,
-			        d.title,
-			        d.type,
-			        d.status,
-			        d.page_count,
-			        d.extraction_metadata,
-			        df.file_name,
-			        df.mime_type,
-			        (b.bytes IS NOT NULL AND octet_length(b.bytes) > 0) AS has_bytes
-			   FROM documents d
-			   LEFT JOIN document_files df ON df.document_id = d.id
-			   LEFT JOIN document_file_blobs b ON b.sha256 = df.sha256
-			  WHERE d.deal_id = $1
-			    AND (
-			      lower(coalesce(d.type, '')) LIKE '%pdf%'
-			      OR lower(coalesce(df.mime_type, '')) LIKE '%pdf%'
-			      OR lower(coalesce(df.file_name, '')) LIKE '%.pdf'
-			    )
-			    AND (
-			      d.status IN ('pending','processing')
-			      OR COALESCE(d.page_count, 0) <= 0
-			      OR d.extraction_metadata IS NULL
-			    )
-			    AND ($2::uuid[] = '{}'::uuid[] OR d.id = ANY($2::uuid[]))`,
-			[dealId, limitToDocs.length > 0 ? limitToDocs : []]
-		);
-		for (const row of rows ?? []) candidates.push(row as any);
-	} catch (err) {
-		await updateJob(job, "failed", err instanceof Error ? err.message : "reconcile query failed", 100);
-		return { ok: false, error: err instanceof Error ? err.message : String(err) };
-	}
-
-	if (candidates.length === 0) {
-		await updateJob(job, "succeeded", "No PDF documents to reconcile", 100);
-		return { ok: true, reconciled: 0, skipped_no_bytes: 0 };
-	}
-
-	const ingestQueue = getQueue("ingest_documents");
-	let reconciled = 0;
-	let skippedNoBytes = 0;
-
-	for (const doc of candidates) {
-		const hasBytes = !!doc.has_bytes;
-		if (!hasBytes) {
-			skippedNoBytes += 1;
-			console.warn(
-				`[reconcile_ingest] missing original bytes doc=${doc.id} status=${doc.status ?? ""}`
-			);
-			continue;
-		}
-
-		try {
-			await insertDocumentExtractionAudit({
-				documentId: doc.id,
-				dealId: doc.deal_id,
-				structuredData: null,
-				extractionMetadata: doc.extraction_metadata,
-				fullContent: null,
-				fullText: null,
-				verificationStatus: null,
-				verificationResult: null,
-				reason: "reconcile_pdf_ingest",
-				triggeredByJobId: job.id ? String(job.id) : undefined,
-			});
-		} catch {
-			// audit is best-effort
-		}
-
-		await failLatestIngestJob(doc.id);
-		await updateDocumentStatus(doc.id, "pending");
-		const name = typeof doc.file_name === "string" && doc.file_name.trim() ? doc.file_name : `${doc.id}.pdf`;
-		await enqueuePersistedJob({
-			type: "ingest_documents",
-			deal_id: doc.deal_id,
-			document_id: doc.id,
-			payload: { document_id: doc.id, deal_id: doc.deal_id, file_name: name, mode: "from_storage", attempt: 1 },
-			parent_job_id: job.id ? String(job.id) : null,
-		});
-		reconciled += 1;
-	}
-
-	await updateJob(
-		job,
-		"succeeded",
-		`Requeued ${reconciled} pdf(s); skipped_no_bytes=${skippedNoBytes}`,
-		100
-	);
-
-	return { ok: true, reconciled, skipped_no_bytes: skippedNoBytes };
-});
-
 registerWorker("ingest_documents", ingestDocumentProcessor);
 registerWorker("render_document_pages", renderDocumentPagesProcessor);
 
@@ -1856,77 +1676,6 @@ registerWorker("deep_scan_visuals", deepScanVisualsProcessor);
 
 registerWorker("fetch_evidence", fetchEvidenceProcessor);
 registerWorker("analyze_deal", analyzeDealProcessor);
-
-registerWorker("orchestration", async (job: Job) => {
-	const data = (job.data ?? {}) as Record<string, unknown>;
-	const dealId = typeof data.deal_id === "string" ? data.deal_id : undefined;
-	const leafQueues: Array<Parameters<typeof getQueue>[0]> = [
-		"ingest_documents",
-		"extract_visuals",
-		"fetch_evidence",
-		"analyze_deal",
-		"verify_documents",
-		"remediate_extraction",
-		"reextract_documents",
-	];
-
-	const resolveTargetQueue = (): Parameters<typeof getQueue>[0] | null => {
-		switch (job.name) {
-			case "analyze-deal":
-			case "run-pipeline":
-				return "analyze_deal";
-			default: {
-				const explicit = typeof (data as any).target_queue === "string" ? (data as any).target_queue : null;
-				return leafQueues.includes(explicit as any) ? (explicit as Parameters<typeof getQueue>[0]) : null;
-			}
-		}
-	};
-
-	const targetQueue = resolveTargetQueue();
-	if (!targetQueue) {
-		console.warn(
-			JSON.stringify({
-				event: "orchestration_unhandled_job",
-				job_id: job.id,
-				job_name: job.name,
-				deal_id: dealId ?? null,
-				reason: "unsupported_job_name",
-			})
-		);
-		return { ok: false, reason: "unsupported_job_name" };
-	}
-
-	const queue = getQueue(targetQueue);
-	console.log(
-		JSON.stringify({
-			event: "orchestration_dispatch",
-			job_id: job.id,
-			job_name: job.name,
-			deal_id: dealId ?? null,
-			target_queue: targetQueue,
-		})
-	);
-
-	const forwarded = await queue.add(targetQueue, { ...data }, {
-		removeOnComplete: true,
-		removeOnFail: false,
-		attempts: 3,
-		backoff: { type: "exponential", delay: 1000 },
-	});
-
-	console.log(
-		JSON.stringify({
-			event: "orchestration_forwarded",
-			job_id: job.id,
-			job_name: job.name,
-			forwarded_job_id: forwarded.id,
-			forwarded_queue: targetQueue,
-			deal_id: dealId ?? null,
-		})
-	);
-
-	return { ok: true, forwarded_job_id: forwarded.id, forwarded_queue: targetQueue };
-});
 
 /**
  * Verification job: Runs after extraction to verify data quality and readiness
@@ -2079,130 +1828,6 @@ registerWorker("reextract_documents", async (job: Job) => {
 registerWorker("document_intelligence_extract", async (job: Job) => {
 	return await documentIntelligenceExtractProcessor(job);
 });
-
-/**
- * Ingestion report job: Generates summary report after all docs are extracted and verified
- */
-registerWorker("generate_ingestion_report", async (job: Job) => {
-	const dealId = (job.data as { deal_id?: string } | undefined)?.deal_id;
-	const documentIds = (job.data as { document_ids?: string[] } | undefined)?.document_ids;
-
-	if (!dealId || !documentIds || documentIds.length === 0) {
-		await updateJob(job, "failed", "Missing deal_id or document_ids");
-		return { ok: false };
-	}
-
-	try {
-		await updateJob(job, "running", "Generating ingestion report...", 20);
-
-		const documents = await getDocumentsByIds(documentIds);
-
-		const documentSummaries = documents.map(doc => {
-			const structuredData = doc.structured_data as any;
-			const extractionMetadata = doc.extraction_metadata as any;
-			const verificationResult = doc.verification_result as VerificationResult | null;
-
-			return {
-				title: doc.title,
-				type: doc.type,
-				status: doc.status,
-				verification_status: doc.verification_status,
-				pages: doc.page_count || 0,
-				file_size_bytes: extractionMetadata?.fileSizeBytes || 0,
-				extraction_quality_score: (verificationResult?.overall_score ?? 0.5),
-				metrics_extracted: structuredData?.keyMetrics?.length || 0,
-				sections_found: structuredData?.mainHeadings?.length || 0,
-				ocr_avg_confidence: verificationResult?.quality_checks?.ocr_confidence?.avg || 100,
-				verification_warnings: verificationResult?.warnings || [],
-			};
-		});
-
-		// Calculate overall metrics
-		const totalPages = documents.reduce((sum, d) => sum + (d.page_count || 0), 0);
-		const totalMetrics = documents.reduce((sum, d) => {
-			const sd = d.structured_data as any;
-			return sum + (sd?.keyMetrics?.length || 0);
-		}, 0);
-		const totalSections = documents.reduce((sum, d) => {
-			const sd = d.structured_data as any;
-			return sum + (sd?.mainHeadings?.length || 0);
-		}, 0);
-		const avgQualityScore = documents.length > 0
-			? documentSummaries.reduce((sum, d) => sum + d.extraction_quality_score, 0) / documents.length
-			: 0;
-
-		// Determine overall readiness
-		const verifiedCount = documents.filter(d => d.verification_status === "verified").length;
-		const warningCount = documents.filter(d => d.verification_status === "warnings").length;
-		const failedCount = documents.filter(d => d.verification_status === "failed").length;
-
-		let overallReadiness: "ready" | "needs_review" | "failed" = "ready";
-		let readinessDetails = "All documents verified and ready for analysis";
-
-		if (failedCount > 0) {
-			overallReadiness = "failed";
-			readinessDetails = `${failedCount} document(s) failed verification. Please review and re-upload.`;
-		} else if (warningCount > 0) {
-			overallReadiness = "needs_review";
-			readinessDetails = `${warningCount} document(s) have warnings. Review before proceeding.`;
-		}
-
-		const summary = {
-			files_uploaded: documentIds.length,
-			total_pages: totalPages,
-			total_metrics: totalMetrics,
-			total_sections: totalSections,
-			avg_quality_score: avgQualityScore,
-			documents: documentSummaries,
-			overall_readiness: overallReadiness,
-			readiness_details: readinessDetails,
-			verification_summary: {
-				verified: verifiedCount,
-				warnings: warningCount,
-				failed: failedCount,
-			},
-			completed_at: new Date().toISOString(),
-			next_steps: overallReadiness === "ready"
-				? "Proceed to deal analysis with uploaded documents"
-				: "Address warnings/failures before proceeding",
-		};
-
-		const reportId = randomUUID();
-		await saveIngestionReport({
-			reportId,
-			dealId,
-			analysisVersion: 0,
-			summary,
-			documentIds,
-		});
-
-		// Update all documents with ingestion summary
-		for (const doc of documents) {
-			const pool = getPool();
-			await pool.query(
-				`UPDATE documents SET ingestion_summary = $2 WHERE id = $1`,
-				[doc.id, summary]
-			);
-		}
-
-		await updateJob(
-			job,
-			"succeeded",
-			`Report generated: ${verifiedCount} verified, ${warningCount} warnings, ${failedCount} failed`,
-			100
-		);
-
-		console.log(`[generate_ingestion_report] deal=${dealId} report_id=${reportId} readiness=${overallReadiness}`);
-
-		return { ok: true, report_id: reportId, summary };
-	} catch (err) {
-		const message = err instanceof Error ? err.message : "Report generation failed";
-		await updateJob(job, "failed", message);
-		console.error(`[generate_ingestion_report] error:`, err);
-		throw err;
-	}
-});
-
 
 // Investor Insight Engine – Stage 0 (PR1)
 // Queue: "investor_insights" | Job: "generate_investor_insights" | Concurrency: 1

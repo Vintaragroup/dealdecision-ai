@@ -1,0 +1,354 @@
+{
+  "deal_name": "Magarian Fund",
+  "deal_id": "0e8fa8ae-94fa-4ab7-ab66-39c07651d089",
+  "_synthetic": false,
+  "mode": "real_document",
+  "source_type": "pdf",
+  "_schema": "deal_understanding_ground_truth_v1",
+  "ground_truth": {
+    "what_company_does": "Magarian Fund, LP is a long-biased, fundamentals-driven concentrated equity hedge fund managed by Pine Valley Investments (PVI), an RIA founded in 2015. The fund targets mispriced and dislocated assets in global equity markets through fundamental research, macroeconomic themes, and options-based risk management.",
+    "problem": "Magarian Fund, LP is a concentrated, long-biased equity hedge fund managed by Pine Valley Investments, delivering 762% net returns since April 2019 through contrarian, fundamental value investing.",
+    "solution": "The fund uses a 4-pillar process (Discipline, Checks & Balances, Engagement, Risk Mitigation) with an 8-16 position portfolio, macroeconomic overlay, and options-based hedging to identify and hold mispriced equities over a 12-24 month horizon.",
+    "why_now": "Accredited investors and institutional allocators seeking long-biased, fundamentals-driven equity exposure with a value and contrarian approach, comfortable with concentrated portfolios seeking alpha generation.",
+    "business_model": "Hedge fund LP structure. Class A investors pay a 1.20% annual management fee and a 15% incentive fee with a 6% hurdle rate, subject to a high water mark. GP co-invests alongside LPs. Minimum investment $1,000,000.",
+    "revenue_model": "Management fee (1.20% per year) and performance/incentive fee (15% above a 6% hurdle rate), with high water mark protection for LPs.",
+    "traction_summary": "762.05% total net return since inception (April 2019) vs S&P 500 151.71%; 610.34% outperformance vs benchmark; 39.29% annualized net return (5Y); YTD 2025 74.35%; $222mm+ AUM across hedge fund ($57mm) and Legacy SMA ($165mm); PVI manages $2.5B overall.",
+    "risks": "Concentrated portfolio (8-16 positions) with up to 25% single-stock limit creates meaningful idiosyncratic risk. Regulatory requirements as an SEC-registered RIA managing an LP structure. Long-biased net exposure (80-120%) carries material market risk despite options hedging.",
+    "target_customer": "Accredited investors and institutional allocators seeking concentrated, long-biased equity exposure with a contrarian, value-oriented approach. Minimum investment $1,000,000.",
+    "go_to_market": "LP subscriptions and institutional investor relationships; the fund targets accredited and institutional allocators through direct outreach and investor relations.",
+    "market_positioning": "Long-biased equity hedge fund positioned as a high-conviction, concentrated value and contrarian strategy with a verified track record of 762% net return since April 2019 vs S&P 500.",
+    "competitive_differentiation": "Differentiated by concentrated fundamental value investing (8-16 positions), disciplined equity selection, options-enhanced risk mitigation, and a demonstrated track record of 610%+ outperformance vs S&P 500 since inception.",
+    "investor_relevance_notes": [
+      "This is an investment fund (hedge fund LP structure) — not a startup, operating company, or SaaS business. It must not be evaluated using startup metrics such as ARR, MRR, customer count, or CAC.",
+      "Fund economics are driven by management fees and incentive fees, not company revenue. AUM and LP returns are the relevant financial signals, not operating revenue.",
+      "The 762.05% total net return and 610%+ S&P 500 outperformance are the central traction signals. These are fund investment returns, not the fund manager's business revenue.",
+      "Accredited and institutional LPs are the target investors. The 'go to market' concept applies to LP capital raising, not customer acquisition.",
+      "Key diligence areas: concentration risk, regulatory compliance as an RIA, sustainability of the track record, correlation to broader markets, and fee structure vs alpha generation."
+    ]
+  },
+  "validation": {
+    "_schema": "deal_understanding_validation_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-MFUND-001",
+        "label": "correctly identifies Magarian Fund as an equity hedge fund",
+        "check_type": "contains_any",
+        "field": "what_company_does",
+        "expected_terms": [
+          "hedge fund",
+          "equity hedge fund",
+          "concentrated equity",
+          "long-biased",
+          "mispriced"
+        ]
+      },
+      {
+        "id": "L1-MFUND-002",
+        "label": "business model recognized as investment fund structure",
+        "check_type": "contains_any",
+        "field": "business_model",
+        "expected_terms": [
+          "investment fund",
+          "hedge fund",
+          "fund",
+          "lp structure",
+          "limited partnership"
+        ]
+      },
+      {
+        "id": "L1-MFUND-003",
+        "label": "revenue model describes fund fee structure",
+        "check_type": "contains_any",
+        "field": "revenue_model",
+        "expected_terms": [
+          "management fee",
+          "incentive fee",
+          "hurdle rate",
+          "high water mark",
+          "performance fee"
+        ]
+      },
+      {
+        "id": "L1-MFUND-004",
+        "label": "traction summary captures headline performance return",
+        "check_type": "contains_any",
+        "field": "traction_summary",
+        "expected_terms": [
+          "762",
+          "610",
+          "outperformance",
+          "net return",
+          "annualized"
+        ]
+      },
+      {
+        "id": "L1-MFUND-005",
+        "label": "target customer reflects accredited or institutional LP investors",
+        "check_type": "contains_any",
+        "field": "target_customer",
+        "expected_terms": [
+          "accredited",
+          "institutional",
+          "allocator",
+          "lp",
+          "limited partner",
+          "investor"
+        ]
+      },
+      {
+        "id": "L1-MFUND-006",
+        "label": "risks cover regulatory and market or concentration exposure",
+        "check_type": "contains_any",
+        "field": "risks",
+        "expected_terms": [
+          "regulatory",
+          "compliance",
+          "concentrated portfolio",
+          "idiosyncratic",
+          "market risk"
+        ]
+      },
+      {
+        "id": "L1-MFUND-007",
+        "label": "problem field reflects fund or equity narrative not startup problem framing",
+        "check_type": "contains_any",
+        "field": "problem",
+        "expected_terms": [
+          "hedge fund",
+          "equity",
+          "fund",
+          "contrarian",
+          "long-biased"
+        ]
+      },
+      {
+        "id": "L1-MFUND-008",
+        "label": "solution describes fundamental research and investment approach",
+        "check_type": "contains_any",
+        "field": "solution",
+        "expected_terms": [
+          "hedge fund",
+          "fundamental research",
+          "mispriced",
+          "dislocated",
+          "options-based",
+          "macroeconomic",
+          "equity"
+        ]
+      },
+      {
+        "id": "L2-MFUND-009",
+        "label": "traction summary includes AUM figure",
+        "check_type": "contains_any",
+        "field": "traction_summary",
+        "expected_terms": [
+          "222mm",
+          "$222mm",
+          "aum",
+          "2.5b",
+          "$57mm",
+          "165mm"
+        ]
+      },
+      {
+        "id": "L2-MFUND-010",
+        "label": "risks address idiosyncratic or single-stock concentration",
+        "check_type": "contains_any",
+        "field": "risks",
+        "expected_terms": [
+          "idiosyncratic",
+          "single-stock",
+          "concentrated",
+          "25%",
+          "drawdown",
+          "market risk"
+        ]
+      },
+      {
+        "id": "L2-MFUND-011",
+        "label": "revenue model includes hurdle rate or high water mark",
+        "check_type": "contains_any",
+        "field": "revenue_model",
+        "expected_terms": [
+          "hurdle rate",
+          "hurdle",
+          "high water mark",
+          "6%"
+        ]
+      },
+      {
+        "id": "L2-MFUND-012",
+        "label": "why_now captures LP investor profile as context",
+        "check_type": "contains_any",
+        "field": "why_now",
+        "expected_terms": [
+          "accredited",
+          "institutional",
+          "equity exposure",
+          "concentrated",
+          "alpha generation",
+          "security selection"
+        ]
+      },
+      {
+        "id": "L3-MFUND-013",
+        "label": "market positioning references institutional or equity or concentrated approach",
+        "check_type": "contains_any",
+        "field": "market_positioning",
+        "expected_terms": [
+          "accredited",
+          "institutional",
+          "equity",
+          "concentrated",
+          "alpha",
+          "contrarian"
+        ]
+      },
+      {
+        "id": "L3-MFUND-014",
+        "label": "competitive differentiation references value or disciplined or contrarian investment approach",
+        "check_type": "contains_any",
+        "field": "competitive_differentiation",
+        "expected_terms": [
+          "contrarian",
+          "value",
+          "concentrated",
+          "disciplined",
+          "security selection",
+          "alpha generation",
+          "fundamentals"
+        ]
+      }
+    ],
+    "consistency_checks": [
+      {
+        "id": "L4-MFUND-015",
+        "label": "business model and revenue model share fund or fee orientation",
+        "check_type": "term_alignment",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "expected_shared_terms": [
+          "fund",
+          "fee",
+          "management",
+          "investment",
+          "hedge"
+        ],
+        "min_shared": 1
+      },
+      {
+        "id": "L4-MFUND-016",
+        "label": "what company does and solution are aligned on hedge fund or equity strategy",
+        "check_type": "term_alignment",
+        "field_a": "what_company_does",
+        "field_b": "solution",
+        "expected_shared_terms": [
+          "hedge fund",
+          "equity",
+          "mispriced",
+          "long-biased",
+          "concentrated"
+        ],
+        "min_shared": 1
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "id": "L4-MFUND-017",
+        "label": "does not misclassify as SaaS or software business",
+        "check_type": "must_not_contain",
+        "field": "business_model",
+        "prohibited_patterns": [
+          "saas",
+          "b2b software",
+          "enterprise saas",
+          "workflow software",
+          "software-as-a-service"
+        ]
+      },
+      {
+        "id": "L4-MFUND-018",
+        "label": "does not apply startup revenue framing to fund economics",
+        "check_type": "must_not_contain",
+        "field": "revenue_model",
+        "prohibited_patterns": [
+          "annual recurring revenue",
+          "monthly recurring revenue",
+          "saas revenue",
+          "subscription software",
+          "customer lifetime value"
+        ]
+      },
+      {
+        "id": "L4-MFUND-019",
+        "label": "does not introduce startup or software company framing in entity description",
+        "check_type": "must_not_contain",
+        "field": "what_company_does",
+        "prohibited_patterns": [
+          "software startup",
+          "b2b saas startup",
+          "enterprise software company",
+          "app that helps users",
+          "platform that connects buyers"
+        ]
+      },
+      {
+        "id": "L4-MFUND-020",
+        "label": "does not apply startup growth metrics to fund traction",
+        "check_type": "must_not_contain",
+        "field": "traction_summary",
+        "prohibited_patterns": [
+          "paying customers",
+          "monthly active users",
+          "customer count",
+          "new signups",
+          "user growth rate"
+        ]
+      }
+    ],
+    "completeness_checks": [
+      {
+        "id": "L5-MFUND-021",
+        "label": "what_company_does is not empty",
+        "check_type": "not_empty",
+        "field": "what_company_does"
+      },
+      {
+        "id": "L5-MFUND-022",
+        "label": "problem is not empty",
+        "check_type": "not_empty",
+        "field": "problem"
+      },
+      {
+        "id": "L5-MFUND-023",
+        "label": "solution is not empty",
+        "check_type": "not_empty",
+        "field": "solution"
+      },
+      {
+        "id": "L5-MFUND-024",
+        "label": "traction_summary is not empty",
+        "check_type": "not_empty",
+        "field": "traction_summary"
+      },
+      {
+        "id": "L5-MFUND-025",
+        "label": "risks is not empty",
+        "check_type": "not_empty",
+        "field": "risks"
+      },
+      {
+        "id": "L5-MFUND-026",
+        "label": "revenue_model is not empty",
+        "check_type": "not_empty",
+        "field": "revenue_model"
+      },
+      {
+        "id": "L5-MFUND-027",
+        "label": "target_customer is not empty",
+        "check_type": "not_empty",
+        "field": "target_customer"
+      }
+    ]
+  }
+}

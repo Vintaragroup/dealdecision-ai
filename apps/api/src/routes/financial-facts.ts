@@ -195,6 +195,35 @@ export async function getFinancialFactsForReport(
  * documents belonging to a deal. Used by the report compiler to enrich cap-table
  * and XLSX detection when the DIO's inputs.documents lacks filenames.
  */
+/**
+ * Returns page_text strings from document_page_understanding rows that contain
+ * high-signal report keywords used by compiler guards and capital-logic inference:
+ * - going concern language (RC-002b)
+ * - use-of-funds / use-of-proceeds / allocation language (RC-006)
+ * - prior-funding historical raise language (RC-005)
+ * Never crashes /report — returns [] on error.
+ */
+export async function getGoingConcernPageTexts(
+  pool: PoolLike,
+  dealId: string
+): Promise<string[]> {
+  try {
+    const r = await pool.query<{ page_text: string }>(
+      `SELECT dpu.payload->>'page_text' AS page_text
+         FROM document_page_understanding dpu
+         JOIN documents d ON d.id = dpu.document_id
+        WHERE d.deal_id = $1
+          AND d.deleted_at IS NULL
+          AND dpu.payload->>'page_text' ~* 'ability[[:space:]]+to[[:space:]]+continue[[:space:]]+as[[:space:]]+a[[:space:]]+going[[:space:]]+concern|substantial[[:space:]]+doubt.*going[[:space:]]+concern|going[[:space:]]+concern.*substantial[[:space:]]+doubt|use[[:space:]]+of[[:space:]]+(funds|proceeds)|allocation[[:space:]]+of[[:space:]]+funds|capital[[:space:]]+allocation|spending[[:space:]]+plan|funds?[[:space:]]+will[[:space:]]+be[[:space:]]+used|funds?[[:space:]]+will[[:space:]]+primarily[[:space:]]+go[[:space:]]+towards|initial[[:space:]]+funds?[[:space:]]+.*go[[:space:]]+towards|proceeds?[[:space:]]+.*used[[:space:]]+for|previously[[:space:]]+(raised|funded|secured|closed)|prior[[:space:]]+(raised|funded|secured|closed)|already[[:space:]]+(raised|funded|secured|closed)|to[[:space:]]+date[[:space:]]+(raised|funded|secured|closed)|looking[[:space:]]+for[[:space:]]+(a[[:space:]]+|the[[:space:]]+|our[[:space:]]+)?(cto|chief[[:space:]]+technology[[:space:]]+officer)|seeking[[:space:]]+(a[[:space:]]+|the[[:space:]]+|our[[:space:]]+)?(cto|chief[[:space:]]+technology[[:space:]]+officer)|hiring[[:space:]]+(a[[:space:]]+|the[[:space:]]+|our[[:space:]]+)?(cto|chief[[:space:]]+technology[[:space:]]+officer)|cto[[:space:]]+(position|role|seat)[[:space:]]+(is[[:space:]]+)?(open|vacant|unfilled|needed|available)|form[[:space:]]+10-?k|form[[:space:]]+10-?q|form[[:space:]]+8-?k|form[[:space:]]+s-?1|registration[[:space:]]+statement|annual[[:space:]]+report[[:space:]]+pursuant[[:space:]]+to[[:space:]]+section[[:space:]]+13|quarterly[[:space:]]+report[[:space:]]+pursuant[[:space:]]+to[[:space:]]+section[[:space:]]+13'`,
+      [dealId],
+    );
+    return (r.rows ?? []).map((row) => row.page_text).filter((t) => typeof t === 'string' && t.length > 0);
+  } catch {
+    // Never crash /report if page understanding is unavailable.
+    return [];
+  }
+}
+
 export async function getDocumentsForReport(
   pool: PoolLike,
   dealId: string
@@ -215,6 +244,99 @@ export async function getDocumentsForReport(
   } catch {
     // Never crash /report if document metadata is unavailable.
     return [];
+  }
+}
+
+// ─── RC-S6-009/010/008: Document full-text extraction helpers ─────────────────
+
+/**
+ * Extracts a candidate company name from a document's full_text.
+ * Tries copyright/watermark patterns first, then legal entity patterns, then early short lines.
+ * Returns null if no candidate found.
+ */
+function extractCompanyNameFromFullText(text: string): string | null {
+  if (!text || typeof text !== 'string') return null;
+  const head = text.slice(0, 8000);
+
+  // 1. Copyright/watermark: "©2026 Climatic Capital ·" pattern
+  const copyright = head.match(/©\s*\d{4}\s+([A-Z][A-Za-z0-9&\s.'-]{2,50}?)(?:\s+(?:Global|·)\b|\s{2,})/);
+  if (copyright?.[1]) {
+    const candidate = copyright[1].trim();
+    if (candidate.length >= 3 && candidate.length <= 60 && !/\b(Confidential|Commercial|Proprietary)\b/i.test(candidate)) {
+      return candidate;
+    }
+  }
+
+  // 2. Legal entity: "Company Name Inc/LLC/Ltd/Corp/Holdings/Capital Management"
+  const legal = head.match(
+    /\b([A-Z][A-Za-z0-9&.'-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.'-]{1,40}){0,4})\s+(?:Inc\.?|LLC\.?|Ltd\.?|Corporation|Corp\.?|GmbH|Holdings|Capital\s+Management|Capital\s+Partners)\b/,
+  );
+  if (legal?.[1]) {
+    const candidate = legal[1].trim();
+    if (candidate.length >= 3 && candidate.length <= 60 && !/^(This|The|Our|For|Any|Such|Each|When)\b/i.test(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Returns the full_text of documents for a deal (up to 50K chars each, max 3 docs).
+ * Used by the report compiler to extract team highlights, fund signals, and UOF breakdowns.
+ * Never crashes.
+ */
+export async function getDocumentFullTextForDeal(
+  pool: PoolLike,
+  dealId: string,
+): Promise<string[]> {
+  try {
+    const r = await pool.query<{ full_text: string }>(
+      `SELECT SUBSTR(full_text, 1, 50000) AS full_text
+         FROM documents
+        WHERE deal_id = $1
+          AND deleted_at IS NULL
+          AND full_text IS NOT NULL
+          AND CHAR_LENGTH(full_text) > 0
+        ORDER BY uploaded_at DESC
+        LIMIT 3`,
+      [dealId],
+    );
+    return (r.rows ?? []).map((row) => row.full_text).filter((t) => typeof t === 'string' && t.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Returns the best candidate company name extracted from document full_text for a deal.
+ * Used by the report compiler to populate structured_summary.company_name.
+ * Never crashes.
+ */
+export async function getCompanyNameFromDocuments(
+  pool: PoolLike,
+  dealId: string,
+): Promise<string | null> {
+  try {
+    const r = await pool.query<{ full_text: string }>(
+      `SELECT SUBSTR(full_text, 1, 8000) AS full_text
+         FROM documents
+        WHERE deal_id = $1
+          AND deleted_at IS NULL
+          AND full_text IS NOT NULL
+          AND CHAR_LENGTH(full_text) > 0
+        ORDER BY uploaded_at DESC
+        LIMIT 3`,
+      [dealId],
+    );
+    const texts = (r.rows ?? []).map((row) => row.full_text).filter((t) => typeof t === 'string' && t.length > 0);
+    for (const text of texts) {
+      const name = extractCompanyNameFromFullText(text);
+      if (name) return name;
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 

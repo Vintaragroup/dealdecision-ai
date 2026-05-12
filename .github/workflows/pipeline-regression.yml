@@ -1,0 +1,98 @@
+name: Pipeline Regression
+
+# ─────────────────────────────────────────────────────────────────────
+# Triggers
+#   pull_request   → runs on PRs that touch pipeline code or GT files
+#   workflow_dispatch → run manually at any time
+#
+# The suite hits a live deployment via secrets (same pattern as
+# deal-understanding-regression). If the secrets are absent the
+# preflight job skips the suite gracefully instead of hard-failing.
+#
+# Required secrets (set in repo Settings → Secrets → Actions):
+#   PIPELINE_REGRESSION_API_URL  — base URL of the staging/prod API
+#                                  e.g. https://api.staging.dealdecision.ai
+#   PIPELINE_REGRESSION_DB_URL   — Postgres DSN for the same environment
+#                                  e.g. postgresql://user:pass@host:5432/db
+# ─────────────────────────────────────────────────────────────────────
+on:
+  pull_request:
+    paths:
+      - 'apps/api/**'
+      - 'apps/worker/**'
+      - 'packages/core/**'
+      - 'evaluation/pipeline_regression/**'
+      - 'evaluation/ground_truth/**'
+      - '.github/workflows/pipeline-regression.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-regression-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────
+  # Prerequisite check — skip gracefully when secrets are absent.
+  # This prevents confusing auth errors on forks or unconfgured repos.
+  # ───────────────────────────────────────────────────────────────────
+  preflight:
+    name: Preflight — check secrets
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - name: Check required secrets
+        id: check
+        env:
+          PIPELINE_REGRESSION_API_URL: ${{ secrets.PIPELINE_REGRESSION_API_URL }}
+          PIPELINE_REGRESSION_DB_URL: ${{ secrets.PIPELINE_REGRESSION_DB_URL }}
+        run: |
+          if [ -z "${PIPELINE_REGRESSION_API_URL:-}" ] || [ -z "${PIPELINE_REGRESSION_DB_URL:-}" ]; then
+            echo "::warning::PIPELINE_REGRESSION_API_URL or PIPELINE_REGRESSION_DB_URL not set — regression suite skipped."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # ───────────────────────────────────────────────────────────────────
+  # Main job — run the full ground-truth regression suite
+  # ───────────────────────────────────────────────────────────────────
+  regression:
+    name: Run regression suite
+    needs: preflight
+    if: needs.preflight.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install -r evaluation/pipeline_regression/requirements.txt
+
+      - name: Run pipeline regression suite
+        env:
+          PIPELINE_REGRESSION_API_URL: ${{ secrets.PIPELINE_REGRESSION_API_URL }}
+          PIPELINE_REGRESSION_DB_URL: ${{ secrets.PIPELINE_REGRESSION_DB_URL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 evaluation/pipeline_regression/run.py \
+            --db-url "$PIPELINE_REGRESSION_DB_URL" \
+            --run-id "ci-${{ github.sha }}"
+
+      - name: Upload regression reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regression-reports-${{ github.sha }}
+          path: |
+            artifacts/regression_suite_report_*
+            artifacts/regression_suite_latest.*
+          retention-days: 30

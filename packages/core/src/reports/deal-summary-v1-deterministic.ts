@@ -26,6 +26,9 @@ export type DeterministicDealSummaryV1 = {
   market: DeterministicDealSummaryLine | null;
   paragraphs: DeterministicDealSummaryLine[];
   warnings: string[];
+  /** Multi-paragraph narrative from deal_summary_v2.summary.paragraphs.
+   * Populated in reports.ts post-compilation; feeds DealWorkspaceTopSection.dealSummaryLong. */
+  long_summary?: string | null;
 };
 
 const asNonEmptyString = (v: unknown): string | null => {
@@ -123,6 +126,25 @@ const kpiDisplayFromStructured = (structured: any, key: string): string | null =
   return raw;
 };
 
+/** Filter the "Unknown" sentinel value that LLM extraction can leave in KPI fields when
+ * a guard has cleared the canonical value but the raw text said "Unknown". */
+const sanitizeKpiText = (text: string | null): string | null => {
+  if (!text) return null;
+  const s = text.trim();
+  return s.toLowerCase() === 'unknown' ? null : s;
+};
+
+/** Detect obvious OCR allocation / pie-chart percentage shards.
+ * These appear when OCR reads stacked-bar or pie-chart labels — e.g. "20% 35% 45%"
+ * or "50% Engineering 25% Marketing 15% Operations". Suppress the entire field. */
+const isOcrPercentageShard = (text: string): boolean => {
+  // Three or more bare percentage tokens in sequence (e.g. "20% 35% 45%")
+  if (/(?:\d+(?:\.\d+)?%\s+){2,}\d+(?:\.\d+)?%/.test(text)) return true;
+  // Allocation breakdown: "XX% [word]" repeated 2+ times (e.g. "50% Eng 25% Sales 25% Ops")
+  if (/(?:\d+(?:\.\d+)?%\s+\w+\s*){2,}\d+(?:\.\d+)?%/.test(text)) return true;
+  return false;
+};
+
 export function buildDeterministicDealSummaryV1FromStructuredSummary(input: {
   structured_summary: any;
 }): DeterministicDealSummaryV1 {
@@ -131,29 +153,45 @@ export function buildDeterministicDealSummaryV1FromStructuredSummary(input: {
   const raiseAmountRaw = structured?.raise?.value_json?.amount?.amount;
   const raiseAmount = typeof raiseAmountRaw === 'number' && Number.isFinite(raiseAmountRaw) ? raiseAmountRaw : null;
   const raiseRound = asNonEmptyString(structured?.raise?.round_label) ?? null;
-  const raiseDisplay = raiseAmount != null ? formatMoneyUsdShort(raiseAmount) : (asNonEmptyString(structured?.raise?.value) ?? null);
+  const raiseDisplay = (() => {
+    if (raiseAmount != null) return formatMoneyUsdShort(raiseAmount);
+    const raw = asNonEmptyString(structured?.raise?.value);
+    if (!raw) return null;
+    // Treat sentinel "Unknown" as no-data — do not emit "Raise: Unknown." in summary tiers
+    if (raw.toLowerCase() === 'unknown') return null;
+    return raw;
+  })();
   const raiseSources = normalizeCitations(structured?.raise?.sources);
 
-  const productText = asNonEmptyString(structured?.product_summary_v1?.value) ?? asNonEmptyString(structured?.product_summary?.value) ?? null;
+  const productText = (() => {
+    const t = asNonEmptyString(structured?.product_summary_v1?.value) ?? asNonEmptyString(structured?.product_summary?.value) ?? null;
+    return t && !isOcrPercentageShard(t) ? t : null;
+  })();
   const productSources = normalizeCitations(structured?.product_summary_v1?.sources ?? structured?.product_summary?.sources);
 
-  const marketText = asNonEmptyString(structured?.market_summary_v1?.value) ?? asNonEmptyString(structured?.market_summary?.value) ?? null;
+  const marketText = (() => {
+    const t = asNonEmptyString(structured?.market_summary_v1?.value) ?? asNonEmptyString(structured?.market_summary?.value) ?? null;
+    return t && !isOcrPercentageShard(t) ? t : null;
+  })();
   const marketSources = normalizeCitations(structured?.market_summary_v1?.sources ?? structured?.market_summary?.sources);
 
-  const businessModelText = asNonEmptyString(structured?.business_model?.value) ?? asNonEmptyString(structured?.business_model_summary?.value) ?? null;
+  const businessModelText = (() => {
+    const t = asNonEmptyString(structured?.business_model?.value) ?? asNonEmptyString(structured?.business_model_summary?.value) ?? null;
+    return t && !isOcrPercentageShard(t) ? t : null;
+  })();
   const businessModelSources = normalizeCitations(structured?.business_model?.sources ?? structured?.business_model_summary?.sources);
 
-  const revenueText = kpiDisplayFromStructured(structured, 'revenue');
+  const revenueText = sanitizeKpiText(kpiDisplayFromStructured(structured, 'revenue'));
   const revenueSources = normalizeCitations(structured?.revenue?.sources);
 
-  const customersText = kpiDisplayFromStructured(structured, 'customers');
+  const customersText = sanitizeKpiText(kpiDisplayFromStructured(structured, 'customers'));
   const customersSources = normalizeCitations(structured?.customers?.sources);
 
   const growthText = (() => {
     const g = structured?.growth;
     const pct = g?.value?.percent;
     if (typeof pct === 'number' && Number.isFinite(pct)) return `${pct}%`;
-    return kpiDisplayFromStructured(structured, 'growth');
+    return sanitizeKpiText(kpiDisplayFromStructured(structured, 'growth'));
   })();
   const growthSources = normalizeCitations(structured?.growth?.sources);
 
@@ -167,9 +205,15 @@ export function buildDeterministicDealSummaryV1FromStructuredSummary(input: {
   }
   const overview = overviewParts.join(' ');
 
+  const revenueIsProjected = !!(structured?.revenue as any)?.is_projected;
   const deepParts: string[] = [];
   if (businessModelText) deepParts.push(`Business model: ${businessModelText.replace(/\s*\.$/, '.')}`);
-  if (revenueText) deepParts.push(`Revenue: ${revenueText.replace(/\s*\.$/, '.')}`);
+  if (revenueText) {
+    const revLabel = revenueIsProjected
+      ? `Revenue (projected): ${revenueText.replace(/\s*\.$/, '.')}`
+      : `Revenue: ${revenueText.replace(/\s*\.$/, '.')}`;
+    deepParts.push(revLabel);
+  }
   if (customersText) deepParts.push(`Customers: ${customersText.replace(/\s*\.$/, '.')}`);
   if (growthText) deepParts.push(`Growth: ${growthText.replace(/\s*\.$/, '.')}`);
 

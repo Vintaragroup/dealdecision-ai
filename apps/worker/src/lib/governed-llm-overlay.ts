@@ -686,10 +686,20 @@ type PersistableGovernedOverviewRow = GovernedLLMOverviewV1 & {
 };
 
 async function persistGovernedOverview(pool: Pool, overview: PersistableGovernedOverviewRow): Promise<{ inserted: boolean }> {
-  const res = await pool.query(
+  const res = await pool.query<{ inserted: boolean }>(
     `INSERT INTO governed_llm_overviews (deal_id, schema_version, llm_phase_mode, input_hash, run_id, step_run_id, summary_text, claims, disclosures, overview_json, consistency_warnings)
      VALUES ($1::uuid, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb)
-     ON CONFLICT (deal_id, input_hash, schema_version) DO NOTHING`,
+     ON CONFLICT (deal_id, input_hash, schema_version) DO UPDATE
+       SET summary_text          = EXCLUDED.summary_text,
+           claims                = EXCLUDED.claims,
+           disclosures           = EXCLUDED.disclosures,
+           llm_phase_mode        = EXCLUDED.llm_phase_mode,
+           run_id                = EXCLUDED.run_id,
+           step_run_id           = EXCLUDED.step_run_id,
+           overview_json         = EXCLUDED.overview_json,
+           consistency_warnings  = EXCLUDED.consistency_warnings,
+           created_at            = now()
+     RETURNING (xmax = 0) AS inserted`,
     [
       overview.deal_id,
       overview.schema_version,
@@ -705,7 +715,7 @@ async function persistGovernedOverview(pool: Pool, overview: PersistableGoverned
     ]
   );
 
-  return { inserted: (res as any)?.rowCount === 1 };
+  return { inserted: Boolean(res.rows?.[0]?.inserted) };
 }
 
 async function persistDiagnosticsSnapshotBestEffort(args: {
@@ -1437,19 +1447,32 @@ function classifySnippetSignals(snippetHead: string): {
   isProduct: boolean;
   isMarketIcp: boolean;
   isBusinessModel: boolean;
+  isBuyerContext: boolean;
 } {
   const t = snippetHead.toLowerCase();
+
+  // SPAC financial documents (EX-99.5, Form S-4 merger proxy) contain financial terms that
+  // superficially match qualitative field patterns; exclude all qualitative signals for them.
+  if (/\b(business\s+combination|trust\s+account|public\s+shares?|public\s+stockholders?|blank\s+check\s+company|minimum\s+cash\s+condition)\b/i.test(t)) {
+    return { isRaiseTerms: false, isProduct: false, isMarketIcp: false, isBusinessModel: false, isBuyerContext: false };
+  }
+
   const isRaiseTerms =
     /(\braising\b|\braise\b|\bfunding\b|\bterms\b|\bvaluation\b|\bmultiple\b|\bask\b|\$\s*\d|\bpre[-\s]?money\b|\bpost[-\s]?money\b|\bseed\b|\bseries\s*[a-d]\b)/i.test(
       t
     );
-  const isMarketIcp = /(\bcustomer\b|\bcustomers\b|\btarget\b|\baudience\b|\bmarket\b|\bicp\b|\bwho\s+we\s+serve\b)/i.test(t);
+  const buyerCueRx =
+    /(\bideal\s+customer\b|\bwho\s+we\s+serve\b|\btarget\s+(customers?|accounts?|buyers?|segments?)\b|\bbuyer\b|\bcustomer\b|\bcustomers\b|\bclients?\b|\busers?\b|\boperators?\b|\bcrews?\b|\bteams?\b|\bdepartments?\b|\bhospitals?\b|\bclinics?\b|\bproviders?\b|\bretailers?\b|\bmanufacturers?\b|\bbrands?\b|\benterprises?\b|\bsm(bs?|es?)\b|\bmid-market\b|\bvertical\b|\bindustry\b|\bsegment\b|\bpayors?\b|\binsurers?\b|\bpublic\s+sector\b)/i;
+  const isBuyerContext = buyerCueRx.test(t);
+  const isMarketIcp =
+    isBuyerContext ||
+    /(\bmarket\b|\bicp\b|\btam\b|\bsam\b|\bsom\b|\bsegment\b|\bgo-to-market\b|\badjacent\s+markets?\b)/i.test(t);
   const isBusinessModel =
-    /(\brevenue\b|\bbusiness\s*model\b|\bsubscription\b|\bmarketplace\b|\blicens\w*\b|\bpricing\b|\bhow\s+we\s+make\s+money\b)/i.test(t);
+    /(\bbusiness\s*model\b|\bsubscription\b|\bmarketplace\b|\blicens\w*\b|\bpricing\b|\bhow\s+we\s+make\s+money\b)/i.test(t);
   const isProduct =
     /(\bproduct\b|\bplatform\b|\bsolution\b|\bwhat\s+we\s+do\b|\bdescription\b|\boverview\b|\bdefinition\b|\btagline\b)/i.test(t) &&
     !isRaiseTerms;
-  return { isRaiseTerms, isProduct, isMarketIcp, isBusinessModel };
+  return { isRaiseTerms, isProduct, isMarketIcp, isBusinessModel, isBuyerContext };
 }
 
 async function pickSourcesForField(pool: Pool, input: {
@@ -1493,7 +1516,7 @@ async function pickSourcesForField(pool: Pool, input: {
       : input.field === "business_model"
         ? /(business\s*model|business_model|revenue|saas|subscription|marketplace|licens|services|pricing)/i
         : input.field === "market_icp"
-          ? /(icp|market|customers|who\s+we\s+serve|target|audience)/i
+          ? /(icp|market|customers?|buyers?|who\s+we\s+serve|target|audience|segment|vertical|industry)/i
           : /(definition|tagline|product|scored:product|from heading|verb|platform|solution|what we do|overview)/i;
 
   const raiseLikeNoteRx = /(raise|raising|funding|terms|valuation|ask)/i;
@@ -1545,6 +1568,11 @@ async function pickSourcesForField(pool: Pool, input: {
     if (input.field === "product_solution" && signals.isProduct) score += 3;
     if (input.field === "market_icp" && signals.isMarketIcp) score += 3;
     if (input.field === "business_model" && signals.isBusinessModel) score += 3;
+
+    if (input.field === "market_icp") {
+      if (signals.isBuyerContext) score += 2;
+      if (signals.isProduct && !signals.isBuyerContext) score -= 2;
+    }
 
     // Additional guardrails.
     if (input.field === "product_solution" && signals.isRaiseTerms) score -= 5;
@@ -1761,6 +1789,34 @@ async function generateDisplayFactsV1BestEffort(args: {
   );
   const extendedPool = [...narrowSources, ...globalFiltered];
 
+  // Fail fast: load policy prompt artifacts before any expensive DB calls.
+  // If artifacts are missing, this throws immediately so we don't waste
+  // DB roundtrips before hitting the same failure later in the function.
+  const promptRuntime = composePolicyAwareSystemPrompt({
+    kind: "display_facts_v1",
+    selectedPolicyId: args.selected_policy_id,
+    additionalInstructions: [
+      "Convert noisy deterministic OCR snippets into clean, investor-readable short statements.",
+      "Use ONLY the provided snippets. Do not invent facts or numbers.",
+      "IMPORTANT: evidence_ids MUST be chosen ONLY from the allowed IDs for that field.",
+      "Allowed IDs for each field are provided as allowed_evidence_ids.<field> and also appear as fields.<field>[].evidence_id.",
+      "Never output evidence_ids that are not in the allowed list for that field.",
+      "If snippets are insufficient for a field, set text=null, evidence_ids=[], evidence_basis=\"no_evidence\".",
+      "Output MUST be valid JSON only (no markdown).",
+      "Return JSON with EXACT keys: product_solution, market_icp, business_model, raise_terms.",
+      "Each value MUST be an object {text: string|null, evidence_ids: string[], evidence_basis: \"direct_snippet\"|\"no_evidence\"}.",
+      "If evidence_ids is non-empty, evidence_basis MUST be \"direct_snippet\" and text MUST be non-empty.",
+      "Keep each text under 220 characters. Remove OCR artifacts.",
+      "Field semantics:",
+      "- product_solution: describe what the product does and the problem it solves. Do NOT describe raise terms, TAM, or buyer personas.",
+      "- market_icp: describe who buys or uses the product (org/team/industry) and why they care. Do NOT restate product mechanics.",
+      "- business_model: describe how the company monetizes (pricing/revenue structure). Ignore qualitative traction or product features.",
+      "- raise_terms: describe the round, instrument, amount, and valuation ONLY when the snippet explicitly states them.",
+      "If a snippet mixes fields, only keep the portion relevant to the requested field or return null when you cannot separate it.",
+      "Use investor-ready declarative sentences and refuse to speculate — return null when evidence is missing or off-topic.",
+    ],
+  });
+
   // Use the module-level DisplayFactEv type.
   type Ev = DisplayFactEv;
 
@@ -1857,24 +1913,6 @@ async function generateDisplayFactsV1BestEffort(args: {
     if (modelEvidence.length === 0)
       modelEvidence.push(...phasebItems.business_model.map(phasebItemToDisplayFactEv));
   }
-
-  const promptRuntime = composePolicyAwareSystemPrompt({
-    kind: "display_facts_v1",
-    selectedPolicyId: args.selected_policy_id,
-    additionalInstructions: [
-      "Convert noisy deterministic OCR snippets into clean, investor-readable short statements.",
-      "Use ONLY the provided snippets. Do not invent facts or numbers.",
-      "IMPORTANT: evidence_ids MUST be chosen ONLY from the allowed IDs for that field.",
-      "Allowed IDs for each field are provided as allowed_evidence_ids.<field> and also appear as fields.<field>[].evidence_id.",
-      "Never output evidence_ids that are not in the allowed list for that field.",
-      "If snippets are insufficient for a field, set text=null, evidence_ids=[], evidence_basis=\"no_evidence\".",
-      "Output MUST be valid JSON only (no markdown).",
-      "Return JSON with EXACT keys: product_solution, market_icp, business_model, raise_terms.",
-      "Each value MUST be an object {text: string|null, evidence_ids: string[], evidence_basis: \"direct_snippet\"|\"no_evidence\"}.",
-      "If evidence_ids is non-empty, evidence_basis MUST be \"direct_snippet\" and text MUST be non-empty.",
-      "Keep each text under 220 characters. Remove OCR artifacts.",
-    ],
-  });
 
   const deterministic_input = {
     schema_version: "display_facts_v1_input_v1",
@@ -2143,10 +2181,31 @@ async function generateDisplayFactsV1BestEffort(args: {
     return noEvidenceField;
   };
 
-  const product_solution = coerceField("product_solution" as any);
-  const market_icp = coerceField("market_icp" as any);
+  const applyDisplayTextCleanup = (
+    field: DisplayFactFieldV1,
+    key: "product_solution" | "market_icp"
+  ): DisplayFactFieldV1 => {
+    if (!field.text) return field;
+    const cleaned = cleanupObviousSentenceArtifacts(field.text);
+    let next = field;
+    if (cleaned !== field.text) {
+      errors.push(`${key}_text_cleaned`);
+      next = { ...field, text: cleaned };
+    }
+    if (key === "market_icp" && marketTextLooksProductHeavy(cleaned)) {
+      errors.push("market_icp_rejected_product_language");
+      return noEvidenceField;
+    }
+    return next;
+  };
+
+  let product_solution = coerceField("product_solution" as any);
+  let market_icp = coerceField("market_icp" as any);
   const business_model = coerceField("business_model" as any);
   const raise_terms = coerceField("raise_terms" as any);
+
+  product_solution = applyDisplayTextCleanup(product_solution, "product_solution");
+  market_icp = applyDisplayTextCleanup(market_icp, "market_icp");
 
   const anyEvidenceAfter =
     product_solution.evidence_ids.length > 0 ||
@@ -2218,6 +2277,22 @@ function violatesNumericCitationGuard(args: { output: string; input: string }): 
 function clampMaybeText(v: unknown, maxLen: number): string | null {
   const s = clampText(v, maxLen);
   return s ? s : null;
+}
+
+const BROKEN_ARTICLE_FRAGMENT_RX = /\bis an\s+for\b/gi;
+const PRODUCT_LANGUAGE_RX = /\b(product|platform|solution|software|tool|system|stack|technology|application|app|workflow|ai\s+agent)\b/i;
+const BUYER_CONTEXT_RX =
+  /\b(buyer|buyers|customer|customers|client|clients|team|teams|department|departments|finance\s+team|sales\s+team|operations?\s+team|procurement|hospital|clinic|provider|payer|retailer|brand|manufacturer|insurer|payor|enterprise|enterprises|smbs?|smes?|mid-market|public\s+sector|government|agency|developers?|founders?|operators?)\b/i;
+function cleanupObviousSentenceArtifacts(text: string): string {
+  if (!text) return text;
+  let out = text.replace(BROKEN_ARTICLE_FRAGMENT_RX, "is for");
+  out = out.replace(/\s+/g, " ").trim();
+  return out;
+}
+
+function marketTextLooksProductHeavy(text: string): boolean {
+  if (!text) return false;
+  return PRODUCT_LANGUAGE_RX.test(text) && !BUYER_CONTEXT_RX.test(text);
 }
 
 /**
@@ -2355,6 +2430,13 @@ async function generateGovernedUiCopyV1BestEffort(args: {
       "Return JSON with EXACT keys: hero_summary, product_solution, market_icp, business_model, raise_terms.",
       "Each value MUST be a string or null.",
       "Keep each field under 320 characters.",
+      "Investor-facing rewrite guidance:",
+      "- product_solution: one concise sentence describing the solution and pain solved. Do not restate taglines or raise info.",
+      "- market_icp: describe the buyer cohort (org/team/industry) and the urgency/pain that makes them buy. Avoid product descriptions.",
+      "- business_model: explain how revenue is generated (pricing model, contract style, usage unit).",
+      "- raise_terms: describe round/amount/instrument/valuation succinctly and only when basis evidence includes it.",
+      "If a basis sentence mixes multiple fields, only retain the portion relevant to the target field or return null.",
+      "Use neutral investor language; never slip into internal/team-centric or marketing tone.",
     ],
   });
 
@@ -2538,6 +2620,23 @@ async function generateGovernedUiCopyV1BestEffort(args: {
       if (k === "raise_terms") safe_raise_terms = null;
     }
   }
+
+  const applyGovernedTextCleanup = (
+    value: string | null,
+    key: "product_solution" | "market_icp"
+  ): string | null => {
+    if (!value) return value;
+    const cleaned = cleanupObviousSentenceArtifacts(value);
+    if (cleaned !== value) qualityNotes.push(`${key}_text_cleaned`);
+    if (key === "market_icp" && marketTextLooksProductHeavy(cleaned)) {
+      qualityNotes.push("market_icp_rejected_product_language");
+      return null;
+    }
+    return cleaned;
+  };
+
+  safe_product_solution = applyGovernedTextCleanup(safe_product_solution, "product_solution");
+  safe_market_icp = applyGovernedTextCleanup(safe_market_icp, "market_icp");
 
   const allBasisText = [
     basis.product_solution.text,
@@ -3021,6 +3120,32 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
       inserted = persisted.inserted;
       validation_failed = !schemaValidated.ok;
 
+      // Detect degraded / no-op overlay: 0 claims with a failed upstream generation step.
+      // Surfaces the root cause (e.g. missing policy prompt artifacts) in a single log line
+      // so it is visible in all environments — not just dev.
+      const overlayClaims = Array.isArray(toPersist.claims) ? toPersist.claims : [];
+      let evidencePacketDegraded = false;
+      let evidencePacketDegradedReason: string | null = null;
+      if (overlayClaims.length === 0) {
+        const dfQuality = display_facts_v1_quality as any;
+        if (dfQuality && !dfQuality.ok) {
+          const dfErrors: string[] = Array.isArray(dfQuality.errors) ? dfQuality.errors : [];
+          const artifactMissingErr = dfErrors.find(
+            (e) => typeof e === "string" && e.startsWith("policy_prompt_artifact_missing")
+          );
+          if (artifactMissingErr) {
+            evidencePacketDegraded = true;
+            evidencePacketDegradedReason = "policy_prompt_artifact_missing";
+          } else if (dfQuality.skipped_reason) {
+            evidencePacketDegraded = true;
+            evidencePacketDegradedReason = `display_facts_skipped:${dfQuality.skipped_reason}`;
+          } else if (dfErrors.length > 0) {
+            evidencePacketDegraded = true;
+            evidencePacketDegradedReason = `display_facts_error:${String(dfErrors[0]).slice(0, 80)}`;
+          }
+        }
+      }
+
       console.log(
         JSON.stringify({
           event: "GOVERNED_LLM_OVERLAY_V1",
@@ -3030,8 +3155,10 @@ export async function generateAndPersistGovernedLlmOverviewBestEffort(args: {
           selected_policy_id: selectedPolicyId,
           input_hash,
           inserted: persisted.inserted,
-          claims_count: Array.isArray(toPersist.claims) ? toPersist.claims.length : 0,
+          claims_count: overlayClaims.length,
           validation_failed: !schemaValidated.ok,
+          evidence_packet_degraded: evidencePacketDegraded,
+          evidence_packet_degraded_reason: evidencePacketDegradedReason,
           run_id: args.runId ?? null,
           step_run_id: args.stepRunId ?? null,
           duration_ms: Date.now() - startedAt,

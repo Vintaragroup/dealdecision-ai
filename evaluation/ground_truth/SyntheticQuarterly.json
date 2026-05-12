@@ -1,0 +1,169 @@
+{
+  "_schema": "ground_truth_v1",
+  "_status": "FIXTURE-READY",
+  "_synthetic": true,
+  "_coverage_rationale": "REF-DEAL-7: Company with quarterly actuals + annual forecast rows + mixed currency/unit labeling in the same XLSX workbook. Tests three failure modes that none of the existing 4 deals exercise: (1) quarterly period labels ('Q1 2024', 'Q3 2024 Actual') vs annual labels ('FY2025E') in identical columns — verifies the system builds correct period_type and picks LTM actuals, not Q1 data, for current state; (2) mixed unit labeling — one sheet in whole dollars, another sheet in $000s — verifies the scale-detection guard prevents a $3,200 (thousands) number from being stored as $3,200 instead of $3,200,000; (3) multi-currency — XLSX has USD revenue and GBP cost-of-goods at a stated exchange rate — verifies the system normalizes to USD before computing burn or gross margin.",
+  "_failure_modes_targeted": [
+    "Quarter-as-current: Q1 actual selected as current_state instead of FY2024 annual actual via timeseries collapse",
+    "Quarter-inflation: four quarterly rows reaching resolveV2 alongside the annual and being averaged into a wrong figure",
+    "Scale-mixing: $000s denomination fact (value=2200) surviving as revenue instead of the normalized $2,200,000",
+    "Multi-currency: GBP burn (£120K) winning over USD-normalized burn ($150K) after timeseries collapse",
+    "Forward annual mixed with quarterly actuals: FY2025 projected=$3,800,000 promoted over FY2024 actual=$2,200,000",
+    "Unit label guard miss: raw $000 artifact from deck (value=2200) not filtered before resolveV2"
+  ],
+  "_onboarding_status": "FIXTURE-READY — fully synthetic, no real deal ingestion required",
+  "_fixture_design_notes": {
+    "timeseries_collapse_rule": "All quarterly + annual revenue facts share document_id='doc-synthq-pl-xlsx'. ≥2 distinct period_labels triggers collapse. FY2024 Actual uses temporal_scope='current' (rank=52024) vs quarterly 'historical' (rank=42024). Annual wins deterministically.",
+    "denomination_design": "Raw $000 artifact has source_kind='deck' (lower bucket). Normalized xlsx fact has source_kind='xlsx'. selectHierarchyWinner picks xlsx bucket → 2200000 wins.",
+    "currency_design": "GBP and USD burn facts share same document_id with distinct period_labels → timeseries collapse. USD fact temporal_scope='current' (rank=52024) beats GBP 'historical' (rank=42024).",
+    "fx_rate": "1 GBP = 1.25 USD. Raw GBP burn = £120,000/month → USD burn = $150,000/month."
+  },
+  "deal_name": "SyntheticQuarterly",
+  "deal_id": "00000000-0000-4000-8000-000000000003",
+  "slots": {
+    "company_description": "SynthStream Analytics — SaaS analytics platform with quarterly reporting",
+    "solution_summary": "Real-time stream analytics for enterprise data pipelines",
+    "target_customer": "Mid-market enterprise data teams",
+    "product_type": "SaaS",
+    "delivery_model": "subscription",
+    "product_maturity": "Scaling",
+    "ai_claims_present": false,
+    "ai_evidence_strength": "none"
+  },
+  "financials": {
+    "_currency_note": "Revenue sheet: USD whole dollars. Costs sheet: GBP ($000s). Stated FX rate: 1 GBP = 1.25 USD. All ground-truth values in USD.",
+    "current_state": {
+      "revenue": {
+        "value": 2200000,
+        "source_kind": "xlsx",
+        "evidence": "SynthStream P&L XLSX — Revenue sheet, row='Total Revenue', col='FY2024 Actual'",
+        "period_label": "FY2024 Actual"
+      },
+      "burn_rate": {
+        "value": 150000,
+        "source_kind": "xlsx",
+        "evidence": "SynthStream P&L XLSX — Costs sheet (GBP £000s), row='Total Opex', col='FY2024 Actual'. £1,440,000/year ÷ 12 = £120,000/month × 1.25 FX = $150,000/month USD",
+        "period_label": "FY2024 Actual"
+      }
+    },
+    "quarterly_actuals": {
+      "_note": "Individual quarterly revenue actuals — these must NOT appear as current_state revenue. Present in same XLSX doc to force timeseries collapse.",
+      "q1_2024_revenue": { "value": 420000,  "period_label": "Q1 2024" },
+      "q2_2024_revenue": { "value": 510000,  "period_label": "Q2 2024" },
+      "q3_2024_revenue": { "value": 610000,  "period_label": "Q3 2024" },
+      "q4_2024_revenue": { "value": 660000,  "period_label": "Q4 2024" }
+    },
+    "forward_projections": {
+      "revenue_fy2025": { "value": 3800000, "source_kind": "xlsx", "period_label": "FY2025 Forecast", "temporal_scope": "projected" },
+      "revenue_q1_2025_forecast": { "value": 780000, "period_label": "Q1 2025", "temporal_scope": "projected" },
+      "revenue_q2_2025_forecast": { "value": 910000, "period_label": "Q2 2025", "temporal_scope": "projected" }
+    },
+    "denomination_noise": {
+      "_note": "Deck NLP artifact: revenue mentioned as '$2,200' (thousands representation). source_kind=deck. Must NOT survive as resolved revenue.",
+      "raw_thousands_value": 2200,
+      "normalized_value": 2200000
+    },
+    "currency_noise": {
+      "_note": "Raw GBP burn fact (£120,000/month). Must NOT survive over USD-normalized burn ($150,000/month).",
+      "gbp_burn_raw": 120000,
+      "usd_burn_normalized": 150000,
+      "fx_rate": 1.25
+    },
+    "raise": { "value": 3000000, "evidence": "Deck slide 12: raising $3M pre-seed" },
+    "validation": {
+      "_note": "Three behavioral layers: (1) timeseries collapse selects annual over quarterly; (2) projected excluded from primary resolution; (3) denomination + FX normalization enforced via source_kind bucket priority.",
+      "extraction_checks": [
+        {
+          "metric_key": "revenue",
+          "expected_value": 2200000,
+          "tolerance_pct": 5,
+          "allowed_source_kinds": ["xlsx"],
+          "period_label_hint": "FY2024 Actual",
+          "note": "Full-year annual actual must win via timeseries collapse over Q1-Q4 quarterly facts from the same document"
+        },
+        {
+          "metric_key": "burn_rate",
+          "expected_value": 150000,
+          "tolerance_pct": 10,
+          "allowed_source_kinds": ["xlsx", "structured_derived"],
+          "period_label_hint": "FY2024 Actual",
+          "note": "USD-normalized burn ($150K) must win via timeseries collapse over raw GBP burn (£120K) from the same document"
+        },
+        {
+          "metric_key": "revenue",
+          "expected_value": 2200000,
+          "tolerance_pct": 5,
+          "allowed_source_kinds": ["xlsx"],
+          "note": "Denomination normalization: xlsx fact (2200000) must win over deck artifact (2200) via source_kind bucket priority in selectHierarchyWinner"
+        }
+      ],
+      "noise_checks": [
+        {
+          "label": "Quarterly fact does not reach resolved_value for revenue",
+          "sql_filter": "metric_key = 'revenue' AND value <= 660000 AND source_kind = 'xlsx'",
+          "expected_count": 0,
+          "metric_key": "revenue",
+          "expected_resolved_excludes_quarterly": true,
+          "quarterly_max_value": 660000,
+          "failure_layer": "compiler",
+          "description": "No single quarter value (max $660K) should appear as resolved revenue — if timeseries collapse fails, a quarterly fact leaks through"
+        },
+        {
+          "label": "FY2025 forecast not promoted as current-state revenue",
+          "sql_filter": "metric_key = 'revenue' AND period_label ILIKE '%2025%' AND temporal_scope = 'projected' AND confidence = 'high'",
+          "expected_count": 0,
+          "metric_key": "revenue",
+          "expected_resolved_not": 3800000,
+          "tolerance_pct": 5,
+          "failure_layer": "compiler",
+          "description": "FY2025 projected revenue ($3.8M) must be excluded from primary resolution — projected_excluded_count must be ≥1"
+        },
+        {
+          "label": "Raw $000 artifact does not resolve as revenue",
+          "sql_filter": "metric_key = 'revenue' AND value < 10000 AND source_kind = 'deck'",
+          "expected_count": 0,
+          "metric_key": "revenue",
+          "expected_resolved_not": 2200,
+          "tolerance_pct": 50,
+          "failure_layer": "extraction",
+          "description": "Deck NLP $000s artifact (value=2200) must not survive selectHierarchyWinner — xlsx bucket wins over deck bucket"
+        },
+        {
+          "label": "Raw GBP burn does not resolve as burn_rate",
+          "sql_filter": "metric_key = 'burn_rate' AND currency = 'GBP' AND value BETWEEN 110000 AND 130000",
+          "expected_count": 0,
+          "metric_key": "burn_rate",
+          "expected_resolved_not": 120000,
+          "tolerance_pct": 5,
+          "failure_layer": "compiler",
+          "description": "GBP burn (£120K) must not survive timeseries collapse — USD-normalized burn ($150K) has higher factSelectionRank via temporal_scope='current'"
+        }
+      ],
+      "report_checks": [
+        {
+          "label": "current_state.revenue must be FY2024 Actual annual total ($2.2M)",
+          "report_path": ["financial_breakdown_v1", "current_state", "revenue", "value"],
+          "expected_value": 2200000,
+          "tolerance_pct": 5,
+          "failure_layer": "compiler",
+          "note": "If system returns a quarterly value or the FY2025 forecast, that is a temporal confusion failure"
+        },
+        {
+          "label": "current_state.revenue source_kind must be xlsx",
+          "report_path": ["financial_breakdown_v1", "current_state", "revenue", "source_kind"],
+          "expected_string": "xlsx",
+          "expected_absent": false,
+          "failure_layer": "compiler"
+        },
+        {
+          "label": "current_state.burn_rate must be USD-normalized ($150K/month)",
+          "report_path": ["financial_breakdown_v1", "current_state", "burn_rate", "value"],
+          "expected_value": 150000,
+          "tolerance_pct": 10,
+          "failure_layer": "compiler",
+          "note": "GBP-only burn would resolve to £120K — if FX conversion fails, the value will be ~20% lower than expected"
+        }
+      ]
+    }
+  }
+}

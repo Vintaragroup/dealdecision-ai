@@ -342,7 +342,12 @@ export async function populateFinancialFactRegistryV1(
     // ── 8. Cross-document value-level dedup ────────────────────────────────────
     // Delete duplicate facts accumulated across separate per-document runs.
     // Keeps the lexicographically smallest fact_id (deterministic).
-    result.facts_deduplicated = await deduplicateFactsByValueForDeal(pool, opts.deal_id);  } catch (topErr: unknown) {
+    result.facts_deduplicated = await deduplicateFactsByValueForDeal(pool, opts.deal_id);
+    // ── 8b. Same-period conflicting-value dedup ─────────────────────────────────
+    // Delete facts that share (metric_key, period_label, source_kind) but have
+    // different values — e.g. "Sales 1" $8K vs "Sales 4" $0 from the same sheet.
+    // Keeps the highest non-zero value per slot (deterministic).
+    result.facts_deduplicated += await deduplicateConflictingValuesBySourceKind(pool, opts.deal_id);  } catch (topErr: unknown) {
     const msg = topErr instanceof Error ? topErr.message : String(topErr);
     result.errors.push(`populate top-level: ${msg}`);
   }
@@ -493,6 +498,48 @@ async function deduplicateFactsByValueForDeal(pool: Pool, deal_id: string): Prom
                 ROW_NUMBER() OVER (
                   PARTITION BY deal_id, metric_key, period_label, value::text, source_kind
                   ORDER BY fact_id
+                ) AS rn
+         FROM financial_facts_v1
+         WHERE deal_id = $1
+       ) ranked
+       WHERE financial_facts_v1.fact_id = ranked.fact_id
+         AND financial_facts_v1.deal_id = $1
+         AND ranked.rn > 1`,
+      [deal_id],
+    );
+    return result.rowCount ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Delete conflicting financial facts for a deal that share the same
+ * (metric_key, period_label, source_kind) but have different values.
+ *
+ * This handles the case where multiple XLSX rows for the same metric+period
+ * (e.g. "Sales 1" $8K and "Sales 4" $0) produce distinct fact_ids via
+ * value_raw in the hash, causing both to accumulate in the DB.
+ *
+ * Resolution order:
+ *  1. Non-zero value beats zero value.
+ *  2. Higher absolute value wins.
+ *  3. Lexicographically smallest fact_id (deterministic tiebreaker).
+ *
+ * Returns the number of rows deleted.
+ */
+async function deduplicateConflictingValuesBySourceKind(pool: Pool, deal_id: string): Promise<number> {
+  try {
+    const result = await pool.query(
+      `DELETE FROM financial_facts_v1
+       USING (
+         SELECT fact_id,
+                ROW_NUMBER() OVER (
+                  PARTITION BY deal_id, metric_key, period_label, source_kind
+                  ORDER BY
+                    CASE WHEN value::numeric != 0 THEN 0 ELSE 1 END ASC,
+                    ABS(value::numeric) DESC,
+                    fact_id ASC
                 ) AS rn
          FROM financial_facts_v1
          WHERE deal_id = $1

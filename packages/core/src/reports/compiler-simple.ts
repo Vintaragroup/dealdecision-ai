@@ -15,10 +15,14 @@ import {
   filterCorruptedFacts,
   isCorruptedFact,
   isProjectedFact,
+  detectProformaModelFactIds,
+  selectCanonicalRevenueFact,
+  CANONICAL_REVENUE_KEYS,
 } from '../financial-facts/select-authoritative-fact.js';
 import { inferCapitalLogicProfileV1, type CapitalLogicProfileV1 } from '../models/capital-logic-profile.js';
 import { inferStageExpectationsProfileV1, type StageExpectationsProfileV1 } from '../models/stage-expectations-profile.js';
 import { inferBusinessModelSignalProfileV1, type BusinessModelSignalProfileV1 } from '../models/business-model-signal-profile.js';
+import { toPolicyAwareBusinessModelDisplay } from '../classification/policy-aware-schema.js';
 import { inferMarketAccessibilitySignalProfileV1, type MarketAccessibilitySignalProfileV1 } from '../models/market-accessibility-signal-profile.js';
 import { inferTractionSignalProfileV1, type TractionSignalProfileV1 } from '../models/traction-signal-profile.js';
 import { inferTeamSignalProfileV1, type TeamSignalProfileV1 } from '../models/team-signal-profile.js';
@@ -34,6 +38,26 @@ import type { ConvictionV1 } from '../models/conviction-v1.js';
 import type { FinancialIntegrityV1 } from '../types/financial-integrity-v1.js';
 import { computeFinancialIntegrityV1 } from '../analyzers/financial-integrity-analyzer-v1.js';
 import { buildConvictionV1 } from './conviction-v1.js';
+import {
+  applyFieldAuthorityGuards,
+  applyStructuredSummaryFillIns,
+  type FieldAuthorityGuardContext,
+} from './field-authority-guard.js';
+import { selectBestCandidatesPerField } from './field-candidate-selector.js';
+import { applyFinalPublishGuard } from './final-publish-guard.js';
+import { logGuardrailBlock } from './kpi-guard.js';
+
+// LLM Deal Understanding Auditor — Phase 1 type imports
+// All slots are optional and null by default. No scoring behavior is changed.
+import type { LLMFieldAuditV1 } from '../models/llm-field-audit-v1.js';
+import type { LLMFinancialVerificationV1 } from '../models/llm-financial-verification-v1.js';
+import type { LLMSchemaGapV1 } from '../models/llm-schema-gap-v1.js';
+import type { LLMDecisionRationaleV1 } from '../models/llm-decision-rationale-v1.js';
+import type { LLMRationaleValidationV1 } from '../models/llm-rationale-validation-v1.js';
+import type { CorrectionLineageV1 } from '../models/correction-lineage-v1.js';
+import type { LLMValidationSummaryV1 } from '../models/llm-validation-summary-v1.js';
+import type { InvestmentInterpretationV1 } from '../models/investment-interpretation-v1.js';
+import type { NarrativeQualityValidationV1 } from '../models/narrative-quality-validation-v1.js';
 
 // Import ReportDTO types directly from contracts
 type ReportDTO = {
@@ -67,13 +91,19 @@ type ReportDTO = {
         amount?: { amount: number | null; currency?: string | null };
       };
     };
-    business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null };
+    business_model: { value: string | null; confidence: number; sources: Array<Record<string, any>>; label?: string | null; recovered?: boolean; recovery_rule?: string | null };
     revenue: {
       value: { amount: number | null; currency: string | null; period: string | null; raw: string | null } | null;
       confidence: number;
       sources: Array<Record<string, any>>;
       label?: string | null;
       selection_reason?: string | null;
+      fact_type_label?: 'actual' | 'projected' | 'interim' | 'run_rate' | 'unclassified' | null;
+      display_type_label?: string | null;
+      revenue_authority_explainer?: string | null;
+      entity_scope?: 'company' | 'customer' | 'case_study' | 'illustrative' | 'unknown' | null;
+      is_projected?: boolean;
+      is_provisional?: boolean;
       candidates?: Array<{
         selected?: boolean;
         score?: number;
@@ -85,6 +115,8 @@ type ReportDTO = {
         currency?: string | null;
         confidence?: number | null;
         sources?: Array<Record<string, any>>;
+        fact_type_label?: string | null;
+        entity_scope?: string | null;
       }>;
     };
 
@@ -101,16 +133,48 @@ type ReportDTO = {
       confidence: number;
       sources: Array<Record<string, any>>;
       label?: string | null;
+      source_support_level?: 'weak' | 'moderate' | 'strong' | null;
     };
     growth: {
       value: { percent: number | null; year: number | null; raw: string | null } | null;
       confidence: number;
       sources: Array<Record<string, any>>;
       label?: string | null;
+      source_support_level?: 'weak' | 'moderate' | 'strong' | null;
     };
     issues: string[];
     strengths: string[];
     recommendations: string[];
+
+    /** RC-S6-009: Company name extracted from document full_text */
+    company_name?: string | null;
+    /** Provenance of company_name: 'deals_name' (authoritative) or 'document_text' (heuristic) */
+    company_name_source?: string | null;
+    /** RC-S6-010: Key team members parsed from document text */
+    team_highlights?: Array<{ name: string; role: string; credential?: string | null }> | null;
+    /** RC-S6-008: Fund deployment capital signals (e.g. debt-in-process, deployment pipeline, target IRR) */
+    fund_deployment_signals?: {
+      debt_in_process?: { amount: number; raw: string } | null;
+      deployment_pipeline?: { amount: number; raw: string } | null;
+      target_irr?: string | null;
+    } | null;
+    /** RC-S6-007: Parsed use-of-funds allocation items from document text */
+    use_of_funds_breakdown?: Array<{ category: string; amount_raw?: string; amount?: number }> | null;
+    /** RC-S6-012: Deployment/project pipeline table extracted from fund-model documents */
+    project_pipeline?: Array<{
+      name: string;
+      capital_raw?: string;
+      revenue_raw?: string | null;
+      return_pct?: string | null;
+      start_date?: string | null;
+    }> | null;
+    /** RC-S6-011 enrichment: Structured revenue model (type, unit economics, recurring flag) */
+    revenue_model?: {
+      type: string;
+      unit_economics?: string | null;
+      recurring?: boolean | null;
+      detail?: string | null;
+    } | null;
 
     // Deterministic KPI-locked synthesis from structured_summary.
     // API may override/augment this with node-derived citations.
@@ -129,6 +193,28 @@ type ReportDTO = {
   sections: ReportSection[];
   completeness: number;
   metadata?: Record<string, any>;
+
+  // ── LLM Deal Understanding Auditor — Phase 1 slots ────────────────────────
+  // All null by default. Populated only after Phase 2 auditor modules are wired.
+  // These fields do NOT affect scoring, verdicts, coverage, financials, or UI.
+  /** LLM field audit: proposals for misplaced or semantically incorrect fields */
+  llm_field_audit_v1?: LLMFieldAuditV1 | null;
+  /** LLM financial verification: entity-level and type classification of extracted values */
+  llm_financial_verification_v1?: LLMFinancialVerificationV1 | null;
+  /** LLM schema gap detector: categories present in documents but missing from the schema */
+  llm_schema_gap_v1?: LLMSchemaGapV1 | null;
+  /** LLM decision rationale: explanation of why the deterministic verdict was produced */
+  llm_decision_rationale_v1?: LLMDecisionRationaleV1 | null;
+  /** LLM rationale validation: consistency and jargon checks on the generated rationale */
+  llm_rationale_validation_v1?: LLMRationaleValidationV1 | null;
+  /** Correction lineage: immutable audit trail of all LLM-proposed corrections */
+  correction_lineage_v1?: CorrectionLineageV1[] | null;
+  /** Validator summary: aggregate statistics from DeterministicCorrectionValidatorV1 */
+  llm_validation_summary_v1?: LLMValidationSummaryV1 | null;
+  /** Investment interpretation layer: section-level underwriting implications */
+  investment_interpretation_v1?: InvestmentInterpretationV1 | null;
+  /** Narrative quality validation for the interpretation layer */
+  narrative_quality_validation_v1?: NarrativeQualityValidationV1 | null;
 };
 
 type ReportSection = {
@@ -261,6 +347,36 @@ const revenueDisplayFromPromotedFacts = (promotedFacts?: PromotedFactInput[]): s
   return null;
 };
 
+const revenueAmountFromPromotedFacts = (promotedFacts?: PromotedFactInput[]): number | null => {
+  const facts = Array.isArray(promotedFacts) ? promotedFacts : [];
+  const candidates = facts
+    .filter((f) => promotedFactTypeOf(f) === 'revenue_v1')
+    .filter((f) => {
+      const vj = promotedFactValueJson(f) ?? {};
+      const subtype = String((vj as any)?.subtype ?? '').toLowerCase();
+      const scope = String((vj as any)?.scope ?? (f as any)?.content_json?.provenance?.scope ?? '').toLowerCase();
+      if (subtype === 'attributed') return false;
+      if (scope === 'channel_attributed') return false;
+      if (subtype === 'forecast' || subtype === 'projected' || subtype === 'proforma') return false;
+      return true;
+    })
+    .sort((a, b) => (Number(b.confidence ?? 0) - Number(a.confidence ?? 0)));
+
+  for (const f of candidates) {
+    const vj = promotedFactValueJson(f) ?? {};
+    const amountRaw = (vj as any)?.amount?.amount;
+    if (typeof amountRaw === 'number' && Number.isFinite(amountRaw)) {
+      return amountRaw;
+    }
+    const raw = asNonEmptyString((vj as any)?.raw ?? (vj as any)?.display);
+    const parsed = parseMoneyLike(raw ?? null).amount;
+    if (typeof parsed === 'number' && Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return null;
+};
+
 const applyRevenueOverrideToMetricBenchmarkContent = (content: string, revenueDisplay: string | null): string => {
   if (!revenueDisplay) return content;
 
@@ -281,6 +397,44 @@ const shouldCollapseRaiseDisplay = (display: string): boolean => {
   if (s.includes('valuation') || s.includes('@') || s.includes('post-money') || s.includes('pre-money') || /\braise\b/.test(s)) return true;
   return false;
 };
+
+type EntityScope = 'company' | 'customer' | 'case_study' | 'illustrative' | 'unknown';
+
+/**
+ * Detect whether a revenue/metric note/slide represents a company-level metric
+ * or a case-study / per-customer / illustrative metric.
+ *
+ * Returns 'case_study' when the note/title contains per-customer or use-case signals.
+ * Returns 'company' when clean financial presentation language is detected.
+ * Returns 'unknown' when there is insufficient signal.
+ */
+function detectEntityScope(noteSnippet: string | null, slideTitle: string | null): EntityScope {
+  const note = String(noteSnippet ?? '').toLowerCase();
+  const title = String(slideTitle ?? '').toLowerCase();
+  const combined = `${note} ${title}`;
+
+  // Strong case-study signals
+  if (/case\s+stud(y|ies)|case\s+solution|use\s+case|client\s+example|customer\s+example|merchant\s+example/.test(combined)) {
+    return 'case_study';
+  }
+  // Per-entity breakdowns — individual client metrics mixed with totals on a use-case slide
+  if (/\bclient\s+hq\b|\bretail\s+location[s]?\s+mrr\b|\breseller.*mrr\b/.test(combined)) {
+    return 'case_study';
+  }
+  // Illustrative / hypothetical
+  if (/\billustrative\b|\bhypothetical\b|\bsample\s+deployment\b|\bper[- ]location\b|\bper[- ]partner\b/.test(combined)) {
+    return 'illustrative';
+  }
+  // Per-customer / pilot signals (but may still be meaningful company metrics)
+  if (/\bpilot\s+client\b|\bper\s+customer\b|\bper\s+merchant\b/.test(combined)) {
+    return 'customer';
+  }
+  // Positive company-level signals
+  if (/\bfinancial\s+(performance|results|statements?|summary)\b|\bsales\s+performance\b|\bannual\s+revenue\b|\btotal\s+(revenue|arr|mrr)\b/.test(combined)) {
+    return 'company';
+  }
+  return 'unknown';
+}
 
 function buildStructuredSummary(
   dio: DIO,
@@ -478,7 +632,26 @@ function buildStructuredSummary(
   })();
   if (promotedModel) {
     const vj = getPromotedValueJson(promotedModel) ?? {};
-    const display = asNonEmptyString(vj?.display) ?? asNonEmptyString(vj?.model);
+    const _rawDisplay = asNonEmptyString(vj?.display) ?? asNonEmptyString(vj?.model);
+    // Display-time policy-aware guard: re-apply toPolicyAwareBusinessModelDisplay using
+    // stored diagnostics so that false-positive real-estate / fund overrides are corrected
+    // even for deals analysed before Fix 1/2 shipped (e.g. Carmoola).
+    const display = (() => {
+      if (!_rawDisplay) return _rawDisplay;
+      const _diagPolicyId: string | null = (vj as any)?.diagnostics?.policy_id ?? null;
+      const _diagRawLabel: string | null = (vj as any)?.display_label_raw ?? (vj as any)?.primary_label ?? null;
+      if (!_diagRawLabel) return _rawDisplay;
+      try {
+        const _pa = toPolicyAwareBusinessModelDisplay({
+          policyId: _diagPolicyId,
+          rawLabel: _diagRawLabel,
+          hasRealEstateSignals: Boolean((vj as any)?.diagnostics?.has_real_estate_signals),
+          hasFundSignals: Boolean((vj as any)?.diagnostics?.has_fund_signals),
+          isPreferredEquity: Boolean((vj as any)?.diagnostics?.is_preferred_equity),
+        });
+        return _pa.display ?? _rawDisplay;
+      } catch { return _rawDisplay; }
+    })();
     const sourcesAll = promotedSourcesFor(promotedModel);
     const primaries = sourcesAll.filter((s) => (s as any)?.evidence_role === 'primary' && (s as any)?.source_document_id && (s as any)?.page_index != null);
     const supportings = sourcesAll.filter((s) => (s as any)?.evidence_role === 'supporting' && (s as any)?.source_document_id && (s as any)?.page_index != null);
@@ -534,11 +707,14 @@ function buildStructuredSummary(
     const percent = typeof pctRaw === 'number' && Number.isFinite(pctRaw) ? pctRaw : null;
     if (raw || percent != null) {
       const sources = attachNoteSnippet(promotedSourcesFor(promotedGrowthPercent), (vj as any)?.note_snippet);
+      const noteText = String((vj as any)?.note_snippet ?? '').toLowerCase();
+      const hasComparisonBasis = /\byoy\b|y\/y|year\s+over\s+year|\bvs\.?\b|\bversus\b|\bcompared\b/.test(noteText);
       structured.growth = {
         value: { percent, year: null, raw: raw ?? null },
         confidence: clamp01(typeof promotedGrowthPercent.confidence === 'number' ? promotedGrowthPercent.confidence : 0.6),
         sources,
         label: null,
+        source_support_level: hasComparisonBasis ? 'moderate' : 'weak',
       };
     }
   }
@@ -566,9 +742,17 @@ function buildStructuredSummary(
   const overview = phase1?.deal_overview_v2;
   const exec = phase1?.executive_summary_v1;
 
+  // Part 4 / stale-identity containment: DIO phase1 BM fallbacks (arbitration, overview, exec)
+  // must not fire for real-estate-classified deals — those BMs are investment structure labels,
+  // not company business models. The FPG CRE guard provides a second safety net but this
+  // prevents leakage into areas that bypass the FPG (IAO, archetype summaries, deep tiers).
+  const dioAssetClass = String((dio as any)?.dio?.deal_classification_v1?.selected?.asset_class ?? '').toLowerCase();
+  const dioPolicyId = String((dio as any)?.dio?.deal_classification_v1?.selected?.policy_id ?? '').toLowerCase();
+  const isDioRealEstate = dioAssetClass === 'real_estate' || dioPolicyId === 'real_estate_underwriting' || dioPolicyId.startsWith('real_estate');
+
   const arbitrationV1 = phase1?.business_model_arbitration_v1;
   const arbitratedModel = asNonEmptyString(arbitrationV1?.business_model);
-  if (arbitratedModel) {
+  if (arbitratedModel && !structured.business_model.value && !isDioRealEstate) {
     const evidence = Array.isArray(arbitrationV1?.evidence) ? arbitrationV1.evidence : [];
     const sources = evidence.map((e: any) => ({
       kind: 'phase1.business_model_arbitration_v1',
@@ -629,7 +813,7 @@ function buildStructuredSummary(
     };
   }
   const overviewModel = asNonEmptyString(overview?.business_model);
-  if (overviewModel && !structured.business_model.value && hasPrimaryCitation(overviewSources)) {
+  if (overviewModel && !structured.business_model.value && hasPrimaryCitation(overviewSources) && !isDioRealEstate) {
     structured.business_model = { value: overviewModel, confidence: 0.9, sources: overviewSources };
   }
 
@@ -649,7 +833,7 @@ function buildStructuredSummary(
   }
   if (!structured.business_model.value) {
     const execModel = asNonEmptyString(exec?.business_model);
-    if (execModel && hasPrimaryCitation(execEvidence)) {
+    if (execModel && hasPrimaryCitation(execEvidence) && !isDioRealEstate) {
       const band = (exec as any)?.confidence?.sections?.business_model ?? (exec as any)?.confidence?.overall;
       structured.business_model = { value: execModel, confidence: confidenceBandToNumber(band), sources: execEvidence };
     }
@@ -833,6 +1017,23 @@ function buildStructuredSummary(
         const subtype = asNonEmptyString((vj as any)?.subtype);
         const sources = attachNoteSnippet(promotedSourcesFor(f), (vj as any)?.note_snippet);
         const conf = clamp01(typeof f?.confidence === 'number' ? f.confidence : 0.62);
+        const prov = f?.content_json?.provenance;
+        // Use pre-computed entity_scope from value_json when available (set by promoted-facts-from-dpu.ts).
+        const precomputedScope = asNonEmptyString((vj as any)?.entity_scope);
+        const validScopes = ['company', 'customer', 'case_study', 'illustrative', 'unknown'];
+        const entityScope = (precomputedScope && validScopes.includes(precomputedScope))
+          ? precomputedScope
+          : detectEntityScope(
+              asNonEmptyString((vj as any)?.note_snippet),
+              asNonEmptyString(prov?.slide_title),
+            );
+        // Authority metadata for promoted/DPU candidates.
+        const sourceType = asNonEmptyString((f as any)?.source_type) ?? 'dpu_derived_fact';
+        const authorityRank: 1 | 2 | 3 | 4 | 5 = sourceType === 'promoted_slide_fact' ? 3 : 3;
+        const sourceSupportLevel = sourceType === 'dpu_derived_fact' ? 'dpu_text' : 'promoted_slide_fact';
+        const documentFamily = 'pitch_deck';
+        const hasPrimaryCitation = !!(prov?.page_index != null && prov?.source_document_id);
+        const selectionExplainer = `${sourceType} page=${prov?.page_index ?? 'na'} conf=${conf.toFixed(2)}`;
         return {
           selected,
           score: scoreValue,
@@ -844,6 +1045,12 @@ function buildStructuredSummary(
           currency: 'USD',
           confidence: conf,
           sources,
+          entity_scope: entityScope,
+          authority_rank: authorityRank,
+          source_support_level: sourceSupportLevel,
+          document_family: documentFamily,
+          has_primary_citation: hasPrimaryCitation,
+          selection_explainer: selectionExplainer,
         };
       };
 
@@ -866,7 +1073,21 @@ function buildStructuredSummary(
         // Exclude irrelevant segments unless explicitly financial/performance.
         if (seg && disallowedSeg.has(seg) && !titleIsFinancialOrPerformance) return -500;
 
+        // Case-study / per-customer metrics are not company-level revenue.
+        // Prefer pre-computed entity_scope from value_json (set upstream in promoted-facts-from-dpu.ts).
+        const precomputedScopeInScore = asNonEmptyString((vj as any)?.entity_scope);
+        const validEntityScopes = ['company', 'customer', 'case_study', 'illustrative', 'unknown'];
+        const entityScope = (precomputedScopeInScore && validEntityScopes.includes(precomputedScopeInScore))
+          ? precomputedScopeInScore
+          : detectEntityScope(
+              asNonEmptyString((vj as any)?.note_snippet),
+              asNonEmptyString(prov?.slide_title),
+            );
+        if (entityScope === 'case_study') return -800;
+        if (entityScope === 'illustrative') return -600;
+
         let s = 0;
+        if (entityScope === 'customer') s -= 30;
         if (scope === 'company_financials_table') s += 50;
         if (scope === 'company_total') s += 10;
         if (scope === 'channel_attributed') s -= 10;
@@ -980,6 +1201,11 @@ function buildStructuredSummary(
       const amountRaw = (vj as any)?.amount?.amount;
       const amount = typeof amountRaw === 'number' && Number.isFinite(amountRaw) ? amountRaw : null;
       const sources = attachNoteSnippet(promotedSourcesFor(promotedRevenue), (vj as any)?.note_snippet);
+      const revProv = (promotedRevenue as any)?.content_json?.provenance;
+      const revEntityScope = detectEntityScope(
+        asNonEmptyString((vj as any)?.note_snippet),
+        asNonEmptyString(revProv?.slide_title),
+      );
 
       const label = (() => {
         const scopeNorm = String(scope ?? '').trim().toLowerCase();
@@ -988,11 +1214,22 @@ function buildStructuredSummary(
         return null;
       })();
 
+      // Map promoted-fact subtype to display_type_label.
+      const promotedDisplayTypeLabel = (() => {
+        const st = String(subtype ?? '').toLowerCase();
+        if (st === 'forecast' || st === 'projected') return 'Revenue (projected)';
+        if (st === 'interim') return 'Revenue (interim)';
+        if (st === 'run_rate') return 'Revenue (run-rate)';
+        return 'Revenue';
+      })();
+
       structured.revenue = {
         value: { amount, currency: 'USD', period: null, raw: display },
         confidence: clamp01(typeof promotedRevenue.confidence === 'number' ? promotedRevenue.confidence : 0.62),
         sources,
         label,
+        display_type_label: promotedDisplayTypeLabel,
+        entity_scope: revEntityScope !== 'unknown' ? revEntityScope : undefined,
         selection_reason: promotedRevenueTrace.selection_reason,
         candidates: Array.isArray(promotedRevenueTrace.candidates) ? promotedRevenueTrace.candidates : [],
       };
@@ -1130,11 +1367,17 @@ function buildStructuredSummary(
       const countRaw = (vj as any)?.count;
       const count = typeof countRaw === 'number' && Number.isFinite(countRaw) ? countRaw : null;
       const sources = attachNoteSnippet(promotedSourcesFor(promotedCustomers), (vj as any)?.note_snippet);
+      // Downgrade confidence when no primary document citation exists — count without
+      // a verifiable page reference (document_id + page) cannot be confirmed.
+      const hasPageCitation = hasPrimaryCitation(sources);
+      const baseConf = typeof promotedCustomers.confidence === 'number' ? promotedCustomers.confidence : 0.62;
+      const effectiveConf = hasPageCitation ? baseConf : Math.min(baseConf, 0.45);
       structured.customers = {
         value: { count, kind: 'customers', raw: display },
-        confidence: clamp01(typeof promotedCustomers.confidence === 'number' ? promotedCustomers.confidence : 0.62),
+        confidence: clamp01(effectiveConf),
         sources,
         label: subtype && subtype !== 'active' ? (subtype === 'wholesale_accounts' ? 'Wholesale' : null) : null,
+        source_support_level: hasPageCitation ? 'moderate' : 'weak',
       };
     }
   }
@@ -1165,15 +1408,41 @@ function buildStructuredSummary(
     }
   }
 
-  // Deterministic summary derived from the structured KPIs.
-  // Always present for persistence; may be refined by API-side node summaries.
-  try {
-    (structured as any).deal_summary_v1 = buildDeterministicDealSummaryV1FromStructuredSummary({
-      structured_summary: structured,
-    });
-  } catch {
-    // Best-effort: never fail report compilation.
+  // Recovery tier: deal_classification_v1 policy_id → canonical BM label.
+  // Fires only when BM is still null after all other paths, and the deal has a
+  // well-typed non-generic policy classification with sufficient confidence.
+  // Never fires for real-estate-classified deals (guarded by isDioRealEstate above).
+  if (!structured.business_model.value && !isDioRealEstate) {
+    const clf = (dio as any)?.dio?.deal_classification_v1;
+    const selectedPolicyId = asNonEmptyString(String(clf?.selected?.policy_id ?? ''));
+    const clfConfidence: number =
+      typeof clf?.selected?.confidence === 'number' && Number.isFinite(clf.selected.confidence)
+        ? clf.selected.confidence
+        : 0;
+    if (selectedPolicyId && clfConfidence >= 0.7) {
+      const recoveredBM = POLICY_TO_CANONICAL_BM[selectedPolicyId] ?? null;
+      if (recoveredBM) {
+        (structured.business_model as any) = {
+          value: recoveredBM,
+          confidence: 0.4,
+          sources: [
+            {
+              kind: 'deal_classification_v1.policy_inferred',
+              policy_id: selectedPolicyId,
+              classification_confidence: clfConfidence,
+            },
+          ],
+          recovered: true,
+          recovery_rule: 'policy_inferred_label',
+        };
+      }
+    }
   }
+
+  // NOTE: deal_summary_v1 is intentionally NOT built here.
+  // It is rebuilt post-guard (after applyFinalPublishGuard + injectCanonicalRevenueIntoStructuredSummary)
+  // inside compileDIOToReportWithPromotedFacts so that hero/overview/deep tiers always
+  // reflect the fully guarded KPI values — never stale pre-guard values.
 
   // TopSection V1: score-driver summary (why is the score X?).
   // Separation contract: this is NEVER a company description.
@@ -1466,7 +1735,29 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       });
     }
   }
-  
+
+  // RC-002b: Detect going concern language in DIO claim texts — promote to high-severity red flag.
+  {
+    const _gcClaims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
+    const _gcParts: string[] = [];
+    for (const claim of _gcClaims) {
+      if (typeof claim?.text === 'string') _gcParts.push(claim.text);
+      for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
+        if (typeof ev?.snippet === 'string') _gcParts.push(ev.snippet);
+      }
+    }
+    if (
+      /substantial\s+doubt.*(?:going\s+concern|ability\s+to\s+continue)|going\s+concern.*substantial\s+doubt|ability\s+to\s+continue\s+as\s+a\s+going\s+concern/i.test(_gcParts.join('\n'))
+      && !redFlags.some((f) => f.message.toLowerCase().includes('going concern'))
+    ) {
+      redFlags.push({
+        severity: 'high',
+        message: 'Going concern doubt noted in filings',
+        action: 'Verify current cash position and any management remediation plan before proceeding',
+      });
+    }
+  }
+
   // Identify green flags (strengths)
   const greenFlags: string[] = [];
   if (results.visual_design?.strengths) {
@@ -1485,10 +1776,37 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
   const structuredSummary = buildStructuredSummary(dio, scoreExplanation, undefined);
   const canonicalRevenueDisplay = revenueDisplayFromStructuredSummary(structuredSummary);
 
+  // RC-004: extract doc type hints from DIO claim text so SEC filings can override funding stage.
+  // The DIO data lives in dio.dio.phase1.claims[*].{text, evidence[*].snippet} — not in dio.inputs.evidence.
+  const _docTypeHintsForFunding = (() => {
+    const claims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
+    const parts: string[] = [];
+    for (const claim of claims) {
+      if (typeof claim?.text === 'string') parts.push(claim.text);
+      for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
+        if (typeof ev?.snippet === 'string') parts.push(ev.snippet);
+      }
+    }
+    const allText = parts.join('\n');
+    const hints: string[] = [];
+    if (/\bform\s+s-?1\b|\bregistration\s+statement\b/i.test(allText)) hints.push('sec_filing_s1');
+    if (/\bform\s+10-?k\b|\bannual\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10k');
+    if (/\bform\s+10-?q\b|\bquarterly\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.push('sec_filing_10q');
+    return hints;
+  })();
+
+  // RC-S6-004: Fall back to DIO overview/exec raise when structured_summary.raise.value is null.
+  const _ssRaiseAmountLegacy = parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null;
+  const _dioOverviewRaiseLegacy = asNonEmptyString((dio as any)?.dio?.phase1?.deal_overview_v2?.raise) ?? null;
+  const _dioExecRaiseLegacy = asNonEmptyString((dio as any)?.dio?.phase1?.executive_summary_v1?.raise) ?? null;
+  const _dioRaiseStrLegacy = _dioOverviewRaiseLegacy ?? _dioExecRaiseLegacy;
+  const _dioRaiseAmountLegacy = _dioRaiseStrLegacy ? (parseMoneyLike(_dioRaiseStrLegacy).amount ?? null) : null;
+  const _fundingStageRaiseAmountLegacy = _ssRaiseAmountLegacy ?? _dioRaiseAmountLegacy;
+
   const fundingStage = inferFundingStageModelV1({
     funding_round_label: null,
     company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
-    raise_amount: parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null,
+    raise_amount: _fundingStageRaiseAmountLegacy,
     raise_sources: Array.isArray(structuredSummary?.raise?.sources)
       ? structuredSummary.raise.sources.map((s: any) => ({
           document_id: s?.source_document_id ?? s?.document_id ?? undefined,
@@ -1497,6 +1815,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
           source_path: s?.source_path ?? undefined,
         }))
       : null,
+    doc_type_hints: _docTypeHintsForFunding.length > 0 ? _docTypeHintsForFunding : null,
   });
   
   // Executive Summary
@@ -1658,6 +1977,7 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
           filename: d?.filename,
         }))
       : null,
+    doc_type_hints: _docTypeHintsForFunding.length > 0 ? _docTypeHintsForFunding : null,
   });
 
   const capitalLogic = inferCapitalLogicProfileV1({
@@ -1706,10 +2026,26 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
     }),
   );
 
+  // RC-DEALTYPE-CORRECT: correct stale context.deal_type in persisted score_explanation.
+  // An older persisted explanation can carry a wrong classification (e.g. fund_spv on a startup
+  // pitch). phase1.deal_overview_v2.deal_type is the authoritative value — extracted directly
+  // from the document, not set at ingestion time. Only applied when phase1 disagrees.
+  const _seP1DealType =
+    (dio as any)?.dio?.phase1?.deal_overview_v2?.deal_type ??
+    (dio as any)?.dio?.phase1?.executive_summary_v1?.deal_type ?? null;
+  const _seCtx = (scoreExplanation as any)?.context;
+  const _seCorrCtx =
+    _seP1DealType && typeof _seP1DealType === 'string' &&
+    _seP1DealType.toLowerCase() !== 'unknown' &&
+    _seCtx && typeof _seCtx === 'object' &&
+    (_seCtx as any).deal_type !== _seP1DealType
+      ? { ...(_seCtx as any), deal_type: _seP1DealType }
+      : _seCtx;
   const scoreExplanationAugmented = scoreExplanation && typeof scoreExplanation === 'object'
     ? ({
         ...(scoreExplanation as any),
         stage_weighted_v1: stageWeighted,
+        ...(_seCorrCtx !== _seCtx ? { context: _seCorrCtx } : {}),
       } as any)
     : scoreExplanation;
 
@@ -1760,70 +2096,218 @@ export function compileDIOToReport(dio: DIO): ReportDTO {
       scoreAvailable,
       scoreConfidence: scoreExplanation?.totals?.confidence_score,
       score_explanation: scoreExplanationAugmented,
-    }
+    },
+    // LLM Deal Understanding Auditor — Phase 1 slots (always null; Phase 2+ populates)
+    llm_field_audit_v1: null,
+    llm_financial_verification_v1: null,
+    llm_schema_gap_v1: null,
+    llm_decision_rationale_v1: null,
+    llm_rationale_validation_v1: null,
+    correction_lineage_v1: null,
+    llm_validation_summary_v1: null,
+    investment_interpretation_v1: null,
+    narrative_quality_validation_v1: null,
   };
 }
 
+/** Maps deal_classification_v1 policy_id values to canonical BM label strings. */
+const POLICY_TO_CANONICAL_BM: Record<string, string> = {
+  enterprise_saas_b2b_v1: 'Subscription/SaaS (B2B)',
+  consumer_saas_b2c_v1: 'Subscription/SaaS (B2C)',
+  marketplace_platform_v1: 'Marketplace / Platform',
+  consumer_fintech_platform_v1: 'B2C Fintech Platform',
+};
+
+const REVENUE_DISPLAY_TYPE_LABEL: Record<string, string> = {
+  actual: 'Revenue',
+  interim: 'Revenue (interim)',
+  projected: 'Revenue (projected)',
+  run_rate: 'Revenue (run-rate)',
+  unclassified: 'Revenue',
+};
+
+function buildRevenueAuthorityExplainer(
+  best: FinancialFactV1,
+  bestIsProjected: boolean,
+  ftLabel: string,
+): string {
+  const sourceLabel = best.source_kind === 'xlsx'
+    ? 'XLSX financial model'
+    : best.source_kind === 'pdf_table'
+    ? 'PDF financial table'
+    : best.source_kind === 'pdf_kpi_line'
+    ? 'PDF KPI line'
+    : 'structured extraction';
+  const typeLabel = bestIsProjected || ftLabel === 'projected'
+    ? 'projected'
+    : ftLabel === 'interim'
+    ? 'interim-period'
+    : ftLabel === 'run_rate'
+    ? 'run-rate'
+    : 'actual';
+  return `${typeLabel} revenue from ${sourceLabel} (${best.period_label ?? 'unspecified period'})`;
+}
+
 /**
- * Inject XLSX-derived revenue facts into structured_summary.revenue.
+ * Injects the canonical revenue FinancialFactV1 (any source kind) into structured_summary.revenue.
  *
- * Uses selectAuthoritativeFact to choose the single best fact, ensuring
- * year-header corruption and projected overrides are rejected before
- * the value is written into the structured summary.
+ * Uses selectCanonicalRevenueFact — the same selector as financial_breakdown_v1.current_state.revenue —
+ * so both report paths always reflect the same underlying fact.
  *
- * All other xlsx revenue candidates are preserved in the candidates list for
- * audit trails. Deck-derived candidates keep their existing selected=false state.
+ * Replaces the former injectXlsxRevenueIntoStructuredSummary which only considered xlsx-sourced
+ * facts (source_kind === 'xlsx'). The removed filter was the root cause of the Qredible divergence:
+ * PDF-extracted FinancialFactV1 records (source_kind='pdf_table') were visible in financial_breakdown
+ * but not in structured_summary, causing scoring to miss confirmed revenue data.
  */
-function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financialFacts: FinancialFactV1[]): void {
-  const REVENUE_KEYS = ['revenue', 'arr', 'mrr'];
+/**
+ * Derive an explicit revenue fact type label for display and UI trust-gating.
+ *
+ * Priority order:
+ *   1. temporal_scope='projected' (or is_projected set by caller) → 'projected'
+ *   2. Part of a proforma model set (detected by detectProformaModelFactIds) → 'projected'
+ *   3. period_type='monthly' → 'run_rate' (annualised monthly)
+ *   4. source_kind='xlsx' with historical year → 'actual'
+ *   5. source_kind='pdf_table' or 'pdf_text' → 'actual' (moderate trust)
+ *   6. Fallback → 'unclassified'
+ *
+ * Note: 'case_study' is intentionally not derived here — case-study metrics
+ * should be rejected upstream by the field-authority-guard (non-company scope).
+ * If they leak through, they appear as 'unclassified' which the UI can flag.
+ */
+function classifyRevenueFactType(
+  fact: FinancialFactV1,
+  proformaIds: Set<string>,
+): 'actual' | 'projected' | 'interim' | 'run_rate' | 'unclassified' {
+  if (isProjectedFact(fact) || proformaIds.has(fact.fact_id)) return 'projected';
+  if (fact.period_type === 'monthly') return 'run_rate';
+  // Detect interim periods: 'H1 2024', 'Q1 2024', 'six months ended', '9 months'
+  const pl = (fact.period_label ?? '').toLowerCase();
+  if (/\bh[12]\b|\bq[1-4]\b|six\s+months?|nine\s+months?|three\s+months?|\binterim\b/.test(pl)) return 'interim';
+  if (fact.source_kind === 'xlsx' || fact.source_kind === 'pdf_table' || fact.source_kind === 'pdf_kpi_line') return 'actual';
+  return 'unclassified';
+}
 
-  // Strip corrupted facts before any consideration.
-  const cleanFacts = filterCorruptedFacts(financialFacts);
+/** Authority rank: 5=xlsx structured, 4=pdf structured, 3=promoted/dpu, 2=deck medium+, 1=deck low */
+function getAuthorityRank(sourceKind: string, confidence: string): 1 | 2 | 3 | 4 | 5 {
+  if (sourceKind === 'xlsx') return 5;
+  if (sourceKind === 'pdf_table' || sourceKind === 'pdf_kpi_line') return 4;
+  if (sourceKind === 'kpi_tile') return 3;
+  if (sourceKind === 'deck' && confidence !== 'low') return 2;
+  if (sourceKind === 'deck') return 1;
+  return 3; // dpu_derived, promoted_slide_fact
+}
 
-  // Collect all xlsx-sourced revenue facts with valid positive currency values.
-  const xlsxRevenue = cleanFacts.filter(
-    (f) =>
-      REVENUE_KEYS.includes(f.metric_key) &&
-      f.source_kind === 'xlsx' &&
-      f.unit === 'currency' &&
-      f.value > 0
-  );
-  if (xlsxRevenue.length === 0) return;
+/** Source support level label for candidates. */
+function getSourceSupportLevel(sourceKind: string, crossSourceStatus?: string | null): string {
+  if (sourceKind === 'xlsx') return 'xlsx_structured';
+  if (sourceKind === 'pdf_table' || sourceKind === 'pdf_kpi_line') return 'pdf_structured';
+  if (crossSourceStatus === 'confirmed') return 'cross_validated';
+  if (sourceKind === 'deck') return 'deck_only';
+  return 'dpu_text';
+}
+
+/** Document family label for candidates. */
+function buildDocumentFamily(sourceKind: string): string {
+  if (sourceKind === 'xlsx') return 'financial_model';
+  if (sourceKind === 'deck') return 'pitch_deck';
+  return 'financial_statements';
+}
+
+function injectCanonicalRevenueIntoStructuredSummary(structuredSummary: any, financialFacts: FinancialFactV1[]): void {
+  // Use the canonical selector — all source kinds, monthly guard included.
+  const best = selectCanonicalRevenueFact(financialFacts);
+
+  if (best == null) {
+    // No canonical selection — check if monthly-only case to surface the signal.
+    const cleanFacts = filterCorruptedFacts(financialFacts);
+    const revenueFacts = cleanFacts.filter(
+      (f) =>
+        (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
+        (f.unit === 'currency' || f.unit === 'number') &&
+        f.value > 0,
+    );
+    if (revenueFacts.length > 0 && revenueFacts.every((f) => f.period_type === 'monthly')) {
+      if (structuredSummary.revenue == null) {
+        structuredSummary.revenue = { selection_reason: 'monthly_only' };
+      } else if (structuredSummary.revenue.value == null) {
+        structuredSummary.revenue = { ...structuredSummary.revenue, selection_reason: 'monthly_only' };
+      }
+    }
+    return;
+  }
 
   const confidenceNum = (c: FinancialFactV1['confidence']): number =>
     c === 'high' ? 0.85 : c === 'medium' ? 0.65 : 0.45;
 
-  // Authoritative selection: prefer realized over projected, then by rank.
-  const best = selectAuthoritativeFact(REVENUE_KEYS, xlsxRevenue, { requireNonProjected: true })
-    ?? selectAuthoritativeFact(REVENUE_KEYS, xlsxRevenue);
-
-  if (!best) return;
   const bestConf = confidenceNum(best.confidence);
 
-  const buildXlsxCandidate = (f: FinancialFactV1, selected: boolean) => {
+  // Collect all non-corrupted, non-monthly revenue facts for the candidate list.
+  const cleanFacts = filterCorruptedFacts(financialFacts);
+  const allRevenueFacts = cleanFacts.filter(
+    (f) =>
+      (CANONICAL_REVENUE_KEYS as string[]).includes(f.metric_key) &&
+      (f.unit === 'currency' || f.unit === 'number') &&
+      f.value > 0 &&
+      f.period_type !== 'monthly',
+  );
+
+  // Detect proforma-model facts so we can propagate is_projected when `best` was
+  // returned from Tier D of selectCanonicalRevenueFact (caller contract: treat as projected).
+  const proformaIds = detectProformaModelFactIds(allRevenueFacts);
+  const bestIsProjected = isProjectedFact(best) || proformaIds.has(best.fact_id);
+
+  // Build a candidate record for any non-corrupted, positive-value revenue fact.
+  const buildFactCandidate = (f: FinancialFactV1, selected: boolean) => {
     const yearMatch = f.period_label.match(/\b(20\d{2})\b/);
+    const ftLabel = classifyRevenueFactType(f, proformaIds);
+    const crossSourceStatus = (f as any)?.provenance_metadata?.cross_source_status ?? null;
+    const authorityRank = getAuthorityRank(f.source_kind, f.confidence);
+    const sourceSupportLevel = getSourceSupportLevel(f.source_kind, crossSourceStatus);
+    const documentFamily = buildDocumentFamily(f.source_kind);
+    const hasPrimaryCitation = !!(f.document_id && f.page_number != null);
+    const entityScopeForFact = detectEntityScope(
+      asNonEmptyString(f.excerpt) ?? null,
+      asNonEmptyString(f.slide_title) ?? null,
+    );
+    const selectionExplainer = `${f.source_kind}/${f.metric_key} ${f.period_label} conf=${f.confidence}`;
     return {
       selected,
       score: confidenceNum(f.confidence),
-      scope: 'company_financials_table',
+      scope: f.source_kind === 'xlsx' ? 'company_financials_table' : 'company_financials',
       subtype: isProjectedFact(f) ? 'forecast' : 'annual',
+      fact_type_label: ftLabel,
       year: yearMatch ? Number(yearMatch[1]) : null,
       value_raw: formatUsdShort(f.value),
       amount: f.value,
       currency: f.currency ?? 'USD',
       confidence: confidenceNum(f.confidence),
-      sources: [{ kind: 'xlsx', document_id: f.document_id, metric_key: f.metric_key, period_label: f.period_label }],
+      sources: [{ kind: f.source_kind, document_id: f.document_id, metric_key: f.metric_key, period_label: f.period_label }],
+      entity_scope: entityScopeForFact,
+      authority_rank: authorityRank,
+      source_support_level: sourceSupportLevel,
+      document_family: documentFamily,
+      has_primary_citation: hasPrimaryCitation,
+      selection_explainer: selectionExplainer,
     };
   };
 
-  // Mark the authoritative selection; all other xlsx candidates are shown as alternatives.
-  const xlsxCandidates = xlsxRevenue.map((f) => buildXlsxCandidate(f, f === best));
+  const factCandidates = allRevenueFacts.map((f) => buildFactCandidate(f, f === best));
 
   const currentRevenue = structuredSummary?.revenue;
-  const currentConf = typeof currentRevenue?.confidence === 'number' ? currentRevenue.confidence : 0;
 
-  if (!currentRevenue || currentRevenue.value == null || bestConf >= currentConf) {
-    // XLSX fact wins: use it as the primary selection, keep existing deck candidates for audit.
+  // Financial facts from the structured-extraction pipeline take priority over DPU promoted
+  // facts whenever the financial fact is at least medium confidence.  Low-confidence financial
+  // facts (deck-only extractions) are the only case where a stronger DPU promoted-fact should
+  // win.  DPU promoted-fact confidence scores are on a different scale (LLM extraction certainty)
+  // and must not crowd out confirmed pipeline KPI or XLSX facts with a numeric near-tie.
+  const financialFactWins = !currentRevenue || currentRevenue.value == null || best.confidence !== 'low';
+
+  if (financialFactWins) {
+    // Financial fact wins (or no deck value present): set as primary selection.
+    const bestFactTypeLabel = classifyRevenueFactType(best, proformaIds);
+    const display_type_label = REVENUE_DISPLAY_TYPE_LABEL[bestFactTypeLabel] ?? 'Revenue';
+    const revenue_authority_explainer = buildRevenueAuthorityExplainer(best, bestIsProjected, bestFactTypeLabel);
+    // Structured extraction facts (XLSX/PDF) are always company-level metrics.
     structuredSummary.revenue = {
       value: {
         amount: best.value,
@@ -1832,21 +2316,26 @@ function injectXlsxRevenueIntoStructuredSummary(structuredSummary: any, financia
         raw: formatUsdShort(best.value),
       },
       confidence: bestConf,
-      sources: [{ kind: 'xlsx', document_id: best.document_id, metric_key: best.metric_key, period_label: best.period_label }],
+      fact_type_label: bestFactTypeLabel,
+      display_type_label,
+      revenue_authority_explainer,
+      entity_scope: 'company',
+      sources: [{ kind: best.source_kind, document_id: best.document_id, metric_key: best.metric_key, period_label: best.period_label }],
       label: best.period_label ?? null,
-      selection_reason: 'xlsx_financial_fact',
+      selection_reason: best.source_kind === 'xlsx' ? 'xlsx_financial_fact' : 'financial_fact',
+      ...(bestIsProjected ? { is_projected: true, is_provisional: true } : {}),
       candidates: [
-        ...xlsxCandidates,
+        ...factCandidates,
         ...(Array.isArray(currentRevenue?.candidates) ? currentRevenue.candidates.map((c: any) => ({ ...c, selected: false })) : []),
       ],
     };
   } else {
-    // Deck fact wins on confidence: preserve deck selection but append xlsx candidates.
+    // Deck fact wins (low-confidence financial fact): preserve deck selection, append financial fact candidates.
     if (!structuredSummary.revenue) return;
     const existing = Array.isArray(structuredSummary.revenue.candidates)
       ? structuredSummary.revenue.candidates
       : [];
-    structuredSummary.revenue.candidates = [...existing, ...xlsxCandidates.map((c) => ({ ...c, selected: false }))];
+    structuredSummary.revenue.candidates = [...existing, ...factCandidates.map((c) => ({ ...c, selected: false }))];
   }
 }
 
@@ -1863,6 +2352,7 @@ function buildEmptyFinancialIntegrityV1(): FinancialIntegrityV1 {
   return {
     computed_at: new Date().toISOString(),
     completeness_score: 0,
+    score: 0,
     missing_critical: [
       'revenue', 'arr', 'mrr', 'burn_rate', 'cash',
       'runway_months', 'raise_amount', 'pre_money_valuation',
@@ -1888,25 +2378,256 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   /** Enriched document metadata from DB. When provided, takes precedence over DIO inputs.documents
    *  so that filenames and MIME types are available for cap-table and XLSX detection. */
   documents?: Array<{ document_id: string; kind?: string | null; mime_type?: string | null; filename?: string | null }> | null;
+  /** RC-002b: Raw page text snippets from document_page_understanding. Used to detect going concern
+   *  language that does not surface in DIO phase1.claims (e.g. full 10-K document text). */
+  pageTexts?: string[] | null;
+  /** RC-S6-009/010/008: Raw document full_text strings. Used to extract company name, team highlights,
+   *  fund deployment signals, and UOF breakdown from raw document text. */
+  documentFullTexts?: string[] | null;
+  /** RC-S6-009: Pre-extracted company name from documents.full_text (API layer). */
+  companyName?: string | null;
+  /** Authoritative evidence item count from the evidence_items DB table.
+   *  When provided, this overrides dio.inputs.evidence.length which may be
+   *  under-populated (in-memory DIO array vs. persisted rows). */
+  evidenceItemCount?: number | null;
 }): ReportDTO {
 	const scoreExplanation = buildScoreExplanationFromDIO(dio as any);
 	const base = compileDIOToReport(dio);
-  const structuredSummary = buildStructuredSummary(dio, scoreExplanation, opts?.promotedFacts ?? undefined);
+  const _reportSignalPageTexts: string[] = Array.isArray(opts?.pageTexts)
+    ? opts!.pageTexts.filter((t) => typeof t === 'string')
+    : [];
+  const _phase1ClaimTexts: string[] = (() => {
+    const claims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
+    const out: string[] = [];
+    for (const claim of claims) {
+      if (typeof claim?.text === 'string') out.push(claim.text);
+      for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
+        if (typeof ev?.snippet === 'string') out.push(ev.snippet);
+      }
+    }
+    return out;
+  })();
+  const _ctoVacancyEvidenceRe = /(looking\s+for|seeking|hiring)\s+(a\s+|the\s+|our\s+)?(cto|chief\s+technology\s+officer)\b|\bcto\s+(position|role|seat)\s+(is\s+)?(open|vacant|unfilled|needed|available)\b/i;
+  const _hasCtoVacancyEvidence = _ctoVacancyEvidenceRe.test([..._phase1ClaimTexts, ..._reportSignalPageTexts].join('\n'));
 
-  // Inject XLSX-derived revenue facts before revenue display string is computed.
+  // RC-002b: Extend going concern scan to cover raw page text (document_page_understanding).
+  // compileDIOToReport only checks phase1.claims — this covers full document text from DPU rows.
+  const _promotedRedFlags: Array<{ severity: 'high' | 'medium' | 'low'; message: string; action: string }> = [];
+  {
+    const _pageTexts: string[] = _reportSignalPageTexts;
+    if (
+      _pageTexts.length > 0
+      && /substantial\s+doubt.*(?:going\s+concern|ability\s+to\s+continue)|going\s+concern.*substantial\s+doubt|ability\s+to\s+continue\s+as\s+a\s+going\s+concern/i.test(_pageTexts.join('\n'))
+      && !((base as any).redFlags ?? []).some((f: any) => typeof f?.message === 'string' && f.message.toLowerCase().includes('going concern'))
+    ) {
+      _promotedRedFlags.push({
+        severity: 'high',
+        message: 'Going concern doubt noted in filings',
+        action: 'Verify current cash position and any management remediation plan before proceeding',
+      });
+    }
+  }
+
+  // ── Field Authority Guard ────────────────────────────────────────────────
+  // Filter promoted facts before compilation to block false positives that would
+  // otherwise pollute raise, revenue, and business_model fields.
+  const guardContext: FieldAuthorityGuardContext = {
+    deal_type: (dio as any)?.dio?.phase1?.business_archetype_v1?.value
+      ?? (dio as any)?.dio?.phase1?.deal_overview_v2?.deal_type
+      ?? null,
+    documents: (() => {
+      if (Array.isArray(opts?.documents)) return opts!.documents;
+      const dioDocList = (dio as any)?.inputs?.documents;
+      return Array.isArray(dioDocList) ? dioDocList : null;
+    })(),
+    dio,
+  };
+  const guardResult = applyFieldAuthorityGuards(opts?.promotedFacts ?? [], guardContext);
+  const guardedFacts: PromotedFactInput[] = guardResult.acceptedFacts as PromotedFactInput[];
+
+  // ── Field Candidate Selector ─────────────────────────────────────────────
+  // Rank accepted facts by document authority + positive content signals.
+  // Winner per field type is placed first; weaker same-type candidates dropped.
+  const selectorResult = selectBestCandidatesPerField(guardedFacts, {
+    deal_type: guardContext.deal_type,
+    documents: guardContext.documents as any[] | null,
+  });
+  const selectedFacts: PromotedFactInput[] = selectorResult.orderedFacts as PromotedFactInput[];
+
+  // ── Confidence-zero guardrail ──────────────────────────────────────────────
+  // Promoted facts with confidence === 0 represent explicitly invalid extractions.
+  // Block them before they can populate raise, revenue, or business_model.
+  // IMPORTANT: confidence=0 means UNKNOWN — treat as missing, not as a negative signal.
+  const preGuardedFacts = selectedFacts.filter((f) => {
+    const conf = typeof f.confidence === 'number' ? f.confidence : null;
+    if (conf === 0) {
+      logGuardrailBlock({
+        field: promotedFactTypeOf(f) || f.fact_type || 'unknown',
+        reason: 'CONFIDENCE_ZERO',
+        confidence: 0,
+        source: f.source_path ?? null,
+      });
+      return false;
+    }
+    return true;
+  });
+  // ────────────────────────────────────────────────────────────────────────────
+
+  const structuredSummary = buildStructuredSummary(
+    dio,
+    scoreExplanation,
+    preGuardedFacts.length > 0 || (opts?.promotedFacts ?? []).length > 0 ? preGuardedFacts : opts?.promotedFacts ?? undefined,
+  );
+
+  // ── Fill null product/market summary from governed_ui_copy_v1 / overview ─
+  applyStructuredSummaryFillIns(structuredSummary as Record<string, any>, guardResult.structuredSummaryFillIns);
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── Final Publish Guard ──────────────────────────────────────────────────
+  // Null bad output values that leaked through DIO phase1 fallback paths
+  // (deal_overview_v2.raise, business_model_arbitration_v1).
+  const publishGuardResult = applyFinalPublishGuard(
+    structuredSummary as Record<string, any>,
+    { deal_type: guardContext.deal_type, dio },
+    guardContext.documents as any[] | null,
+  );
+  // ────────────────────────────────────────────────────────────────────────
+
+  // ── Post-guard BM policy recovery ────────────────────────────────────────
+  // The FinalPublishGuard may null a generic/low-quality promoted-fact BM
+  // (e.g., "generic_wholesale_tech_mismatch"). If BM is still null after the
+  // guard, attempt recovery via deal_classification_v1 policy_id.
+  {
+    const postGuardBM = (structuredSummary as any).business_model;
+    const isRealEstatePostGuard = guardContext.deal_type === 'cre';
+    if (!postGuardBM?.value && !isRealEstatePostGuard) {
+      const clf = (dio as any)?.dio?.deal_classification_v1;
+      const selectedPolicyId = asNonEmptyString(String(clf?.selected?.policy_id ?? ''));
+      const rawConf = clf?.selected?.confidence;
+      const clfConfidence = typeof rawConf === 'number' ? rawConf : typeof rawConf === 'string' ? parseFloat(rawConf) : 0;
+      if (selectedPolicyId && clfConfidence >= 0.7) {
+        const recoveredBM = POLICY_TO_CANONICAL_BM[selectedPolicyId] ?? null;
+        if (recoveredBM) {
+          (structuredSummary as any).business_model = {
+            value: recoveredBM,
+            confidence: 0.4,
+            sources: [{ kind: 'deal_classification_v1.policy_inferred', policy_id: selectedPolicyId, classification_confidence: clfConfidence }],
+            label: 'PolicyRecovered',
+            recovered: true,
+            recovery_rule: 'policy_inferred_label',
+          };
+        }
+      }
+    }
+  }
+  // ────────────────────────────────────────────────────────────────────────
+
+  // Inject canonical revenue fact (all source kinds) before revenue display string is computed.
   if (opts?.financialFacts && opts.financialFacts.length > 0) {
-    injectXlsxRevenueIntoStructuredSummary(structuredSummary, opts.financialFacts);
+    injectCanonicalRevenueIntoStructuredSummary(structuredSummary, opts.financialFacts);
   }
 
   const revenueDisplay = revenueDisplayFromStructuredSummary(structuredSummary) ?? revenueDisplayFromPromotedFacts(opts?.promotedFacts);
   const sections = revenueDisplay
     ? base.sections.map((s) => (s.id === 'metric-benchmark' ? { ...s, content: applyRevenueOverrideToMetricBenchmarkContent(s.content, revenueDisplay) } : s))
     : base.sections;
+  const ctoVacancyMessage = 'Key technical role unfilled - CTO position vacant';
+  const _structuredRevenueAmount: number | null = (() => {
+    const rev = (structuredSummary as any)?.revenue;
+    const amountDirect = typeof rev?.value?.amount === 'number' && Number.isFinite(rev.value.amount)
+      ? rev.value.amount
+      : null;
+    if (amountDirect != null) return amountDirect;
+    const raw = typeof rev?.value?.raw === 'string'
+      ? rev.value.raw
+      : (typeof rev?.value === 'string' ? rev.value : null);
+    const parsed = parseMoneyLike(raw ?? null).amount;
+    if (typeof parsed === 'number' && Number.isFinite(parsed)) return parsed;
+
+    const promotedAmount = revenueAmountFromPromotedFacts(opts?.promotedFacts);
+    if (typeof promotedAmount === 'number' && Number.isFinite(promotedAmount)) return promotedAmount;
+
+    const displayParsed = parseMoneyLike(revenueDisplay ?? null).amount;
+    return typeof displayParsed === 'number' && Number.isFinite(displayParsed) ? displayParsed : null;
+  })();
+  const _hasStrongRevenueEvidence = _structuredRevenueAmount != null && _structuredRevenueAmount >= 1_000_000;
+  const _preRevenueMessage = 'Pre-revenue stage - monetization unproven';
+  const _preRevenuePattern = /pre[-‑–\s]*revenue[^\n\\n]*monetization\s+unproven/i;
+
+  const _sanitizedSections = (!_hasCtoVacancyEvidence || _hasStrongRevenueEvidence)
+    ? sections.map((s) => {
+      if (typeof (s as any)?.content !== 'string') return s;
+      let content = String((s as any).content)
+        .replace(new RegExp(`(^|\\n|\\\\n)\\s*[•-]?\\s*(\\[high\\]\\s*)?${ctoVacancyMessage.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}`, 'gi'), '$1')
+        .replace(/\n{3,}/g, '\n\n')
+        .replace(/(?:\\n){3,}/g, '\\n\\n');
+      if (_hasStrongRevenueEvidence) {
+        content = content
+          .replace(/(^|\n|\\n)\s*[•-]?\s*(\[(critical|high|medium|low)\]\s*)?[^\n\\n]*pre[-‑–\s]*revenue[^\n\\n]*monetization\s+unproven[^\n\\n]*/gi, '$1')
+          .replace(/\n{3,}/g, '\n\n')
+          .replace(/(?:\\n){3,}/g, '\\n\\n');
+      }
+      content = content.trim();
+      return { ...s, content };
+    })
+    : sections;
+
+  // RC-001ft / RC-004: Extract doc type hints from DIO claim text once so they can be
+  // shared by both inferFundingStageModelV1 and inferFinancialCoverageProfileV1.
+  // Pattern: DIO data lives in dio.dio.phase1.claims[*].{text, evidence[*].snippet}.
+  const _docTypeHints: string[] = (() => {
+    const claims: any[] = (dio as any)?.dio?.phase1?.claims ?? [];
+    const parts: string[] = [];
+    for (const claim of claims) {
+      if (typeof claim?.text === 'string') parts.push(claim.text);
+      for (const ev of (Array.isArray(claim?.evidence) ? claim.evidence : [])) {
+        if (typeof ev?.snippet === 'string') parts.push(ev.snippet);
+      }
+    }
+    if (Array.isArray(_reportSignalPageTexts)) {
+      for (const t of _reportSignalPageTexts) {
+        if (typeof t === 'string') parts.push(t);
+      }
+    }
+    const docs = Array.isArray(opts?.documents) ? opts!.documents : [];
+    const hints = new Set<string>();
+    for (const d of docs) {
+      const kind = String((d as any)?.kind ?? '').toLowerCase().trim();
+      const file = String((d as any)?.filename ?? '').toLowerCase().trim();
+      if (kind.includes('10k') || kind.includes('10-k')) hints.add('sec_filing_10k');
+      if (kind.includes('10q') || kind.includes('10-q')) hints.add('sec_filing_10q');
+      if (kind.includes('8k') || kind.includes('8-k')) hints.add('sec_filing_8k');
+      if (kind.includes('s1') || kind.includes('s-1')) hints.add('sec_filing_s1');
+
+      if (/\b10-?k\b|annual[_\s-]?report/.test(file)) hints.add('sec_filing_10k');
+      if (/\b10-?q\b|quarterly[_\s-]?report/.test(file)) hints.add('sec_filing_10q');
+      if (/\b8-?k\b|current[_\s-]?report/.test(file)) hints.add('sec_filing_8k');
+      if (/\bs-?1\b|registration[_\s-]?statement/.test(file)) hints.add('sec_filing_s1');
+    }
+
+    const allText = parts.join('\n');
+    if (/\bform\s+s-?1\b|\bregistration\s+statement\b/i.test(allText)) hints.add('sec_filing_s1');
+    if (/\bform\s+10-?k\b|\bannual\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.add('sec_filing_10k');
+    if (/\bform\s+10-?q\b|\bquarterly\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.add('sec_filing_10q');
+    if (/\bform\s+8-?k\b|\bcurrent\s+report\s+pursuant\s+to\s+section\s+13\b/i.test(allText)) hints.add('sec_filing_8k');
+    return Array.from(hints);
+  })();
+
+  // RC-S6-004: When structured_summary.raise.value is null (e.g. DIO overview sources lack
+  // page citations required for hasPrimaryCitation), fall back to the DIO overview raise and
+  // exec summary raise for the funding stage magnitude check. This ensures large-raise IDEA-stage
+  // deals surface the conflict and produce funding_stage='unknown' rather than 'pre_seed'.
+  const _ssRaiseAmount = parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null;
+  const _dioOverviewRaise = asNonEmptyString((dio as any)?.dio?.phase1?.deal_overview_v2?.raise) ?? null;
+  const _dioExecRaise = asNonEmptyString((dio as any)?.dio?.phase1?.executive_summary_v1?.raise) ?? null;
+  const _dioRaiseStr = _dioOverviewRaise ?? _dioExecRaise;
+  const _dioRaiseAmount = _dioRaiseStr ? (parseMoneyLike(_dioRaiseStr).amount ?? null) : null;
+  const _fundingStageRaiseAmount = _ssRaiseAmount ?? _dioRaiseAmount;
 
   const fundingStage = inferFundingStageModelV1({
     funding_round_label: null,
     company_phase_label: (dio as any)?.dio?.phase_inference_v1?.company_phase ?? null,
-    raise_amount: parseMoneyLike(structuredSummary?.raise?.value ?? null).amount ?? null,
+    raise_amount: _fundingStageRaiseAmount,
     raise_sources: Array.isArray(structuredSummary?.raise?.sources)
       ? structuredSummary.raise.sources.map((s: any) => ({
           document_id: s?.source_document_id ?? s?.document_id ?? undefined,
@@ -1915,6 +2636,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
           source_path: s?.source_path ?? undefined,
         }))
       : null,
+    doc_type_hints: _docTypeHints.length > 0 ? _docTypeHints : null,
   });
 
   const financialCoverage = inferFinancialCoverageProfileV1({
@@ -1940,6 +2662,7 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
           }))
         : null;
     })(),
+    doc_type_hints: _docTypeHints.length > 0 ? _docTypeHints : null,
   });
 
   const financialBreakdown = buildFinancialBreakdownV1({
@@ -1987,6 +2710,11 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   if (Array.isArray(opts?.financialFacts) && opts.financialFacts.length > 0) {
     financialIntegrityV1 = { ...financialIntegrityV1, has_facts: true };
   }
+  // Backfill score field if absent (Fix 15 — DIO-stored values from before Fix 15 lack score).
+  // score is an alias for completeness_score. Safe to apply on every path.
+  if ((financialIntegrityV1.score == null) && financialIntegrityV1.completeness_score != null) {
+    financialIntegrityV1 = { ...financialIntegrityV1, score: financialIntegrityV1.completeness_score };
+  }
 
   const underwritingReadiness = buildUnderwritingReadinessV1({
     financial_breakdown_v1: financialBreakdown,
@@ -1997,6 +2725,8 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
   const capitalLogic = inferCapitalLogicProfileV1({
     structured_summary: structuredSummary,
     promoted_facts: Array.isArray(opts?.promotedFacts) ? opts!.promotedFacts : null,
+    page_texts: Array.isArray(opts?.pageTexts) ? opts!.pageTexts : null,
+    document_full_texts: Array.isArray(opts?.documentFullTexts) ? opts!.documentFullTexts : null,
   });
 
   const businessModelSignal = inferBusinessModelSignalProfileV1({
@@ -2063,8 +2793,159 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     financial_breakdown_v1: financialBreakdown,
   });
 
+  // ── Revenue path convergence guard ─────────────────────────────────────────
+  // Both structured_summary.revenue and financial_breakdown_v1.current_state.revenue
+  // must select the same canonical revenue value.  If they diverge after injection,
+  // back-fill structured_summary from the breakdown (the financially richer path) and
+  // record a diagnostic so test assertions and future code reviews can detect regressions.
+  const ssRevenueAmount: number | null = (structuredSummary.revenue?.value as any)?.amount ?? null;
+  const bdRevenueAmount: number | null = financialBreakdown.current_state.revenue?.value ?? null;
+  const revenuePathsConverged =
+    ssRevenueAmount === bdRevenueAmount ||
+    (ssRevenueAmount == null && bdRevenueAmount == null);
+
+  if (!revenuePathsConverged && bdRevenueAmount != null) {
+    // Financial breakdown has a canonical fact that structured_summary missed.
+    // Back-fill so scoring sees the same value as the display layer.
+    const bdRev = financialBreakdown.current_state.revenue!;
+    const bdConf = bdRev.confidence === 'high' ? 0.85 : bdRev.confidence === 'medium' ? 0.65 : 0.45;
+    structuredSummary.revenue = {
+      ...(structuredSummary.revenue ?? {}),
+      value: {
+        amount: bdRevenueAmount,
+        currency: bdRev.currency ?? 'USD',
+        period: bdRev.period_label ?? null,
+        raw: formatUsdShort(bdRevenueAmount),
+      },
+      confidence: bdConf,
+      sources: [{ kind: bdRev.source_kind, period_label: bdRev.period_label }],
+      label: bdRev.period_label ?? null,
+      selection_reason: 'financial_fact_backfill',
+      // Propagate projection flag so the UI knows this is a forward-looking figure
+      // (e.g. DealDecision proforma-only model where Tier D surfaces the 2026 budget).
+      ...(bdRev.is_projected ? { is_projected: true, is_provisional: true } : {}),
+    };
+  }
+
+  const revenueConvergenceDiagnostic = {
+    converged: revenuePathsConverged || (!revenuePathsConverged && bdRevenueAmount != null),
+    structured_summary_amount_before_guard: ssRevenueAmount,
+    financial_breakdown_amount: bdRevenueAmount,
+    backfill_applied: !revenuePathsConverged && bdRevenueAmount != null,
+  };
+
+  // ── Rebuild deal_summary_v1 POST all guards ───────────────────────────────
+  // Must run AFTER:
+  //   1. applyFinalPublishGuard      (nulls invalid raise / business_model / revenue)
+  //   2. injectCanonicalRevenueIntoStructuredSummary (XLSX/PDF facts override)
+  //   3. revenue convergence guard   (back-fills from financial_breakdown)
+  //
+  // This guarantees hero/overview/deep tiers reflect guarded values only.
+  // Any field nulled by a guard will be absent from the tiers — never stale.
+  try {
+    (structuredSummary as any).deal_summary_v1 = buildDeterministicDealSummaryV1FromStructuredSummary({
+      structured_summary: structuredSummary,
+    });
+  } catch {
+    // Best-effort: never fail report compilation.
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
+  // ── RC-S6 document full-text enrichment ───────────────────────────────────
+  // RC-S6-009: Company name, RC-S6-010: Team, RC-S6-008: Fund signals, RC-S6-007: UOF breakdown
+  try {
+    const _fullTexts = Array.isArray(opts?.documentFullTexts)
+      ? opts!.documentFullTexts.filter((t) => typeof t === 'string' && t.trim().length > 0)
+      : [];
+
+    // RC-S6-009: Company name from pre-extracted opt, then from full_text
+    if (!(structuredSummary as any).company_name) {
+      const cnFromOpts = opts?.companyName ?? null;
+      const cnFromText = (!cnFromOpts && _fullTexts.length > 0) ? _extractCompanyNameFromTexts(_fullTexts) : null;
+      const cn = cnFromOpts ?? cnFromText;
+      if (cn) {
+        (structuredSummary as any).company_name = cn;
+        (structuredSummary as any).company_name_source = cnFromOpts ? 'deals_name' : 'document_text';
+      }
+    }
+
+    if (_fullTexts.length > 0) {
+      // RC-S6-010: Team highlights
+      if (!(structuredSummary as any).team_highlights) {
+        const th = _extractTeamHighlightsFromTexts(_fullTexts);
+        if (th && th.length > 0) (structuredSummary as any).team_highlights = th;
+      }
+
+      // RC-S6-008: Fund deployment signals (Climatic-style)
+      if (!(structuredSummary as any).fund_deployment_signals) {
+        const fds = _extractFundDeploymentSignals(_fullTexts);
+        if (fds) (structuredSummary as any).fund_deployment_signals = fds;
+      }
+
+      // RC-S6-007: Use-of-funds breakdown
+      if (!(structuredSummary as any).use_of_funds_breakdown) {
+        const uofb = _extractUseOfFundsBreakdown(_fullTexts);
+        if (uofb && uofb.length > 0) (structuredSummary as any).use_of_funds_breakdown = uofb;
+      }
+
+      // RC-S6-012: Project/deployment pipeline table
+      if (!(structuredSummary as any).project_pipeline) {
+        const pp = _extractProjectPipeline(_fullTexts);
+        if (pp && pp.length > 0) (structuredSummary as any).project_pipeline = pp;
+      }
+
+      // RC-S6-011 enrichment: Revenue model
+      if (!(structuredSummary as any).revenue_model) {
+        const rm = _extractRevenueModel(_fullTexts);
+        if (rm) (structuredSummary as any).revenue_model = rm;
+      }
+    }
+  } catch {
+    // Best-effort: never fail report compilation.
+  }
+  // ────────────────────────────────────────────────────────────────────────────
+
+	// ── Financial data quality score blend (Fix 15) ────────────────────────────
+  // Blend the base overallScore (persisted DIO value) with a financial data quality
+  // signal derived from financial_integrity_v1.completeness_score (verified fact
+  // completeness) and financial_coverage_v1.score (coverage flag density × confidence).
+  // Only activates when financial_facts are present (has_facts=true).
+  // Weight: 70% existing score + 30% quality signal.
+  const _fiCompleteness = financialIntegrityV1.completeness_score;
+  const _covScoreRaw = financialCoverage.score ?? 0;
+  const _baseOverall: number =
+    typeof (base as any).overallScore === 'number' && Number.isFinite((base as any).overallScore)
+      ? (base as any).overallScore
+      : 0;
+  let _adjustedOverallScore: number = _baseOverall;
+  if (financialIntegrityV1.has_facts && _fiCompleteness != null) {
+    const _qualityScore = Math.round(0.45 * _fiCompleteness + 0.55 * _covScoreRaw);
+    _adjustedOverallScore = Math.round(0.70 * _baseOverall + 0.30 * _qualityScore);
+  }
+
+  const _baseRedFlags = Array.isArray((base as any).redFlags) ? (base as any).redFlags : [];
+  const _mergedRedFlags = _promotedRedFlags.length > 0
+    ? [..._baseRedFlags, ..._promotedRedFlags]
+    : _baseRedFlags;
+  const _effectiveRedFlags = !_hasCtoVacancyEvidence
+    ? _mergedRedFlags.filter((f: any) => {
+      const msg = typeof f?.message === 'string' ? f.message : '';
+      return msg.toLowerCase() !== ctoVacancyMessage.toLowerCase();
+    })
+    : _mergedRedFlags;
+  const _effectiveRedFlags2 = _hasStrongRevenueEvidence
+    ? _effectiveRedFlags.filter((f: any) => {
+      const msg = typeof f?.message === 'string' ? f.message : '';
+      return !_preRevenuePattern.test(msg);
+    })
+    : _effectiveRedFlags;
+
 	return {
 		...base,
+    overallScore: _adjustedOverallScore,
+    grade: scoreToGrade(_adjustedOverallScore),
+    // RC-002b: Merge promoted red flags (e.g. going concern from DPU page texts) with base red flags.
+    redFlags: _effectiveRedFlags2,
     funding_stage_v1: fundingStage,
     financial_coverage_v1: financialCoverage,
     financial_breakdown_v1: financialBreakdown,
@@ -2077,12 +2958,30 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
     team_signal_v1: teamSignal,
     conviction_v1: convictionV1,
     structured_summary: structuredSummary,
-    sections,
+    sections: _sanitizedSections,
     financial_integrity_v1: financialIntegrityV1,
 
 		metadata: {
 			...(base as any).metadata,
+			// Prefer the authoritative DB count (evidence_items table) when provided.
+			// dio.inputs.evidence is under-populated for large/multi-run deals.
+			...(typeof opts?.evidenceItemCount === 'number' && opts.evidenceItemCount >= 0
+				? { evidenceCount: opts.evidenceItemCount }
+				: {}),
 			score_explanation: scoreExplanationAugmented,
+      revenue_convergence: revenueConvergenceDiagnostic,
+      field_authority_guard: guardResult.guardLog.length > 0 ? {
+        rejected_count: guardResult.rejectedFacts.length,
+        accepted_count: guardResult.acceptedFacts.length,
+        log: guardResult.guardLog,
+        fill_ins_applied: Object.keys(guardResult.structuredSummaryFillIns),
+      } : undefined,
+      field_candidate_selector: selectorResult.selectionLog.length > 0 ? selectorResult.selectionLog : undefined,
+      final_publish_guard: publishGuardResult.log.some((e) => e.action !== 'kept') ? {
+        fields_nulled: publishGuardResult.fields_nulled,
+        fields_replaced: publishGuardResult.fields_replaced,
+        log: publishGuardResult.log.filter((e) => e.action !== 'kept'),
+      } : undefined,
 		},
 	};
 }
@@ -2090,6 +2989,340 @@ export function compileDIOToReportWithPromotedFacts(dio: DIO, opts?: {
 /**
  * Helper functions
  */
+
+// ── RC-S6 document full-text extraction helpers ─────────────────────────────
+
+/** RC-S6-009: Extract a candidate company name from document full_text snippets. */
+function _extractCompanyNameFromTexts(texts: string[]): string | null {
+  for (const text of texts) {
+    const head = text.slice(0, 8000);
+
+    // Copyright/watermark: "©2026 Climatic Capital ·"
+    const copyright = head.match(/©\s*\d{4}\s+([A-Z][A-Za-z0-9&\s.'-]{2,50}?)(?:\s+(?:Global|·)\b|\s{2,})/);
+    if (copyright?.[1]) {
+      const candidate = copyright[1].trim();
+      if (candidate.length >= 3 && candidate.length <= 60 && !/\b(Confidential|Commercial|Proprietary)\b/i.test(candidate)) {
+        return candidate;
+      }
+    }
+
+    // Legal entity match (captures name before Inc/LLC/Holdings/etc.)
+    const legal = head.match(
+      /\b([A-Z][A-Za-z0-9&.'-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.'-]{1,40}){0,4})\s+(?:Inc\.?|LLC\.?|Ltd\.?|Corporation|Corp\.?|GmbH|Holdings|Capital\s+Management|Capital\s+Partners)\b/,
+    );
+    if (legal?.[1]) {
+      const candidate = legal[1].trim();
+      if (candidate.length >= 3 && candidate.length <= 60 && !/^(This|The|Our|For|Any|Such|Each|When)\b/i.test(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+}
+
+/** RC-S6-010: Extract team highlights from document full_text. */
+function _extractTeamHighlightsFromTexts(texts: string[]): Array<{ name: string; role: string; credential?: string | null }> | null {
+  const seen = new Set<string>();
+  const output: Array<{ name: string; role: string; credential?: string | null }> = [];
+
+  for (const text of texts) {
+    // Locate team section
+    const teamMatch = text.match(/\bTEAM\b[:\s]*/i);
+    if (!teamMatch) continue;
+    const teamStart = (teamMatch.index ?? 0) + teamMatch[0].length;
+    const teamSection = text.slice(teamStart, teamStart + 3000);
+
+    // Pattern 1: ALL-CAPS NAME followed by ALLCAPS ROLE  e.g. "NICOLAUS RADFORD CEO • credential"
+    const allCapsRe = /\b([A-Z]{2,}(?:\s+[A-Z.]{2,})+)\s+(CEO|CTO|CFO|COO|FOUNDER|CO-?FOUNDER|PARTNER|PRESIDENT|CSO|CMO|CRO)\b([^.\n]{0,80})/g;
+    let m: RegExpExecArray | null;
+    while ((m = allCapsRe.exec(teamSection)) !== null) {
+      const rawName = m[1].trim().replace(/\s+/g, ' ');
+      const name = rawName.replace(/\b([A-Z])([A-Z]+)\b/g, (_, a, b) => a + b.toLowerCase());
+      const role = m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase();
+      const credRaw = (m[3] ?? '').replace(/^[•·\-\s]+/, '').slice(0, 120).trim();
+      const key = `${rawName}:${m[2]}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        output.push({ name, role, credential: credRaw || null });
+      }
+    }
+
+    // Pattern 2: Title Case Name (exactly first + last, 2 words) followed by known role
+    // Using strict 2-word name to avoid matching geographic region labels (e.g. "North America", "Australia Michael")
+    const titleCaseRe = /\b([A-Z][a-z]+\s+[A-Z][a-zé]+)\s+(CEO|CTO|CFO|COO|Founder|Co-Founder|Partner|President|Managing\s+Director|Managing\s+Partner|Global\s+Partner|Head\s+of\s+(?:Investor\s+Relations|Product|Engineering|Sales|Marketing|Operations|Public\s+Affairs|Global))\b([^.\n]{0,75})/g;
+    while ((m = titleCaseRe.exec(teamSection)) !== null) {
+      const name = m[1].trim();
+      const role = m[2].trim().replace(/\s+/g, ' ');
+      const credRaw = (m[3] ?? '').replace(/^[,•·\-\s]+/, '').slice(0, 120).trim();
+      const key = `${name}:${role}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        output.push({ name, role, credential: credRaw || null });
+      }
+    }
+
+    if (output.length > 0) break; // only process first team section
+  }
+
+  return output.length > 0 ? output.slice(0, 8) : null;
+}
+
+/** RC-S6-008: Extract fund deployment signals (Climatic IaaS/fund model capital signals). */
+function _extractFundDeploymentSignals(texts: string[]): {
+  debt_in_process?: { amount: number; raw: string } | null;
+  deployment_pipeline?: { amount: number; raw: string } | null;
+  target_irr?: string | null;
+} | null {
+  const DEBT_PROCESS_RE = /(\$[0-9]+(?:\.[0-9]+)?[MBKmb]+\+?)\s+DEBT\s+IN\s+PROCESS/i;
+  const PIPELINE_RE = /(\$[0-9]+(?:\.[0-9]+)?[MBKmb]+\+?)\s+(?:DEPLOYMENT\s+)?PIPELINE/i;
+  const TARGET_IRR_RE = /([0-9]+(?:\.[0-9]+)?%\+?)\s*(?:Target\s+IRR|IRR[:\s]+Target|IRR\b)/i;
+
+  let debtSignal: { amount: number; raw: string } | null = null;
+  let pipelineSignal: { amount: number; raw: string } | null = null;
+  let targetIrr: string | null = null;
+
+  for (const text of texts) {
+    if (!debtSignal) {
+      const m = text.match(DEBT_PROCESS_RE);
+      if (m) {
+        const raw = m[1];
+        const parsed = _parseMoneyAmountSimple(raw);
+        if (parsed) debtSignal = { amount: parsed, raw };
+      }
+    }
+    if (!pipelineSignal) {
+      const m = text.match(PIPELINE_RE);
+      if (m) {
+        const raw = m[1];
+        const parsed = _parseMoneyAmountSimple(raw);
+        if (parsed) pipelineSignal = { amount: parsed, raw };
+      }
+    }
+    if (!targetIrr) {
+      const m = text.match(TARGET_IRR_RE);
+      if (m) targetIrr = m[0].trim();
+    }
+  }
+
+  if (!debtSignal && !pipelineSignal && !targetIrr) return null;
+  return { debt_in_process: debtSignal, deployment_pipeline: pipelineSignal, target_irr: targetIrr };
+}
+
+/** RC-S6-007: Parse use-of-funds breakdown items from document text.
+ *
+ * Three extraction strategies tried in order per heading occurrence:
+ *  A) Single-line comma/slash items (PAI: "Product launch, customer delivery...")
+ *  B) Dollar-amount anchored multi-line items (Weavstra: "$200M for operations...")
+ *  C) Labeled section items under THE RAISE heading (Climatic: "Legal & Custody / Close Debt Deals")
+ */
+function _extractUseOfFundsBreakdown(texts: string[]): Array<{ category: string; amount_raw?: string; amount?: number }> | null {
+  const HEADING_RE = /(?:use\s+of\s+funds|use\s+of\s+proceeds|use\s+of\s+capital|the\s+raise)\b/gi;
+
+  for (const text of texts) {
+    HEADING_RE.lastIndex = 0;
+    let headingMatch: RegExpExecArray | null;
+    while ((headingMatch = HEADING_RE.exec(text)) !== null) {
+      const headingEnd = headingMatch.index + headingMatch[0].length;
+      const section = text.slice(headingEnd, headingEnd + 2000);
+
+      // ── Strategy A: Single-line comma/slash items (PAI) ──────────────────
+      const firstChunk = section.replace(/\n/g, ' ').slice(0, 200);
+      const boundaryIdx = firstChunk.search(/\s{3,}|[A-Z]{5,}[^a-z]|\bINVESTMENT\b|\bINVESTOR\b|\bMARKET\b|\bSLIDE\b/);
+      const linePortion = boundaryIdx > 10 ? firstChunk.slice(0, boundaryIdx) : firstChunk;
+      const lineItems = linePortion
+        .split(/[,\/]/)
+        .map((s) => s.trim().replace(/^\s*and\s+/i, '').trim())
+        .filter((s) => s.length >= 3 && s.length <= 60);
+      if (lineItems.length >= 2) {
+        return lineItems.slice(0, 8).map(_parseUofItem);
+      }
+
+      // ── Strategy B: Dollar-amount anchored multi-line items (Weavstra) ───
+      const DOLLAR_LINE_RE =
+        /(\$[\d,.]+[MBKmb]+\+?)\s+(?:for\s+(?:a\s+|an?\s+)?|invest(?:ment)?\s+(?:for\s+(?:a\s+)?|into\s+|to\s+(?:secure\s+|deploy\s+)?))([\w][^.\n]{8,80})/gi;
+      const dollarItems: Array<{ category: string; amount_raw: string; amount?: number }> = [];
+      let dm: RegExpExecArray | null;
+      while ((dm = DOLLAR_LINE_RE.exec(section)) !== null) {
+        const raw = dm[1];
+        const desc = dm[2].replace(/\band\b.*$/i, '').replace(/[»•·\-–]+\s*$/g, '').trim().slice(0, 80);
+        if (desc.length >= 5) {
+          dollarItems.push({ category: desc.replace(/,\s*and.*$/i, '').trim(), amount_raw: raw, amount: _parseMoneyAmountSimple(raw) ?? undefined });
+        }
+      }
+      if (dollarItems.length >= 2) return dollarItems.slice(0, 8);
+
+      // ── Strategy C: Labeled sections under THE RAISE (Climatic) ──────────
+      if (/the\s+raise/i.test(headingMatch[0])) {
+        const FUND_LABEL_RE =
+          /\b(Legal\s+[&+]\s+Custody|SPV\s+Creat\w+|Close\s+Debt\s+Deals?|Team\s+[&+]\s+Pipeline|Product\s+Development|Marketing|Technology|Operations|R&D|Research\s+&?\s*Development|Hiring|Sales|Infrastructure)\b/gi;
+        const labelItems: Array<{ category: string; amount_raw?: string; amount?: number }> = [];
+        const seenLabels = new Set<string>();
+        let lm: RegExpExecArray | null;
+        while ((lm = FUND_LABEL_RE.exec(section)) !== null) {
+          const label = lm[1].trim().replace(/\s+/g, ' ');
+          const lkey = label.toLowerCase();
+          if (seenLabels.has(lkey)) continue;
+          seenLabels.add(lkey);
+          // Look for an amount within 120 chars after this label
+          const after = section.slice(lm.index + lm[0].length, lm.index + lm[0].length + 120);
+          const amtM = after.match(/\$[\d,.]+[MBKmb]+\+?/);
+          if (amtM) {
+            labelItems.push({ category: label, amount_raw: amtM[0], amount: _parseMoneyAmountSimple(amtM[0]) ?? undefined });
+          } else {
+            labelItems.push({ category: label });
+          }
+        }
+        if (labelItems.length >= 2) return labelItems.slice(0, 8);
+      }
+    }
+  }
+  return null;
+}
+
+function _parseUofItem(rawItem: string): { category: string; amount_raw?: string; amount?: number } {
+  // "$60M AI and SW" prefix pattern
+  const amtPrefix = rawItem.match(/^(\$[0-9]+(?:\.[0-9]+)?[MmKkBbGg]+\+?)\s+(.+)$/);
+  if (amtPrefix) {
+    return { category: amtPrefix[2].trim(), amount_raw: amtPrefix[1], amount: _parseMoneyAmountSimple(amtPrefix[1]) ?? undefined };
+  }
+  // "Category = $amount" suffix pattern
+  const amtSuffix = rawItem.match(/^(.+?)\s*[=:]\s*(\$[0-9]+(?:\.[0-9]+)?[MmKkBbGg]+\+?)$/);
+  if (amtSuffix) {
+    return { category: amtSuffix[1].trim(), amount_raw: amtSuffix[2], amount: _parseMoneyAmountSimple(amtSuffix[2]) ?? undefined };
+  }
+  return { category: rawItem };
+}
+
+/** RC-S6-012: Extract deployment/project pipeline table (Climatic-style fund model).
+ *
+ * Locates "Project Capital Revenue Rtn Start Progress" table header and parses rows of the form:
+ *   ProjectName (Country) $Capital $Revenue Return% StartDate
+ * Progress percentages scattered by OCR layout are ignored.
+ */
+function _extractProjectPipeline(
+  texts: string[],
+): Array<{ name: string; capital_raw?: string; revenue_raw?: string | null; return_pct?: string | null; start_date?: string | null }> | null {
+  const TABLE_HEADER_RE = /Project\s+Capital\s+Revenue\s+Rtn\s+Start\s+Progress/i;
+  const SECTION_END_RE = /\bTEAM\b|\bGET IN TOUCH\b|\bIMPORTANT NOTICE\b/i;
+  // Row: Name (CC) $Capital $Revenue|— Return% StartDate
+  // Name: 1-4 words (max 25 chars before country code) to avoid absorbing preceding OCR garbage
+  // — or – as no-data revenue placeholder; → in names (Waste → Fuel)
+  const ROW_RE =
+    /\b([A-Za-z][A-Za-z0-9\u2192\u2013\u2014\-]*(?:\s+[A-Za-z0-9\u2192\u2013\u2014\-]+){0,3}?\s*\([A-Z]{2,3}\))\s+(\$[\d,.]+[MBKb]+(?:[\u2013\u2014\-]\$?[\d,.]+[MBKb]+)?)\s+(\$[\d,.]+[MBKb]+(?:[\u2013\u2014\-]\$?[\d,.]+[MBKb]+)?|[\u2014\u2013—–\-])\s+(\d+%|TBA)\s+((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{2}|\d{4})/gi;
+
+  for (const text of texts) {
+    const headerMatch = text.match(TABLE_HEADER_RE);
+    if (!headerMatch) continue;
+
+    const tableStart = headerMatch.index! + headerMatch[0].length;
+    const afterHeader = text.slice(tableStart, tableStart + 3000);
+    const endMatch = afterHeader.match(SECTION_END_RE);
+    const tableSection = endMatch ? afterHeader.slice(0, endMatch.index) : afterHeader;
+
+    const rows: Array<{ name: string; capital_raw?: string; revenue_raw?: string | null; return_pct?: string | null; start_date?: string | null }> = [];
+    // Known OCR watermark/footer phrases that may be absorbed as name prefix
+    const OCR_WATERMARK_RE = /^(?:©\d{4}\s+[\w\s.·]+?·\s*)?(?:commercial\s+in\s+confidence\s*)?/i;
+    let rm: RegExpExecArray | null;
+    while ((rm = ROW_RE.exec(tableSection)) !== null) {
+      // Post-process name: strip leading OCR watermark garbage (e.g. "Commercial in Confidence")
+      // then keep the last 2 capitalised words before the country-code "(CC)".
+      let rawName = rm[1].trim().replace(/\s+/g, ' ');
+      // Step 1: strip known watermark prefix patterns
+      rawName = rawName.replace(OCR_WATERMARK_RE, '').trim();
+      // Step 2: if still more than 3 words before the '(', take the last 2 as project name
+      const ccIdx = rawName.lastIndexOf('(');
+      if (ccIdx > 1) {
+        const beforeCC = rawName.slice(0, ccIdx).trimEnd();
+        const nameParts = beforeCC.split(' ').filter(Boolean);
+        if (nameParts.length > 3) {
+          // Take last 2 words as the project name (covers "Waste → Fuel", "Solar Up", "Power Barge")
+          const truncated = nameParts.slice(-2).join(' ').trim();
+          rawName = `${truncated} ${rawName.slice(ccIdx)}`;
+        }
+      }
+      const name = rawName.trim();
+      const capital = rm[2];
+      const revRaw = rm[3];
+      // Treat any dash/em-dash variant as null revenue
+      const revenue = /^[\u2014\u2013\-—–]$/.test(revRaw.trim()) ? null : revRaw;
+      const returnPct = rm[4] === 'TBA' ? null : rm[4];
+      const start = rm[5];
+      rows.push({ name, capital_raw: capital, revenue_raw: revenue, return_pct: returnPct, start_date: start });
+    }
+
+    if (rows.length >= 2) return rows;
+  }
+  return null;
+}
+
+/** RC-S6-011 enrichment: Extract structured revenue model from document full_text. */
+function _extractRevenueModel(texts: string[]): {
+  type: string;
+  unit_economics?: string | null;
+  recurring?: boolean | null;
+  detail?: string | null;
+} | null {
+  for (const text of texts) {
+    // ── RaaS (PAI): "$75,000/year (min) per installed robot" ──────────────
+    const raasUnit = text.match(/\$\s*([\d,]+)\s*\/\s*(?:year|yr)\s*(?:\(min\))?\s*per\s+(?:installed\s+)?robot/i);
+    if (raasUnit) {
+      const rawAmt = raasUnit[1].replace(/,/g, '');
+      const displayAmt = parseInt(rawAmt, 10) >= 1000 ? `$${Math.round(parseInt(rawAmt, 10) / 1000)}K` : `$${rawAmt}`;
+      return {
+        type: 'RaaS',
+        unit_economics: `${displayAmt}/year per robot (min)`,
+        recurring: true,
+        detail: 'Robot-as-a-Service: robots leased annually to industrial customers; additional per-task inspection revenue possible',
+      };
+    }
+    // RaaS fallback: label present but no explicit unit price
+    if (/robot\s+as\s+a\s+service|raas\s+business\s+model/i.test(text)) {
+      const altUnit = text.match(/\$\s*([\d,]+)\s*\/\s*(?:year|yr|robot|unit)/i);
+      return {
+        type: 'RaaS',
+        unit_economics: altUnit ? `$${altUnit[1]}/year per robot` : null,
+        recurring: true,
+        detail: 'Robot-as-a-Service: robots leased to industrial customers on a term basis',
+      };
+    }
+
+    // ── IRR / SPV Fund (Climatic): "X%+ Target IRR" + SPV language ─────────
+    const irrM = text.match(/([0-9]+(?:\.[0-9]+)?%\+?)\s+Target\s+IRR/i);
+    if (irrM && /\bSPVs?\b/i.test(text)) {
+      return {
+        type: 'SPV Deployment / Infrastructure-as-a-Service',
+        unit_economics: `${irrM[1]} target IRR`,
+        recurring: false,
+        detail: 'Fund deploys investor equity via asset-level SPVs into climate infrastructure; revenue from 10–20yr government, utility, and corporate contracts',
+      };
+    }
+
+    // ── Sovereign Enterprise + Government (Weavstra) ─────────────────────
+    if (/sovereign\s+(?:agentic|al\b|ai\b|infrastructure|middleware)/i.test(text) && /sole[\s-]source/i.test(text)) {
+      return {
+        type: 'Enterprise + Government Contracts',
+        recurring: true,
+        detail: 'Sovereign AI middleware and quantum compute solutions; enterprise SaaS subscriptions and government sole-source contracts',
+      };
+    }
+  }
+  return null;
+}
+
+function _parseMoneyAmountSimple(raw: string): number | null {
+  if (!raw) return null;
+  // Handle comma-formatted amounts: $2,500M
+  const cleaned = raw.replace(/,/g, '').replace(/[^\d.$MmBbKkGg+]/g, '');
+  const m = cleaned.match(/\$?\s*([0-9]+(?:\.[0-9]+)?)\s*([MmBbKkGg])\+?/);
+  if (!m) return null;
+  const base = parseFloat(m[1]);
+  const suffix = m[2].toUpperCase();
+  const mult = suffix === 'K' ? 1_000 : suffix === 'M' ? 1_000_000 : suffix === 'B' ? 1_000_000_000 : suffix === 'G' ? 1_000_000_000 : 1;
+  const result = base * mult;
+  return Number.isFinite(result) ? result : null;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 
 function scoreToGrade(score: number): 'Excellent' | 'Good' | 'Fair' | 'Needs Improvement' {
   if (score >= 85) return 'Excellent';

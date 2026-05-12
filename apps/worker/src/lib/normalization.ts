@@ -104,7 +104,16 @@ function labelToMetricKey(label: string): keyof CanonicalMetrics | null {
 
 	// Canonical metrics (deterministic, generic label matching)
 	if (/(^|\b)(revenue|sales|net sales|turnover|income)\b/.test(s)) return "revenue";
-	if (/(^|\b)(expenses|expense|opex|operating expense|operating expenses|sg&a|sga|operating spend)\b/.test(s)) return "expenses";
+	// "Total Cost of Operations" and variants: map to expenses BEFORE the generic
+	// "expense/opex" pattern so that this specific full-cost row wins over sub-lines.
+	if (/(^|\b)(total\s+cost\s+of\s+operations?|costs?\s+of\s+operations?)\b/.test(s)) return "expenses";
+	// Generic operating expenses: require the label does NOT contain "sales expense/cost"
+	// (e.g. "Total Sales Expense") which is a department sub-line, not total opex.
+	if (
+		/(^|\b)(expenses|expense|opex|operating expense|operating expenses|sg&a|sga|operating spend)\b/.test(s) &&
+		!/\bsales\s+(expense|cost|spend)\b/.test(s)
+	)
+		return "expenses";
 	if (/(^|\b)(cogs|cost of goods sold|cost of goods|cost of revenue)\b/.test(s)) return "cogs";
 	if (
 		/(^|\b)(cash balance|cash on hand|cash available|cash remaining|ending cash|beginning cash|starting cash|bank balance|bank|cash)\b/.test(s) ||

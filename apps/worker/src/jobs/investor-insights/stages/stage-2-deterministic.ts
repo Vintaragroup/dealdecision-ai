@@ -89,6 +89,7 @@ import {
 } from "../../../lib/deck-financial-signals-v1.js";
 import type { CrossSourceReconciliationSummary } from "../../../lib/cross-source-reconciliation.js";
 import type { FinancialCoverageV1, FinancialConflictV1 } from "@dealdecision/core";
+import { getFinancialFactsForDeal } from "../../../lib/db/financial-facts-db.js";
 import { isCandidateTaintedByFundAumContext, isCandidateTaintedByVolumeMetric, hasStrongRaiseSignal } from "../resolve-raise-amount.js";
 import {
 	ARR_TAINT_WINDOW,
@@ -148,6 +149,8 @@ export function buildProductNarrativeBody(inputs: InsightSlotInputs): string | n
 
 	for (const page of inputs.dpuPages) {
 		const text = page.text ?? "";
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		// Skip pages that look like financial tables (high density of money tokens)
 		const moneyCount = (text.match(/\$[\d,]/g) ?? []).length;
 		const totalWords = text.split(/\s+/).filter(Boolean).length;
@@ -256,6 +259,8 @@ export function buildProductNarrativeBundle(inputs: InsightSlotInputs): RankedNa
 
 	for (const page of inputs.dpuPages) {
 		const text = page.text ?? "";
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		const moneyCount = (text.match(/\$[\d,]/g) ?? []).length;
 		const totalWords = text.split(/\s+/).filter(Boolean).length;
 		if (totalWords > 0 && moneyCount / totalWords >= 0.12) continue;
@@ -450,6 +455,23 @@ export interface InsightSlotInputs {
 	 * "PD - Verse.pdf" can surface brand candidates without deal-specific hacks.
 	 */
 	documentTitles: string[];
+	/**
+	 * Financial Truth Resolution Layer V1 output.
+	 * Populated by buildFinancialTruthV1 in the processor after buildFinancialFactRegistryV1 runs.
+	 * null/undefined when the FTRL has not run yet (e.g. early gate-fail paths).
+	 */
+	financialTruth?: import("../../../lib/financial-facts/build-financial-truth-v1.js").FinancialTruthMapV1 | null;
+	/**
+	 * Raw financial facts loaded from financial_facts_v1 at the start of each run.
+	 * Written by populateFinancialFactRegistryV1 (analyze-deal job) via
+	 * extract-financial-table-claims.ts — which can surface facts (e.g.
+	 * cash_outflow_operating) that the Stage-2 workbook-intelligence path misses.
+	 *
+	 * Passed to buildFinancialFactRegistryV1 as existingDbFacts so that
+	 * reconcileFinancialFactsV1 Rules 4/4b can derive burn_rate and runway_months.
+	 * Never written back to DB from this merge (runtime-only, FTRL input only).
+	 */
+	existingDbFacts: FinancialFactV1[];
 }
 
 
@@ -469,6 +491,26 @@ export interface InsightSlotInputs {
  */
 const MARKET_PATTERN =
 	/(?:\bTAM\b|\bSAM\b|\bSOM\b|\btotal\s+addressable\s+market\b|\baddressable\s+market\b)[^$\n]{0,60}?\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]?\+?|\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]\+?[^$\n]{0,60}?(?:\bTAM\b|\bSAM\b|\bSOM\b|\btotal\s+addressable\s+market\b|\baddressable\s+market\b)|\bmarket\s+size[s]?\b[^$\n]{0,80}?\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]?\+?|\$[\d,]+(?:\.\d+)?(?:\s*-\s*[\d,]+(?:\.\d+)?)?\s*[BbMmKkTt]\+?[^$\n]{0,80}?\bmarket\s+size[s]?\b/i;
+
+/**
+ * SPAC_SHELL_ENTITY_RE — matches pages that are primarily from a SPAC /
+ * blank-check-company financial filing rather than the target operating company.
+ *
+ * These pages describe the shell vehicle's standalone economics:
+ *   • trust-account income ("investments held in the Trust Account")
+ *   • warrant/derivative fair-value changes ("change in fair value of derivative liabilities")
+ *   • SPAC merger accounting ("initial business combination", "blank check company")
+ *
+ * Pages matching this pattern must NOT be surfaced as target-company evidence in
+ * the narrative corpus, regardless of which other keywords they contain.
+ */
+const SPAC_SHELL_ENTITY_RE =
+	/change in fair value of (?:derivative|warrant|earnout|pipe)\s*liabilities|investments held in (?:the )?Trust Account|initial business combination|blank check company/i;
+
+/** Returns true when page text belongs to a SPAC / shell entity filing, not the target company. */
+function isSpacShellEntityPage(text: string): boolean {
+	return SPAC_SHELL_ENTITY_RE.test(text);
+}
 
 /**
  * TRACTION_SIGNAL: matches "MRR $50K", "ARR $600K",
@@ -1245,6 +1287,43 @@ function extractDpuText(payload: unknown): string | null {
 }
 
 /**
+ * Deduplicate workbook facts by (metric_key, period_label, source_kind).
+ *
+ * Multiple XLSX rows (e.g. "Sales 1" $8K vs "Sales 4" $0) can produce
+ * conflicting FinancialFactV1 entries for the same period because `makeFactId`
+ * in metric-promoter includes `value_raw` in the hash, giving each row a
+ * distinct fact_id.  Without this dedup, both facts accumulate in the DB.
+ *
+ * Resolution order per group:
+ *  1. Non-zero value beats zero value.
+ *  2. Higher absolute value wins.
+ *  3. Lexicographically smaller fact_id (deterministic tiebreaker).
+ */
+function deduplicateWorkbookFacts(facts: FinancialFactV1[]): FinancialFactV1[] {
+	const best = new Map<string, FinancialFactV1>();
+	for (const f of facts) {
+		const key = `${f.metric_key}:${f.period_label}:${f.source_kind}`;
+		const existing = best.get(key);
+		if (!existing) {
+			best.set(key, f);
+			continue;
+		}
+		const existingIsZero = existing.value === 0;
+		const incomingIsZero = f.value === 0;
+		if (existingIsZero && !incomingIsZero) {
+			best.set(key, f); // non-zero beats zero
+		} else if (!existingIsZero && incomingIsZero) {
+			// keep existing non-zero
+		} else if (Math.abs(f.value) > Math.abs(existing.value)) {
+			best.set(key, f); // higher absolute value wins
+		} else if (Math.abs(f.value) === Math.abs(existing.value) && f.fact_id < existing.fact_id) {
+			best.set(key, f); // deterministic tiebreaker
+		}
+	}
+	return Array.from(best.values());
+}
+
+/**
  * Load DPU page texts and evidence snippets for Stage 1 slot extraction.
  * Best-effort: DPU load failure sets dpuLoadFailed=true; all slots become NotComputable.
 
@@ -1277,6 +1356,8 @@ async function loadInsightSlotInputs(
 	const workbookFacts:    FinancialFactV1[] = [];
 	// deal_facts_v1 traction metrics — loaded non-fatally after main try/catch
 	let dealTractionFacts:  DealTractionFact[] = [];
+	// Existing DB facts (financial_facts_v1) — loaded non-fatally as FTRL secondary input
+	let existingDbFacts:    FinancialFactV1[] = [];
 
 	try {
 		const { rows } = await pool.query<{ document_id: string; page_index: number; payload: unknown }>(
@@ -1501,6 +1582,17 @@ async function loadInsightSlotInputs(
 			// Document titles are supplemental; failure is non-fatal.
 		});
 
+	// Load existing financial_facts_v1 rows as a secondary FTRL input.
+	// These were written by populateFinancialFactRegistryV1 (analyze-deal job) via
+	// extract-financial-table-claims.ts, which surfaces facts (e.g.
+	// cash_outflow_operating) that the Stage-2 workbook path misses.
+	// Used in buildFinancialFactRegistryV1 Section 7b. Non-fatal.
+	await getFinancialFactsForDeal(pool, dealId, { limit: 500 })
+		.then((facts) => { existingDbFacts = facts; })
+		.catch(() => {
+			// Existing DB facts are a supplemental FTRL input; failure is non-fatal.
+		});
+
 	const _bestStmt = pickBestStatement(financialStatements);
 	const _bestUof  = pickBestUseOfFunds(useOfFundsStatements);
 	const _bestBs   = pickBestBalanceSheet(balanceSheets);
@@ -1540,9 +1632,10 @@ async function loadInsightSlotInputs(
 		saasKpis:         _bestKpi,
 		bankTransactions,
 		deckFinancialSignals,
-		workbookFacts,
+		workbookFacts: deduplicateWorkbookFacts(workbookFacts),
 		dealTractionFacts,
 		documentTitles,
+		existingDbFacts,
 	};
 }
 
@@ -2598,6 +2691,19 @@ interface CanonicalField {
 	 * When ≥ 2, buildConfidenceSignals emits evidence_count=2 → VERIFIED tier.
 	 */
 	corroboration_count?: number;
+	/**
+	 * Set to true by applyTruthGatesV1 when the financial truth layer has determined
+	 * that this field's value should not receive full scoring credit.
+	 * The value is still surfaced for display — only scoring is blocked.
+	 *
+	 * Blocked when:
+	 *   - FinancialTruthRecord.state === "CONFLICT"      (sources disagree)
+	 *   - FinancialTruthRecord.state === "INSUFFICIENT"  (not enough data)
+	 *   - FinancialTruthRecord.projected_only_dataset === true  (not current traction)
+	 */
+	truth_gate_blocked?: boolean;
+	/** Machine-readable reason code explaining why truth_gate_blocked is true. */
+	truth_gate_reason?: string;
 }
 
 interface ConflictEntry {
@@ -2952,6 +3058,62 @@ function enrichCorroboration(fields: CanonicalField[], pages: DpuPage[]): void {
 		if (!pattern) continue;
 		const targetNorm = normalizeAmountForConflict(field.value);
 		field.corroboration_count = countCorroboratedPages(pages, pattern, targetNorm);
+	}
+}
+
+// ─── Phase 2 Fix #4: Truth-state gate ────────────────────────────────────────
+
+/**
+ * Maps canonical traction field names to their keys in the FinancialTruthMapV1.
+ * Only fields listed here are ever truth-gated; all other fields pass through.
+ */
+const TRUTH_GATED_FIELDS: Record<string, string> = {
+	arr_value:     "arr",
+	mrr_value:     "mrr",
+	revenue_value: "revenue",
+} as const;
+
+/**
+ * Apply financial truth-layer gates to all canonical traction fields.
+ *
+ * For each field in TRUTH_GATED_FIELDS that is present and Computable, checks the
+ * corresponding FinancialTruthRecord.  When the truth state would reduce confidence
+ * in the value, sets `truth_gate_blocked = true` and `truth_gate_reason` to a
+ * machine-readable code.  The value itself is NOT removed — it remains visible in
+ * the UI but is excluded from market-score computation by computeMarketScoreRaw.
+ *
+ * Gate conditions:
+ *   - state === "CONFLICT"            → sources disagree; no resolved single truth
+ *   - state === "INSUFFICIENT"        → fewer than the minimum reliable sources
+ *   - projected_only_dataset === true → all facts are forward-looking projections
+ *
+ * Permissive default: when financialTruth is absent or the metric has no record,
+ * no gate is applied (field scores normally).
+ *
+ * Exported for unit tests.
+ */
+export function applyTruthGatesV1(
+	fields: CanonicalField[],
+	financialTruth: import("../../../lib/financial-facts/build-financial-truth-v1.js").FinancialTruthMapV1 | null | undefined,
+): void {
+	if (!financialTruth) return;
+	for (const field of fields) {
+		if (field.computability !== "Computable") continue;
+		const metricKey = TRUTH_GATED_FIELDS[field.field];
+		if (!metricKey) continue;
+		const record = financialTruth[metricKey];
+		if (!record) continue;
+		if (record.state === "CONFLICT") {
+			field.truth_gate_blocked = true;
+			field.truth_gate_reason = `TRUTH_CONFLICT:${metricKey.toUpperCase()}`;
+		} else if (record.state === "INSUFFICIENT") {
+			field.truth_gate_blocked = true;
+			field.truth_gate_reason = `TRUTH_INSUFFICIENT:${metricKey.toUpperCase()}`;
+		} else if (record.projected_only_dataset === true) {
+			field.truth_gate_blocked = true;
+			field.truth_gate_reason = `TRUTH_PROJECTED_ONLY:${metricKey.toUpperCase()}`;
+		}
+		// CONFIRMED → no gate; field scores normally.
 	}
 }
 
@@ -3333,6 +3495,10 @@ function extractPhase2Result(inputs: InsightSlotInputs): Phase2Result {
 		).level;
 	}
 
+	// ── Phase 2 Fix #4: Truth-state gate — block scoring credit when financial
+	// truth layer reports CONFLICT, INSUFFICIENT, or projected_only for traction fields.
+	applyTruthGatesV1(fields, inputs.financialTruth);
+
 	return { fields, conflicts, completeness };
 }
 
@@ -3343,7 +3509,10 @@ function formatCanonicalFieldLine(f: CanonicalField): string {
 	if (f.computability === "Computable" && f.value !== null && f.evidenceRef !== null) {
 		const src = f.source ?? "deck";
 		const conf = f.confidence ?? "UNKNOWN";
-		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=${f.reasonCode ?? "none"} | source=${src} | confidence=${conf}`;
+		const truthGatePart = f.truth_gate_blocked
+			? ` | truth_gate=blocked | truth_gate_reason=${f.truth_gate_reason ?? "UNKNOWN"}`
+			: "";
+		return `category=${f.category} | field=${f.field} | computability=Computable | value="${f.value}" | evidence=${f.evidenceRef} | reason=${f.reasonCode ?? "none"} | source=${src} | confidence=${conf}${truthGatePart}`;
 	}
 	const conf = f.confidence ?? "UNKNOWN";
 	const suppressedPart = f.suppressedValue ? ` | suppressed_value="${f.suppressedValue}"` : "";
@@ -3655,6 +3824,8 @@ function gatherMarketPositionCandidates(inputs: InsightSlotInputs): NarrativeCan
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!MARKET_PATTERN.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
 		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
@@ -3684,6 +3855,8 @@ function gatherFinancialOutlookCandidates(inputs: InsightSlotInputs): NarrativeC
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!FINANCIAL_OUTLOOK_RE.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
 		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
@@ -3715,6 +3888,8 @@ function gatherCapitalRaiseCandidates(inputs: InsightSlotInputs): NarrativeCandi
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!RAISE_AMOUNT_PATTERN.test(text) && !RAISE_RANGE_PATTERN.test(text)) continue;
 		// Skip pages tainted by volume-metric language (GMV, loan-book, financed, etc.)
 		if (isCandidateTaintedByVolumeMetric(text)) continue;
@@ -3744,6 +3919,8 @@ function gatherTractionCandidates(inputs: InsightSlotInputs): NarrativeCandidate
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!TRACTION_PATTERN.test(text) && !TRACTION_PCT_PATTERN.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
 		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
@@ -3774,6 +3951,8 @@ function gatherBusinessQualityCandidates(inputs: InsightSlotInputs): NarrativeCa
 	for (const page of inputs.dpuPages) {
 		const text = page.text;
 		if (!text || text.length < 20) continue;
+		// Skip SPAC / shell-entity financial statement pages — not target-company evidence.
+		if (isSpacShellEntityPage(text)) continue;
 		if (!BUSINESS_QUALITY_RE.test(text)) continue;
 		const excerpt = text.trim().slice(0, 300);
 		candidates.push({ text: excerpt, meta: { sourceType: "raw_ocr_page" } });
@@ -3866,4 +4045,7 @@ export {
 	detectArrInTextSources,
 	isValuationMatchTainted,
 	detectValuationPostInTextSources,
+	// Fix #4: Truth-state gate — applyTruthGatesV1 is already an `export function` above.
+	// Fix 17: workbook fact dedup — exported for unit tests
+	deduplicateWorkbookFacts,
 };

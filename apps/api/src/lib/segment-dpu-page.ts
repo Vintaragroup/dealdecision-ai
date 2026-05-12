@@ -119,7 +119,19 @@ export function segmentDpuPage(input: {
       return hasSizing || (anyMatch(bulletsText, [/\bmarket\b/i, /\bindustry\b/i]) && hasMarketLanguage);
     })();
 
-    const product_intent = anyMatch(bulletsText, [/\bapparel\b/i, /\baccessories\b/i, /\bglove\w*\b/i, /\bcollection\b/i, /\bproduct\b/i]);
+    const product_intent = anyMatch(bulletsText, [
+      /\bapparel\b/i,
+      /\baccessories\b/i,
+      /\bglove\w*\b/i,
+      /\bcollection\b/i,
+      /\bproduct\b/i,
+      // Medical device / therapeutic product signals.
+      /\bmedical\s+device\b/i,
+      /\bdigital\s+therapeutic\b/i,
+      /\bprocedureless\b/i,
+      /\bswallowed\s+capsule\b/i,
+      /\bgastric\s+balloon\b/i,
+    ]);
 
     const gtm_intent = anyMatch(bulletsText, [
       /\bsell\s+via\s+website\b/i,
@@ -259,6 +271,22 @@ export function segmentDpuPage(input: {
       segment: "market",
       keywords: ["tam", "sam", "som", "market", "industry", "cagr", "outlook"],
       confidence: 0.74,
+    },
+    {
+      id: "product.bullets.medical_device_platform",
+      // Medical device / therapeutic product pages. Confidence 0.82 is intentionally above the
+      // deterministicIsStrong threshold (0.8) so these pages win over a structuredKey of 'unknown'
+      // from the visual classifier. Terms are specific enough to avoid false positives.
+      when: () => {
+        const hasMedicalDevice = /\bmedical\s+device\b/i.test(bulletsText);
+        const hasDigitalTherapeutic = /\bdigital\s+therapeutic\b|\btherapeutic\s+platform\b/i.test(bulletsText);
+        const hasProcedureless = /\bprocedureless\b|\bswallowed\s+capsule\b|\bgastric\s+balloon\b|\bintragastric\s+balloon\b/i.test(bulletsText);
+        const hasObesityPlatform = /\bclinical\s+obesity\b|\bobesity\s+treatment\b|\bobesity\s+platform\b/i.test(bulletsText);
+        return hasMedicalDevice || hasDigitalTherapeutic || hasProcedureless || hasObesityPlatform;
+      },
+      segment: "product" as AnalystSegment,
+      keywords: ["medical device", "digital therapeutic", "procedureless", "gastric balloon", "obesity treatment"],
+      confidence: 0.82,
     },
     {
       id: "product.intent.products",

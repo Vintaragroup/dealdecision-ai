@@ -922,8 +922,11 @@ describe('buildUnderwritingReadinessV1 — integrity FAIL propagation', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Phase 2 — Scenario 1: weak explicit burn + derived workbook proxy', () => {
-  // Deck burn scores higher than derived (deck SRC_RANK=1 > unknown SRC_RANK=0)
-  // so deck is selected as primary; derived is the alternative.
+  // Fix #7: selectCurrentStateFact now selects the derived workbook proxy over the
+  // deck-low-conf claim. Priority: non-provisional > derived-workbook > deck-provisional.
+  // The deck $250K fact is provisional (deck+low-conf) AND less reliable than the
+  // derived workbook estimate. After Fix #7, the derived proxy is primary and the
+  // deck claim becomes the alternative.
   function makeScenario1Facts(): FinancialFactV1[] {
     return [
       fact('burn_rate', 250_000, {
@@ -943,45 +946,45 @@ describe('Phase 2 — Scenario 1: weak explicit burn + derived workbook proxy', 
     ];
   }
 
-  test('primary burn is the deck fact (deck outranks derived/unknown)', () => {
+  test('primary burn is the derived workbook proxy (workbook beats deck-low-conf)', () => {
     const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
-    expect(bd.burn_runway.monthly_burn?.source_kind).toBe('deck');
-    expect(bd.burn_runway.monthly_burn?.value).toBe(250_000);
+    expect(bd.burn_runway.monthly_burn?.is_derived).toBe(true);
+    expect(bd.burn_runway.monthly_burn?.value).toBe(400_000);
   });
 
-  test('primary burn is_provisional = true (low-conf deck source)', () => {
+  test('primary burn is_provisional = true (derived implies provisional)', () => {
     const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
     expect(bd.burn_runway.monthly_burn?.is_provisional).toBe(true);
   });
 
-  test('alternative_burn_fact surfaces the derived workbook proxy', () => {
+  test('alternative_burn_fact is the deck-provisional fact (relegated because lower quality)', () => {
     const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
     expect(bd.burn_runway.alternative_burn_fact).toBeDefined();
-    expect(bd.burn_runway.alternative_burn_fact?.is_derived).toBe(true);
-    expect(bd.burn_runway.alternative_burn_fact?.derivation_rule).toBe('burn_rate_from_total_expenses_run_rate');
-    expect(bd.burn_runway.alternative_burn_fact?.value).toBe(400_000);
+    expect(bd.burn_runway.alternative_burn_fact?.source_kind).toBe('deck');
+    expect(bd.burn_runway.alternative_burn_fact?.value).toBe(250_000);
   });
 
-  test('alternative_burn_fact.is_provisional = true (derived implies provisional)', () => {
+  test('alternative_burn_fact.is_provisional = true (low-conf deck source)', () => {
     const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
     expect(bd.burn_runway.alternative_burn_fact?.is_provisional).toBe(true);
   });
 
-  test('alternative_burn_fact carries semantic_family and semantic_role from FinancialFactV1', () => {
+  test('primary burn carries semantic_family and semantic_role from FinancialFactV1', () => {
     const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
-    expect(bd.burn_runway.alternative_burn_fact?.semantic_family).toBe('liquidity');
-    expect(bd.burn_runway.alternative_burn_fact?.semantic_role).toBe('derived');
+    expect(bd.burn_runway.monthly_burn?.semantic_family).toBe('liquidity');
+    expect(bd.burn_runway.monthly_burn?.semantic_role).toBe('derived');
   });
 
-  test('primary burn selection_reason references the deck weakness and alternative', () => {
+  test('primary burn selection_reason references workbook-derived proxy and alternative', () => {
     const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
     expect(bd.burn_runway.monthly_burn?.selection_reason).toBeTruthy();
-    expect(bd.burn_runway.monthly_burn?.selection_reason).toMatch(/deck|proxy|alternative/i);
+    expect(bd.burn_runway.monthly_burn?.selection_reason).toMatch(/workbook|proxy|alternative/i);
   });
 
-  test('current_state.burn_rate mirrors the deck primary fact', () => {
+  test('current_state.burn_rate uses the derived workbook proxy (not the deck claim)', () => {
     const bd = buildFinancialBreakdownV1({ financial_facts: makeScenario1Facts(), financial_coverage_v1: makeCoverage() });
-    expect(bd.current_state.burn_rate?.source_kind).toBe('deck');
+    expect(bd.current_state.burn_rate?.is_derived).toBe(true);
+    expect(bd.current_state.burn_rate?.value).toBe(400_000);
     expect(bd.current_state.burn_rate?.is_provisional).toBe(true);
   });
 });
@@ -1173,5 +1176,78 @@ describe('Phase 2 — Backward compatibility: existing FinancialMetricPoint fiel
     expect(typeof rev?.period_label).toBe('string');
     expect(typeof rev?.confidence).toBe('string');
     expect(typeof rev?.source_kind).toBe('string');
+  });
+});
+
+// ─── Fix 14: proforma-only XLSX model (DealDecision pattern) ─────────────────
+
+describe('buildFinancialBreakdownV1 — proforma-only XLSX model (Fix 14 / DealDecision)', () => {
+  const currentYear = new Date().getFullYear();
+
+  function proformaFact(metric_key: string, value: number, year: number): ReturnType<typeof fact> {
+    return fact(metric_key, value, {
+      source_kind: 'xlsx',
+      period_label: String(year),
+      period_type: 'annual',
+      confidence: 'medium',
+      // temporal_scope absent — same as DealDecision DB state after stale extraction
+    });
+  }
+
+  let bd: ReturnType<typeof buildFinancialBreakdownV1>;
+  beforeEach(() => {
+    bd = buildFinancialBreakdownV1({
+      financial_facts: [
+        proformaFact('revenue', 3_337_000, currentYear),
+        proformaFact('revenue', 15_502_000, currentYear + 1),
+        proformaFact('revenue', 35_778_000, currentYear + 2),
+        // Burn rate: structured_derived 2026 — must be preserved
+        fact('burn_rate', 251_536, {
+          source_kind: 'structured_derived',
+          period_label: String(currentYear),
+          period_type: 'monthly',
+          confidence: 'medium',
+          is_derived: true,
+        }),
+      ],
+      financial_coverage_v1: xlsxCoverage({ forecast_revenue_present: true }),
+    });
+  });
+
+  test('current_state.revenue is defined (not null)', () => {
+    expect(bd.current_state.revenue).toBeDefined();
+  });
+
+  test('current_state.revenue.value is the earliest proforma year ($3,337,000)', () => {
+    expect(bd.current_state.revenue?.value).toBe(3_337_000);
+  });
+
+  test('current_state.revenue.is_projected is true', () => {
+    expect(bd.current_state.revenue?.is_projected).toBe(true);
+  });
+
+  test('current_state.revenue.is_provisional is true', () => {
+    expect(bd.current_state.revenue?.is_provisional).toBe(true);
+  });
+
+  test('current_state.revenue.selection_reason is proforma_projection_fallback', () => {
+    expect(bd.current_state.revenue?.selection_reason).toBe('proforma_projection_fallback');
+  });
+
+  test('has_current_state is true (proforma revenue counts as financial state)', () => {
+    expect(bd.has_current_state).toBe(true);
+  });
+
+  test('burn_rate structured_derived fact is preserved', () => {
+    expect(bd.current_state.burn_rate?.value).toBe(251_536);
+    expect(bd.current_state.burn_rate?.source_kind).toBe('structured_derived');
+  });
+
+  test('current_state.revenue.period_label is the current year', () => {
+    expect(bd.current_state.revenue?.period_label).toBe(String(currentYear));
+  });
+
+  test('current_state.revenue.source_kind is xlsx', () => {
+    expect(bd.current_state.revenue?.source_kind).toBe('xlsx');
   });
 });

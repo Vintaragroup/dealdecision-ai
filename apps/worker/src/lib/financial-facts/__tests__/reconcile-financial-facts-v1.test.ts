@@ -33,7 +33,7 @@ describe("reconcileFinancialFactsV1 — runway derivation", () => {
     const runway = result.find((f) => f.metric_key === "runway_months");
     expect(runway).toBeDefined();
     expect(runway!.value).toBeCloseTo(12, 1);  // 1_800_000 / 150_000 = 12
-    expect(runway!.source_kind).toBe("unknown");
+    expect(runway!.source_kind).toBe("structured_derived");
     expect(runway!.confidence).toBe("medium");
     expect(runway!.reconciliation_status).toBe("ok");
   });
@@ -223,7 +223,7 @@ describe("reconcileFinancialFactsV1 — gross_margin derivation", () => {
     // 1_200_000 / 2_000_000 * 100 = 60%
     expect(gm!.value).toBeCloseTo(60, 1);
     expect(gm!.unit).toBe("percent");
-    expect(gm!.source_kind).toBe("unknown");
+    expect(gm!.source_kind).toBe("structured_derived");
     expect(gm!.confidence).toBe("medium");
     expect(gm!.reconciliation_status).toBe("ok");
   });
@@ -657,4 +657,280 @@ describe("reconcileFinancialFactsV1 — Rule 4b: runway chaining from cash_outfl
     expect(runwayFacts[0]!.value).toBe(18); // original preserved
   });
 });
+
+// ─── Rule 5: ARR derivation from structured MRR ───────────────────────────────
+
+describe("reconcileFinancialFactsV1 — Rule 5: ARR derivation from MRR × 12", () => {
+  it("derives ARR = MRR × 12 when structured MRR exists and no ARR", () => {
+    const mrr = makeFact({ metric_key: "mrr", value: 50_000, source_kind: "xlsx" });
+    const result = reconcileFinancialFactsV1([mrr, makeFact({ metric_key: "revenue", value: 600_000 })], "d1");
+    const arr = result.find((f) => f.metric_key === "arr");
+    expect(arr).toBeDefined();
+    expect(arr!.value).toBe(600_000); // 50_000 × 12
+    expect(arr!.source_kind).toBe("structured_derived");
+    expect(arr!.is_derived).toBe(true);
+    expect(arr!.derivation_rule).toBe("arr_from_mrr_times_12");
+    expect(arr!.confidence).toBe("medium");
+  });
+
+  it("does NOT derive ARR when explicit ARR already exists for the same period", () => {
+    const mrr = makeFact({ metric_key: "mrr", value: 50_000, source_kind: "xlsx" });
+    const arr = makeFact({ metric_key: "arr", value: 700_000 });
+    const result = reconcileFinancialFactsV1([mrr, arr], "d1");
+    const arrFacts = result.filter((f) => f.metric_key === "arr");
+    expect(arrFacts).toHaveLength(1);
+    expect(arrFacts[0]!.value).toBe(700_000); // original unchanged
+  });
+
+  it("does NOT derive ARR from deck MRR (source_kind = deck)", () => {
+    const mrrDeck = makeFact({ metric_key: "mrr", value: 100_000, source_kind: "deck" });
+    const revenue = makeFact({ metric_key: "revenue", value: 1_200_000 });
+    const result = reconcileFinancialFactsV1([mrrDeck, revenue], "d1");
+    const arr = result.find((f) => f.metric_key === "arr");
+    expect(arr).toBeUndefined();
+  });
+
+  it("does NOT derive ARR from narrative MRR (source_kind = narrative)", () => {
+    const mrrNarr = makeFact({ metric_key: "mrr", value: 80_000, source_kind: "narrative" });
+    const revenue = makeFact({ metric_key: "revenue", value: 960_000 });
+    const result = reconcileFinancialFactsV1([mrrNarr, revenue], "d1");
+    expect(result.find((f) => f.metric_key === "arr")).toBeUndefined();
+  });
+
+  it("does NOT derive ARR from projected MRR (temporal_scope = projected)", () => {
+    const mrrProj = makeFact({ metric_key: "mrr", value: 75_000, source_kind: "xlsx", temporal_scope: "projected" });
+    const revenue = makeFact({ metric_key: "revenue", value: 900_000 });
+    const result = reconcileFinancialFactsV1([mrrProj, revenue], "d1");
+    expect(result.find((f) => f.metric_key === "arr")).toBeUndefined();
+  });
+
+  it("does NOT derive ARR from low-confidence MRR", () => {
+    const mrrLow = makeFact({ metric_key: "mrr", value: 60_000, source_kind: "xlsx", confidence: "low" });
+    const revenue = makeFact({ metric_key: "revenue", value: 720_000 });
+    const result = reconcileFinancialFactsV1([mrrLow, revenue], "d1");
+    expect(result.find((f) => f.metric_key === "arr")).toBeUndefined();
+  });
+
+  it("does NOT derive ARR when MRR value is 0", () => {
+    const mrrZero = makeFact({ metric_key: "mrr", value: 0, source_kind: "xlsx" });
+    const revenue = makeFact({ metric_key: "revenue", value: 500_000 });
+    const result = reconcileFinancialFactsV1([mrrZero, revenue], "d1");
+    expect(result.find((f) => f.metric_key === "arr")).toBeUndefined();
+  });
+
+  it("derived ARR has correct semantic metadata", () => {
+    const mrr = makeFact({ metric_key: "mrr", value: 25_000, source_kind: "pdf_table" });
+    const revenue = makeFact({ metric_key: "revenue", value: 300_000 });
+    const result = reconcileFinancialFactsV1([mrr, revenue], "d1");
+    const arr = result.find((f) => f.metric_key === "arr");
+    expect(arr).toBeDefined();
+    expect(arr!.semantic_family).toBe("revenue");
+    expect(arr!.semantic_role).toBe("derived");
+    expect(arr!.reconciliation_status).toBe("ok");
+    expect(arr!.unit).toBe("currency");
+  });
+
+  it("derives ARR per period — two MRR periods produce two ARR facts", () => {
+    const mrr2024 = makeFact({ metric_key: "mrr", value: 40_000, source_kind: "xlsx", period_label: "FY2024",
+      fact_id: "factv1:d1:mrr:annual:FY2024:aaa" });
+    const mrr2025 = makeFact({ metric_key: "mrr", value: 50_000, source_kind: "xlsx", period_label: "FY2025",
+      fact_id: "factv1:d1:mrr:annual:FY2025:bbb" });
+    const result = reconcileFinancialFactsV1([mrr2024, mrr2025], "d1");
+    const arrFacts = result.filter((f) => f.metric_key === "arr");
+    expect(arrFacts).toHaveLength(2);
+    const arr2024 = arrFacts.find((f) => f.period_label === "FY2024");
+    const arr2025 = arrFacts.find((f) => f.period_label === "FY2025");
+    expect(arr2024!.value).toBe(480_000);  // 40_000 × 12
+    expect(arr2025!.value).toBe(600_000);  // 50_000 × 12
+  });
+
+  it("is idempotent — running reconcile twice does not duplicate the derived ARR", () => {
+    const mrr = makeFact({ metric_key: "mrr", value: 30_000, source_kind: "xlsx" });
+    const revenue = makeFact({ metric_key: "revenue", value: 360_000 });
+    const firstPass = reconcileFinancialFactsV1([mrr, revenue], "d1");
+    const secondPass = reconcileFinancialFactsV1(firstPass, "d1");
+    const arrFacts = secondPass.filter((f) => f.metric_key === "arr");
+    expect(arrFacts).toHaveLength(1);
+  });
+});
+
+// ─── Projection tag propagation — Rule 4 derived burn_rate ────────────────────
+
+describe("reconcileFinancialFactsV1 — Rule 4: projected tag propagates to derived burn_rate", () => {
+  function makeProjectedOutflow(periodLabel = "Year 12"): FinancialFactV1 {
+    return {
+      fact_id:        `factv1:d1:cash_outflow_operating:annual:${periodLabel.replace(" ", "_")}:proj0001`,
+      deal_id:        "d1",
+      source_kind:    "xlsx",
+      metric_key:     "cash_outflow_operating",
+      period_type:    "annual",
+      period_label:   periodLabel,
+      value:          1_453_000,
+      unit:           "currency",
+      confidence:     "high",
+      temporal_scope: "projected",
+    };
+  }
+
+  it("derived burn_rate gets temporal_scope=projected when source has temporal_scope=projected", () => {
+    const outflow = makeProjectedOutflow("Year 12");
+    const result = reconcileFinancialFactsV1([outflow], "d1");
+
+    const burn = result.find((f) => f.metric_key === "burn_rate");
+    expect(burn).toBeDefined();
+    expect(burn!.temporal_scope).toBe("projected");
+  });
+
+  it("derived burn_rate gets temporal_scope=projected from ordinal Year N label (no explicit scope)", () => {
+    // Source fact has no temporal_scope — relies on period_label heuristic
+    const outflow: FinancialFactV1 = {
+      fact_id:      "factv1:d1:cash_outflow_operating:unknown:Year_12:noscope01",
+      deal_id:      "d1",
+      source_kind:  "xlsx",
+      metric_key:   "cash_outflow_operating",
+      period_type:  "unknown",
+      period_label: "Year 12",
+      value:        1_453_000,
+      unit:         "currency",
+      confidence:   "high",
+      // no temporal_scope
+    };
+    const result = reconcileFinancialFactsV1([outflow], "d1");
+
+    const burn = result.find((f) => f.metric_key === "burn_rate");
+    expect(burn).toBeDefined();
+    expect(burn!.temporal_scope).toBe("projected");
+  });
+
+  it("derived burn_rate gets temporal_scope=projected for each ordinal year (Year 1–Year 15)", () => {
+    for (const n of [1, 2, 3, 5, 10, 12, 15]) {
+      const periodLabel = `Year ${n}`;
+      const outflow: FinancialFactV1 = {
+        fact_id:      `factv1:d1:cash_outflow_operating:unknown:Year_${n}:ord000${n}`,
+        deal_id:      "d1",
+        source_kind:  "xlsx",
+        metric_key:   "cash_outflow_operating",
+        period_type:  "unknown",
+        period_label: periodLabel,
+        value:        1_000_000,
+        unit:         "currency",
+        confidence:   "high",
+      };
+      const result = reconcileFinancialFactsV1([outflow], "d1");
+      const burn = result.find((f) => f.metric_key === "burn_rate");
+      expect(burn, `Year ${n} should derive projected burn`).toBeDefined();
+      expect(burn!.temporal_scope, `Year ${n} derived burn should be projected`).toBe("projected");
+    }
+  });
+
+  it("derived burn_rate does NOT get temporal_scope=projected for non-projected historical facts", () => {
+    // Monthly cash_outflow for a concrete historical period — no temporal_scope, no ordinal Year N
+    const outflow: FinancialFactV1 = {
+      fact_id:      "factv1:d1:cash_outflow_operating:monthly:Jan2024:hist0001",
+      deal_id:      "d1",
+      source_kind:  "xlsx",
+      metric_key:   "cash_outflow_operating",
+      period_type:  "monthly",
+      period_label: "Jan 2024",
+      value:        250_000,
+      unit:         "currency",
+      confidence:   "high",
+    };
+    const result = reconcileFinancialFactsV1([outflow], "d1");
+
+    const burn = result.find((f) => f.metric_key === "burn_rate");
+    expect(burn).toBeDefined();
+    expect(burn!.temporal_scope).toBeUndefined(); // NOT projected
+  });
+});
+
+// ─── Projection tag propagation — Rule 4b derived runway_months ───────────────
+
+describe("reconcileFinancialFactsV1 — Rule 4b: projected tag propagates to derived runway_months", () => {
+  it("derived runway_months gets temporal_scope=projected when outflow is projected", () => {
+    const outflow: FinancialFactV1 = {
+      fact_id:        "factv1:d1:cash_outflow_operating:annual:Year_12:proj0002",
+      deal_id:        "d1",
+      source_kind:    "xlsx",
+      metric_key:     "cash_outflow_operating",
+      period_type:    "annual",
+      period_label:   "Year 12",
+      value:          1_453_000,
+      unit:           "currency",
+      confidence:     "high",
+      temporal_scope: "projected",
+    };
+    const cash = makeFact({ metric_key: "cash", value: 7_812_000, period_type: "unknown", period_label: "Year 12" });
+    const result = reconcileFinancialFactsV1([outflow, cash], "d1");
+
+    const runway = result.find((f) => f.metric_key === "runway_months");
+    expect(runway).toBeDefined();
+    expect(runway!.temporal_scope).toBe("projected");
+  });
+
+  it("derived runway_months gets temporal_scope=projected from ordinal Year N label (no explicit scope on either source)", () => {
+    const outflow: FinancialFactV1 = {
+      fact_id:      "factv1:d1:cash_outflow_operating:unknown:Year_12:noscope02",
+      deal_id:      "d1",
+      source_kind:  "xlsx",
+      metric_key:   "cash_outflow_operating",
+      period_type:  "unknown",
+      period_label: "Year 12",
+      value:        1_453_000,
+      unit:         "currency",
+      confidence:   "high",
+      // no temporal_scope
+    };
+    // cash also has no temporal_scope — period_label heuristic should still tag both
+    const cash = makeFact({ metric_key: "cash", value: 7_812_000, period_type: "unknown", period_label: "Year 12" });
+    const result = reconcileFinancialFactsV1([outflow, cash], "d1");
+
+    const runway = result.find((f) => f.metric_key === "runway_months");
+    expect(runway).toBeDefined();
+    // Period label "Year 12" → heuristic detects projected on both sources
+    expect(runway!.temporal_scope).toBe("projected");
+    // Burn also tagged
+    const burn = result.find((f) => f.metric_key === "burn_rate");
+    expect(burn!.temporal_scope).toBe("projected");
+  });
+
+  it("derived runway_months does NOT get temporal_scope=projected for historical facts", () => {
+    const outflow: FinancialFactV1 = {
+      fact_id:      "factv1:d1:cash_outflow_operating:monthly:Jan2024:hist0002",
+      deal_id:      "d1",
+      source_kind:  "xlsx",
+      metric_key:   "cash_outflow_operating",
+      period_type:  "monthly",
+      period_label: "Jan 2024",
+      value:        250_000,
+      unit:         "currency",
+      confidence:   "high",
+    };
+    const cash = makeFact({ metric_key: "cash", value: 2_400_000, period_label: "Jan 2024" });
+    const result = reconcileFinancialFactsV1([outflow, cash], "d1");
+
+    const runway = result.find((f) => f.metric_key === "runway_months");
+    expect(runway).toBeDefined();
+    expect(runway!.temporal_scope).toBeUndefined(); // NOT projected
+  });
+});
+
+// ─── isProjectedFact period_label heuristic (via Rule 1 guard) ────────────────
+
+describe("reconcileFinancialFactsV1 — ordinal Year N period_label treated as projected in Rule 1", () => {
+  it("Rule 1 does NOT derive runway from Year N cash + burn (no explicit temporal_scope)", () => {
+    // Year N without explicit temporal_scope — period_label heuristic must block Rule 1
+    const cash = makeFact({ metric_key: "cash",      value: 7_812_000, period_label: "Year 12" });
+    const burn = makeFact({ metric_key: "burn_rate", value:   484_333, period_label: "Year 12",
+      fact_id: "factv1:d1:burn_rate:monthly:Year_12:explicit0" });
+    const result = reconcileFinancialFactsV1([cash, burn], "d1");
+
+    // Rule 1 projection guard should block derivation via period_label heuristic
+    const derived = result.find(
+      (f) => f.metric_key === "runway_months" && f.is_derived === true,
+    );
+    expect(derived).toBeUndefined();
+  });
+});
+
 

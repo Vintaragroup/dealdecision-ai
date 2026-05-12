@@ -108,7 +108,8 @@ export type GovernedExecutiveSummaryResult =
 export type ExecutiveSummaryCacheMissReason =
 	| "cache_miss_no_previous"
 	| "cache_miss_fingerprint_mismatch"
-	| "cache_miss_validation_failed";
+	| "cache_miss_validation_failed"
+	| "cache_miss_force_recompute";
 
 // ─── Persistence record ───────────────────────────────────────────────────────
 
@@ -270,6 +271,12 @@ export interface ResolveGovernedExecSummaryArgs {
 	/** PR36.9: Serialized contradiction markers body. */
 	contradictionMarkersBody?: string | null;
 	/**
+	 * When true, bypass the fingerprint cache and always regenerate via LLM.
+	 * Used when the caller knows the truth state has materially changed (e.g.,
+	 * force_recompute from a user-triggered force_refresh request).
+	 */
+	forceRecompute?: boolean;
+	/**
 	 * Injectable generate function — defaults to `generateGovernedExecSummaryV1`.
 	 * Overriding in tests avoids any real LLM calls.
 	 */
@@ -309,6 +316,7 @@ export async function resolveGovernedExecSummaryWithCache(
 		canonicalCompanyName,
 		productNarrativeBody,
 		contradictionMarkersBody,
+		forceRecompute = false,
 		generateFn = generateGovernedExecSummaryV1,
 	} = args;
 
@@ -340,8 +348,9 @@ export async function resolveGovernedExecSummaryWithCache(
 	// ── Determine cache miss reason ───────────────────────────────────────────
 	function resolveCacheOutcome():
 		| { hit: true }
-		| { hit: false; reason: ExecutiveSummaryCacheMissReason } {
-		if (previousRecord === null || previousRecord === undefined) {
+		| { hit: false; reason: ExecutiveSummaryCacheMissReason } {		if (forceRecompute) {
+			return { hit: false, reason: "cache_miss_force_recompute" };
+		}		if (previousRecord === null || previousRecord === undefined) {
 			return { hit: false, reason: "cache_miss_no_previous" };
 		}
 		if (previousRecord.fingerprint !== fingerprint) {

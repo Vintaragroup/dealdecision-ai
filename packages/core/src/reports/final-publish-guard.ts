@@ -1,0 +1,756 @@
+/**
+ * Final Publish Guard
+ *
+ * Output-phase null-enforcement for the structured_summary, applied AFTER
+ * `buildStructuredSummary` completes.
+ *
+ * WHY THIS EXISTS — two DIO phase-1 "leak paths" survive the pre-guard:
+ *
+ * 1. RAISE LEAK:   `deal_overview_v2.raise = "$1 Series A Convertible Note"`
+ *    After the field-authority guard blocks the `raise_terms_v1` promoted fact,
+ *    `structured.raise.value` is null.  The overview fallback then fires inside
+ *    `buildStructuredSummary` and fills `structured.raise` with the LLM-generated
+ *    deal_overview_v2 string — which for de-SPAC deals often contains "$1" amounts
+ *    (per-liquidation-preference pricing from the SPAC model).
+ *
+ * 2. BUSINESS MODEL LEAK:  `business_model_arbitration_v1.business_model = "Wholesale/Retail"`
+ *    The arbitration block in `buildStructuredSummary` UNCONDITIONALLY overwrites
+ *    `structured.business_model` whenever arbitrationV1.business_model is truthy.
+ *    For medtech/healthcare deals this often produces a generic accounting-segment
+ *    descriptor ("Wholesale/Retail") instead of the go-to-market model language from
+ *    the pitch deck.
+ *
+ * 3. REVENUE LEAK (defense-in-depth):
+ *    Revenue sourced from a `financial_pro_forma` or SPAC-entity document should
+ *    be blocked by the pre-guard, but this guard provides a final safety net.
+ *
+ * The guard MUTATES `structuredSummary` in-place and returns a full audit log.
+ *
+ * Pure function — no DB, no LLM, no side effects other than mutation of the
+ * passed `structuredSummary` object.
+ */
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export type PublishGuardAction = 'nulled' | 'replaced' | 'kept';
+
+export type PublishGuardLogEntry = {
+  field: string;
+  action: PublishGuardAction;
+  rule: string;
+  original_value: string | null;
+  replacement_value: string | null;
+  reason: string;
+};
+
+export type FinalPublishGuardResult = {
+  fields_nulled: string[];
+  fields_replaced: string[];
+  log: PublishGuardLogEntry[];
+};
+
+export type FinalPublishGuardContext = {
+  deal_type?: string | null;
+  dio?: any;
+};
+
+// ─── Internal helpers ─────────────────────────────────────────────────────────
+
+function asStr(v: unknown): string | null {
+  if (typeof v === 'string' && v.trim()) return v.trim();
+  return null;
+}
+
+function getNestedStr(obj: any, ...keys: string[]): string | null {
+  let cur: any = obj;
+  for (const k of keys) {
+    if (cur === null || cur === undefined || typeof cur !== 'object') return null;
+    cur = cur[k];
+  }
+  return asStr(cur);
+}
+
+function getDioPhase1(dio: any): any {
+  return (dio as any)?.dio?.phase1 ?? null;
+}
+
+function getGovernedUiCopyV1(dio: any): any {
+  return getDioPhase1(dio)?.governed_ui_copy_v1 ?? null;
+}
+
+/**
+ * Extract the deal_classification_v1 selected entry from the DIO.
+ * The `selected` object is the winning policy entry from the classification step.
+ */
+function getDealClassification(dio: any): any {
+  return (dio as any)?.dio?.deal_classification_v1?.selected ?? null;
+}
+
+/**
+ * Returns true when deal_classification_v1 explicitly categorises this deal as
+ * a real-estate asset class or a real-estate underwriting policy.
+ *
+ * This is the PRIMARY (non-text-based) signal for the CRE guard — it fires even
+ * when the DIO text fields contain vague investment/sponsor language that does not
+ * trigger the text-based `hasRealEstateContext` patterns (e.g. Albuquerque pattern:
+ * product_solution = "whether to provide to Cross Development (the Sponsor) all or
+ * a portion of an investment…").
+ */
+function isDealClassifiedAsRealEstate(dio: any): boolean {
+  const cls = getDealClassification(dio);
+  if (!cls) return false;
+  const assetClass = String(cls.asset_class ?? '').toLowerCase();
+  const policyId = String(cls.policy_id ?? '').toLowerCase();
+  return (
+    assetClass === 'real_estate' ||
+    policyId === 'real_estate_underwriting' ||
+    policyId.startsWith('real_estate')
+  );
+}
+
+/** Check if a text contains medtech / healthcare product signals. */
+function hasMedtechProductSignals(text: string | null): boolean {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  return (
+    /\bmedical\b/.test(t) ||
+    /\bdevice\b/.test(t) ||
+    /\bhealthcare\b/.test(t) ||
+    /\bhealth\s+care\b/.test(t) ||
+    /\bclinical\b/.test(t) ||
+    /\b(hcp|physician|clinician|doctor|hospital)\b/.test(t) ||
+    /\bprocedure\b/.test(t) ||
+    /\btherapeutic\b/.test(t) ||
+    /\bimplant\b/.test(t) ||
+    /\bballoon\b/.test(t) ||
+    /\bbariatric\b/.test(t) ||
+    /\bsurgical\b/.test(t)
+  );
+}
+
+/**
+ * Check if a text contains software / technology platform signals.
+ *
+ * Applies alongside `hasMedtechProductSignals` so that the wholesale/retail BM guard
+ * also fires for SaaS, AI, analytics, and compliance platform deals — not only medtech.
+ */
+function hasTechPlatformContext(text: string | null): boolean {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  return (
+    /\bplatform\b/.test(t) ||
+    /\bsoftware\b/.test(t) ||
+    /\bsaas\b/.test(t) ||
+    /\bsubscription\b/.test(t) ||
+    /\b(ai|ml|machine\s+learning)\b/.test(t) ||
+    /\banalytics\b/.test(t) ||
+    /\bapi\b/.test(t) ||
+    /\bmarketplace\b/.test(t) ||
+    /\bcompliance\b/.test(t) ||
+    /\bautomation\b/.test(t) ||
+    /\bworkflow\b/.test(t) ||
+    /\bmonitoring\b/.test(t) ||
+    /\bdata\s+(platform|intelligence|science|management)\b/.test(t) ||
+    /\bcloud\b/.test(t) ||
+    /\bapp\b/.test(t) ||
+    /\bdigital\b/.test(t)
+  );
+}
+
+/**
+ * Check if a text contains commercial real estate signals.
+ *
+ * Fires the CRE business-model guard for deals where the BM extraction
+ * produces a generic wholesale/retail or omnichannel term but the deal is
+ * actually a CRE investment vehicle (build-to-suit, net-lease, REIT, etc.).
+ *
+ * Conservative: each rule targets unambiguous CRE / facility / project-finance
+ * language. Generic finance terms (ltv, dscr, preferred equity) are intentionally
+ * excluded — they appear in non-CRE deals.
+ */
+function hasRealEstateContext(text: string | null): boolean {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  return (
+    /\breal\s+estate\b/.test(t) ||
+    /\bbuild.to.suit\b/.test(t) ||
+    /\bcommercial\s+(property|real|development)\b/.test(t) ||
+    /\bnet\s+lease\b/.test(t) ||
+    /\bnnn\s+lease\b/.test(t) ||
+    /\bcap\s+rate\b/.test(t) ||
+    /\btenants?\b/.test(t) ||
+    /\bzoning\b/.test(t) ||
+    /\breit\b/.test(t) ||
+    /\bground\s+lease\b/.test(t) ||
+    /\bproperty\s+(investment|development|acquisition)\b/.test(t) ||
+    /\bcommercial\s+real\b/.test(t) ||
+    // Project-finance / facility signals (unambiguous in CRE/infrastructure context):
+    /\bstabilized\s+(yield|noi|value|occupancy)\b/.test(t) ||
+    /\boccupancy\s+rate\b/.test(t) ||
+    /\bproject\s+(costs?|budget|yield)\b/.test(t) ||
+    /\bsources\s+and\s+uses\b/.test(t) ||
+    /\bconstruction\s+(loan|budget|costs?|schedule)\b/.test(t) ||
+    /\b(land\s+)?parcel\b/.test(t) ||
+    /\bsite\s+(plan|acquisition|work)\b/.test(t) ||
+    /\boffering\s+memorandum\b/.test(t) ||
+    /\binvestment\s+memorandum\b/.test(t) ||
+    /\bintrastate\s+(offering|sale)\b/.test(t) ||
+    /\bdevelopment\s+(sponsor|costs?|project)\b/.test(t) ||
+    /\brehabilitation\s+facilit\b/.test(t)
+  );
+}
+
+/** Return true if raise value looks like a per-share / liquidation-preference reference. */
+function isPerShareOrLiquidationRaise(value: string): boolean {
+  const v = value.toLowerCase();
+  return (
+    /liquidation\s+preference/.test(v) ||
+    /\bper[- ]share\b/.test(v) ||
+    /\bper[- ]unit\b/.test(v) ||
+    /\/sh(are)?\b/.test(v)
+  );
+}
+
+/**
+ * Return true if raise value looks like a $1-placeholder artifact.
+ *
+ * This pattern appears when an LLM is given per-share pricing data
+ * from a SPAC liquidation preference model and produces e.g.
+ * "$1 Series A Convertible Note" — which is not a real transaction amount.
+ */
+function isDollar1Placeholder(value: string): boolean {
+  const v = value.trim();
+  // Exact patterns: "$1 Series ...", "$1 Preferred ...", "$1 Convertible ..."
+  if (/^\$?\s*1\s+(series|preferred|convertible|note)/i.test(v)) return true;
+  // Value JSON amount is $1 exactly (or any subunit < $1,000 in a de-SPAC context)
+  return false; // numeric check is done separately via amount
+}
+
+/** Extract raise amount from structured.raise. */
+function getRaiseAmount(structuredRaise: any): number | null {
+  const a =
+    structuredRaise?.value_json?.amount?.amount ??
+    structuredRaise?.value_json?.amount;
+  if (typeof a === 'number' && Number.isFinite(a)) return a;
+  return null;
+}
+
+/** Format a USD dollar amount in abbreviated form (same logic as deal-summary-v1-deterministic). */
+function formatMoneyUsdShort(amount: number): string {
+  const v = Number.isFinite(amount) ? amount : NaN;
+  if (!Number.isFinite(v)) return '—';
+  if (v >= 1e9) {
+    const x = v / 1e9;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}B`;
+  }
+  if (v >= 1e6) {
+    const x = v / 1e6;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}M`;
+  }
+  if (v >= 1e3) {
+    const x = v / 1e3;
+    const s = Number.isInteger(x) ? x.toFixed(0) : x.toFixed(x >= 10 ? 0 : 1);
+    return `$${s}K`;
+  }
+  return `$${Math.round(v).toLocaleString()}`;
+}
+
+/** True if value looks like a prose sentence rather than a formatted raise display string. */
+function isProseContaminatedRaise(value: string): boolean {
+  // A clean raise string is short (e.g. "$4M Growth Round", "$4,000,000", "$4M (Growth)")
+  // A prose-contaminated string is long (whole sentence) and contains punctuation typical of prose.
+  if (value.length <= 70) return false;
+  // Must look like a sentence: multiple spaces (words) or sentence-ending punctuation
+  return /[.!?,]/.test(value) || (value.split(' ').length > 6);
+}
+
+/** True if value.sources all point to phase1 LLM paths (no promoted-fact doc citation). */
+function raiseSourcingIsPhase1Only(structuredRaise: any): boolean {
+  const sources: any[] = Array.isArray(structuredRaise?.sources) ? structuredRaise.sources : [];
+  if (sources.length === 0) return true; // no sources → unverified
+  return sources.every((s: any) => {
+    const kind = String(s?.kind ?? '').toLowerCase();
+    return kind.startsWith('phase1.') || kind.startsWith('llm_') || kind === '';
+  });
+}
+
+/** True if business model sources don't include any pitch_deck documents. */
+function businessModelSourcesNoPitchDeck(structuredBM: any, documents: any[] | null): boolean {
+  const sources: any[] = Array.isArray(structuredBM?.sources) ? structuredBM.sources : [];
+  if (sources.length === 0) return true;
+
+  // sources from arbitration_v1 have kind = 'phase1.business_model_arbitration_v1'
+  // and no document_id → they're phase1 only
+  for (const s of sources) {
+    const docId = asStr(s?.document_id ?? s?.source_document_id);
+    if (docId) {
+      // Distribution-segment sources are proxy / inferred BM labels (e.g. extracted from
+      // "Use of Funds" slides).  They are NOT explicit pitch-deck BM statements and should
+      // not block the guard even when the source document is an investor deck.
+      const segmentKey = String(s?.segment_key ?? s?.segment ?? '').toLowerCase();
+      if (segmentKey === 'distribution') continue;
+
+      // Has a real document ID — check if it's a pitch deck
+      const doc = documents?.find((d: any) => d.document_id === docId);
+      const kind = String(doc?.kind ?? '').toLowerCase();
+      const filename = String(doc?.filename ?? '').toLowerCase();
+      if (
+        kind.includes('pitch') || kind.includes('deck') ||
+        filename.includes('pitch') || filename.includes('deck') ||
+        filename.endsWith('.pptx') || filename.endsWith('.ppt') || filename.endsWith('.key')
+      ) {
+        return false; // Has pitch deck source → do NOT flag
+      }
+    }
+  }
+
+  // All sources are either phase1-only, distribution-proxy, or non-pitch-deck
+  return true;
+}
+
+// ─── Rule: Raise output guard ─────────────────────────────────────────────────
+
+function applyRaiseGuard(
+  structuredSummary: Record<string, any>,
+  context: FinalPublishGuardContext,
+  log: PublishGuardLogEntry[],
+): void {
+  const raise = structuredSummary?.raise;
+  if (!raise) return;
+
+  const value = asStr(raise?.value);
+  if (!value) return; // Already null — nothing to do
+
+  const dealType = String(context?.deal_type ?? '').toLowerCase().replace(/[-_ ]/g, '');
+  const isDeSpac = dealType === 'despac';
+  const amount = getRaiseAmount(raise);
+  const isPhase1Only = raiseSourcingIsPhase1Only(raise);
+
+  let triggerRule: string | null = null;
+  let reason: string | null = null;
+
+  if (isPerShareOrLiquidationRaise(value)) {
+    triggerRule = 'raise.per_share_or_liquidation';
+    reason = `Raise value "${value}" matches per-share / liquidation-preference pattern — not a transaction amount`;
+  } else if (/^unknown$/i.test(value.trim())) {
+    // "Unknown" is a DIO sentinel meaning no data was found — should never surface as a display string
+    triggerRule = 'raise.unknown_sentinel';
+    reason = `Raise value is the sentinel string "Unknown" — no actual raise data available; nulling to avoid "Raise: Unknown." in summary tiers`;
+  } else if (isDollar1Placeholder(value)) {
+    triggerRule = 'raise.dollar1_placeholder';
+    reason = `Raise value "${value}" matches $1 series/preferred/convertible placeholder pattern`;
+  } else if (
+    isDeSpac &&
+    /^\$1B$/i.test(value) &&
+    amount === 1_000_000_000 &&
+    isPhase1Only
+  ) {
+    // "$1B" in a de-SPAC context from phase1-only sources is a well-known parseScaledNumber
+    // artifact: the DIO contains "$1 Series A Convertible Note" which gets strip-parsed as
+    // "$1B" because the 'b' in "Convertible" is treated as a billion suffix.
+    // Since de-SPAC deals that genuinely raised $1B would have promoted facts with doc citations,
+    // a phase1-only "$1B" is safe to null.
+    triggerRule = 'raise.dollar1b_despac_artifact';
+    reason = `de-SPAC raise "$1B" from phase1-only source — likely a parser artifact from "$1 ...Convertible..." text, not a genuine $1B transaction`;
+  } else if (
+    isDeSpac &&
+    amount !== null &&
+    amount < 100_000 &&
+    isPhase1Only
+  ) {
+    // de-SPAC raises must be ≥ $100K; anything smaller is per-share pricing
+    triggerRule = 'raise.despac_implausible_tiny_amount';
+    reason = `de-SPAC raise amount ${amount} < $100K sourced from phase1-only (no doc citation) — likely per-share pricing, not transaction amount`;
+  }
+
+  // Detect prose-contaminated raise value: long narrative string when a clean numeric amount is available.
+  // Applies broadly (not de-SPAC-only) — e.g. "Probility is seeking $4M to expand the platform..."  → "$4M (Growth)"
+  if (!triggerRule && isProseContaminatedRaise(value)) {
+    const proseAmount = getRaiseAmount(raise);
+    if (proseAmount !== null && proseAmount >= 100_000) {
+      triggerRule = 'raise.prose_contaminated';
+      reason = `Raise value is a prose narrative (length=${value.length}) but a clean numeric amount (${proseAmount}) is available from value_json — replacing with formatted display string`;
+    }
+  }
+
+  if (triggerRule === 'raise.prose_contaminated') {
+    const proseAmount = getRaiseAmount(raise)!;
+    const roundLabel = typeof raise?.round_label === 'string' && raise.round_label.trim()
+      ? raise.round_label.trim() : null;
+    const formatted = formatMoneyUsdShort(proseAmount);
+    const replacement = roundLabel ? `${formatted} (${roundLabel})` : formatted;
+    log.push({
+      field: 'raise',
+      action: 'replaced',
+      rule: triggerRule,
+      original_value: value,
+      replacement_value: replacement,
+      reason: reason ?? triggerRule,
+    });
+    structuredSummary.raise = {
+      ...raise,
+      value: replacement,
+      replaced_by: 'final_publish_guard',
+      replace_rule: triggerRule,
+      replace_reason: reason,
+    };
+    // prose contamination → replace path (not null), no further action
+  } else if (triggerRule) {
+    log.push({
+      field: 'raise',
+      action: 'nulled',
+      rule: triggerRule,
+      original_value: value,
+      replacement_value: null,
+      reason: reason ?? triggerRule,
+    });
+
+    // Null the raise in-place, preserving provenance
+    structuredSummary.raise = {
+      value: null,
+      value_json: null,
+      round_label: null,
+      confidence: 0,
+      sources: Array.isArray(raise.sources) ? raise.sources : [],
+      nulled_by: 'final_publish_guard',
+      null_rule: triggerRule,
+      null_reason: reason,
+    };
+  } else {
+    log.push({
+      field: 'raise',
+      action: 'kept',
+      rule: 'raise.no_violation',
+      original_value: value,
+      replacement_value: null,
+      reason: 'No raise guard rule triggered',
+    });
+  }
+}
+
+// ─── Rule: Business model output guard ───────────────────────────────────────
+
+/**
+ * Detect generic accounting-segment language (e.g. "Wholesale/Retail") incorrectly
+ * used as a business model descriptor for a medtech/healthcare product.
+ *
+ * When fired: null the value and attempt to replace from governed_ui_copy_v1.business_model
+ * (which tends to use correct B2B → HCP channel language for these deals).
+ */
+function applyBusinessModelGuard(
+  structuredSummary: Record<string, any>,
+  context: FinalPublishGuardContext,
+  documents: any[] | null,
+  log: PublishGuardLogEntry[],
+): void {
+  const bm = structuredSummary?.business_model;
+  if (!bm) return;
+
+  const value = asStr(bm?.value);
+  if (!value) return;
+
+  // Check for generic wholesale/retail distribution channel language
+  const isGenericDistributionTerm =
+    /^wholesale\s*\/?\s*retail$/i.test(value) ||
+    /^wholesale$/i.test(value) ||
+    (/\bwholesale\b/i.test(value) && !/\bB2B\b/.test(value) && !/hcp|healthcare|medical/i.test(value));
+
+  if (!isGenericDistributionTerm) {
+    log.push({
+      field: 'business_model',
+      action: 'kept',
+      rule: 'business_model.no_generic_term',
+      original_value: value,
+      replacement_value: null,
+      reason: 'Value does not match generic wholesale/retail distribution term',
+    });
+    return;
+  }
+
+  // Check whether the BM sources include any pitch deck.
+  // We generally preserve pitch-deck wording, except for a governed mismatch case:
+  // standalone "Wholesale/Retail" with strong tech/platform context and no explicit
+  // wholesale keyword in context (common false positive from channel language).
+  const hasPitchDeckSource = !businessModelSourcesNoPitchDeck(bm, documents);
+
+  // Check for medtech / healthcare product signals in DIO context
+  const guidedCopy = getGovernedUiCopyV1(context.dio);
+
+  // Collect BM source slide titles / notes as a fallback text corpus
+  const bmSourceSlideText = (() => {
+    const sources: any[] = Array.isArray(bm?.sources) ? bm.sources : [];
+    const texts = sources.map((s: any) => [s?.slide_title, s?.note].filter(Boolean).join(' ')).filter(Boolean);
+    return texts.length > 0 ? texts.join(' ') : null;
+  })();
+
+  // Build a combined signal corpus from all available text sources.
+  // Using a corpus (union of all non-null sources) rather than a ??-chain ensures that
+  // a garbage OCR artifact in one field (e.g. market_icp) does not shadow reliable signal
+  // in a later field (e.g. bmSourceSlideText).
+  const productSignalSources = [
+    getNestedStr(guidedCopy, 'product_solution'),
+    getNestedStr(getDioPhase1(context.dio), 'deal_overview_v2', 'product_solution'),
+    getNestedStr(getDioPhase1(context.dio), 'deal_overview_v2', 'problem_context'),
+    getNestedStr(getDioPhase1(context.dio), 'deal_overview_v2', 'market_icp'),
+    getNestedStr(getDioPhase1(context.dio), 'executive_summary_v1', 'product_description'),
+    bmSourceSlideText,
+  ].filter(Boolean);
+  const productSolution = productSignalSources.length > 0 ? productSignalSources.join(' ') : null;
+
+  // ── CRE guard: null the BM if the deal is a real-estate asset / facility / investment vehicle
+  //    and the extracted BM is a generic wholesale/retail/omnichannel consumer-brand term.
+  //
+  //    Two detection paths — either is sufficient:
+  //    (a) Text-based: hasRealEstateContext() on DIO product/summary/guided-copy text
+  //    (b) Classification-based: deal_classification_v1.selected.asset_class === 'real_estate'
+  //        This path catches deals where DIO text fields contain vague investment/sponsor
+  //        language that does not trigger the text patterns (e.g. Albuquerque pattern).
+  const overviewSummary = getNestedStr(getDioPhase1(context.dio), 'deal_overview_v2', 'summary');
+  const creByText =
+    hasRealEstateContext(productSolution) ||
+    hasRealEstateContext(overviewSummary) ||
+    hasRealEstateContext(getNestedStr(guidedCopy, 'company_overview'));
+  const creByClassification = isDealClassifiedAsRealEstate(context.dio);
+  const hasCRE = creByText || creByClassification;
+  const creRule = creByClassification && !creByText
+    ? 'business_model.real_estate_classification_mismatch'
+    : 'business_model.real_estate_context_mismatch';
+  const creReason = creByClassification && !creByText
+    ? 'Deal classified as real_estate asset class by deal_classification_v1 — generic wholesale/retail term is a BM mismatch for a real-estate investment vehicle, nulling'
+    : 'Generic wholesale/retail term with commercial real estate deal context — value is a mismatch, nulling';
+  if (hasCRE) {
+    log.push({
+      field: 'business_model',
+      action: 'nulled',
+      rule: creRule,
+      original_value: value,
+      replacement_value: null,
+      reason: creReason,
+    });
+    structuredSummary.business_model = {
+      value: null,
+      confidence: 0,
+      sources: [
+        {
+          kind: 'final_publish_guard.nulled',
+          replaced_from: value,
+          null_rule: creRule,
+        },
+      ],
+      label: 'GuardNulled',
+      nulled_by: 'final_publish_guard',
+    };
+    return;
+  }
+
+  const phase1Claims = Array.isArray((getDioPhase1(context.dio) as any)?.claims)
+    ? ((getDioPhase1(context.dio) as any).claims as any[])
+    : [];
+  const claimSignalText = phase1Claims
+    .flatMap((claim: any) => {
+      const out: string[] = [];
+      if (typeof claim?.text === 'string') out.push(claim.text);
+      const evidence = Array.isArray(claim?.evidence) ? claim.evidence : [];
+      for (const ev of evidence) {
+        if (typeof ev?.snippet === 'string') out.push(ev.snippet);
+      }
+      return out;
+    })
+    .join(' ');
+
+  const hasMedtech = hasMedtechProductSignals(productSolution) || hasMedtechProductSignals(claimSignalText);
+  const hasTech = hasTechPlatformContext(productSolution) || hasTechPlatformContext(claimSignalText);
+  const hasExplicitWholesaleInContext = /\bwholesale\b/i.test(`${String(productSolution ?? '')} ${claimSignalText}`);
+
+  if (hasPitchDeckSource && !(hasTech && !hasExplicitWholesaleInContext)) {
+    log.push({
+      field: 'business_model',
+      action: 'kept',
+      rule: 'business_model.pitch_deck_source_present',
+      original_value: value,
+      replacement_value: null,
+      reason: 'Generic term found in pitch-deck source and no governed mismatch signal detected',
+    });
+    return;
+  }
+
+  // Qualified multi-channel labels ("Omnichannel (DTC + Wholesale/Retail)", "DTC + Wholesale")
+  // are legitimate specific BM descriptors for consumer/fintech brands, not the bare
+  // "Wholesale/Retail" distribution-channel leak this guard targets. Preserve them unless
+  // the CRE guard already fired above.
+  const isQualifiedMultiChannelLabel = /\b(omnichannel|dtc|direct[\s-]to[\s-]consumer)\b/i.test(value);
+
+  if (!hasMedtech && !hasTech) {
+    log.push({
+      field: 'business_model',
+      action: 'kept',
+      rule: 'business_model.no_product_context',
+      original_value: value,
+      replacement_value: null,
+      reason: 'Generic wholesale term found but no medtech or tech platform product signals detected — preserving value',
+    });
+    return;
+  }
+
+  // Qualified multi-channel labels ("Omnichannel (DTC + Wholesale/Retail)") must not be
+  // silently replaced or nulled by this guard — they are legitimate BM descriptors for
+  // consumer/fintech brands. Only the CRE guard (above) may null them.
+  if (isQualifiedMultiChannelLabel) {
+    log.push({
+      field: 'business_model',
+      action: 'kept',
+      rule: 'business_model.qualified_multichannel_label',
+      original_value: value,
+      replacement_value: null,
+      reason: 'Omnichannel or DTC-qualified label — not treated as generic wholesale/retail',
+    });
+    return;
+  }
+
+  // Both conditions met: generic wholesale term + medtech or tech platform context
+  // + no protected pitch-deck preservation
+  // -> attempt to replace from governed_ui_copy_v1.business_model
+  const govBM = asStr(guidedCopy?.business_model);
+  const hasGoodReplacement = govBM !== null && govBM.length >= 20;
+  const fallbackTechReplacement = hasTech ? 'Marketplace / platform' : null;
+
+  const triggerRule = hasMedtech
+    ? 'business_model.generic_wholesale_medtech_mismatch'
+    : 'business_model.generic_wholesale_tech_mismatch';
+
+  if (hasGoodReplacement || fallbackTechReplacement) {
+    const replacement = hasGoodReplacement ? govBM : fallbackTechReplacement;
+    log.push({
+      field: 'business_model',
+      action: 'replaced',
+      rule: triggerRule,
+      original_value: value,
+      replacement_value: replacement,
+      reason: hasGoodReplacement
+        ? 'Generic wholesale/retail term with governed mismatch context - replaced from governed_ui_copy_v1.business_model'
+        : 'Generic wholesale/retail term with tech/platform mismatch context - replaced with marketplace/platform fallback label',
+    });
+
+    structuredSummary.business_model = {
+      value: replacement,
+      confidence: 0.6, // Lower than deck-sourced; governed_ui_copy is LLM synthesis
+      sources: [
+        {
+          kind: hasGoodReplacement ? 'final_publish_guard.governed_ui_copy_v1' : 'final_publish_guard.tech_platform_fallback',
+          replaced_from: value,
+          null_rule: triggerRule,
+        },
+      ],
+      label: 'GovernedUiCopyFallback',
+      replaced_by: 'final_publish_guard',
+    };
+  } else {
+    log.push({
+      field: 'business_model',
+      action: 'nulled',
+      rule: triggerRule,
+      original_value: value,
+      replacement_value: null,
+      reason: `Generic wholesale/retail term with medtech product context; no governed_ui_copy_v1.business_model available (length ${govBM?.length ?? 0})`,
+    });
+
+    structuredSummary.business_model = {
+      value: null,
+      confidence: 0,
+      sources: Array.isArray(bm.sources) ? bm.sources : [],
+      nulled_by: 'final_publish_guard',
+      null_rule: triggerRule,
+    };
+  }
+}
+
+// ─── Rule: Revenue defense-in-depth ──────────────────────────────────────────
+
+/**
+ * Belt-and-suspenders revenue guard.
+ *
+ * The pre-guard (field-authority-guard.ts) already blocks pro_forma revenue facts.
+ * This guard handles the rare case where pro_forma revenue leaked through DIO phase1
+ * fallback paths rather than through the promoted-fact channel.
+ */
+function applyRevenueGuard(
+  structuredSummary: Record<string, any>,
+  log: PublishGuardLogEntry[],
+): void {
+  const rev = structuredSummary?.revenue;
+  if (!rev) return;
+
+  const value = asStr(rev?.value?.raw ?? rev?.value);
+  if (!value) return;
+
+  const sources: any[] = Array.isArray(rev?.sources) ? rev.sources : [];
+  const hasProFormaSource = sources.some((s: any) => {
+    const kind = String(s?.kind ?? '').toLowerCase();
+    const doc_kind = String(s?.document_kind ?? s?.doc_kind ?? '').toLowerCase();
+    return (
+      kind.includes('pro_forma') || kind.includes('proforma') ||
+      doc_kind.includes('pro_forma') || doc_kind.includes('proforma') ||
+      (typeof s?.doc_family === 'string' &&
+        (s.doc_family === 'financial_pro_forma' || s.doc_family === 'spac_financials' || s.doc_family === 'spac_mda'))
+    );
+  });
+
+  if (hasProFormaSource) {
+    log.push({
+      field: 'revenue',
+      action: 'nulled',
+      rule: 'revenue.pro_forma_source',
+      original_value: value,
+      replacement_value: null,
+      reason: 'Revenue sourced from pro_forma/SPAC document — not operating company revenue',
+    });
+
+    structuredSummary.revenue = {
+      value: null,
+      confidence: 0,
+      sources: sources,
+      nulled_by: 'final_publish_guard',
+      null_rule: 'revenue.pro_forma_source',
+    };
+  } else {
+    log.push({
+      field: 'revenue',
+      action: 'kept',
+      rule: 'revenue.no_pro_forma_source',
+      original_value: value,
+      replacement_value: null,
+      reason: 'No pro_forma source detected',
+    });
+  }
+}
+
+// ─── Entry point ──────────────────────────────────────────────────────────────
+
+/**
+ * Apply the final publish guard to a structured_summary that has already been
+ * built by `buildStructuredSummary` + `applyStructuredSummaryFillIns`.
+ *
+ * Mutates `structuredSummary` in-place.
+ *
+ * @param structuredSummary  The output of buildStructuredSummary — will be mutated.
+ * @param context            Deal type + raw DIO (for governed_ui_copy_v1 access).
+ * @param documents          Optional document metadata (for source audit).
+ */
+export function applyFinalPublishGuard(
+  structuredSummary: Record<string, any>,
+  context: FinalPublishGuardContext,
+  documents?: any[] | null,
+): FinalPublishGuardResult {
+  const log: PublishGuardLogEntry[] = [];
+
+  applyRaiseGuard(structuredSummary, context, log);
+  applyBusinessModelGuard(structuredSummary, context, documents ?? null, log);
+  applyRevenueGuard(structuredSummary, log);
+
+  const fields_nulled = log.filter((e) => e.action === 'nulled').map((e) => e.field);
+  const fields_replaced = log.filter((e) => e.action === 'replaced').map((e) => e.field);
+
+  return { fields_nulled, fields_replaced, log };
+}

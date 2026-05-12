@@ -695,6 +695,34 @@ describe("RiskAssessmentEngine", () => {
       expect(r.evidence_id).not.toBe(NIL_UUID);
     }
   });
+
+  test("does not flag CTO vacancy when 'looking for' and 'CTO' are unrelated", async () => {
+    const text = [
+      "We are looking for strategic partners and distribution expansion.",
+      "Leadership team: CEO, CTO, COO.",
+      "Regulatory compliance is required.",
+    ].join(" ");
+
+    const result = await riskAssessmentEngine.analyze({
+      pitch_text: text,
+      documents: [{ full_text: text }],
+      evidence: [],
+      headings: ["Team", "Market", "Risks"],
+      evidence_ids: [EVIDENCE_ID],
+    } as any);
+
+    const allRisks = [
+      ...result.risks_by_category.market,
+      ...result.risks_by_category.team,
+      ...result.risks_by_category.financial,
+      ...result.risks_by_category.execution,
+    ];
+    const ctoVacancy = allRisks.find((r) =>
+      String(r.description || "").toLowerCase().includes("cto position vacant")
+    );
+
+    expect(ctoVacancy).toBeUndefined();
+  });
 });
 
 describe("Analyzer registry", () => {

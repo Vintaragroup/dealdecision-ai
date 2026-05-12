@@ -21,13 +21,15 @@
  *   signalData    — buildSignalCards + toOverviewSignalData (was: [])
  */
 
-import type { WorkspaceViewModel, WorkspaceHeaderVM, WorkspaceOverviewVM } from '../contracts/workspaceViewModel';
+import type { WorkspaceViewModel, WorkspaceHeaderVM, WorkspaceOverviewVM, WorkspaceOverviewFactMeta, WorkspaceRcS6ProjectPipelineItem, WorkspaceRcS6RevenueModel, WorkspaceRcS6TeamHighlight, WorkspaceRcS6UseOfFundsItem } from '../contracts/workspaceViewModel';
 import { buildSignalCards, toOverviewSignalData } from './buildSignalCards';
 import { getPolicyFamily } from '../../../lib/policyUtils';
+import type { DealWorkspaceOverviewModel, DealWorkspaceOverviewField } from '../../../lib/selectors/selectDealWorkspaceOverviewModel';
 
 // ─── Input contract ──────────────────────────────────────────────────────────
 
 export interface WorkspaceViewModelInputs {
+  overviewModel: DealWorkspaceOverviewModel;
   // ── Identity ────────────────────────────────────────────────────────────
   displayName: string;
   dealDescription: string;
@@ -39,7 +41,7 @@ export interface WorkspaceViewModelInputs {
 
   // ── Score / verdict ──────────────────────────────────────────────────────
   reportViewScore: number;
-  verdict: 'INVEST' | 'CONSIDER' | 'PASS' | 'HARD_PASS';
+  verdict: 'INVEST' | 'INVESTIGATE' | 'CONSIDER' | 'PASS' | 'HARD_PASS';
   blockers: number;
 
   // ── Signal quality ───────────────────────────────────────────────────────
@@ -58,10 +60,6 @@ export interface WorkspaceViewModelInputs {
 
   // ── Governed / canonical narrative ──────────────────────────────────────
   governedDealOneLiner: string;
-  governedProduct: string;
-  governedMarket: string;
-  governedBusinessModel: string;
-  governedRaise: string;
   /** Medium-length narrative for the Investment Snapshot body. Empty string when absent. */
   investmentSnapshotBody: string;
 
@@ -194,6 +192,16 @@ function isRealEstateBusinessModelDisplaySafe(value: string | null | undefined):
   return !STARTUP_TAXONOMY_RE.test(display);
 }
 
+function toOverviewFactMeta(field: DealWorkspaceOverviewField, opts: { isRealEstateSchema: boolean }): WorkspaceOverviewFactMeta {
+  const value = sanitizeEvidenceText(field.value, opts);
+  return {
+    value,
+    trust: field.trust,
+    source: field.source ?? null,
+    conflict: field.conflict ?? null,
+  };
+}
+
 /**
  * Whether a string looks like a structured numeric/formatted KPI value —
  * i.e., it contains a digit, a percentage, or a money symbol.
@@ -277,6 +285,7 @@ function deriveEvidenceConfidence(band: 'high' | 'med' | 'low' | 'unknown'): num
  */
 export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): WorkspaceViewModel {
   const {
+    overviewModel,
     displayName,
     dealDescription,
     dealStageLabel,
@@ -293,10 +302,6 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     coverageRatio,
     evidenceCoverage,
     governedDealOneLiner,
-    governedProduct,
-    governedMarket,
-    governedBusinessModel,
-    governedRaise,
     investmentSnapshotBody,
     selectedHeaderReady,
     raiseValue,
@@ -323,6 +328,13 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
   } = inputs;
 
   // ── Derived values ────────────────────────────────────────────────────────
+
+  const overviewFacts = overviewModel.keyFacts;
+  const rcS6 = overviewModel.rcS6;
+  const governedProduct = overviewFacts.product.value;
+  const governedMarket = overviewFacts.market.value;
+  const governedBusinessModel = overviewFacts.business_model.value;
+  const governedRaise = overviewFacts.raise_terms.value;
 
   const icReadiness = deriveIcReadiness(coverageRatio, confidenceBand);
   const evidenceConfidence = deriveEvidenceConfidence(confidenceBand);
@@ -518,6 +530,39 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
         raise: 'Raise / Terms',
       };
 
+  const summaryShortDisplay = asDisplayValue(overviewModel.summaries.short.value);
+  const summaryLongDisplay = asDisplayValue(overviewModel.summaries.long.text);
+  const companyDescriptionValue = summaryLongDisplay !== DASH
+    ? summaryLongDisplay
+    : summaryShortDisplay !== DASH
+      ? summaryShortDisplay
+      : governedDealOneLiner;
+
+  const productFactMeta = toOverviewFactMeta(overviewFacts.product, { isRealEstateSchema });
+  const marketFactMeta = toOverviewFactMeta(overviewFacts.market, { isRealEstateSchema });
+  const businessModelFactMeta = toOverviewFactMeta(overviewFacts.business_model, { isRealEstateSchema });
+  const raiseFactMeta = toOverviewFactMeta(overviewFacts.raise_terms, { isRealEstateSchema: false });
+
+  const overviewRcS6 = {
+    teamHighlights: (rcS6.teamHighlights ?? []).map((item): WorkspaceRcS6TeamHighlight => ({
+      name: item.name,
+      role: item.role,
+      credential: item.credential ?? null,
+    })),
+    useOfFunds: (rcS6.useOfFunds ?? []).map((item): WorkspaceRcS6UseOfFundsItem => ({
+      category: item.category,
+      amountLabel: item.amountLabel ?? null,
+    })),
+    projectPipeline: (rcS6.projectPipeline ?? []).map((item): WorkspaceRcS6ProjectPipelineItem => ({
+      name: item.name,
+      capitalLabel: item.capitalLabel ?? null,
+      revenueLabel: item.revenueLabel ?? null,
+      returnPct: item.returnPct ?? null,
+      startDate: item.startDate ?? null,
+    })),
+    revenueModel: rcS6.revenueModel as WorkspaceRcS6RevenueModel,
+  };
+
   // ── Pipeline status derived from stage ───────────────────────────────────
   // (Already computed by DealWorkspace — passed through here for completeness.)
 
@@ -557,7 +602,7 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
 
   const overview: WorkspaceOverviewVM = {
     companyName: displayName,
-    companyDescription: governedDealOneLiner,
+    companyDescription: companyDescriptionValue,
     snapshotFactLabels,
     snapshotFacts: {
       raise: raiseDisplayFinal,
@@ -573,13 +618,20 @@ export function buildWorkspaceViewModel(inputs: WorkspaceViewModelInputs): Works
     deal: dealTiles,
     businessModel: bmTiles,
     evidenceLabels,
-    productSummary: sanitizeEvidenceText(governedProduct, { isRealEstateSchema }),
-    marketSummary: sanitizeEvidenceText(governedMarket, { isRealEstateSchema }),
-    businessModelSummary: sanitizeEvidenceText(governedBusinessModel, { isRealEstateSchema }),
-    raiseTerms: sanitizeEvidenceText(governedRaise, { isRealEstateSchema: false }),
+    keyFacts: {
+      product: productFactMeta,
+      market: marketFactMeta,
+      businessModel: businessModelFactMeta,
+      raise: raiseFactMeta,
+    },
+    productSummary: productFactMeta.value,
+    marketSummary: marketFactMeta.value,
+    businessModelSummary: businessModelFactMeta.value,
+    raiseTerms: raiseFactMeta.value,
     investmentSnapshotBody,
     insightsScore,
     insightsConfidence,
+    rcS6: overviewRcS6,
   };
 
   return {

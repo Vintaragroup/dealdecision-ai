@@ -9,6 +9,8 @@
 
 import type { Pool } from "pg";
 
+import { buildOrchestratorReportV1 } from "@dealdecision/core";
+
 import type {
 	GateState,
 	ComplianceState,
@@ -194,7 +196,7 @@ export async function persistReport(
 		throw err;
 	}
 
-	// ── Debug: log success after insert ─────────────────────────────────────
+	// ── Debug: log success after upsert ─────────────────────────────────────
 	console.log(
 		JSON.stringify({
 			event: "INVESTOR_INSIGHTS_PERSIST_OK",
@@ -208,4 +210,38 @@ export async function persistReport(
 	);
 
 	return insertedId;
+}
+
+// ─── Canonical Decision persistence ───────────────────────────────────────────
+
+/**
+ * Best-effort: resolve canonical_decision_v1 from the render package +
+ * deals.overall_score, then patch investor_insight_reports.report_payload.
+ *
+ * Follows the same non-blocking pattern as applyFinancialIntelligenceV1 —
+ * always resolves, never throws. Canonical decision data remains available
+ * on-demand via GET /orchestrator-report even when this patch is skipped.
+ *
+ * Called after persistReport in all three processor paths.
+ */
+export async function applyCanonicalDecisionV1(
+	pool: Pool,
+	reportId: string,
+	dealId: string,
+	renderPackage: RenderPackage,
+): Promise<void> {
+	try {
+		const report = buildOrchestratorReportV1({ dealId, renderPackage });
+		const cd = report.canonical_decision;
+		if (!cd) return;
+
+		await pool.query(
+			`UPDATE public.investor_insight_reports
+			   SET report_payload = COALESCE(report_payload, '{}'::jsonb) || $2::jsonb
+			 WHERE id = $1::uuid`,
+			[reportId, JSON.stringify({ canonical_decision_v1: cd })],
+		);
+	} catch {
+		// non-fatal — canonical decision available on-demand via /orchestrator-report
+	}
 }

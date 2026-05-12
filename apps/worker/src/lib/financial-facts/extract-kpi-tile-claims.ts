@@ -32,6 +32,31 @@ import {
   extractPeriodFromText,
   inferCurrencyCode,
 } from "./extract-financial-table-claims";
+import { detectUnitScale } from "../../extraction/xlsx/table-detector.js";
+
+// ─── Page-level scale context ────────────────────────────────────────────────
+
+/**
+ * Number of lines to scan from the start of a page's text for a scale annotation.
+ * e.g. "All amounts in $000s" or "(in thousands)" at the top of a traction slide.
+ */
+const PAGE_SCALE_SCAN_LINES = 6;
+
+/**
+ * Detect a page-level scale annotation from the first few lines of text.
+ *
+ * Returns { factor: 1, source_text: null } when no annotation is found.
+ * When found, all KPI values without an explicit K/M/B/T token suffix are
+ * multiplied by `factor` to normalize to absolute dollars.
+ */
+function detectPageScaleContext(text: string): { factor: number; source_text: string | null } {
+  const lines = text
+    .split("\n")
+    .slice(0, PAGE_SCALE_SCAN_LINES)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  return detectUnitScale(lines);
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -42,6 +67,12 @@ const MIN_CURRENCY_VALUE = 1_000;
 /**
  * Slide types where extraction is suppressed — numeric mentions on these slides
  * are overwhelmingly non-financial (team bios, quotes, sport scores, etc.).
+ *
+ * "product" is included because product feature / demo slides frequently contain
+ * UI screenshots whose embedded numbers (e.g. "$40K MRR" shown inside a demo
+ * dashboard) reflect sample or customer-level data, not company-level KPIs.
+ * Legitimate company traction callouts on a product slide cause the classifier
+ * to resolve the slide as "traction" (higher priority) rather than "product".
  */
 const SUPPRESSED_SLIDE_TYPES = new Set([
   "team",
@@ -49,6 +80,7 @@ const SUPPRESSED_SLIDE_TYPES = new Set([
   "quote",
   "cover",
   "appendix",
+  "product",
 ]);
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -128,12 +160,14 @@ const EXAMPLE_CONTEXT_RE =
   /\b(?:use[\s-]case|use_case|scenario|hypothetical|illustrative|case\s+study|sample\s+(?:merchant|customer|client|scenario|economics)|merchant\s+example|customer\s+example|fi\s+example|institution\s+example|example\s+(?:economics|customer|merchant|client|institution))\b/i;
 
 /**
- * Matches market-size projection phrases: "Per SAM ARR", "% of SOM", "SAM ARR".
+ * Matches market-size projection phrases: "Per SAM ARR", "% of SOM", "SAM ARR",
+ * and standalone market-size labels: "addressable market", "market opportunity",
+ * "market size", "TAM:", "SAM:", "SOM:".
  * Applied only to revenue/ARR/MRR/GTV/GMV — these are market-capture projections,
  * not current company traction metrics.
  */
 const MARKET_PROJECTION_RE =
-  /\bper\s+(?:sam|som|tam)\b|%\s*of\s+(?:tam|sam|som)\b|\bsam\s+arr\b|\bsom\s+arr\b|\bsam\s+mrr\b|\bsom\s+mrr\b/i;
+  /\bper\s+(?:sam|som|tam)\b|%\s*of\s+(?:tam|sam|som)\b|\bsam\s+arr\b|\bsom\s+arr\b|\bsam\s+mrr\b|\bsom\s+mrr\b|\b(?:total\s+)?addressable\s+market\b|\bmarket\s+(?:size|opportunity)\b|\b(?:tam|sam|som)\s*[:\-]\s*\$|\brev(?:enue)?\s+opportunity\b/i;
 
 /** Revenue/ARR/MRR/GTV/GMV — suppressed when MARKET_PROJECTION_RE matches the segment. */
 const MARKET_PROJECTION_SENSITIVE_KEYS = new Set(["arr", "mrr", "revenue", "gtv", "gmv"]);
@@ -251,6 +285,11 @@ export function extractKpiTileClaims(
   // Gate: suppress extraction on non-relevant slide types
   if (opts.slide_type && SUPPRESSED_SLIDE_TYPES.has(opts.slide_type)) return [];
 
+  // Detect page-level scale annotation once for the whole page.
+  // Applied to values that carry no explicit K/M/B/T suffix.
+  const { factor: pageScaleFactor, source_text: pageScaleSourceText } =
+    detectPageScaleContext(text);
+
   const claims: FinancialFactV1[] = [];
   /** Dedup guard within a single page call */
   const emittedKeys = new Set<string>();
@@ -316,15 +355,22 @@ export function extractKpiTileClaims(
         isYearLike(parsed.value)
       ) continue;
 
+      // Apply page-level scale when no explicit K/M/B/T suffix was used.
+      // Double-scaling guard: if the token already expanded a scale suffix
+      // (e.g. "$5.12M" → already 5_120_000), do NOT multiply again.
+      const effectiveValue = parsed.has_explicit_scale_suffix
+        ? parsed.value
+        : parsed.value * pageScaleFactor;
+
       // Currency facts must meet minimum threshold
-      if (parsed.unit === "currency" && Math.abs(parsed.value) < MIN_CURRENCY_VALUE) continue;
+      if (parsed.unit === "currency" && Math.abs(effectiveValue) < MIN_CURRENCY_VALUE) continue;
 
       // Guard: currency-keyed metrics with a bare number token (no $ symbol)
       // must also meet the minimum threshold to avoid "revenue: 2" style noise.
       if (
         CURRENCY_METRIC_KEYS.has(matchedMetric.key) &&
         parsed.unit === "number" &&
-        Math.abs(parsed.value) < MIN_CURRENCY_VALUE
+        Math.abs(effectiveValue) < MIN_CURRENCY_VALUE
       ) continue;
 
       // ── Build the fact ───────────────────────────────────────────────────
@@ -365,7 +411,7 @@ export function extractKpiTileClaims(
         metric_key:            matchedMetric.key,
         period_type,
         period_label,
-        value:                 parsed.value,
+        value:                 effectiveValue,
         unit:                  parsed.unit,
         currency,
         confidence:            "low",
@@ -375,6 +421,11 @@ export function extractKpiTileClaims(
         excerpt:               capFactExcerpt(segment),
         slide_type:            opts.slide_type,
         slide_title:           opts.slide_title,
+        // Page-level scale auditability: set when scale was applied from context.
+        ...(pageScaleFactor > 1 && !parsed.has_explicit_scale_suffix ? {
+          unit_scale_factor_applied: pageScaleFactor,
+          unit_scale_source_text:    pageScaleSourceText,
+        } : {}),
       });
     }
   } catch {

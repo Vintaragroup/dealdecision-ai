@@ -1,0 +1,72 @@
+{
+  "deal_name": "MultiDocBenchmark",
+  "deal_id": null,
+  "source_type": "multi_document_deal",
+  "source_docs": [
+    "deck.pdf",
+    "memo.pdf",
+    "model.xlsx"
+  ],
+  "ground_truth": {
+    "what_company_does": "REPLACE_ME",
+    "problem": "REPLACE_ME",
+    "solution": "REPLACE_ME",
+    "why_now": "REPLACE_ME",
+    "business_model": "REPLACE_ME",
+    "revenue_model": "REPLACE_ME",
+    "go_to_market": "REPLACE_ME",
+    "target_customer": "REPLACE_ME",
+    "traction_summary": "REPLACE_ME",
+    "market_positioning": "REPLACE_ME",
+    "competitive_differentiation": "REPLACE_ME",
+    "risks": "REPLACE_ME"
+  },
+  "validation": {
+    "_schema": "deal_understanding_v1",
+    "understanding_checks": [
+      {
+        "id": "L1-MDOC-001",
+        "layer": "L1-FIDELITY",
+        "field": "traction_summary",
+        "check_type": "contains_any",
+        "expected_terms": ["REPLACE_MODEL_VALUE", "REPLACE_CURRENT_REVENUE"]
+      }
+    ],
+    "consistency_checks": [
+      {
+        "id": "L2-MDOC-002",
+        "layer": "L2-UNDERSTANDING",
+        "check_type": "term_alignment",
+        "field_a": "business_model",
+        "field_b": "revenue_model",
+        "expected_shared_terms": ["REPLACE_ME"],
+        "min_shared": 1
+      }
+    ],
+    "hallucination_checks": [
+      {
+        "id": "L4-MDOC-003",
+        "layer": "L4-HALLUCINATION",
+        "field": "traction_summary",
+        "check_type": "must_not_contain",
+        "prohibited_patterns": ["deck projection if contradicted by model", "future revenue as current"]
+      }
+    ],
+    "completeness_checks": [
+      { "id": "L5-MDOC-004", "layer": "L5-COMPLETENESS", "field": "what_company_does", "check_type": "not_empty" },
+      { "id": "L5-MDOC-005", "layer": "L5-COMPLETENESS", "field": "business_model", "check_type": "not_empty" },
+      { "id": "L5-MDOC-006", "layer": "L5-COMPLETENESS", "field": "traction_summary", "check_type": "not_empty" },
+      { "id": "L5-MDOC-007", "layer": "L5-COMPLETENESS", "field": "risks", "check_type": "not_empty" }
+    ]
+  },
+  "investor_relevance_notes": [
+    "A strong understanding should prioritize structured financial truth from the model over narrative claims in the deck.",
+    "The system should explicitly surface contradictions between deck claims and spreadsheet values.",
+    "Important diligence areas include which source governs revenue, margins, and growth assumptions."
+  ],
+  "source_priority_rules": {
+    "financial_truth_priority": ["xlsx", "memo", "deck"],
+    "narrative_priority": ["memo", "deck", "xlsx_notes"],
+    "projection_vs_actual_rule": "actuals_over_projections"
+  }
+}

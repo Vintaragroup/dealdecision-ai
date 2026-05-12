@@ -1,0 +1,82 @@
+{
+  "runStamp": "2026-04-06T13-24-07-225Z",
+  "apiBase": "http://localhost:9001",
+  "pythonBin": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/.venv/bin/python",
+  "validator": {
+    "exitCode": 0,
+    "reportPath": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/artifacts/deal-understanding-regression/numeric-trust-remediation/validator-report.md",
+    "stdoutPath": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/artifacts/deal-understanding-regression/numeric-trust-remediation/validator.stdout.log",
+    "stderrPath": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/artifacts/deal-understanding-regression/numeric-trust-remediation/validator.stderr.log"
+  },
+  "requiredDeals": {
+    "Palm": {
+      "pass": 18,
+      "fail": 0,
+      "skip": 0,
+      "dealId": "5c8c7d6e-c992-4be7-8b10-268eac36f663"
+    },
+    "Probility": {
+      "pass": 18,
+      "fail": 0,
+      "skip": 0,
+      "dealId": "42be8b30-2b7d-45e0-ade0-99427a505c59"
+    },
+    "Verse": {
+      "pass": 18,
+      "fail": 0,
+      "skip": 0,
+      "dealId": "bcd59d33-7887-41cd-80b9-742bc5ba945a"
+    },
+    "ToxyScreen": {
+      "pass": 17,
+      "fail": 0,
+      "skip": 0,
+      "dealId": "05042123-6c4f-4dcb-9131-a95fce3cd28c"
+    }
+  },
+  "observedRows": {
+    "SynthPDFDeal": {
+      "deal": "SynthPDFDeal",
+      "pass": 15,
+      "fail": 0,
+      "skip": 1,
+      "overallScore": "—",
+      "status": "🟢 All pass"
+    },
+    "Palm": {
+      "deal": "Palm",
+      "pass": 18,
+      "fail": 0,
+      "skip": 0,
+      "overallScore": "100%",
+      "status": "🟢 All pass"
+    },
+    "Probility": {
+      "deal": "Probility",
+      "pass": 18,
+      "fail": 0,
+      "skip": 0,
+      "overallScore": "100%",
+      "status": "🟢 All pass"
+    },
+    "ToxyScreen": {
+      "deal": "ToxyScreen",
+      "pass": 17,
+      "fail": 0,
+      "skip": 0,
+      "overallScore": "100%",
+      "status": "🟢 All pass"
+    },
+    "Verse": {
+      "deal": "Verse",
+      "pass": 18,
+      "fail": 0,
+      "skip": 0,
+      "overallScore": "100%",
+      "status": "🟢 All pass"
+    }
+  },
+  "understandingPayloadDir": "/Users/ryanmorrow/Documents/Projects2025/DealDecisionAI/artifacts/deal-understanding-regression/numeric-trust-remediation/understanding-payloads",
+  "failures": [],
+  "passed": true
+}

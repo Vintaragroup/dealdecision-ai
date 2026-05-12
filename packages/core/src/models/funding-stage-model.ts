@@ -1,5 +1,5 @@
 export type FundingStageModelV1 = {
-  funding_stage: "pre_seed" | "seed" | "series_a" | "growth" | "unknown";
+  funding_stage: "pre_seed" | "seed" | "series_a" | "growth" | "ipo" | "public_company" | "unknown";
   confidence: number; // 0..1
   signals: Array<{
     label: string;
@@ -18,6 +18,8 @@ export type FundingStageModelV1 = {
 const clamp01 = (v: number): number => Math.min(1, Math.max(0, v));
 
 type FundingStage = FundingStageModelV1["funding_stage"];
+/** The four classic VC funding stages eligible for label/raise-band scoring. */
+type ClassicFundingStage = "pre_seed" | "seed" | "series_a" | "growth";
 
 type EvidenceRefLike = {
   document_id?: string;
@@ -31,11 +33,46 @@ export function inferFundingStageModelV1(input: {
   company_phase_label?: string | null;
   raise_amount?: number | null;
   raise_sources?: Array<EvidenceRefLike> | null;
+  /** RC-004: doc type hints from document intelligence (sec_filing_s1, sec_filing_10k, etc.) */
+  doc_type_hints?: string[] | null;
 }): FundingStageModelV1 {
+  // RC-004: SEC filing early-exit — overrides label/raise-band inference with certainty.
+  // Priority order: 10-K/10-Q > S-1. Annual/quarterly filers are already public; 10-K wins over S-1
+  // even if both terms appear (e.g. WeWork files 10-K but also references prior S-1 registration).
+  const hints = Array.isArray(input.doc_type_hints)
+    ? input.doc_type_hints.map((h) => String(h).toLowerCase().trim())
+    : [];
+  if (hints.some((h) => h === 'sec_filing_10k' || h === 'sec_filing_10q')) {
+    return {
+      funding_stage: 'public_company',
+      confidence: 0.9,
+      signals: [{ label: hints.includes('sec_filing_10k') ? 'sec_filing_10k_detected' : 'sec_filing_10q_detected', weight: 1.0 }],
+    };
+  }
+  if (hints.some((h) => h === 'sec_filing_8k')) {
+    return {
+      funding_stage: 'public_company',
+      confidence: 0.85,
+      signals: [{ label: 'sec_filing_8k_detected', weight: 0.95 }],
+    };
+  }
+  if (hints.some((h) => h === 'sec_filing_s1')) {
+    return {
+      funding_stage: 'ipo',
+      confidence: 0.9,
+      signals: [{ label: 'sec_filing_s1_detected', weight: 1.0 }],
+    };
+  }
   const signals: FundingStageModelV1["signals"] = [];
   let labelSignalCount = 0;
+  // RC-S6-004/013: Track when the stage label is derived from an IDEA-phase fallback.
+  // IDEA → pre_seed is a low-evidence mapping; use reduced weight (0.35) so:
+  //   (a) confidence is visibly lower (0.35 vs 0.6),
+  //   (b) a large raise amount triggers the conflict path → unknown stage (honest for
+  //       fund / IaaS / non-standard archetypes that happen to score IDEA phase).
+  let hasIdeaFallback = false;
 
-  const stageScores: Record<Exclude<FundingStage, "unknown">, number> = {
+  const stageScores: Record<Exclude<FundingStage, "unknown" | "ipo" | "public_company">, number> = {
     pre_seed: 0,
     seed: 0,
     series_a: 0,
@@ -47,11 +84,16 @@ export function inferFundingStageModelV1(input: {
     if (!rawStr) return;
     const stage = inferStageFromAnyLabel(rawStr);
     if (!stage) return;
-    stageScores[stage] += 0.6;
+    // RC-S6-004/013: IDEA-derived labels get a reduced weight of 0.35.
+    // Explicit round labels ("pre-seed", "seed") keep the full 0.6 weight.
+    const isIdeaDerived = /^idea(?:tion|[-_ ]stage)?$/i.test(rawStr);
+    const weight = isIdeaDerived ? 0.35 : 0.6;
+    if (isIdeaDerived) hasIdeaFallback = true;
+    stageScores[stage] += weight;
     labelSignalCount += 1;
     signals.push({
       label: `${labelKind}:${stage}`,
-      weight: 0.6,
+      weight,
       value: rawStr,
     });
   };
@@ -84,7 +126,7 @@ export function inferFundingStageModelV1(input: {
     };
   }
 
-  const candidates = (Object.keys(stageScores) as Array<Exclude<FundingStage, "unknown">>)
+  const candidates = (Object.keys(stageScores) as Array<ClassicFundingStage>)
     .filter((s) => stageScores[s] > 0);
 
   if (candidates.length === 0) {
@@ -127,7 +169,7 @@ export function inferFundingStageModelV1(input: {
   };
 }
 
-function inferStageFromRaiseAmountBand(raiseAmount: number): Exclude<FundingStage, "unknown"> | null {
+function inferStageFromRaiseAmountBand(raiseAmount: number): ClassicFundingStage | null {
   if (!(typeof raiseAmount === "number" && Number.isFinite(raiseAmount) && raiseAmount > 0)) return null;
 
   // Deterministic bands (v1). Note: 1.0–5.0M overlaps <1.5M; we deterministically
@@ -140,7 +182,7 @@ function inferStageFromRaiseAmountBand(raiseAmount: number): Exclude<FundingStag
   return null;
 }
 
-function inferStageFromAnyLabel(label: string): Exclude<FundingStage, "unknown"> | null {
+function inferStageFromAnyLabel(label: string): ClassicFundingStage | null {
   const s = label.trim().toLowerCase();
   if (!s) return null;
 
@@ -166,11 +208,11 @@ function inferStageFromAnyLabel(label: string): Exclude<FundingStage, "unknown">
   return null;
 }
 
-function softmax01(values: Record<Exclude<FundingStage, "unknown">, number>): Record<Exclude<FundingStage, "unknown">, number> {
-  const entries = Object.entries(values) as Array<[Exclude<FundingStage, "unknown">, number]>;
+function softmax01(values: Record<ClassicFundingStage, number>): Record<ClassicFundingStage, number> {
+  const entries = Object.entries(values) as Array<[ClassicFundingStage, number]>;
   const exps = entries.map(([stage, v]) => [stage, Math.exp(v)] as const);
   const denom = exps.reduce((sum, [, ev]) => sum + ev, 0);
-  const out: any = {};
+  const out = {} as Record<ClassicFundingStage, number>;
   for (const [stage, ev] of exps) {
     out[stage] = denom > 0 ? ev / denom : 0;
   }

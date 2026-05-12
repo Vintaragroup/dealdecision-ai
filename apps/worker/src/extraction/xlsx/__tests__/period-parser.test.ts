@@ -101,6 +101,43 @@ describe("parsePeriodLabel — quarterly labels", () => {
       expect(r.year).toBe(2026);
       expect(r.is_projected).toBe(true);
     });
+
+    it("1Q2026 → quarter=1, year=2026 (4-digit year)", () => {
+      const r = parsePeriodLabel("1Q2026");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(1);
+      expect(r.year).toBe(2026);
+      expect(r.normalized).toBe("Q1 2026");
+    });
+
+    it("3Q2026 → quarter=3, year=2026 (4-digit year)", () => {
+      const r = parsePeriodLabel("3Q2026");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(3);
+      expect(r.year).toBe(2026);
+    });
+
+    it("4Q2026E → quarter=4, year=2026, is_projected=true (4-digit year)", () => {
+      const r = parsePeriodLabel("4Q2026E");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(4);
+      expect(r.year).toBe(2026);
+      expect(r.is_projected).toBe(true);
+    });
+
+    it("2026Q1 → quarter=1, year=2026 (year-leading 4-digit)", () => {
+      const r = parsePeriodLabel("2026Q1");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(1);
+      expect(r.year).toBe(2026);
+    });
+
+    it("2026Q3 → quarter=3, year=2026 (year-leading 4-digit)", () => {
+      const r = parsePeriodLabel("2026Q3");
+      expect(r.period_type).toBe("quarterly");
+      expect(r.quarter).toBe(3);
+      expect(r.year).toBe(2026);
+    });
   });
 
   describe("FY-prefixed quarterly (FY25 Q1, FY2025-Q3)", () => {
@@ -376,4 +413,92 @@ describe("ordinal forecast-year labels (Year N / Yr N)", () => {
     // No number → no match for pattern 12 → fallback
     expect(r.is_projected).toBe(false);
   });
+});
+
+// ─── Named-month labels (Fix #5 — period label validation) ───────────────────
+
+describe("parsePeriodLabel — named month labels", () => {
+  it.each([
+    ["September"],
+    ["January"],
+    ["December"],
+    ["October"],
+  ])('"%s" (full name) → period_type=monthly, year=null, is_projected=false', (label) => {
+    const r = parsePeriodLabel(label);
+    expect(r.period_type).toBe("monthly");
+    expect(r.year).toBeNull();
+    expect(r.is_projected).toBe(false);
+    expect(r.normalized).toBe(label);
+  });
+
+  it.each([
+    ["Jan"],
+    ["Feb"],
+    ["Mar"],
+    ["Apr"],
+    ["May"],
+    ["Jun"],
+    ["Jul"],
+    ["Aug"],
+    ["Sep"],
+    ["Oct"],
+    ["Nov"],
+    ["Dec"],
+  ])('"%s" (3-letter abbreviation) → period_type=monthly', (label) => {
+    const r = parsePeriodLabel(label);
+    expect(r.period_type).toBe("monthly");
+    expect(r.year).toBeNull();
+  });
+
+  it('"Sep 2026" → period_type=monthly, year=2026', () => {
+    const r = parsePeriodLabel("Sep 2026");
+    expect(r.period_type).toBe("monthly");
+    expect(r.year).toBe(2026);
+    expect(r.quarter).toBeNull();
+    expect(r.is_projected).toBe(false);
+  });
+
+  it('"October 2027" → period_type=monthly, year=2027', () => {
+    const r = parsePeriodLabel("October 2027");
+    expect(r.period_type).toBe("monthly");
+    expect(r.year).toBe(2027);
+  });
+
+  it('"January 2025" → period_type=monthly, year=2025', () => {
+    const r = parsePeriodLabel("January 2025");
+    expect(r.period_type).toBe("monthly");
+    expect(r.year).toBe(2025);
+  });
+
+  it.each(["Month 1", "Month 3", "Month 9", "Month 12"])(
+    '"%s" → period_type=monthly, year=null',
+    (label) => {
+      const r = parsePeriodLabel(label);
+      expect(r.period_type).toBe("monthly");
+      expect(r.year).toBeNull();
+      expect(r.is_projected).toBe(false);
+    },
+  );
+});
+
+// ─── Column-index labels (Fix #5 — period label validation) ──────────────────
+
+describe("parsePeriodLabel — column-index labels", () => {
+  it.each(["col_M", "col_A", "col_Z", "col_13", "column_4"])(
+    '"%s" → period_type=unknown, normalized unchanged, no throw',
+    (label) => {
+      const r = parsePeriodLabel(label);
+      expect(r.period_type).toBe("unknown");
+      expect(r.normalized).toBe(label);
+    },
+  );
+
+  it.each(["col_M", "col_A", "col_Z", "col_13", "column_4"])(
+    '"%s" is NOT classified as annual or quarterly',
+    (label) => {
+      const r = parsePeriodLabel(label);
+      expect(r.period_type).not.toBe("annual");
+      expect(r.period_type).not.toBe("quarterly");
+    },
+  );
 });

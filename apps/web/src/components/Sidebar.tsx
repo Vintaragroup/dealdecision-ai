@@ -98,6 +98,24 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
     }`;
   };
 
+  const getUtilityNavItemClass = (page: PageView) => {
+    const isActive = currentPage === page;
+
+    if (isActive) {
+      return `flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer ${
+        darkMode
+          ? 'text-white bg-white/[0.08] border border-white/10'
+          : 'text-gray-900 bg-gray-100 border border-gray-200'
+      }`;
+    }
+
+    return `flex items-center gap-3 px-3 py-2 rounded-lg transition-colors cursor-pointer ${
+      darkMode
+        ? 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.03]'
+        : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100/60'
+    }`;
+  };
+
   return (
     <>
       {/* Mobile Overlay */}
@@ -293,14 +311,14 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                 <div className="space-y-1">
                   <button 
                     onClick={() => onNavigate('componentShowcase')}
-                    className={getNavItemClass('componentShowcase')}
+                    className={getUtilityNavItemClass('componentShowcase')}
                   >
                     <BookOpen className="w-4 h-4" />
                     <span className="text-sm">Components</span>
                   </button>
                   <button 
                     onClick={() => onNavigate('logoShowcase')}
-                    className={getNavItemClass('logoShowcase')}
+                    className={getUtilityNavItemClass('logoShowcase')}
                   >
                     <Target className="w-4 h-4" />
                     <span className="text-sm">Logo Variants</span>
@@ -318,7 +336,7 @@ export function Sidebar({ darkMode, logoVariant = 'network', currentPage, onNavi
                 <div className="space-y-1">
                   <button
                     onClick={() => onNavigate('systemAdmin')}
-                    className={getNavItemClass('systemAdmin')}
+                    className={getUtilityNavItemClass('systemAdmin')}
                   >
                     <ShieldCheck className="w-4 h-4" />
                     <span className="text-sm">System Admin</span>

@@ -937,6 +937,7 @@ export const DIOContextSchema = z.object({
     "services",
     "consumer_product",
     "crypto_mining",
+    "de_spac",
     "other",
   ]),
   vertical: z.enum([

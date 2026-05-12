@@ -53,6 +53,29 @@ export type GovernedLLMOverviewV1 = {
 	}>;
 };
 
+// ============================================================================
+// Canonical Decision Summary — persisted from investor_insight_reports
+// ============================================================================
+
+/**
+ * Slim summary of the canonical decision resolver output.
+ * Persisted to investor_insight_reports.report_payload by the worker
+ * and surfaced on the Deal object so list/dashboard surfaces do not
+ * need a separate /orchestrator-report fetch.
+ */
+export interface CanonicalDecisionSummaryV1DTO {
+	/** Authoritative 0–100 score (Track 1 overall_score or ORS fallback). */
+	score?: number;
+	/** Five-band verdict: strong_yes | yes | watch | pass | strong_pass. */
+	verdict?: string;
+	/** Resolver confidence 0–1. */
+	confidence?: number;
+	/** True when Track 1 and Track 2 scores differ by >15 pts. */
+	conflict_detected?: boolean;
+	/** Short diagnostic note from the resolver. */
+	resolver_note?: string;
+}
+
 export interface Deal {
 	id: string;
 	name: string;
@@ -69,6 +92,9 @@ export interface Deal {
 
 	// Additive: Analysis Foundation (Fundability) — stable DTO surface for UI/API.
 	fundability_v1?: FundabilityV1DTO;
+
+	/** Additive: persisted canonical decision summary from investor_insight_reports. */
+	canonical_decision_v1?: CanonicalDecisionSummaryV1DTO | null;
 
 	// Latest DIO metadata (derived from versioned DIO history)
 	dioVersionId?: string;

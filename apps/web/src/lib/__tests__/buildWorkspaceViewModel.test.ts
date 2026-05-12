@@ -3,10 +3,74 @@ import { getPolicyScoreSectionLabel, getSelectedPolicyIdFromAny } from '@dealdec
 
 import { buildWorkspaceViewModel } from '../../components/workspace/builders/buildWorkspaceViewModel';
 import type { WorkspaceViewModelInputs } from '../../components/workspace/builders/buildWorkspaceViewModel';
+import type { DealWorkspaceOverviewModel } from '../../lib/selectors/selectDealWorkspaceOverviewModel';
 
 // ─── Shared fixture ──────────────────────────────────────────────────────────
 
+const OVERVIEW_MODEL_BASE: DealWorkspaceOverviewModel = {
+  summaries: {
+    short: {
+      value: 'Acme automates enterprise workflow with AI.',
+      origin: 'deterministic',
+      evidenceIds: [],
+      evidence: [],
+      trust: 'structured',
+      source: 'structured_summary',
+    },
+    long: {
+      paragraphs: ['B2B SaaS for workflow automation'],
+      text: 'B2B SaaS for workflow automation',
+      origin: 'deterministic',
+      evidenceIds: [],
+      evidence: [],
+      trust: 'structured',
+      source: 'structured_summary',
+    },
+  },
+  keyFacts: {
+    product: {
+      value: 'An AI workflow assistant for mid-market ops teams.',
+      origin: 'deterministic',
+      evidenceIds: [],
+      evidence: [],
+      trust: 'structured',
+      source: 'structured_summary',
+    },
+    market: {
+      value: 'SMB-to-mid-market SaaS, ~$12B TAM.',
+      origin: 'deterministic',
+      evidenceIds: [],
+      evidence: [],
+      trust: 'structured',
+      source: 'structured_summary',
+    },
+    business_model: {
+      value: 'Usage-based SaaS with enterprise expansion.',
+      origin: 'deterministic',
+      evidenceIds: [],
+      evidence: [],
+      trust: 'structured',
+      source: 'structured_summary',
+    },
+    raise_terms: {
+      value: '$5M Seed on $20M cap.',
+      origin: 'deterministic',
+      evidenceIds: [],
+      evidence: [],
+      trust: 'structured',
+      source: 'structured_summary',
+    },
+  },
+  rcS6: {
+    teamHighlights: [],
+    useOfFunds: [],
+    projectPipeline: [],
+    revenueModel: { type: null, unitEconomics: null, detail: null, recurring: null, trust: 'not_extracted' },
+  },
+};
+
 const BASE: WorkspaceViewModelInputs = {
+  overviewModel: OVERVIEW_MODEL_BASE,
   displayName: 'Acme Corp',
   dealDescription: 'B2B SaaS for workflow automation',
   dealStageLabel: 'Early Diligence',
@@ -23,10 +87,6 @@ const BASE: WorkspaceViewModelInputs = {
   coverageRatio: 0.78,
   evidenceCoverage: 'Strong',
   governedDealOneLiner: 'Acme automates enterprise workflow with AI.',
-  governedProduct: 'An AI workflow assistant for mid-market ops teams.',
-  governedMarket: 'SMB-to-mid-market SaaS, ~$12B TAM.',
-  governedBusinessModel: 'Usage-based SaaS with enterprise expansion.',
-  governedRaise: '$5M Seed on $20M cap.',
   investmentSnapshotBody: '',
   selectedHeaderReady: true,
   raiseValue: '$5M',
@@ -385,9 +445,18 @@ describe('policy-aware metric schema', () => {
   test('real-estate business model prefers governed policy-safe phrasing over startup taxonomy', () => {
     const vm = buildWorkspaceViewModel({
       ...BASE,
+      overviewModel: {
+        ...BASE.overviewModel,
+        keyFacts: {
+          ...BASE.overviewModel.keyFacts,
+          business_model: {
+            ...BASE.overviewModel.keyFacts.business_model,
+            value: 'Preferred equity structure with debt service coverage covenant',
+          },
+        },
+      },
       selectedPolicyId: 'real_estate_underwriting',
       businessModelValue: 'Omnichannel DTC subscription',
-      governedBusinessModel: 'Preferred equity structure with debt service coverage covenant',
     });
 
     expect(vm.header.metrics.businessModel[0]?.value).toBe('Preferred equity structure with debt service coverage covenant');
@@ -396,10 +465,16 @@ describe('policy-aware metric schema', () => {
   test('real-estate extracted evidence relabels sections and gates startup-style text', () => {
     const vm = buildWorkspaceViewModel({
       ...BASE,
+      overviewModel: {
+        ...BASE.overviewModel,
+        keyFacts: {
+          ...BASE.overviewModel.keyFacts,
+          product: { ...BASE.overviewModel.keyFacts.product, value: 'Omnichannel DTC platform with subscription checkout' },
+          market: { ...BASE.overviewModel.keyFacts.market, value: 'B2C users and customer cohorts' },
+          business_model: { ...BASE.overviewModel.keyFacts.business_model, value: 'Preferred equity structure' },
+        },
+      },
       selectedPolicyId: 'real_estate_underwriting',
-      governedProduct: 'Omnichannel DTC platform with subscription checkout',
-      governedMarket: 'B2C users and customer cohorts',
-      governedBusinessModel: 'Preferred equity structure',
     });
 
     expect(vm.overview.evidenceLabels.product).toBe('Asset / Facility');
@@ -409,12 +484,18 @@ describe('policy-aware metric schema', () => {
     expect(vm.overview.businessModelSummary).toBe('Preferred equity structure');
   });
 
-  test('real-estate raise falls back to governed raise summary when header raise is missing', () => {
+  test('real-estate raise falls back to structured raise summary when header raise is missing', () => {
     const vm = buildWorkspaceViewModel({
       ...BASE,
+      overviewModel: {
+        ...BASE.overviewModel,
+        keyFacts: {
+          ...BASE.overviewModel.keyFacts,
+          raise_terms: { ...BASE.overviewModel.keyFacts.raise_terms, value: '$35.6M construction loan + $11.9M equity' },
+        },
+      },
       selectedPolicyId: 'real_estate_underwriting',
       raiseValue: null,
-      governedRaise: '$35.6M construction loan + $11.9M equity',
     });
 
     expect(vm.overview.snapshotFacts.raise).toBe('$35.6M + $11.9M');
@@ -436,9 +517,15 @@ describe('policy-aware metric schema', () => {
   test('malformed Raise short values are hidden instead of rendered', () => {
     const vm = buildWorkspaceViewModel({
       ...BASE,
+      overviewModel: {
+        ...BASE.overviewModel,
+        keyFacts: {
+          ...BASE.overviewModel.keyFacts,
+          raise_terms: { ...BASE.overviewModel.keyFacts.raise_terms, value: '$,' },
+        },
+      },
       selectedPolicyId: 'enterprise_saas_b2b_v1',
       raiseValue: '$,',
-      governedRaise: '$,',
     });
 
     expect(vm.overview.snapshotFacts.raise).toBe('—');
@@ -460,11 +547,17 @@ describe('policy-aware metric schema', () => {
     const sameText = 'Preferred equity structure with sponsor equity and lease-backed investment terms';
     const vm = buildWorkspaceViewModel({
       ...BASE,
+      overviewModel: {
+        ...BASE.overviewModel,
+        keyFacts: {
+          ...BASE.overviewModel.keyFacts,
+          raise_terms: { ...BASE.overviewModel.keyFacts.raise_terms, value: sameText },
+          business_model: { ...BASE.overviewModel.keyFacts.business_model, value: sameText },
+        },
+      },
       selectedPolicyId: 'real_estate_underwriting',
       raiseValue: sameText,
-      governedRaise: sameText,
       businessModelValue: sameText,
-      governedBusinessModel: sameText,
     });
 
     expect(vm.overview.snapshotFacts.raise).toBe('—');
@@ -480,7 +573,7 @@ describe('policy-aware metric schema', () => {
     expect(vm.overview.snapshotFactLabels.arr).toBe('ARR');
     expect(vm.overview.evidenceLabels.product).toBe('Product');
     expect(vm.overview.evidenceLabels.market).toBe('Market');
-    expect(vm.overview.productSummary).toBe(BASE.governedProduct);
+    expect(vm.overview.productSummary).toBe(BASE.overviewModel.keyFacts.product.value);
   });
 });
 
@@ -715,10 +808,10 @@ describe('vm structural completeness', () => {
   test('governed narrative fields are passed through to overview unchanged', () => {
     const vm = buildWorkspaceViewModel(BASE);
     expect(vm.overview.companyDescription).toBe(BASE.governedDealOneLiner);
-    expect(vm.overview.productSummary).toBe(BASE.governedProduct);
-    expect(vm.overview.marketSummary).toBe(BASE.governedMarket);
-    expect(vm.overview.businessModelSummary).toBe(BASE.governedBusinessModel);
-    expect(vm.overview.raiseTerms).toBe(BASE.governedRaise);
+    expect(vm.overview.productSummary).toBe(BASE.overviewModel.keyFacts.product.value);
+    expect(vm.overview.marketSummary).toBe(BASE.overviewModel.keyFacts.market.value);
+    expect(vm.overview.businessModelSummary).toBe(BASE.overviewModel.keyFacts.business_model.value);
+    expect(vm.overview.raiseTerms).toBe(BASE.overviewModel.keyFacts.raise_terms.value);
   });
 
   test('insights entry point values are passed through to overview', () => {

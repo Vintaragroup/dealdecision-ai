@@ -30,6 +30,9 @@ const FIELD_TYPE_TO_METRIC_KEY: Record<FieldTypeV1, string> = {
   revenue_canonical_v1:          "revenue",
   marketing_attributed_revenue_v1: "marketing_attributed_revenue",
   forecast_revenue_v1:           "forecast_revenue",
+  // Semantic revenue subtypes — never collapse into generic "revenue"
+  booked_revenue_v1:             "booked_revenue",
+  recognized_revenue_v1:         "recognized_revenue",
   arr_v1:                        "arr",
   mrr_v1:                        "mrr",
   tam_v1:                        "tam",
@@ -82,6 +85,34 @@ function extractPeriodLabel(metric: TypedMetric): string {
   if (m && m[1]) return m[1].trim();
   // If no brackets found, fall back to the column label if we can parse it
   return "current";
+}
+
+/**
+ * Returns true when a period label is a structural artifact of the XLSX
+ * extraction format rather than a genuine financial period.
+ *
+ * Belt-and-suspenders guard that catches any structural labels that slip past
+ * the table-detector layer (e.g. via excel_sheet paths or unusual payloads).
+ *
+ * Suppressed patterns:
+ *   - Column coordinate placeholders: "col_C", "col_M", "col_AA"
+ *   - Denomination markers: "$000", "$000s", "000s", "($000)", "(000s)"
+ *   - Pure scale abbreviations: "$M", "$MM", "$K", "€B" (stand-alone tokens)
+ *   - Empty / whitespace
+ */
+function isStructuralPeriodLabel(periodLabel: string): boolean {
+  const s = periodLabel.trim();
+  if (!s) return true;
+  // Column coordinate: col_A, col_B, …, col_AA (Fallback 2 artifacts)
+  if (/^col_[A-Za-z]+$/.test(s)) return true;
+  // Denomination markers: $000, $000s, 000s, 000, ₹000s, (000s), ($000), etc.
+  if (/^[$€£¥₹]?\s*0{2,}s?$/i.test(s)) return true;
+  if (/^\([$€£¥₹]?\s*0{2,}s?\)$/i.test(s)) return true;
+  // Stand-alone scale abbreviations: $M, $MM, €M, $K, £B, etc.
+  if (/^[$€£¥₹]\s*m{1,2}$/i.test(s)) return true;
+  if (/^[$€£¥₹]\s*k$/i.test(s)) return true;
+  if (/^[$€£¥₹]\s*b$/i.test(s)) return true;
+  return false;
 }
 
 // ─── Confidence mapping ───────────────────────────────────────────────────────
@@ -154,6 +185,13 @@ export function promoteToFinancialFactV1(
         ? "post_money_valuation"
         : rawMetricKey;
     const periodLabel = extractPeriodLabel(metric);
+
+    // Structural period label guard: drop facts whose period label is an XLSX
+    // formatting artifact (col_C, $000, $M, etc.) rather than a real period.
+    // These originate from salary schedules, cap-table sheets, or allocation
+    // tables that lacked a proper period-header row. Belt-and-suspenders check
+    // complementing the table-detector-layer structural column guard.
+    if (isStructuralPeriodLabel(periodLabel)) continue;
     const unit = inferUnit(metricKey);
 
     // Build deterministic source pointer for fact_id
@@ -206,6 +244,29 @@ export function promoteToFinancialFactV1(
     };
 
     facts.push(fact);
+  }
+
+  // ── Multi-year proforma model detection ────────────────────────────────────
+  // If this extraction batch contains XLSX annual/TTM facts for a future year,
+  // the current-year column is part of a forward-projection model (not realized
+  // actuals). Upgrade temporal_scope from "current" → "projected" for current-year
+  // annual/TTM facts so that downstream selectors and isProjectedFact() treat them
+  // correctly after the next re-ingest.
+  const promoterCurrentYear = new Date().getFullYear();
+  const hasFutureXlsxAnnualFact = facts.some((f) => {
+    if (f.period_type !== 'annual' && f.period_type !== 'ttm') return false;
+    const yr = f.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
+    return yr != null && Number(yr[1]) > promoterCurrentYear;
+  });
+  if (hasFutureXlsxAnnualFact) {
+    for (const f of facts) {
+      if (f.temporal_scope !== 'current') continue;
+      if (f.period_type !== 'annual' && f.period_type !== 'ttm') continue;
+      const yr = f.period_label.match(/(?<!\d)(20\d{2})(?!\d)/);
+      if (yr != null && Number(yr[1]) === promoterCurrentYear) {
+        f.temporal_scope = 'projected';
+      }
+    }
   }
 
   return facts;

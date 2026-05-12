@@ -96,3 +96,143 @@ test('GET /api/v1/deals/:deal_id/evidence returns evidence or empty', async () =
 
   await app.close();
 });
+
+test('GET /api/v1/evidence/resolve handles doc:<uuid>:page:<n> format', async () => {
+  const docId = 'd636df8d-de94-48bc-a0c3-aa55035548a4';
+  const refId = `doc:${docId}:page:11`;
+  const mockPool = {
+    query: async (sql: string, params: unknown[]) => {
+      if (sql.includes('information_schema.columns') && sql.includes('evidence')) {
+        return { rows: [{ oid: 'evidence' }] };
+      }
+      if (sql.includes('to_regclass') && (params as string[])[0] === 'evidence') {
+        return { rows: [{ oid: 'evidence' }] };
+      }
+      if (sql.includes('to_regclass') && (params as string[])[0] === 'documents') {
+        return { rows: [{ oid: 'documents' }] };
+      }
+      if (sql.includes('to_regclass')) {
+        return { rows: [{ oid: null }] };
+      }
+      if (sql.includes('FROM documents') && sql.includes('deleted_at IS NULL')) {
+        return { rows: [{ id: docId, title: 'Climatic PitchDeck (5).pdf' }] };
+      }
+      return { rows: [] };
+    }
+  } as any;
+
+  const app = Fastify();
+  await registerEvidenceRoutes(app, mockPool, async () => ({ id: 1, job_id: 'job-1', status: 'queued' as const }));
+
+  const res = await app.inject({ method: 'GET', url: `/api/v1/evidence/resolve?ids=${encodeURIComponent(refId)}` });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  assert.equal(body.results.length, 1);
+  const result = body.results[0];
+  assert.equal(result.id, refId);
+  assert.equal(result.ok, true);
+  assert.equal(result.resolvable, true);
+  assert.equal(result.document_id, docId);
+  assert.equal(result.document_title, 'Climatic PitchDeck (5).pdf');
+  assert.equal(result.page, 11);
+
+  await app.close();
+});
+
+test('GET /api/v1/evidence/resolve handles doc:<uuid>:page_index:<n> format', async () => {
+  const docId = 'f23ba1b8-85b8-4ce0-a8c6-ac3eaf22588b';
+  const refId = `doc:${docId}:page_index:9`;
+  const mockPool = {
+    query: async (sql: string, params: unknown[]) => {
+      if (sql.includes('to_regclass') && (params as string[])[0] === 'documents') {
+        return { rows: [{ oid: 'documents' }] };
+      }
+      if (sql.includes('to_regclass')) {
+        return { rows: [{ oid: null }] };
+      }
+      if (sql.includes('FROM documents') && sql.includes('deleted_at IS NULL')) {
+        return { rows: [{ id: docId, title: 'Allurion Deck.pdf' }] };
+      }
+      return { rows: [] };
+    }
+  } as any;
+
+  const app = Fastify();
+  await registerEvidenceRoutes(app, mockPool, async () => ({ id: 1, job_id: 'job-1', status: 'queued' as const }));
+
+  const res = await app.inject({ method: 'GET', url: `/api/v1/evidence/resolve?ids=${encodeURIComponent(refId)}` });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  const result = body.results[0];
+  assert.equal(result.ok, true);
+  assert.equal(result.document_title, 'Allurion Deck.pdf');
+  assert.equal(result.page, 9);
+
+  await app.close();
+});
+
+test('GET /api/v1/evidence/resolve falls back to evidence_items for unresolved bare UUID', async () => {
+  const uuidRef = '523c18fb-1067-4b7a-bbde-81713bf4ecc4';
+  const docId = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+  const mockPool = {
+    query: async (sql: string, _params: unknown[]) => {
+      if (sql.includes('to_regclass') && (_params as string[])[0] === 'evidence') {
+        return { rows: [{ oid: 'evidence' }] };
+      }
+      if (sql.includes('to_regclass') && (_params as string[])[0] === 'evidence_items') {
+        return { rows: [{ oid: 'evidence_items' }] };
+      }
+      if (sql.includes('to_regclass') && (_params as string[])[0] === 'documents') {
+        return { rows: [{ oid: 'documents' }] };
+      }
+      if (sql.includes('to_regclass')) return { rows: [{ oid: null }] };
+      if (sql.includes('information_schema.columns')) return { rows: [{ ok: 1 }] };
+      if (sql.includes('data_type')) return { rows: [{ data_type: 'uuid' }] };
+      // evidence table lookup: return empty (not found)
+      if (sql.includes('FROM evidence e') && !sql.includes('information_schema')) {
+        return { rows: [] };
+      }
+      // evidence_items fallback: return a match
+      if (sql.includes('FROM evidence_items')) {
+        return { rows: [{ evidence_id: uuidRef, source_document_id: docId, content_text: 'Some risk text', doc_title: 'Risk Report.pdf' }] };
+      }
+      return { rows: [] };
+    }
+  } as any;
+
+  const app = Fastify();
+  await registerEvidenceRoutes(app, mockPool, async () => ({ id: 1, job_id: 'job-1', status: 'queued' as const }));
+
+  const res = await app.inject({ method: 'GET', url: `/api/v1/evidence/resolve?ids=${encodeURIComponent(uuidRef)}` });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  const result = body.results[0];
+  assert.equal(result.ok, true);
+  assert.equal(result.document_title, 'Risk Report.pdf');
+  assert.equal(result.snippet, 'Some risk text');
+
+  await app.close();
+});
+
+test('GET /api/v1/evidence/resolve returns ok:false for unresolvable opaque ref', async () => {
+  const opaqueRef = 'pdf_kpi_line source=pagev1:abc page=3 metric=cac';
+  const mockPool = {
+    query: async (sql: string, params: unknown[]) => {
+      if (sql.includes('to_regclass') && (params as string[])[0] === 'documents') {
+        return { rows: [{ oid: 'documents' }] };
+      }
+      if (sql.includes('to_regclass')) return { rows: [{ oid: null }] };
+      return { rows: [] };
+    }
+  } as any;
+
+  const app = Fastify();
+  await registerEvidenceRoutes(app, mockPool, async () => ({ id: 1, job_id: 'job-1', status: 'queued' as const }));
+
+  const res = await app.inject({ method: 'GET', url: `/api/v1/evidence/resolve?ids=${encodeURIComponent(opaqueRef)}` });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  assert.equal(body.results[0].ok, false);
+
+  await app.close();
+});

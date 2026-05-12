@@ -293,11 +293,20 @@ export async function registerInvestorInsightsRoutes(
     // Unique per-request jobId — bypasses BullMQ dedup so regenerate always enqueues.
     const jobId = `investor_insights__${dealId}__v1__manual_regenerate__${Date.now()}`;
 
+    const body = (request.body ?? {}) as { override_llm_mode?: boolean };
+    const overrideLlmMode = body.override_llm_mode === true;
+
     const insightsQueue = deps?.investorInsightsQueue ?? (getQueues().investorInsightsQueue as any);
     try {
       await insightsQueue.add(
         "generate_investor_insights",
-        { deal_id: dealId, engine_version: "v1", triggered_by: "manual_regenerate", force_recompute: true },
+        {
+          deal_id: dealId,
+          engine_version: "v1",
+          triggered_by: "manual_regenerate",
+          force_recompute: true,
+          ...(overrideLlmMode && { override_llm_mode: true }),
+        },
         { jobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
       );
     } catch (err) {
@@ -624,6 +633,135 @@ export async function registerInvestorInsightsRoutes(
             history: runHistory,
           },
           visuals_sanity,
+        });
+      }
+    );
+
+    // ── GET /api/v1/debug/deals/:dealId/intelligence ─────────────────────────
+    // Internal-only. Returns the most recent Stage 5 intelligence output for a
+    // deal: confidence assessment and challenge pass result.
+    //
+    // Gated behind debugRoutesEnabled — never exposed to end users.
+    // Memory influence is a secondary signal; it does not change ORS or
+    // overwrite verdicts.
+    app.get<{ Params: { dealId: string } }>(
+      "/api/v1/debug/deals/:dealId/intelligence",
+      {
+        schema: {
+          tags: ["debug"],
+          params: {
+            type: "object",
+            properties: { dealId: { type: "string" } },
+            required: ["dealId"],
+          },
+        } as any,
+      },
+      async (request, reply) => {
+        const parsed = z.string().uuid().safeParse(request.params.dealId);
+        if (!parsed.success) {
+          return reply.status(400).send({ error: "dealId must be a valid UUID" });
+        }
+        const dealId = parsed.data;
+
+        const hasConfidenceTable = await hasTable(pool, "deal_confidence_assessments");
+        const hasChallengeTable = await hasTable(pool, "deal_challenge_pass_results");
+
+        let confidence: Record<string, unknown> | null = null;
+        let challenge: Record<string, unknown> | null = null;
+
+        if (hasConfidenceTable) {
+          try {
+            const { rows } = await pool.query<Record<string, unknown>>(
+              `SELECT
+                 intelligence_run_id,
+                 overall_confidence_score,
+                 overall_confidence_band,
+                 memory_adjustment,
+                 memory_adjustment_reason,
+                 jsonb_array_length(penalties_applied) AS penalty_count,
+                 (SELECT COALESCE(SUM((item->>'penalty')::int), 0)
+                  FROM jsonb_array_elements(penalties_applied) item) AS total_penalty,
+                 penalties_applied,
+                 created_at
+               FROM deal_confidence_assessments
+               WHERE deal_id = $1
+               ORDER BY created_at DESC
+               LIMIT 1`,
+              [dealId]
+            );
+            confidence = rows[0] ?? null;
+          } catch {
+            confidence = null;
+          }
+        }
+
+        if (hasChallengeTable && confidence?.intelligence_run_id) {
+          try {
+            const { rows } = await pool.query<Record<string, unknown>>(
+              `SELECT
+                 intelligence_run_id,
+                 verdict_resistance_score,
+                 verdict_resistance_label,
+                 flag_count_critical,
+                 flag_count_error,
+                 flag_count_warn,
+                 jsonb_array_length(missing_evidence) AS missing_evidence_count,
+                 jsonb_array_length(diligence_gaps) AS diligence_gaps_count,
+                 memory_challenge_used,
+                 memory_challenge_summary,
+                 primary_challenge_reason,
+                 challenge_factors,
+                 created_at
+               FROM deal_challenge_pass_results
+               WHERE intelligence_run_id = $1
+               LIMIT 1`,
+              [confidence.intelligence_run_id]
+            );
+            challenge = rows[0] ?? null;
+          } catch {
+            challenge = null;
+          }
+        }
+
+        // Pull memory influence snapshot from deal_memory_snapshots.
+        // Created by Stage 5 after deriveMemoryInfluence() so reviewers can
+        // see WHY memory did or did not adjust confidence for this run.
+        const hasMemorySnapshotTable = await hasTable(pool as any, "deal_memory_snapshots");
+
+        let memory: Record<string, unknown> | null = null;
+        if (hasMemorySnapshotTable && confidence?.intelligence_run_id) {
+          try {
+            const { rows } = await pool.query<Record<string, unknown>>(
+              `SELECT
+                 similar_deal_count,
+                 avg_similarity_pct,
+                 memory_support_signal,
+                 memory_fragility_signal,
+                 verdict_agreement_fraction,
+                 confidence_adjustment,
+                 neighbor_snapshots
+               FROM deal_memory_snapshots
+               WHERE intelligence_run_id = $1
+               LIMIT 1`,
+              [confidence.intelligence_run_id]
+            );
+            memory = rows[0] ?? null;
+          } catch {
+            memory = null;
+          }
+        }
+
+        return reply.send({
+          deal_id: dealId,
+          run_id: confidence?.intelligence_run_id ?? null,
+          confidence,
+          challenge,
+          memory,
+          _meta: {
+            has_confidence_table: hasConfidenceTable,
+            has_challenge_table: hasChallengeTable,
+            has_memory_snapshot_table: hasMemorySnapshotTable,
+          },
         });
       }
     );

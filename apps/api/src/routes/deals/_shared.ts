@@ -1203,6 +1203,8 @@ export type DIOAggregateRow = {
   phase_inference_v1?: any;
   fundability_assessment_v1?: any;
   fundability_decision_v1?: any;
+  /** Additive: persisted canonical decision from investor_insight_reports.report_payload */
+  canonical_decision_v1?: any;
 };
 
 export function parseNullableNumber(value: unknown): number | null {
@@ -2519,6 +2521,18 @@ export function mapDeal(
         fundabilityAssessmentV1 && typeof fundabilityAssessmentV1 === "object" ? fundabilityAssessmentV1 : undefined,
       fundability_decision_v1:
         fundabilityDecisionV1 && typeof fundabilityDecisionV1 === "object" ? fundabilityDecisionV1 : undefined,
+    };
+  }
+
+  // Additive: canonical decision summary persisted from investor_insight_reports.
+  const canonicalDecisionV1 = (dio as any)?.canonical_decision_v1;
+  if (canonicalDecisionV1 && typeof canonicalDecisionV1 === "object") {
+    out.canonical_decision_v1 = {
+      score: typeof canonicalDecisionV1.score === "number" ? canonicalDecisionV1.score : undefined,
+      verdict: typeof canonicalDecisionV1.verdict === "string" ? canonicalDecisionV1.verdict : undefined,
+      confidence: typeof canonicalDecisionV1.confidence === "number" ? canonicalDecisionV1.confidence : undefined,
+      conflict_detected: typeof canonicalDecisionV1.conflict_detected === "boolean" ? canonicalDecisionV1.conflict_detected : undefined,
+      resolver_note: typeof canonicalDecisionV1.resolver_note === "string" ? canonicalDecisionV1.resolver_note : undefined,
     };
   }
 

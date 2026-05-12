@@ -222,7 +222,12 @@ export function buildDeterministicScoreInputsV1(args: {
 	const kpis: ScoreInputsV1Kpi[] = kpiKeys
 		.map((k) => {
 			const fromStructured = kpiFromStructured(args.structured_summary, k);
-			if (fromStructured.value_raw != null || fromStructured.sources.length > 0 || fromStructured.confidence > 0) return fromStructured;
+			// A field nulled by a guard (applyFinalPublishGuard / field_authority_guard) has
+			// confidence=0 and value_raw=null but may retain sources[] for provenance.
+			// Treat this as "missing data" and fall back to input_documents — never use the
+			// nulled value as a negative signal against the deal.
+			const isNulledByGuard = fromStructured.confidence === 0 && fromStructured.value_raw == null;
+			if (!isNulledByGuard && (fromStructured.value_raw != null || fromStructured.sources.length > 0 || fromStructured.confidence > 0)) return fromStructured;
 			return kpiFromInputDocuments(args.input_documents, k);
 		})
 		.sort((a, b) => a.key.localeCompare(b.key));

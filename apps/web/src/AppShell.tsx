@@ -225,7 +225,7 @@ export default function AppShell() {
   const handleSaveNotificationPreferences = (prefs: NotificationPreferences) => {
     setNotificationPreferences(prefs);
     // TODO: Save to backend/localStorage when ready
-    console.log('Notification preferences saved:', prefs);
+    if (import.meta.env.DEV) console.debug('[AppShell] notification preferences saved:', prefs);
   };
 
   useEffect(() => {
@@ -257,7 +257,7 @@ export default function AppShell() {
             ) : null}
 
             {/* Main App */}
-            <div className={`flex h-screen overflow-hidden ${
+            <div className={`app-shell-root flex h-screen overflow-hidden ${
               darkMode ? 'bg-[#0a0a0a]' : 'bg-gradient-to-br from-gray-50 via-white to-gray-100'
             }`}>
               <Sidebar 
@@ -270,7 +270,7 @@ export default function AppShell() {
                 mobileMenuOpen={mobileMenuOpen}
                 setMobileMenuOpen={setMobileMenuOpen}
               />
-              <div className="flex-1 flex flex-col min-w-0 relative">
+              <div className="app-shell-content flex-1 flex flex-col min-w-0 relative">
                 <Header 
                   darkMode={darkMode} 
                   setDarkMode={setDarkMode}
@@ -282,7 +282,7 @@ export default function AppShell() {
                   onNavigate={handleNavigate}
                   onOpenCommandPalette={() => setCommandPaletteOpen(true)}
                 />
-                <main className="flex-1 overflow-auto">
+                <main className="app-shell-main flex-1 overflow-auto">
                   {currentPage === 'logoShowcase' && isRyanAdmin && (
                     <div className="p-6">
                       <LogoShowcase 

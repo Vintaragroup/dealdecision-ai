@@ -17,4 +17,5 @@ export type {
   DciBand,
   FinancialHealthScore,
   MarketScore,
+  CanonicalDecision,
 } from './types';

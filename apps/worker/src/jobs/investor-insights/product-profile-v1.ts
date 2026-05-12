@@ -69,7 +69,8 @@ GOVERNANCE RULES — MUST FOLLOW:
    - ai_evidence_strength: "strong" | "weak" | "marketing_only" | "none"
 5. cited_evidence_ids MUST only include IDs from the EVIDENCE section below.
 6. The "Deal Name" header is a CRM label and may differ from the actual brand name used in the materials. When the slides or OCR text consistently use a different brand name, prefer that brand name in all output fields (e.g. if the deck shows "Cino" throughout, use "Cino" — not the Deal Name).
-7. Return exactly this JSON schema — no extra keys:
+7. ENTITY DISTINCTION — CRITICAL: If the materials describe multiple projects, portfolio assets, financed deals, or customer case studies, you MUST distinguish between the COMPANY'S OWN product/platform/service and external entities. The company_description and solution_summary must describe what the COMPANY itself builds, sells, or operates — NOT a project the company is financing, lending to, or developing for a third party. If the deck describes "Project S Tidal Energy" but the company is a lender/developer, describe the company's lending/development platform, not the specific project.
+8. Return exactly this JSON schema — no extra keys:
 
 {
   "company_description": "<1-2 sentences>",

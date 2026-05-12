@@ -25,6 +25,13 @@ export type FinancialCoverageProfileV1 = {
     source_path?: string;
     snippet?: string;
   }>>;
+  /**
+   * Normalized 0–100 coverage quality score.
+   * Derived from coverage flag count (out of 8) weighted by confidence level.
+   * confidence_mult: high=1.0, medium=0.85, low=0.65.
+   * Used by the report compiler to blend financial data quality into overallScore.
+   */
+  score?: number;
   notes?: string[];
 };
 
@@ -55,6 +62,23 @@ const isMarketSizingText = (text: string): boolean => {
   if (!text.trim()) return false;
   if (containsMarketSizingLanguage(text)) return true;
   return /\b(tam|sam|som|market\s*(size|sizing)|total\s+addressable\s+market|serviceable\s+available\s+market|serviceable\s+obtainable\s+market)\b/i.test(text);
+};
+
+/**
+ * Returns true when the candidate text describes capital deployment, a program
+ * financing total, or per-site capex — NOT an operating revenue figure.
+ *
+ * Common false-positive patterns in infrastructure / project-finance deals:
+ *   "Use of Proceeds" slides that summarise total deployment ($155M)
+ *   "Total Program" capex estimates
+ *   "Per-site deployment cost" figures
+ *   "Capital deployed across X sites"
+ *
+ * These must NOT be classified as historical_revenue_present.
+ */
+const isDeploymentCapitalText = (text: string): boolean => {
+  if (!text.trim()) return false;
+  return /\b(use\s+of\s+(proceeds|funds)|capital\s+deploy(ment|ed|ing)|deploy(ed|ment|ing)\s+(of\s+)?capital|total\s+(program|deployment|capex)|program\s+(finance|total|cost)|infrastructure\s+deploy(ment|ed)|per[-\s]site\s+(cost|deploy|capex)|per[-\s]unit\s+deploy|project\s+finance|estimated\s+deploy(ment|ed)|deployment\s+target|capex\s+(estimate|budget|plan|per\s+site))\b/i.test(text);
 };
 
 const looksLikeFutureYear = (year: number, currentYear: number): boolean => year > currentYear;
@@ -110,6 +134,8 @@ export function inferFinancialCoverageProfileV1(input: {
   promoted_facts?: any[] | null;    // if available in compiler context
   financial_facts?: FinancialFactV1[] | null;  // typed spreadsheet facts from financial_facts_v1
   documents?: Array<{ document_id: string; kind?: string; mime_type?: string; filename?: string }> | null;
+  /** RC-001ft: SEC filing hint codes extracted from DIO claim text (e.g. 'sec_filing_s1'). */
+  doc_type_hints?: string[] | null;
 }): FinancialCoverageProfileV1 {
   const out: FinancialCoverageProfileV1 = {
     confidence: 'low',
@@ -174,6 +200,9 @@ export function inferFinancialCoverageProfileV1(input: {
     const isForecast = subtype === 'forecast' || /\b(forecast|projection|projected|plan)\b/i.test(raw);
     const isMarketSizing = raw ? isMarketSizingText(raw) : false;
     if (isMarketSizing) continue;
+    // Deployment / capex totals (e.g. "Use of Proceeds" $155M) must not be
+    // treated as historical operating revenue.
+    if (raw && isDeploymentCapitalText(raw)) continue;
     const ev = Array.isArray(c?.sources) ? firstEvidenceFromSources(c.sources) : null;
 
     if (year != null) {
@@ -206,9 +235,10 @@ export function inferFinancialCoverageProfileV1(input: {
     const subtype = asNonEmptyString((cj as any)?.value_json?.subtype ?? null);
     const year = typeof (cj as any)?.value_json?.year === 'number' ? (cj as any).value_json.year : null;
 
-    // Revenue facts (exclude market sizing)
+    // Revenue facts (exclude market sizing and deployment capital)
     if (ft === 'revenue_v1') {
       if (text && isMarketSizingText(text)) continue;
+      if (text && isDeploymentCapitalText(text)) continue;
       if (scope && scope.toLowerCase().includes('market')) continue;
       const isForecast = (subtype && subtype.toLowerCase() === 'forecast') || /\b(forecast|projection|projected|plan)\b/i.test(text);
       const ev = firstEvidenceFromPromotedFact(pf, text);
@@ -225,8 +255,8 @@ export function inferFinancialCoverageProfileV1(input: {
 
     // Forecast signals via deterministic text/fact types
     if (ft.includes('forecast') || ft.includes('projection') || /\b(forecast|projection|projected|plan)\b/i.test(text)) {
-      // Still block market sizing from being treated as revenue.
-      if (text && !isMarketSizingText(text)) {
+      // Still block market sizing and deployment capital from being treated as revenue.
+      if (text && !isMarketSizingText(text) && !isDeploymentCapitalText(text)) {
         flag(out, 'forecast_revenue_present', firstEvidenceFromPromotedFact(pf, text));
       }
     }
@@ -342,6 +372,18 @@ export function inferFinancialCoverageProfileV1(input: {
     }
   }
 
+  // RC-001ft: If SEC filing hints are present and no XLSX was detected, credit the filing
+  // as an authoritative source. SEC filings contain audited financial statements — never
+  // penalize them for the absence of a startup-style spreadsheet model.
+  const secHints = Array.isArray(input.doc_type_hints) ? input.doc_type_hints : [];
+  const secFilingPresent = secHints.some((h) => h === 'sec_filing_s1' || h === 'sec_filing_10k' || h === 'sec_filing_10q');
+  if (secFilingPresent && out.sources.every((s) => s.kind !== 'xlsx')) {
+    // Replace deck placeholder with authoritative filing source.
+    const deckIdx = out.sources.findIndex((s) => s.kind === 'deck');
+    if (deckIdx !== -1) out.sources.splice(deckIdx, 1);
+    out.sources.push({ kind: 'other', notes: 'sec_filing_authoritative' });
+  }
+
   // Confidence heuristic
   const coverageKeys = Object.keys(out.coverage) as Array<keyof FinancialCoverageProfileV1['coverage']>;
   const trueCount = coverageKeys.reduce((sum, k) => sum + (out.coverage[k] ? 1 : 0), 0);
@@ -349,6 +391,8 @@ export function inferFinancialCoverageProfileV1(input: {
   if (out.coverage.income_statement_present || (trueCount >= 5 && hasXlsx)) out.confidence = 'high';
   else if (trueCount >= 2 && trueCount <= 4) out.confidence = 'medium';
   else out.confidence = 'low';
+  // RC-001ft: SEC filings contain audited financials — never score lower than medium.
+  if (secFilingPresent && out.confidence === 'low') out.confidence = 'medium';
 
   // Notes: track whether any evidence explicitly points at XLSX paths or typed facts.
   const usedXlsxPath = (() => {
@@ -363,7 +407,19 @@ export function inferFinancialCoverageProfileV1(input: {
   const notes: string[] = [];
   if (hasXlsx) notes.push('xlsx_present');
   if (usedXlsxPath || usedXlsxFacts) notes.push('xlsx_evidence_used');
+  if (secFilingPresent) notes.push('sec_filing_present');
   if (notes.length > 0) out.notes = notes;
+
+  // Compute normalized coverage quality score 0–100 (Fix 15)
+  // Weighted by confidence: high=1.0, medium=0.85, low=0.65
+  const _COVERAGE_SCORE_KEYS: (keyof FinancialCoverageProfileV1['coverage'])[] = [
+    'historical_revenue_present', 'forecast_revenue_present', 'income_statement_present',
+    'burn_rate_present', 'runway_present', 'unit_economics_present',
+    'balance_sheet_present', 'cash_flow_present',
+  ];
+  const _trueFlags = _COVERAGE_SCORE_KEYS.filter((k) => out.coverage[k]).length;
+  const _CONF_MULT: Record<string, number> = { high: 1.0, medium: 0.85, low: 0.65 };
+  out.score = Math.round((_trueFlags / _COVERAGE_SCORE_KEYS.length) * 100 * (_CONF_MULT[out.confidence] ?? 0.65));
 
   return out;
 }

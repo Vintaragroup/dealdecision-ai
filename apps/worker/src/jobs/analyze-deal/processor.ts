@@ -54,6 +54,15 @@ import { getFinancialFactsForDeal, getDocumentsForReport, FINANCIAL_FACTS_ANALYS
 import { populatePageRegistryV1 } from "../../lib/page-registry/populate-page-registry-v1";
 import { populateDealFactRegistryV1 } from "../../lib/deal-facts/populate-deal-fact-registry-v1";
 import { populateFinancialFactRegistryV1 } from "../../lib/financial-facts/populate-financial-fact-registry-v1";
+import {
+	runLLMFieldAuditShadow,
+	runLLMFinancialVerificationShadow,
+	runDeterministicValidatorShadow,
+	runLLMDecisionRationaleShadow,
+	runLLMRationaleValidationShadow,
+} from "../../lib/intelligence/llm-auditor-hooks";
+import { synthesizeInvestmentInterpretationV1 } from '../../lib/intelligence/investment-interpretation-synthesizer-v1';
+import { validateNarrativeQualityV1 } from '../../lib/intelligence/narrative-quality-validator-v1';
 
 // -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
 function safeJsonParseObject(raw: string): Record<string, unknown> | null {
@@ -100,6 +109,31 @@ function countWords(value: string): number {
 	const s = String(value ?? "");
 	const words = s.trim().split(/\s+/).filter(Boolean);
 	return words.length;
+}
+
+function envFlagEnabled(value: string | undefined): boolean {
+	const normalized = String(value ?? '').trim().toLowerCase();
+	return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+const SUMMARY_BROKEN_ARTICLE_RX = /\bis an\s+for\b/gi;
+const SUMMARY_INVESTMENT_KEYWORDS_RX =
+	/\b(invest|investment|conviction|recommend|recommendation|proceed|pass|hold|score|risk|raise|round|valuation|diligence|gating)\b/i;
+
+function cleanupSummarySentence(text: string): string {
+	if (!text) return text;
+	let out = text.replace(SUMMARY_BROKEN_ARTICLE_RX, "is for");
+	out = out.replace(/\s+/g, " ").trim();
+	return out;
+}
+
+function enforceInvestmentOneLiner(text: string, opts: { recommendation?: string | null }): string {
+	const cleaned = cleanupSummarySentence(text);
+	if (!cleaned) return cleaned;
+	if (SUMMARY_INVESTMENT_KEYWORDS_RX.test(cleaned)) return cleaned;
+	const rec = typeof opts.recommendation === "string" && opts.recommendation.trim().length > 0 ? opts.recommendation.trim() : null;
+	const prefix = rec ? `Investment view (${rec})` : "Investment view";
+	return `${prefix}: ${cleaned}`;
 }
 
 function countSentences(value: string): number {
@@ -222,6 +256,39 @@ export function resolvePromotedBusinessModelForPolicy(input: {
 	}
 
 	if (!isRealEstatePolicyId(input.selectedPolicyId)) {
+		// SPV/fund guard: if the stored promoted display is a consumer channel label but the raw
+		// slide text is dominated by fund/SPV language without an explicit DTC keyword, suppress.
+		const rawText = String(input.promotedRawText ?? "").toLowerCase();
+		const currentDisplay = String(input.currentDisplay ?? "").toLowerCase();
+		const isDtcLabel = /\b(dtc\s*ecommerce|direct[\s-]to[\s-]consumer|omnichannel)\b/i.test(promoted);
+		if (process.env.DDAI_DEBUG_POLICY_GUARD === "1" || process.env.DEBUG_PHASE1_OVERVIEW_V2 === "1") {
+			console.log(JSON.stringify({ event: "DEBUG_POLICY_GUARD", isDtcLabel, rawText_len: rawText.length, currentDisplay_head: currentDisplay.slice(0, 80) }));
+		}
+		if (isDtcLabel) {
+			// Case 1: rawText present — check for SPV/fund dominance without explicit DTC
+			if (rawText) {
+				const hasFundSpvInRaw = /\b(spvs?|special\s+purpose\s+vehicle|fund\s+vehicle|co-?investment|non-?dilutive|carried\s+interest|general\s+partner|limited\s+partner)\b/.test(rawText);
+				const hasExplicitDtcKeyword = /\b(dtc\b|d2c\b|direct[\s-]to[\s-]consumer|direct\s+via\s+website|website\s+sales)/.test(rawText);
+				if (hasFundSpvInRaw && !hasExplicitDtcKeyword) {
+					return { action: "suppress", display: null, reason: "fund_spv_signals_block_dtc_without_explicit_dtc_keyword" };
+				}
+			}
+			// Case 2: rawText empty — if the current live DPU analysis is clearly non-DTC (enterprise/AI/tech/fund),
+			// or if there is no current context at all (rawText=null means stored fact has no supporting evidence),
+			// treat stored DTC label as stale and suppress it.
+			if (!rawText) {
+				if (!currentDisplay) {
+					// No raw evidence and no current context: stored label has no support — suppress.
+					return { action: "suppress", display: null, reason: "stale_dtc_label_no_supporting_evidence" };
+				}
+				// If the current deterministic analysis does NOT detect DTC/ecommerce signals, the stored
+				// DTC label is a stale artefact — suppress it. "SaaS", "Fund", "Licensing", etc. all lack DTC.
+				const currentHasDtc = /\b(dtc\b|d2c\b|direct[\s-]to[\s-]consumer|ecommerce|consumer\s*\/\s*commerce)\b/i.test(currentDisplay);
+				if (!currentHasDtc) {
+					return { action: "suppress", display: null, reason: "stale_dtc_label_conflicts_with_current_non_dtc_signals" };
+				}
+			}
+		}
 		return { action: "accept", display: promoted, reason: "policy_non_real_estate" };
 	}
 
@@ -381,10 +448,15 @@ async function generateDealSummaryV2FromPhase1(input: {
 			"If a detail is missing, state it explicitly as a gap (e.g., 'Raise/terms not provided').",
 			"Output MUST be valid JSON only (no markdown, no backticks, no extra text).",
 			"Return JSON with EXACT schema and keys: {\"generated_at\": string, \"model\": \"gpt-4o-mini\", \"summary\": {\"one_liner\": string, \"paragraphs\": [string,string,string]}, \"strengths\": string[], \"risks\": string[], \"open_questions\": string[]}.",
+			"Investment framing requirements:",
+			"- summary.one_liner MUST read like an investment viewpoint (recommendation, conviction, or gating raise context). Do NOT write 'Company X is a...' marketing blurbs.",
+			"- summary.paragraphs[0]: describe what the deal is (raise/instrument/stage) and the current recommendation posture.",
+			"- summary.paragraphs[1]: describe the top conviction drivers (team/product/traction) referencing available quantitative or qualitative proof.",
+			"- summary.paragraphs[2]: describe the key risks, gaps, or next diligence items blocking full conviction.",
 			"Requirements: summary.paragraphs MUST be exactly 3 paragraphs.",
 			"Each paragraph MUST be 2–4 sentences and at least 60 words.",
-			"No bullet points in paragraphs. Use investor-grade, neutral language.",
-			"Prefer deal_overview_v2 for product/ICP/model and executive_summary_v2.signals for recommendation/score/confidence.",
+			"No bullet points in paragraphs. Use investor-grade, analytical language, referencing recommendation/score when provided.",
+			"Prefer deal_overview_v2 for product/ICP/model, executive_summary_v2.signals for recommendation/score/confidence, and decision_summary_v1 for open risks.",
 		],
 	});
 	const system = promptRuntime.systemPrompt;
@@ -529,6 +601,11 @@ async function generateDealSummaryV2FromPhase1(input: {
 	}
 	// Ensure model matches the required one even if the model omits it.
 	coerced.model = "gpt-4o-mini";
+	const execSummarySignals = input.phase1_executive_summary_v2 && typeof input.phase1_executive_summary_v2 === "object"
+		? (input.phase1_executive_summary_v2 as any)
+		: null;
+	const recommendation = typeof execSummarySignals?.recommendation === "string" ? execSummarySignals.recommendation : null;
+	coerced.summary.one_liner = enforceInvestmentOneLiner(coerced.summary.one_liner, { recommendation });
 	console.log(
 		JSON.stringify({
 			event: "phase1_deal_summary_v2_built",
@@ -585,6 +662,10 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 	// multi-stage pipeline only runs once — from the full analyze_deal triggered at finalize.
 	const isFirstPass = (job.data as any)?.reason === "first_pass_pages_ready"
 		|| Boolean((job.data as any)?.prereq?.first_pass);
+	// User-triggered force-refresh: bypass investor_insights dedup so Stage 5 executes and
+	// writes financial_truth_summary + a fresh deal_challenge_pass_results row.
+	// Automated/scheduled runs keep existing dedup behavior (force_recompute stays false).
+	const isForceRefresh = Boolean((job.data as any)?.force_refresh) || Boolean((job.data as any)?.payload?.force_refresh);
 	const minDpuCreatedAtRaw = (job.data as any)?.min_dpu_created_at ?? (job.data as any)?.payload?.min_dpu_created_at;
 	const minDpuCreatedAt =
 		typeof minDpuCreatedAtRaw === "string" && minDpuCreatedAtRaw.trim().length > 0
@@ -598,12 +679,110 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 	try {
 		// Phase 7: observability — log the analysis mode so first-pass jobs are clearly
 		// distinguishable in production logs without having to scan job payloads.
+
+		// ── Prereq readiness check ──────────────────────────────────────────────
+		// Evaluate upstream completion before committing to analysis work.
+		// Checks: (a) eligible extracted docs exist, (b) DPU rows exist for pitch-deck docs,
+		// (c) on force_refresh: DPU rows are newer than min_dpu_created_at.
+		// Emits ANALYZE_DEAL_PREREQ_PENDING when coverage is insufficient; still proceeds
+		// (fail-open) but the log makes timing issues visible without blocking the queue.
+		try {
+			const pool = getPool();
+			const [docsRes, dpuRes] = await Promise.all([
+				pool.query<{ id: string; status: string; type: string }>(
+					`SELECT id::text, status, COALESCE(type,'other') AS type
+					   FROM documents
+					  WHERE deal_id = $1::uuid AND deleted_at IS NULL`,
+					[dealId]
+				),
+				pool.query<{ document_id: string; dpu_count: string; latest_created_at: string | null }>(
+					`SELECT document_id::text,
+					        COUNT(*)::text AS dpu_count,
+					        MAX(created_at)::text AS latest_created_at
+					   FROM document_page_understanding
+					  WHERE deal_id = $1::uuid
+					  GROUP BY document_id`,
+					[dealId]
+				),
+			]);
+
+			const allDocs = docsRes.rows;
+			const dpuByDoc = new Map(dpuRes.rows.map((r) => [r.document_id, r]));
+			const extractedDocs = allDocs.filter((d) => d.status === "completed" || d.status === "ready_for_analysis");
+			const pitchDeckDocs = allDocs.filter((d) => d.type === "pitch_deck");
+			const pitchDecksWithDpu = pitchDeckDocs.filter((d) => dpuByDoc.has(d.id) && Number(dpuByDoc.get(d.id)!.dpu_count) > 0);
+
+			// For force_refresh: check that at least one DPU row is newer than min_dpu_created_at.
+			let dpuFreshForRefresh = true;
+			if (isForceRefresh && minDpuCreatedAt && dpuRes.rows.length > 0) {
+				const latestDpu = dpuRes.rows
+					.map((r) => r.latest_created_at ?? "")
+					.filter(Boolean)
+					.sort()
+					.pop() ?? "";
+				dpuFreshForRefresh = latestDpu >= minDpuCreatedAt;
+			}
+
+			const prereqReady =
+				extractedDocs.length > 0 &&
+				(pitchDeckDocs.length === 0 || pitchDecksWithDpu.length > 0) &&
+				dpuFreshForRefresh;
+
+			if (!prereqReady) {
+				console.log(
+					JSON.stringify({
+						event: "ANALYZE_DEAL_PREREQ_PENDING",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						is_force_refresh: isForceRefresh,
+						is_first_pass: isFirstPass,
+						all_docs_count: allDocs.length,
+						extracted_docs_count: extractedDocs.length,
+						pitch_deck_docs_count: pitchDeckDocs.length,
+						pitch_decks_with_dpu: pitchDecksWithDpu.length,
+						dpu_fresh_for_refresh: dpuFreshForRefresh,
+						min_dpu_created_at: minDpuCreatedAt,
+						ts: new Date().toISOString(),
+					})
+				);
+			} else {
+				const totalDpuRows = dpuRes.rows.reduce((s, r) => s + Number(r.dpu_count), 0);
+				console.log(
+					JSON.stringify({
+						event: "ANALYZE_DEAL_PREREQ_READY",
+						deal_id: dealId,
+						job_id: job.id ? String(job.id) : null,
+						is_force_refresh: isForceRefresh,
+						is_first_pass: isFirstPass,
+						extracted_docs_count: extractedDocs.length,
+						pitch_deck_docs_count: pitchDeckDocs.length,
+						pitch_decks_with_dpu: pitchDecksWithDpu.length,
+						total_dpu_rows: totalDpuRows,
+						min_dpu_created_at: minDpuCreatedAt,
+						ts: new Date().toISOString(),
+					})
+				);
+			}
+		} catch (prereqCheckErr) {
+			// Never block analysis on a prereq-check error — fail open.
+			console.warn(
+				JSON.stringify({
+					event: "ANALYZE_DEAL_PREREQ_CHECK_FAILED",
+					deal_id: dealId,
+					job_id: job.id ? String(job.id) : null,
+					reason: prereqCheckErr instanceof Error ? prereqCheckErr.message : String(prereqCheckErr),
+					ts: new Date().toISOString(),
+				})
+			);
+		}
+
 		console.log(
 			JSON.stringify({
 				event: "ANALYZE_DEAL_START",
 				deal_id: dealId,
 				job_id: job.id ? String(job.id) : null,
 				is_first_pass: isFirstPass,
+				is_force_refresh: isForceRefresh,
 				reason: (job.data as any)?.reason ?? null,
 				ts: new Date().toISOString(),
 			})
@@ -801,7 +980,14 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 				title: doc.title,
 				type: analysisType,
 				full_text: enrichedFullText.trim() ? enrichedFullText : null,
-				...(minimalFullContent ? { full_content: minimalFullContent } : {}),
+				// For pitch_deck: use the pre-built minimalFullContent (words-only projection).
+				// For PPTX-format docs classified as "other" (full_content has slides array):
+				// pass the raw full_content so extractPagesFromFullContent can extract slide text.
+				...(minimalFullContent
+					? { full_content: minimalFullContent }
+					: (doc.full_content && typeof doc.full_content === "object" && Array.isArray((doc.full_content as any).slides)
+						? { full_content: doc.full_content }
+						: {})),
 			};
 		});
 
@@ -1070,6 +1256,34 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 							},
 						]),
 					};
+				} else if (policyResolution.action === "suppress") {
+					// The stale promoted fact was suppressed. Delete the evidence_items record so the
+					// report compiler cannot read it and re-surface the stale label. The report will
+					// fall back to DPU-derived facts which can now classify correctly.
+					try {
+						const suppressedEvidenceId = `deal:${dealId}:fact:business_model_v1`;
+						await pool.query(
+							`DELETE FROM evidence_items WHERE evidence_id = $1 AND deal_id = $2::uuid`,
+							[suppressedEvidenceId, dealId]
+						);
+						console.log(
+							JSON.stringify({
+								event: "phase1_promoted_business_model_stale_record_deleted",
+								deal_id: dealId,
+								evidence_id: suppressedEvidenceId,
+								reason: policyResolution.reason,
+							})
+						);
+					} catch (deleteErr) {
+						// Non-fatal: log but don't fail the analysis job.
+						console.warn(
+							JSON.stringify({
+								event: "phase1_promoted_business_model_stale_record_delete_failed",
+								deal_id: dealId,
+								error: String(deleteErr),
+							})
+						);
+					}
 				}
 			}
 		} catch {
@@ -1704,6 +1918,30 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 					// Non-blocking — compiler falls back to DIO inputs.documents
 				}
 
+				let companyName: string | null = null;
+				try {
+					const dealNameResult = await pool.query<{ name: string | null }>(
+						`SELECT name FROM deals WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1`,
+						[dealId]
+					);
+					const rawName = dealNameResult.rows?.[0]?.name;
+					if (typeof rawName === 'string' && rawName.trim().length > 0) {
+						companyName = rawName.trim();
+					}
+				} catch { /* fail-open */ }
+
+				// Query authoritative evidence count from DB so compiler.evidenceCount
+				// reflects actual evidence_items rows, not the in-memory DIO array.
+				let evidenceItemCount: number | null = null;
+				try {
+					const evidenceCountResult = await pool.query<{ count: string }>(
+						`SELECT COUNT(*)::text AS count FROM evidence_items WHERE deal_id = $1::uuid`,
+						[dealId]
+					);
+					const raw = evidenceCountResult.rows?.[0]?.count;
+					if (raw != null) evidenceItemCount = parseInt(raw, 10);
+				} catch { /* fail-open — compiler will fall back to dio.inputs.evidence.length */ }
+
 				const compiledReport = (() => {
 					// Always use the WithPromotedFacts variant so financialFacts and documents
 					// can be supplied for consistent has_xlsx / has_cap_table / has_facts output
@@ -1712,8 +1950,260 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						promotedFacts,
 						financialFacts: financialFactsForOrchestrator,
 						documents: documentsForCompile,
+						companyName: companyName ?? undefined,
+						evidenceItemCount: evidenceItemCount ?? undefined,
 					});
 				})();
+
+				// ── Phase 2: LLM Shadow Auditors ────────────────────────────────────────
+				// Run the LLM Field Auditor and Financial Verifier in parallel (shadow mode).
+				// Best-effort, non-blocking — never throws, never alters scoring or verdicts.
+				// Results are attached as optional slots on compiledReport before persisting.
+				try {
+					const structuredSummary = (compiledReport as any)?.structured_summary ?? null;
+					const financialBreakdown = (compiledReport as any)?.financial_breakdown_v1 ?? null;
+					const hasXlsx = Boolean((compiledReport as any)?.has_xlsx);
+					const hasCapTable = Boolean((compiledReport as any)?.has_cap_table);
+					const archetype = (compiledReport as any)?.archetype ?? null;
+
+					const promotedFactsSample = (promotedFacts ?? []).slice(0, 20).map((f: any) => ({
+						evidence_id: String(f.evidence_id ?? ''),
+						fact_type: String(f.content_json?.fact_type ?? f.source_type ?? ''),
+						content: (typeof f.content_json === 'object' && f.content_json) ? f.content_json : {},
+						confidence: typeof f.confidence === 'number' ? f.confidence : 0,
+					}));
+
+					const financialFactsForAudit = (financialFactsForOrchestrator ?? []).map((ff: any) => ({
+						fact_id: ff.fact_id ?? null,
+						metric: String(ff.metric ?? ''),
+						value: typeof ff.value === 'number' ? ff.value : null,
+						raw_value: ff.raw_value ?? null,
+						period: ff.period ?? null,
+						source_kind: ff.source_kind ?? null,
+						confidence: typeof ff.confidence === 'number' ? ff.confidence : null,
+						is_projection: ff.is_projection ?? null,
+					}));
+
+					const runId = String((result.storage_result as any)?.version ?? '') || null;
+
+					const [fieldAuditResult, financialVerifResult] = await Promise.allSettled([
+						runLLMFieldAuditShadow({
+							deal_id: dealId,
+							run_id: runId,
+							company_name: companyName ?? null,
+							archetype,
+							structured_summary: structuredSummary,
+							financial_breakdown: financialBreakdown,
+							promoted_facts_sample: promotedFactsSample,
+							evidence_count: evidenceItemCount ?? 0,
+							has_xlsx: hasXlsx,
+							has_cap_table: hasCapTable,
+						}),
+						runLLMFinancialVerificationShadow({
+							deal_id: dealId,
+							run_id: runId,
+							company_name: companyName ?? null,
+							has_xlsx: hasXlsx,
+							has_cap_table: hasCapTable,
+							financial_breakdown: financialBreakdown,
+							financial_facts: financialFactsForAudit,
+							deck_financial_signals: (compiledReport as any)?.deck_financial_signals ?? null,
+						}),
+					]);
+
+					if (fieldAuditResult.status === 'fulfilled' && fieldAuditResult.value) {
+						(compiledReport as any).llm_field_audit_v1 = fieldAuditResult.value;
+					}
+					if (financialVerifResult.status === 'fulfilled' && financialVerifResult.value) {
+						(compiledReport as any).llm_financial_verification_v1 = financialVerifResult.value;
+					}
+
+					// ── Phase 3: Deterministic Validator ──────────────────────────────────
+					// Validates LLM proposals, produces correction lineage + learning events.
+					// INVARIANT: applied_to_scoring is always false. No scoring fields mutated.
+					const fieldAudit = fieldAuditResult.status === 'fulfilled' ? fieldAuditResult.value : null;
+					const financialVerif = financialVerifResult.status === 'fulfilled' ? financialVerifResult.value : null;
+
+					if (fieldAudit !== null || financialVerif !== null) {
+						const validatorResult = await runDeterministicValidatorShadow({
+							deal_id: dealId,
+							run_id: runId,
+							company_name: companyName ?? null,
+							archetype: archetype ?? null,
+							llm_field_audit: fieldAudit,
+							llm_financial_verification: financialVerif,
+							structured_summary: structuredSummary,
+							financial_breakdown: financialBreakdown,
+						});
+
+						if (validatorResult) {
+							(compiledReport as any).correction_lineage_v1 = [validatorResult.correction_lineage];
+							(compiledReport as any).llm_validation_summary_v1 = validatorResult.validation_summary;
+						}
+					}
+
+					if (envFlagEnabled(process.env.INVESTMENT_INTERPRETATION_SHADOW_MODE)) {
+						const selectedPolicyIdForInterpretation =
+							getSelectedPolicyIdFromAnyLike((result as any)?.dio) ??
+							getSelectedPolicyIdFromAnyLike((result as any)?.storage_result?.dio_data) ??
+							null;
+						const interpretation = synthesizeInvestmentInterpretationV1({
+							deal_id: dealId,
+							report_id: null,
+							run_id: runId,
+							company_name: companyName ?? null,
+							canonical_verdict:
+								(compiledReport as any)?.canonical_decision_v2?.verdict ??
+								(compiledReport as any)?.recommendation ??
+								null,
+							archetype: archetype ?? null,
+							selected_policy_id: selectedPolicyIdForInterpretation,
+							structured_summary: structuredSummary,
+							phase1_overview: ((result as any)?.dio as any)?.phase1?.deal_overview_v2 ?? null,
+							promoted_facts_sample: promotedFactsSample.map((fact) => ({
+								evidence_id: fact.evidence_id,
+								fact_type: fact.fact_type,
+								summary: String((fact as any).content?.summary ?? fact.content?.text ?? fact.content?.value ?? '').slice(0, 220),
+								confidence: fact.confidence,
+								source_kind: null,
+							})),
+							financial_verification: financialVerif,
+							validation_summary: (compiledReport as any)?.llm_validation_summary_v1 ?? null,
+							accepted_corrections: ((compiledReport as any)?.correction_lineage_v1?.[0]?.corrections ?? [])
+								.filter((item: any) => item?.validator_status === 'accepted')
+								.slice(0, 5)
+								.map((item: any) => `${item.original_field} -> ${item.proposed_field}: ${item.correction_type}`),
+							underwriting_readiness: (compiledReport as any)?.underwriting_readiness_v1 ?? null,
+						});
+
+						if (interpretation) {
+							(compiledReport as any).investment_interpretation_v1 = interpretation;
+							(compiledReport as any).narrative_quality_validation_v1 = validateNarrativeQualityV1({
+								deal_id: dealId,
+								run_id: runId,
+								interpretation,
+							});
+						}
+					}
+				} catch {
+					// Fail-open: shadow audit errors must never block the analysis job
+				}
+
+				// ── Phase 4: Decision Rationale Synthesizer + Validator ─────────────────────
+				// INVARIANTS:
+				// - canonical_verdict is ALWAYS from the deterministic pipeline
+				// - LLM explains the verdict; it does NOT compute or override it
+				// - No scoring, conviction, or verdict fields are mutated
+				// - Rationale only reaches compiledReport if validator passes
+				try {
+					const canonicalVerdict: string =
+						(compiledReport as any)?.canonical_decision_v2?.verdict ??
+						(compiledReport as any)?.recommendation ??
+						null;
+
+					if (canonicalVerdict) {
+						// Re-derive context vars (Phase 4 is outside Phase 2/3 try scope)
+						const p4RunId = String((result.storage_result as any)?.version ?? '') || null;
+						const p4HasXlsx = Boolean((compiledReport as any)?.has_xlsx);
+						const p4HasCapTable = Boolean((compiledReport as any)?.has_cap_table);
+						const p4Archetype = (compiledReport as any)?.archetype ?? null;
+
+						// Build accepted corrections summary for synthesizer context
+						const lineageItems: Array<Record<string, unknown>> =
+							(compiledReport as any)?.correction_lineage_v1?.[0]?.corrections ?? [];
+						const acceptedCorrectionsSummary = lineageItems
+							.filter((c: any) => c.validator_status === 'accepted')
+							.slice(0, 5)
+							.map((c: any) => `${c.original_field} → ${c.proposed_field}: ${c.correction_type}`);
+
+						// Build financial facts summary for validator
+						const financialFactsForValidator = (financialFactsForOrchestrator ?? []).slice(0, 12).map((ff: any) => ({
+							metric: String(ff.metric ?? ''),
+							raw_value: ff.raw_value ?? null,
+							is_projection: ff.is_projection ?? null,
+						}));
+
+						// Evidence items for synthesizer
+						const strongestEvidenceForSynthesizer = (promotedFacts ?? []).slice(0, 12).map((f: any) => ({
+							evidence_id: String(f.evidence_id ?? ''),
+							fact_type: String(f.content_json?.fact_type ?? f.source_type ?? ''),
+							summary: String(f.content_json?.summary ?? f.content_json?.text ?? f.content_json?.value ?? '').slice(0, 200),
+							is_projection: Boolean(f.is_projection),
+							source_kind: String(f.source_kind ?? 'unknown'),
+							confidence: typeof f.confidence === 'number' ? f.confidence : 0,
+						}));
+
+						// Conviction summary (plain text only — never pass raw scoring object)
+						const convictionRec: string | null =
+							(compiledReport as any)?.recommendation ?? null;
+						const convictionOneLiner: string | null =
+							(compiledReport as any)?.one_liner ?? null;
+						const convictionSummary = [convictionRec, convictionOneLiner]
+							.filter(Boolean)
+							.join(' — ') || null;
+
+						// Financial coverage summary string
+						const financialCovPct: number | null =
+							(compiledReport as any)?.financial_coverage_v1?.completeness_pct ?? null;
+						const financialCoverageSummary = financialCovPct != null
+							? `Financial completeness: ${financialCovPct}%`
+							: null;
+
+						// Synthesize rationale
+						const rationale = await runLLMDecisionRationaleShadow({
+							deal_id: dealId,
+							run_id: p4RunId,
+							canonical_verdict: canonicalVerdict,
+							company_name: companyName ?? null,
+							archetype: p4Archetype ?? null,
+							conviction_summary: convictionSummary,
+							financial_coverage_summary: financialCoverageSummary,
+							evidence_count: evidenceItemCount ?? 0,
+							has_xlsx: p4HasXlsx,
+							has_cap_table: p4HasCapTable,
+							strongest_evidence_items: strongestEvidenceForSynthesizer,
+							financial_facts_summary: (financialFactsForOrchestrator ?? []).slice(0, 12).map((ff: any) => ({
+								metric: String(ff.metric ?? ''),
+								value: typeof ff.value === 'number' ? ff.value : null,
+								raw_value: ff.raw_value ?? null,
+								period: ff.period ?? null,
+								is_projection: ff.is_projection ?? null,
+								source_kind: ff.source_kind ?? null,
+							})),
+							contradiction_summaries: [],
+							missing_evidence_signals: [],
+							accepted_corrections_summary: acceptedCorrectionsSummary,
+							decision_readiness_score: (compiledReport as any)?.decision_readiness?.score ?? null,
+							financial_completeness_pct: financialCovPct,
+							underwriting_readiness_notes: [],
+							section_health_summary: null,
+						});
+
+						if (rationale) {
+							// Validate before attaching
+							const validation = await runLLMRationaleValidationShadow({
+								deal_id: dealId,
+								run_id: p4RunId,
+								rationale,
+								financial_facts_summary: financialFactsForValidator,
+							});
+
+							// Promote rationale to 'validated' if validator passes
+							if (validation?.overall_status === 'passed') {
+								(rationale as any).status = 'validated';
+								(rationale as any).validation_run_id = validation.run_id;
+							}
+
+							// Always attach rationale (shadow_only or validated)
+							(compiledReport as any).llm_decision_rationale_v1 = rationale;
+							if (validation) {
+								(compiledReport as any).llm_rationale_validation_v1 = validation;
+							}
+						}
+					}
+				} catch {
+					// Fail-open: rationale synthesis errors must never block the analysis job
+				}
 
 				// Explicitly stamp updated_at so the staleness detector can use DIO.updated_at
 				// as the authoritative freshness anchor for the financial snapshot.
@@ -1909,7 +2399,12 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 				const insightsJobId = makeJobId("investor_insights", [dealId, "v1", "overlay_complete"]);
 				await insightsQueue.add(
 					"generate_investor_insights",
-					{ deal_id: dealId, engine_version: "v1", triggered_by: "overlay_complete" },
+					{
+						deal_id: dealId,
+						engine_version: "v1",
+						triggered_by: "overlay_complete",
+						...(isForceRefresh ? { force_recompute: true } : {}),
+					},
 					{ jobId: insightsJobId, removeOnComplete: true, removeOnFail: false, attempts: 3, backoff: { type: "exponential", delay: 1000 } }
 				);
 				console.log(
@@ -1918,6 +2413,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						deal_id: dealId,
 						job_id: insightsJobId,
 						triggered_by: "overlay_complete",
+						force_recompute: isForceRefresh,
 						ts: new Date().toISOString(),
 					})
 				);

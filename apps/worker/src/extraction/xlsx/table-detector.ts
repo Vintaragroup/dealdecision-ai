@@ -141,19 +141,30 @@ const MIN_COL_HEADERS = 2;
  *   - "in billions"
  */
 const UNIT_SCALE_PATTERNS: ReadonlyArray<{ readonly pattern: RegExp; readonly factor: number }> = [
-  // Billions
+  // Billions — "in billions", "(in billions)", "USD billions"
   {
-    pattern: /\bin\s+(?:us\s+)?billions?\b|\(in\s+billions?\)/i,
+    pattern: /\bin\s+(?:us\s+)?billions?\b|\(in\s+billions?\)|(?:USD|EUR|GBP|AUD|CAD)\s+billions?\b/i,
     factor: 1_000_000_000,
   },
-  // Millions — "in millions", "(in millions)", "$MM", "£MM", "€MM", "(£MM)"
+  // Millions:
+  //   existing: "in millions", "(in millions)", "$MM", "£MM", "€MM", "(£MM)"
+  //   new:      "$M", "($ M)", "($M)", "in $M", "USD millions"
+  //
+  // Note: [$€£¥₹]\s*m(?!\w) matches "$M" / "$ M" but NOT "$MM" (next char is M, a word char)
+  //       and NOT "$1.5M" (\s* cannot span digits — currency sym is directly before M).
+  //       (?!\w) prevents matching inside currency amounts like "$128M" because \s* only
+  //       matches whitespace between the symbol and M, not digits.
   {
-    pattern: /\bin\s+(?:us\s+)?millions?\b|\(in\s+millions?\)|[$€£¥₹]\s*mm\b|\([$€£¥₹]?\s*mm\)/i,
+    pattern: /\bin\s+(?:us\s+)?millions?\b|\(in\s+millions?\)|[$€£¥₹]\s*mm\b|\([$€£¥₹]?\s*mm\)|[$€£¥₹]\s*m(?!\w)|\([$€£¥₹]?\s*m(?!\w)\)|(?:USD|EUR|GBP|AUD|CAD)\s+millions?\b|\bin\s+[$€£¥₹]\s*m(?!\w)/i,
     factor: 1_000_000,
   },
-  // Thousands — "in thousands", "(in thousands)", "$000s", "£000s", "€000s", "(000s)", "(£000s)"
+  // Thousands:
+  //   existing: "in thousands", "(in thousands)", "$000s", "£000s", "€000s", "(000s)"
+  //   new:      "$K", "($ K)", "($K)", "in $K", "USD thousands"
+  //
+  // Note: [$€£¥₹]\s*k(?!\w) matches "$K" / "$ K" but NOT "$KPIS" (K followed by word char).
   {
-    pattern: /\bin\s+(?:us\s+)?thousands?\b|\(in\s+thousands?\)|[$€£¥₹]\s*000s?\b|\([$€£¥₹]?\s*000s?\)/i,
+    pattern: /\bin\s+(?:us\s+)?thousands?\b|\(in\s+thousands?\)|[$€£¥₹]\s*000s?\b|\([$€£¥₹]?\s*000s?\)|[$€£¥₹]\s*k(?!\w)|\([$€£¥₹]?\s*k(?!\w)\)|(?:USD|EUR|GBP|AUD|CAD)\s+thousands?\b|\bin\s+[$€£¥₹]\s*k(?!\w)/i,
     factor: 1_000,
   },
 ];
@@ -207,6 +218,35 @@ function isYear(v: unknown): boolean {
 /** Returns true if the value looks like a projected-period header (e.g. "2025E", "FY2026E"). */
 function isProjectedHeader(s: string): boolean {
   return /\b\d{4}[Ee]\b/.test(s) || /\bfy\s*\d{4}[Ee]\b/i.test(s);
+}
+
+/**
+ * Returns true when a column header string is a structural/non-period artifact
+ * rather than a genuine financial period label.
+ *
+ * Suppressed patterns:
+ *   - Column coordinate labels:   "col_A", "col_B", …, "col_AA" (from excel_range Fallback 2)
+ *   - Denomination markers ($000): "$000", "$000s", "000s", "(000s)", "($000)"
+ *   - Scale abbreviations:         "$M", "$MM", "€M", "$K", etc. (pure scale stand-alone tokens)
+ *   - Empty / whitespace only
+ *
+ * Does NOT suppress legitimate period strings like "2024", "Q1 2024", "TTM",
+ * scenario labels like "Base" / "Upside", or month names like "January".
+ */
+export function isStructuralColumnHeader(header: string): boolean {
+  const s = header.trim();
+  if (!s) return true;
+  // Column coordinate placeholders: col_A, col_B, …, col_AA, col_BC, etc.
+  if (/^col_[A-Za-z]+$/.test(s)) return true;
+  // Denomination markers: $000, $000s, 000s, 000, (000s), ($000), ₹000s, etc.
+  if (/^[$€£¥₹]?\s*0{2,}s?$/i.test(s)) return true;
+  if (/^\([$€£¥₹]?\s*0{2,}s?\)$/i.test(s)) return true;
+  // Pure scale abbreviations used as column banners: $M, $MM, €M, $K, £B, etc.
+  // These are denomination markers, not period labels.
+  if (/^[$€£¥₹]\s*m{1,2}$/i.test(s)) return true;
+  if (/^[$€£¥₹]\s*k$/i.test(s)) return true;
+  if (/^[$€£¥₹]\s*b$/i.test(s)) return true;
+  return false;
 }
 
 // ─── excel_range (rows_preview) handler ──────────────────────────────────────
@@ -326,6 +366,16 @@ function fromExcelRange(payload: Record<string, unknown>): FinancialTable | null
         break;
       }
     }
+  }
+
+  // Structural label guard: if every period label resolved to a column-coordinate
+  // placeholder (col_C, col_D, col_M, etc.) the table has no usable financial
+  // period context.  These originate from salary schedules, headcount tables,
+  // cap-table allocation sheets, or vesting schedules that never had a
+  // period-header row.  Suppressing here prevents hundreds of junk revenue facts
+  // with period_label="col_C" / "col_M" from reaching the facts table.
+  if (periodLabels.length > 0 && periodLabels.every((l) => isStructuralColumnHeader(l))) {
+    return null;
   }
 
   if (periodKeys.length < MIN_COL_HEADERS) return null;
@@ -499,7 +549,12 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
 
   // ── Step 1: Separate label column from value columns ──────────────────
   const labelCol = headers[0]!;
-  const valueCols = headers.slice(1);
+  const rawValueCols = headers.slice(1);
+  // Filter out structural/denomination column headers ($000, col_X, etc.).
+  // These are workbook formatting markers, not financial period labels.
+  // Unit scale detection still works because scaleScanTexts includes the
+  // full headers array (including the structural headers before filtering).
+  const valueCols = rawValueCols.filter((h) => !isStructuralColumnHeader(h));
   if (valueCols.length < MIN_COL_HEADERS) return null;
 
   // ── Step 2: Build row headers + cell matrix ───────────────────────────
@@ -562,8 +617,17 @@ function fromExcelSheet(payload: Record<string, unknown>): FinancialTable | null
   if (rowHeaders.length < MIN_ROW_HEADERS) return null;
 
   // ── Step 3: Detect unit scaling ───────────────────────────────────────
-  // Scan sheet title + column headers for denominator markers.
+  // Scan sheet title + column headers + first 5 rows for denominator markers.
+  // Mirrors the fromExcelRange strategy: workbooks often put "in thousands" or
+  // "($M)" in the first label row rather than in the sheet title or headers.
   const scaleScanTexts: string[] = [sheetTitle, ...headers];
+  for (let i = 0; i < Math.min(5, rows.length); i++) {
+    const row = rows[i];
+    if (!row || typeof row !== "object") continue;
+    for (const v of Object.values(row as Record<string, unknown>)) {
+      if (typeof v === "string" && v.trim()) scaleScanTexts.push(v);
+    }
+  }
   const { factor: unit_scale_factor, source_text: unit_scale_source_text } =
     detectUnitScale(scaleScanTexts);
 

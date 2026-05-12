@@ -72,6 +72,22 @@ export interface FinancialFactRegistryInputsV1 {
    * metric_key + period_label already exists in the registry (projection safety).
    */
   workbookFacts?: FinancialFactV1[];
+
+  /**
+   * Existing facts already persisted to financial_facts_v1 (written by
+   * populateFinancialFactRegistryV1 during the analyze-deal job).  These are
+   * merged AFTER workbookFacts as a secondary fallback — they only fill slots
+   * not already covered by the current-run facts (Sections 1–7).
+   *
+   * Purpose: surface facts that extract-financial-table-claims.ts can find
+   * (e.g. cash_outflow_operating) but that the Stage-2 workbook-intelligence
+   * path currently misses, so reconcileFinancialFactsV1 Rules 4/4b can derive
+   * burn_rate and runway_months correctly.
+   *
+   * IMPORTANT: these facts are never written back to DB from this merge — they
+   * are runtime-only inputs for FTRL.  current-run facts always win on conflict.
+   */
+  existingDbFacts?: FinancialFactV1[];
 }
 
 // ─── Builder ──────────────────────────────────────────────────────────────────
@@ -361,6 +377,18 @@ export function buildFinancialFactRegistryV1(
       });
       if (map.has(tempId)) continue; // XLSX already populated this
 
+      // Plausibility guards for deck-signal benchmarks:
+      //  - burn_rate < $1,000: almost certainly a pricing unit (e.g. $349/month
+      //    per-agent subscription), not company burn.  No real-world company has
+      //    a total monthly burn under $1K.
+      //  - revenue < $1,000: a sub-$1K revenue figure is either a ratio/efficiency
+      //    metric ("each $11 in ARR per sales dollar") or OCR noise — not a
+      //    plausible company revenue disclosure.
+      if (bm.basis === "deck_signal") {
+        if (parsed.metric_key === "burn_rate" && parsed.value < MIN_PLAUSIBLE_BURN_RATE) continue;
+        if (parsed.metric_key === "revenue"   && parsed.value < MIN_PLAUSIBLE_DECK_REVENUE) continue;
+      }
+
       push({
         fact_id: tempId,
         deal_id: dealId,
@@ -382,20 +410,131 @@ export function buildFinancialFactRegistryV1(
   // ── 6. Deck financial signals — low confidence fallback ───────────────────
   if (inputs.deckSignals) {
     const ds = inputs.deckSignals;
+
+    // Helper: find the first parseable mention matching a text predicate.
+    const firstMentionMatch = (
+      mentions: DeckFinancialMention[],
+      predicate: (text: string) => boolean,
+    ): DeckFinancialMention | null => mentions.find((m) => predicate(m.text)) ?? null;
+
+    // Helper: find the mention with the LARGEST parsed dollar amount
+    // (among those passing the predicate). Guards against OCR-garbled small
+    // fragments (e.g. "$5120 ARR" vs "$1,582,164 Total ARR" on the same page).
+    const largestMentionMatch = (
+      mentions: DeckFinancialMention[],
+      predicate: (text: string) => boolean,
+    ): DeckFinancialMention | null => {
+      let best: DeckFinancialMention | null = null;
+      let bestAmt = -Infinity;
+      for (const m of mentions) {
+        if (!predicate(m.text)) continue;
+        const amt = parseDeckAmount(m.text);
+        if (amt !== null && amt > bestAmt) {
+          bestAmt = amt;
+          best = m;
+        }
+      }
+      return best;
+    };
+
+    // Pricing-context set: text snippets already identified as product/license pricing.
+    // Used to filter burn_rate mentions whose amount matches a pricing amount.
+    const pricingTexts = new Set((ds.pricing_mentions ?? []).map((m) => m.text));
+
     const deckFactGroups: Array<{
       metric_key: string;
       label: string;
-      mentions: DeckFinancialMention[];
+      mention: DeckFinancialMention | null;
       unit: FinancialFactV1["unit"];
     }> = [
-      { metric_key: "revenue",       label: "Revenue (deck)",   mentions: ds.revenue_mentions,   unit: "currency" },
-      { metric_key: "burn_rate",     label: "Burn Rate (deck)", mentions: ds.burn_mentions,       unit: "currency" },
-      { metric_key: "arr",           label: "ARR (deck)",       mentions: ds.arr_mrr_mentions,    unit: "currency" },
+      {
+        metric_key: "revenue",
+        label: "Revenue (deck)",
+        // Skip mentions that overlap with pricing or ARR/MRR language — these
+        // are not canonical revenue disclosures.
+        // Also uses largestMentionMatch to prefer the largest disclosed figure
+        // over OCR-garbled small fragments (e.g. the "each $11 in ARR" efficiency
+        // ratio from a network model text block would otherwise be selected first).
+        mention: (() => {
+          const arrMrrTexts = new Set((ds.arr_mrr_mentions ?? []).map((m) => m.text));
+          return largestMentionMatch(
+            ds.revenue_mentions,
+            (t) => !pricingTexts.has(t) && !arrMrrTexts.has(t),
+          );
+        })(),
+        unit: "currency",
+      },
+      {
+        metric_key: "burn_rate",
+        label: "Burn Rate (deck)",
+        // Filter out burn mentions that are actually pricing disclosures:
+        //   1. Exact text match with a pricing_mention detected by PRICING_RE.
+        //   2. The burn mention text itself carries per-unit pricing signals
+        //      (e.g. "/month per-agent", "license at $X/month").
+        //   3. The extracted value is < MIN_PLAUSIBLE_BURN_RATE — no real company
+        //      has sub-$1 K/month total burn; sub-$1K values are unit pricing.
+        mention: (() => {
+          const PRICING_SIGNAL_RE =
+            /\b(?:license|plan|tier|seat|subscription|per[\s-](?:user|seat|agent|license))\b|\/(?:seat|user|agent|mo|month|yr|year)\b|\bper-agent\b|\bper\s+agent\b/i;
+          return (
+            ds.burn_mentions.find((m) => {
+              if (pricingTexts.has(m.text)) return false;
+              if (PRICING_SIGNAL_RE.test(m.text)) return false;
+              const amt = parseDeckAmount(m.text);
+              if (amt !== null && amt < MIN_PLAUSIBLE_BURN_RATE) return false;
+              return true;
+            }) ?? null
+          );
+        })(),
+        unit: "currency",
+      },
+      {
+        metric_key: "arr",
+        label: "ARR (deck)",
+        // Selection priority for ARR:
+        //  1. Prefer "Total ARR" labelled mentions — these are aggregate traction summaries
+        //     (e.g. "$1,582,164 Total ARR" from a traction KPI tile) rather than pipeline
+        //     or projection values (e.g. "$6M+ ARR" from an "Active Pipeline" slide).
+        //     Among multiple "Total ARR" mentions (e.g. one from a projection table and one
+        //     from the real traction slide), the LARGEST wins — current traction is typically
+        //     the most recent and highest disclosed actuals in the deck.
+        //  2. Fall back to the LARGEST ARR mention to suppress OCR noise (e.g. "$5120 ARR").
+        mention: (() => {
+          const totalMention = largestMentionMatch(
+            ds.arr_mrr_mentions,
+            (t) => /\bARR\b|annual\s+recurring/i.test(t) && /\bTotal\b/i.test(t),
+          );
+          return totalMention ?? largestMentionMatch(
+            ds.arr_mrr_mentions,
+            (t) => /\bARR\b|annual\s+recurring/i.test(t),
+          );
+        })(),
+        unit: "currency",
+      },
+      {
+        metric_key: "mrr",
+        label: "MRR (deck)",
+        // Selection priority for MRR:
+        //  1. Prefer "Total MRR" labelled mentions — aggregate traction (e.g. "$131,847 Total MRR")
+        //     over per-segment model projections (e.g. "$381K MRR" network economics slide).
+        //     Among multiple "Total MRR" mentions, the LARGEST wins.
+        //  2. Fall back to the LARGEST MRR mention to suppress OCR noise.
+        mention: (() => {
+          const totalMention = largestMentionMatch(
+            ds.arr_mrr_mentions,
+            (t) => /\bMRR\b|monthly\s+recurring/i.test(t) && /\bTotal\b/i.test(t),
+          );
+          return totalMention ?? largestMentionMatch(
+            ds.arr_mrr_mentions,
+            (t) => /\bMRR\b|monthly\s+recurring/i.test(t),
+          );
+        })(),
+        unit: "currency",
+      },
     ];
 
-    for (const { metric_key, label, mentions, unit } of deckFactGroups) {
+    for (const { metric_key, label, mention, unit } of deckFactGroups) {
       // Only produce one deck fact per metric_key (the first mention)
-      const mention = mentions[0];
       if (!mention) continue;
 
       // Skip if higher-confidence data already covers this metric
@@ -415,6 +554,12 @@ export function buildFinancialFactRegistryV1(
       // Try parse a dollar amount from the mention text
       const parsed = parseDeckAmount(mention.text);
       if (parsed === null) continue;
+
+      // Plausibility floor: sub-$1K deck values for revenue and burn_rate are
+      // almost always ratio/efficiency numbers ("each $11 in ARR") or unit
+      // pricing ($349/agent) — not company-level financial disclosures.
+      if (metric_key === "revenue"   && parsed < MIN_PLAUSIBLE_DECK_REVENUE) continue;
+      if (metric_key === "burn_rate" && parsed < MIN_PLAUSIBLE_BURN_RATE)    continue;
 
       const source_pointer = `deck doc=${mention.doc_id} page=${mention.page_index}`;
       push({
@@ -481,6 +626,32 @@ export function buildFinancialFactRegistryV1(
     }
   }
 
+  // ── 7b. Existing DB facts (secondary fallback from analyze-deal pipeline) ──
+  // populateFinancialFactRegistryV1 (analyze-deal job) uses
+  // extract-financial-table-claims.ts which can surface facts that the Stage-2
+  // workbook-intelligence path does not (e.g. cash_outflow_operating).
+  // Merge them here so reconcileFinancialFactsV1 Rules 4/4b can derive
+  // burn_rate and runway_months even when those facts are absent from the
+  // current-run workbookFacts.
+  //
+  // Precedence: current-run facts (Sections 1–7) always win — DB facts only
+  // fill slots not already in the map.  We do NOT apply projection safety here
+  // because these facts were already validated and persisted; we trust them.
+  if (inputs.existingDbFacts && inputs.existingDbFacts.length > 0) {
+    for (const dbf of inputs.existingDbFacts) {
+      if (!isFiniteFactValue(dbf.value)) continue;
+      // Skip if a current-run fact already occupies this slot (by fact_id).
+      if (map.has(dbf.fact_id)) continue;
+      // Also skip if a current-run fact covers the same metric+period slot —
+      // we prefer fresh extraction over a potentially stale DB fact.
+      const slotAlreadyCovered = Array.from(map.values()).some(
+        (f) => f.metric_key === dbf.metric_key && f.period_label === dbf.period_label,
+      );
+      if (slotAlreadyCovered) continue;
+      push(dbf);
+    }
+  }
+
   // ── 8. Cross-source reconciliation (Phase 3) ──────────────────────────────
   // Annotate every fact with cross_source_status by comparing deck vs workbook
   // facts for the same metric_key + period_label slot.
@@ -506,6 +677,27 @@ export function buildFinancialFactRegistryV1(
 function isRealizedScope(scope: string | undefined): boolean {
   return scope === "historical" || scope === "current";
 }
+
+// ─── Plausibility thresholds for deck-signal facts ────────────────────────────
+
+/**
+ * Minimum plausible company burn rate from a deck signal.
+ *
+ * Values below this are almost certainly unit-pricing figures
+ * (e.g. "$349/month per ISO agent") rather than company-level burn.
+ * No real-world company operates on less than $1,000/month total spend.
+ */
+const MIN_PLAUSIBLE_BURN_RATE = 1_000;
+
+/**
+ * Minimum plausible company revenue from a deck-text signal.
+ *
+ * Sub-$1K values typically indicate:
+ *  - Ratio / efficiency metrics (e.g. "each sales dollar generating $11 in ARR")
+ *  - OCR noise from slide numbers or row identifiers
+ * Even the smallest pre-revenue seed companies do not disclose "$11 revenue".
+ */
+const MIN_PLAUSIBLE_DECK_REVENUE = 1_000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -586,7 +778,12 @@ function parseLooseCurrency(s: string): number | null {
  * Returns null if no recognizable amount found.
  */
 function parseDeckAmount(text: string): number | null {
-  const m = text.match(/\$\s*([\d,]+(?:\.\d+)?)\s*([KkMmBbTt]?)/);
+  // The negative lookahead (?!\w) after the multiplier group prevents capturing
+  // the leading letter of adjacent words as a scale suffix.
+  // e.g. "$2,352,769 Bank" → B from "Bank" is NOT captured as billion multiplier.
+  // Standalone suffixes ("$2.5B", "$2.5 B", "$2.5 billion") still work correctly:
+  // the engine backtracks to match empty suffix when the letter is word-continued.
+  const m = text.match(/\$\s*([\d,]+(?:\.\d+)?)\s*([KkMmBbTt]?)(?!\w)/);
   if (!m) return null;
   const base = parseFloat(m[1].replace(/,/g, ""));
   const mult = m[2]?.toUpperCase();

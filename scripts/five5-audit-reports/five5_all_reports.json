@@ -1,0 +1,28 @@
+{
+  "Dropables": {
+    "deal_id": "6062573f-a7ee-4a95-a4f8-2b1ecb80bc15",
+    "doc_ids": [
+      "633642d7-c545-49f6-8dbc-0b92b3addc1d"
+    ]
+  },
+  "Nanochon": {
+    "deal_id": "cf095563-857e-439c-8e21-866c5303fc95",
+    "doc_ids": [
+      "18e7cfc2-33d4-4225-926e-bd49955941b3"
+    ]
+  },
+  "NerdWallet": {
+    "deal_id": "2590957b-278d-4b7b-add4-a6d43e06dddd",
+    "doc_ids": [
+      "6f110941-51de-4eb4-98ca-3bb5b8c422f3"
+    ]
+  },
+  "WeWork": {
+    "deal_id": "872c3d0f-5ca9-4095-ac45-41d1eafe4df1",
+    "doc_ids": [
+      "5cf3b19f-6f29-4af2-aa8c-b6f727a73fb5",
+      "1066e540-b5b4-4c1f-a36d-233ad1d3983d",
+      "7a470e2d-3b04-4ff9-876a-3171b8cca4db"
+    ]
+  }
+}

@@ -107,3 +107,19 @@ These files have high blast radius, complex invariants, or are under active obse
 3. **Legacy UI consolidation** — migrate live imports out of `investor-insights/legacy/` and `workspace/legacy/`, then delete those dirs
 4. **PDF v2 promotion** — run quality comparison, cut over primary extraction
 5. **Revenue normalization** — implement period-normalization for multi-period financial comparisons
+
+---
+
+## Repository Hygiene Rules
+
+The following rules govern what may and may not be committed. These are enforced by `.gitignore` where applicable.
+
+| Category | Rule |
+|----------|------|
+| **Deal source documents** | Raw pitch decks, XLSX financials, cap tables, and private placement memos must **never** be committed. Keep in `docs/reference-deal-docs/` (gitignored) or outside the repo entirely. |
+| **Raw governed LLM outputs** | Files like `*governLLM*.txt` or `*governedLLM*.txt` containing real deal IDs and raw LLM output must not be committed. Gitignored by pattern. |
+| **Generated forensic artifacts** | `artifacts/forensics/`, `artifacts/training/`, and `artifacts/unknown-knowledgebase/` are generated runtime outputs — gitignored, not source of truth. |
+| **Scratch scripts** | `scripts/tmp_*.py` and `scripts/tmp_*.js` are local debug scripts — gitignored. Use `scripts/experimental/` for durable non-production scripts. |
+| **Root placeholders** | Files like `financial_intelligence_v1`, `meta`, `report`, `typescript` at the repo root are gitignored. Never commit empty or accidental root files. |
+| **Evaluation ground truth** | `evaluation/ground_truth/*.json` is **intentionally committed** — it is the benchmark contract for the regression gate. Do not delete or gitignore it. |
+| **tsconfig scratch artifacts** | `packages/**/tsconfig*.bak` and `packages/**/tsconfig*.test` are investigation artifacts — gitignored. Never commit them. |

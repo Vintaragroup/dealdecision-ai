@@ -184,3 +184,36 @@ test-results/
 
 apps/web/src/components/workspace/Deal-Deep-Dive/deep-dive-documentation
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Share-readiness guardrails (added chore/share-readiness-cleanup-p0)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Root-level placeholder / garbage files (never meaningful content)
+/financial_intelligence_v1
+/meta
+/report
+/typescript
+
+# Scratch debug scripts in scripts/ root
+scripts/tmp_*.py
+scripts/tmp_*.js
+
+# apps/tmp scratch directory
+apps/tmp/
+
+# Deal source documents — NDA-sensitive, must not be committed
+docs/reference-deal-docs/
+
+# Raw governed LLM output artifacts containing real deal IDs
+docs/*governLLM*.txt
+docs/*governedLLM*.txt
+
+# Generated forensic / training artifacts
+artifacts/forensics/
+artifacts/training/
+artifacts/unknown-knowledgebase/
+
+# Stale tsconfig scratch artifacts (not real config files)
+packages/**/tsconfig*.bak
+packages/**/tsconfig*.test
+

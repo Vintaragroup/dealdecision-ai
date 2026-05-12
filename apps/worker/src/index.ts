@@ -10,7 +10,7 @@ import {
 	getDocumentCapabilities,
 	getInitialRenderedPagesChunk,
 	generatePhase1DIOV1,
-	DealOrchestrator,
+	// DealOrchestrator is imported directly by jobs/analyze-deal/processor.ts — not needed here
 	DIOStorageImpl,
 	compileDIOToReport,
 	compileDIOToReportWithPromotedFacts,

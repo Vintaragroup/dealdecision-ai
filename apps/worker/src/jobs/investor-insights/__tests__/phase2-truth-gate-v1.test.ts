@@ -10,8 +10,7 @@
 
 import { describe, it, expect } from "vitest";
 import { applyTruthGatesV1, formatCanonicalFieldLine } from "../stages/stage-2-deterministic.js";
-import { computeMarketScoreRaw } from "../../../orchestrator/compute-ors.js";
-import { parseCanonicalFieldsBody } from "../../../orchestrator/render-package-helpers.js";
+import { computeMarketScoreRaw, parseCanonicalFieldsBody } from "@dealdecision/core";
 import type { FinancialTruthMapV1 } from "../../../lib/financial-facts/build-financial-truth-v1.js";
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────

@@ -276,6 +276,19 @@ export type { OverviewDegradeResult, OverviewGuardError, OverviewGuardViolation 
 // into the ddai_orchestrator_report_v1 schema. No new LLM calls. No DB writes.
 export { buildOrchestratorReportV1, type InvestorInsightsRenderPackage } from "./orchestrator/build-orchestrator-report-v1";
 export type { OrchestratorRenderPackageInput } from "./orchestrator/render-package-input";
+// Orchestrator scoring primitives — exported for use in worker tests and external callers
+export {
+  computeMarketScoreRaw,
+  computeMarketScorePersisted,
+  computeOverallRecommendationScore,
+  type OrsInputs,
+} from "./orchestrator/compute-ors";
+export {
+  computeFinancialHealthComposite,
+  type FhcRawInputs,
+} from "./orchestrator/compute-fhc";
+// Render-package parsing helpers
+export { parseCanonicalFieldsBody } from "./orchestrator/render-package-helpers";
 export type {
   OrchestratorReportV1,
   OrchestratorDecision,

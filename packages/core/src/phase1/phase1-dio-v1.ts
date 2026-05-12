@@ -10,6 +10,7 @@ import {
 	normalizeOverviewSentence,
 	normalizeForMatch,
 } from "./phase1-text-utils";
+import { escapeRegExp, headingMatches, isProbableHeading, splitDeckLines } from "./phase1-section-matcher";
 
 export type Phase1ConfidenceBand = "low" | "med" | "high";
 
@@ -382,10 +383,6 @@ function getPhase1SectionLabels(policy_id: string | null): Record<string, string
 	};
 }
 
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function inferCompanyHint(params: { dealName?: string | null; docs: Phase1GeneratorInputDocument[] }): string {
 	const fromDeal = sanitizeInlineText(safeString(params.dealName));
 	if (fromDeal) {
@@ -561,34 +558,6 @@ function isHighQualityOverviewCandidate(value: string): boolean {
 	if (letterTokens.length >= 5 && upperTokens.length / letterTokens.length > 0.4) return false;
 
 	return true;
-}
-
-function headingMatches(line: string, needles: string[]): boolean {
-	const norm = normalizeForMatch(line);
-	if (!norm) return false;
-	for (const n of needles) {
-		const needle = normalizeForMatch(n);
-		if (!needle) continue;
-		if (norm.includes(needle)) return true;
-	}
-	return false;
-}
-
-function isProbableHeading(line: string): boolean {
-	const s = sanitizeInlineText(line);
-	if (!s) return false;
-	if (s.length > 72) return false;
-	if (/:$/.test(s)) return true;
-	const lettersOnly = s.replace(/[^A-Za-z]/g, "");
-	if (lettersOnly.length >= 6 && lettersOnly === lettersOnly.toUpperCase()) return true;
-	return false;
-}
-
-function splitDeckLines(text: string): string[] {
-	return safeString(text)
-		.split(/\r\n|\n|\r/g)
-		.map((l) => sanitizeInlineText(l))
-		.filter(Boolean);
 }
 
 function extractFromPitchDeckPages(params: {

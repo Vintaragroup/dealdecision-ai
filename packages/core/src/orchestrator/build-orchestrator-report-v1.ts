@@ -550,6 +550,20 @@ export function buildOrchestratorReportV1(args: {
     warnings.push("financial_layout_classifier_v1 section absent — FHC XLSX signals will be 0.");
   if (!inputsPresent.financial_reconciliation_v1)
     warnings.push("financial_reconciliation_v1 section absent — FHC RC will use neutral default of 50.");
+
+  // DPU staleness warning: when DPU rows are present but stale vs the current document
+  // fingerprint, evidence may not reflect the latest document state.  Surface this so
+  // the report consumer can trigger a backfill before relying on canonical fields.
+  if (coverage.dpu_blocked_reason === "dpu_stale") {
+    const coveragePct = coverage.text_coverage_pct;
+    const completeFlag = coverage.dpu_page_count > 0 && coveragePct >= 100 ? "true" : `false(${coveragePct}%)`;
+    const fpPart = coverage.docs_fingerprint ? ` docs_fingerprint=${coverage.docs_fingerprint}` : "";
+    const tsPart = coverage.latest_dpu_created_at ? ` latest_dpu_created_at=${coverage.latest_dpu_created_at}` : "";
+    warnings.push(
+      `dpu_stale: complete=${completeFlag} reason=dpu_stale${fpPart}${tsPart} — requires backfill to ensure evidence alignment with current docs_fingerprint`
+    );
+  }
+
   warnings.push(
     "evidence_registry: evidence_items table not accessible in build-only mode — items empty."
   );

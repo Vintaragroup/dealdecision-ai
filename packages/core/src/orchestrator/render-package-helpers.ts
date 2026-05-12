@@ -58,6 +58,21 @@ export interface ParsedCoverageSnapshot {
   visuals_count: number;
   /** Derived: dpu_nonempty_pages / dpu_page_count * 100, or 0 */
   text_coverage_pct: number;
+  /**
+   * Machine-readable blocked reason from the coverage snapshot body, if present.
+   * Set to "dpu_stale" when the DPU rows exist but are stale vs the current document
+   * fingerprint (e.g. docs were updated after the last DPU run).  Null when fresh.
+   */
+  dpu_blocked_reason: string | null;
+  /**
+   * Stable content-addressed fingerprint of the deal's document set at the time of the
+   * DPU run.  Present only when the render-package writer included it in the KV body.
+   */
+  docs_fingerprint: string | null;
+  /**
+   * ISO timestamp of the most recently created DPU row, if the writer included it.
+   */
+  latest_dpu_created_at: string | null;
 }
 
 export function parseCoverageSnapshot(body: string | null): ParsedCoverageSnapshot {
@@ -75,6 +90,17 @@ export function parseCoverageSnapshot(body: string | null): ParsedCoverageSnapsh
   const text_coverage_pct =
     dpu_page_count > 0 ? Math.round((dpu_nonempty_pages / dpu_page_count) * 100) : 0;
 
+  // blocked_reason may be written as either key; "none" normalises to null.
+  const rawBlockedReason = kv["blocked_reason"] ?? kv["dpu_blocked_reason"] ?? null;
+  const dpu_blocked_reason =
+    rawBlockedReason && rawBlockedReason !== "none" ? rawBlockedReason : null;
+
+  // Optional fields — only present when the writer included them in the KV body.
+  const rawFp = kv["docs_fingerprint"] ?? kv["upstream_fingerprint"] ?? null;
+  const docs_fingerprint = rawFp && rawFp !== "none" ? rawFp : null;
+  const rawLatestDpu = kv["latest_dpu_created_at"] ?? null;
+  const latest_dpu_created_at = rawLatestDpu && rawLatestDpu !== "none" ? rawLatestDpu : null;
+
   return {
     docs_count: readInt("docs_count"),
     dpu_page_count,
@@ -82,6 +108,9 @@ export function parseCoverageSnapshot(body: string | null): ParsedCoverageSnapsh
     evidence_count: readInt("evidence_count"),
     visuals_count: readInt("visuals_count"),
     text_coverage_pct,
+    dpu_blocked_reason,
+    docs_fingerprint,
+    latest_dpu_created_at,
   };
 }
 
@@ -189,6 +218,16 @@ export interface ParsedCanonicalField {
   reason: string | null;
   /** "xlsx" | "deck" | "derived" | "unknown" */
   source_type: string;
+  /** Evidence confidence level — serialised from stage-2 (PR36.6). e.g. "STRONG_EVIDENCE" */
+  confidence?: string;
+  /**
+   * True when the financial truth layer has blocked scoring credit for this field.
+   * Set by applyTruthGatesV1 in stage-2 when state is CONFLICT, INSUFFICIENT,
+   * or projected_only_dataset. The value is still present for display.
+   */
+  truth_gate_blocked?: boolean;
+  /** Machine-readable reason code for the truth gate, e.g. "TRUTH_CONFLICT:ARR". */
+  truth_gate_reason?: string | null;
 }
 
 /**
@@ -219,6 +258,8 @@ export function parseCanonicalFieldsBody(body: string | null): ParsedCanonicalFi
     const value = computability === "NotComputable" ? null : (parts["value"] || null);
     const evidence = parts["evidence"] && parts["evidence"] !== "none" ? parts["evidence"] : null;
     const reason = parts["reason"] && parts["reason"] !== "none" ? parts["reason"] : null;
+    const truthGateBlocked = parts["truth_gate"] === "blocked" ? true : undefined;
+    const truthGateReason = truthGateBlocked ? (parts["truth_gate_reason"] || null) : undefined;
 
     fields.push({
       category: parts["category"] ?? "",
@@ -228,6 +269,9 @@ export function parseCanonicalFieldsBody(body: string | null): ParsedCanonicalFi
       evidence,
       reason,
       source_type: parts["source"] ?? "unknown",
+      confidence: parts["confidence"] || undefined,
+      truth_gate_blocked: truthGateBlocked,
+      truth_gate_reason: truthGateReason,
     });
   }
 

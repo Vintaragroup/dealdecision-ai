@@ -23,7 +23,7 @@ import {
   isFactPromotable,
   getUncertaintyLabel,
 } from "@dealdecision/core";
-import { parseCanonicalFieldsBody } from "../../../orchestrator/render-package-helpers";
+import { parseCanonicalFieldsBody } from "@dealdecision/core";
 
 // ─── 1. buildConfidenceSignals ────────────────────────────────────────────────
 

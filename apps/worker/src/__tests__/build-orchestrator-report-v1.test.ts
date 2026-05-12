@@ -14,8 +14,8 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { buildOrchestratorReportV1 } from "../orchestrator/build-orchestrator-report-v1";
-import type { InvestorInsightsRenderPackage } from "../orchestrator/build-orchestrator-report-v1";
+import { buildOrchestratorReportV1 } from "@dealdecision/core";
+import type { InvestorInsightsRenderPackage } from "@dealdecision/core";
 
 // ─── Minimal render-package helpers ──────────────────────────────────────────
 

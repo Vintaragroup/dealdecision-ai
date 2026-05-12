@@ -1,5 +1,15 @@
-import { createHash } from "crypto";
 import { getSelectedPolicyIdFromAny } from "../classification/get-selected-policy-id";
+import {
+	stableId,
+	safeString,
+	uniqStrings,
+	normalizeConfidenceToNumber,
+	sanitizeInlineText,
+	capsTokenRatio,
+	capOneLiner,
+	normalizeOverviewSentence,
+	normalizeForMatch,
+} from "./phase1-text-utils";
 
 export type Phase1ConfidenceBand = "low" | "med" | "high";
 
@@ -262,43 +272,6 @@ type DealOverviewV1 = {
 	market_icp_present: boolean;
 };
 
-function stableId(prefix: string, text: string): string {
-	const norm = text.trim().toLowerCase();
-	const hash = createHash("sha256").update(norm).digest("hex").slice(0, 12);
-	return `${prefix}_${hash}`;
-}
-
-function safeString(v: unknown): string {
-	return typeof v === "string" ? v : v == null ? "" : String(v);
-}
-
-function uniqStrings(values: string[]): string[] {
-	const out: string[] = [];
-	const seen = new Set<string>();
-	for (const v of values) {
-		const s = v.trim();
-		if (!s) continue;
-		const key = s.toLowerCase();
-		if (seen.has(key)) continue;
-		seen.add(key);
-		out.push(s);
-	}
-	return out;
-}
-
-function normalizeConfidenceToNumber(confidence: unknown): number | null {
-	if (typeof confidence === "number" && Number.isFinite(confidence)) {
-		return Math.max(0, Math.min(1, confidence));
-	}
-	if (typeof confidence === "string") {
-		const c = confidence.trim().toLowerCase();
-		if (c === "high") return 0.8;
-		if (c === "med" || c === "medium") return 0.6;
-		if (c === "low") return 0.35;
-	}
-	return null;
-}
-
 export function isSectionProvided(sectionObj: any): { provided: boolean; why_missing?: Phase1CoverageSectionWhyMissingV1 } {
 	const MIN_TEXT_LEN = 20;
 	const LOW_CONFIDENCE = 0.4;
@@ -409,13 +382,6 @@ function getPhase1SectionLabels(policy_id: string | null): Record<string, string
 	};
 }
 
-function sanitizeInlineText(value: string): string {
-	return value
-		.replace(/[\u0000-\u001F\u007F]+/g, " ")
-		.replace(/\s+/g, " ")
-		.trim();
-}
-
 function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -512,19 +478,6 @@ function hasSpacedLogoOcrArtifact(value: string): boolean {
 	return /\b(?:[A-Za-z]\s+){4,}[A-Za-z]\b/.test(s);
 }
 
-function capsTokenRatio(value: string): number {
-	const s = sanitizeInlineText(value);
-	if (!s) return 0;
-	const tokens = s.split(/\s+/g).filter(Boolean);
-	if (tokens.length === 0) return 0;
-	const capsTokens = tokens.filter((t) => {
-		if (t.length < 2) return false;
-		if (!/[A-Z]/.test(t)) return false;
-		return /^[A-Z0-9]+$/.test(t);
-	}).length;
-	return capsTokens / tokens.length;
-}
-
 // Edu-bio rejection pattern — shared by both hard-validation gates.
 // Matches biography/education fragments that should never appear as product/ICP copy.
 const EDU_BIO_REJECT_RE =
@@ -585,30 +538,6 @@ function hardValidateRealEstateMarketIcp(value: string): string {
 	return s;
 }
 
-function normalizeOverviewSentence(value: string, maxChars: number): string {
-	let s = safeString(value);
-	if (!s.trim()) return "";
-
-	// Collapse common OCR junk / artifacts.
-	s = s
-		.replace(/[\u0000-\u001F\u007F]+/g, " ")
-		.replace(/[“”]/g, '"')
-		.replace(/[‘’]/g, "'")
-		.replace(/(?:—|–|_){2,}/g, " ")
-		.replace(/[@#%*=^~`|\\]{2,}/g, " ")
-		.replace(/\bRp\b\s*[—–-]+\s*\d+(?:\s*[—–-]+\s*\d+)?/gi, " ")
-		.replace(/\b\d+\s*[—–-]+\s*\d+\b/g, " ")
-		.replace(/([!?.,:;])\1{2,}/g, "$1")
-		.replace(/\s+/g, " ");
-
-	s = sanitizeInlineText(s);
-	if (!s) return "";
-
-	// Ensure we return a sentence-like fragment.
-	if (!/[.!?]$/.test(s)) s = `${s}.`;
-	return capOneLiner(s, maxChars);
-}
-
 function isHighQualityOverviewCandidate(value: string): boolean {
 	const s = sanitizeInlineText(value);
 	if (s.length < 18) return false;
@@ -632,14 +561,6 @@ function isHighQualityOverviewCandidate(value: string): boolean {
 	if (letterTokens.length >= 5 && upperTokens.length / letterTokens.length > 0.4) return false;
 
 	return true;
-}
-
-function normalizeForMatch(value: string): string {
-	return safeString(value)
-		.toLowerCase()
-		.replace(/[^a-z0-9\s]/g, " ")
-		.replace(/\s+/g, " ")
-		.trim();
 }
 
 function headingMatches(line: string, needles: string[]): boolean {
@@ -861,15 +782,6 @@ function extractAllReadableText(docs: Phase1GeneratorInputDocument[]): string {
 		}
 	}
 	return parts.join("\n\n");
-}
-
-function capOneLiner(value: string, maxChars: number): string {
-	const s = sanitizeInlineText(value);
-	if (s.length <= maxChars) return s;
-	const cut = s.slice(0, maxChars - 1);
-	const lastSpace = cut.lastIndexOf(" ");
-	const trimmed = (lastSpace >= Math.floor(maxChars * 0.6) ? cut.slice(0, lastSpace) : cut).trim();
-	return `${trimmed}…`;
 }
 
 function buildDealOverviewV1(params: {

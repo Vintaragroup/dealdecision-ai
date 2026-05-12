@@ -88,7 +88,8 @@ function buildMissingSections(inputs: FhcRawInputs): string[] {
 /**
  * Compute the Financial Health Composite.
  *
- * - FSI < 15 → status=insufficient_data, score=null
+ * - FSI < 10 → status=insufficient_data, score=null
+ *   (Threshold history: was 15; lowered 2026-03-30 — see inline comment below)
  * - Otherwise: score = round(0.60 * FSI + 0.40 * (RC ?? 50))
  */
 export function computeFinancialHealthComposite(raw: FhcRawInputs): FinancialHealthScore {

@@ -4,7 +4,7 @@ import path from "path";
 import fs from "fs/promises";
 import { sanitizeText, getDocumentCapabilities, getInitialRenderedPagesChunk, QUEUE_NAMES } from "@dealdecision/core";
 import type { JobProgressEventV1, JobStatus } from "@dealdecision/contracts";
-import { getPool, mergeDocumentExtractionMetadata, getDocumentOriginalFile, upsertDocumentOriginalFile, getDocumentsForDeal } from "../../lib/db";
+import { mergeDocumentExtractionMetadata, getDocumentOriginalFile, upsertDocumentOriginalFile } from "../../lib/db";
 import { updateJobProgress, emitJobProgress } from "../../lib/job-progress";
 import { enqueuePersistedJob } from "../../lib/job-enqueue";
 import { makeJobId } from "../../lib/job-id";
@@ -12,7 +12,7 @@ import { getQueue, connection } from "../../lib/queue";
 import { planChunkEnqueues } from "../../lib/page-chunks";
 import { logMemory, yieldToEventLoop } from "../../lib/memory";
 import {
-  getVisionExtractorConfig, createVisionJobRuntime, hasTable, resolvePageImageUris,
+  resolvePageImageUris,
   backfillVisualAssetImageUris, persistSyntheticVisualAssets, persistVisionResponse,
   callVisionWorkerWithRetries, callXlsxWorkerWithRetries, buildXlsxCanonicalPatch,
   deduceDocKind, resegmentStructuredSyntheticAssets, applyVisionHintsToStructuredPowerpointSlides,
@@ -47,7 +47,6 @@ import {
   FIRST_PASS_CHUNK_PRIORITY,
   BACKGROUND_CHUNK_PRIORITY,
 } from "../../lib/first-pass-config";
-import { verifyVisionServiceForJob } from "../../lib/vision-verification";
 import { tryReadImageB64ForVision, headCheckImageUri } from "../../lib/vision-image";
 import { pickDownloadUrlFromExtractionMetadata } from "../../lib/original-file-url";
 import { promoteVisualOcrToDocumentFullText } from "../../lib/visual-ocr-promoter";
@@ -56,6 +55,7 @@ import { computeAndPersistVisionRoutingV1 } from "../../lib/vision-routing";
 import { makeDevLogger, updateJob } from "../../lib/worker-utils";
 import { waitForIngest } from "./ingest-wait";
 import { evaluateTargetDocumentReadiness } from "./readiness";
+import { runExtractVisualsPrecheck } from "./precheck";
 
 // ── Local helpers ──────────────────────────────────────────────────────────────
 
@@ -85,253 +85,42 @@ function stripOcrFieldsForNativeTextPriority(response: any): any {
 // ── Coordinator ──────────────────────────────────────────────────────────────
 
 export async function runExtractVisualsCoordinator(job: Job) {
-	const data = (job.data ?? {}) as {
-		deal_id?: string;
-		document_id?: string;
-		document_ids?: string[];
-		image_uris?: string[];
-		extractor_version?: string;
-		force_resegment?: boolean;
-		force_reextract?: boolean;
-		force_ocr?: boolean;
-		enqueue_deep_scan?: boolean;
-		page_start?: number;
-		page_end?: number;
-		chunk?: { page_start?: number; page_end?: number };
-		// Some callers wrap job args inside a nested payload object.
-		payload?: Record<string, unknown>;
-	};
-	// Normalize payload shape: allow either top-level fields OR nested `payload` fields.
-	// This is important for flags like force_ocr so coordinator-enqueued chunk jobs inherit them.
-	const normalized: any = (() => {
-		const nested = (data as any)?.payload;
-		if (nested && typeof nested === "object" && !Array.isArray(nested)) {
-			const merged = { ...(nested as any), ...(data as any) };
-			delete (merged as any).payload;
-			return merged;
-		}
-		return data as any;
-	})();
-	const documentId = typeof normalized.document_id === "string" ? normalized.document_id : undefined;
-	const dealId = typeof normalized.deal_id === "string" ? normalized.deal_id : undefined;
-	const payload: any = normalized;
-	if (!payload.chunk || typeof payload.chunk !== "object") {
-		const ps = (payload as any).page_start;
-		const pe = (payload as any).page_end;
-		if (ps != null && pe != null) {
-			payload.chunk = { page_start: ps, page_end: pe };
-		}
-	}
-	const isChunkJob = Boolean(payload.chunk && payload.chunk.page_start != null && payload.chunk.page_end != null);
-	const isCoordinator = !isChunkJob;
-	let dealIdForAudit: string | undefined = typeof dealId === "string" && dealId.trim().length > 0 ? dealId.trim() : undefined;
-	if (!dealIdForAudit) {
-		const payloadDealId = typeof (data as any)?.deal_id === "string" ? String((data as any).deal_id).trim() : "";
-		dealIdForAudit = payloadDealId.length > 0 ? payloadDealId : undefined;
-	}
-	const imageUris = Array.isArray(normalized.image_uris) ? normalized.image_uris : undefined;
-	const extractorVersionOverride = typeof normalized.extractor_version === "string" ? normalized.extractor_version : undefined;
-	const forceResegment = Boolean((normalized as any).force_resegment);
-	const forceReextract = Boolean((normalized as any).force_reextract);
-	const forceOcr = Boolean((normalized as any).force_ocr);
-	const enqueueDeepScan = Boolean((normalized as any).enqueue_deep_scan);
-	const pageStartRaw = payload?.chunk?.page_start;
-	const pageEndRaw = payload?.chunk?.page_end;
-	const requestedPageStart =
-		typeof pageStartRaw === "number" && Number.isFinite(pageStartRaw) ? Math.max(0, Math.floor(pageStartRaw)) : 0;
-	const requestedPageEnd =
-		typeof pageEndRaw === "number" && Number.isFinite(pageEndRaw) ? Math.max(0, Math.floor(pageEndRaw)) : undefined;
+	const precheckOutcome = await runExtractVisualsPrecheck(job, job.data);
 
-	const explicitDocumentIds = Array.isArray(normalized.document_ids)
-		? (normalized.document_ids as any[]).filter((id) => typeof id === "string" && id.trim().length > 0)
-		: [];
-
-	let targetDocumentIds: string[] = [];
-	if (documentId) {
-		targetDocumentIds = [documentId];
-	} else if (explicitDocumentIds.length > 0) {
-		targetDocumentIds = explicitDocumentIds;
-	} else if (dealId) {
-		try {
-			const docs = await getDocumentsForDeal(dealId);
-			targetDocumentIds = docs
-				.map((d: any) => d.document_id)
-				.filter((id: any) => typeof id === "string" && id.length > 0);
-		} catch (err) {
-			await updateJob(job, "failed", err instanceof Error ? err.message : "Failed to load deal documents", 100);
-			return { ok: false };
-		}
+	if (precheckOutcome.failed) {
+		return precheckOutcome.result;
 	}
 
-	if (targetDocumentIds.length === 0) {
-		console.warn("[extract_visuals] Missing document_id (or deal_id with documents)");
-		try {
-			await enqueueAnalyzeDeal({
-				dealId: dealIdForAudit,
-				reason: "extract_visuals_start",
-				triggerJobId: job.id ? String(job.id) : null,
-				shouldEnqueue: false,
-				skipReason: "missing_target_documents",
-				extra: {
-					document_id: documentId ?? null,
-					document_ids: explicitDocumentIds,
-				},
-			});
-		} catch {
-			// never block failure reporting
-		}
-		await updateJob(job, "failed", "Missing document_id (or deal_id with documents)", 100);
-		return { ok: false };
-	}
-
-	const config = getVisionExtractorConfig();
-	if (!config.enabled) {
-		try {
-			await enqueueAnalyzeDeal({
-				dealId: dealIdForAudit,
-				reason: "extract_visuals_start",
-				triggerJobId: job.id ? String(job.id) : null,
-				shouldEnqueue: false,
-				skipReason: "visual_extraction_disabled",
-				extra: {
-					enable_flag: "ENABLE_VISUAL_EXTRACTION",
-				},
-			});
-		} catch {
-			// never block
-		}
-		await updateJob(
-			job,
-			"failed",
-			"Visual extraction is disabled in the worker (set ENABLE_VISUAL_EXTRACTION=1)",
-			100
-		);
-		return { ok: false, skipped: true, reason: "disabled" };
-	}
-
-	const visionRuntime = createVisionJobRuntime({
+	const { context } = precheckOutcome;
+	const {
+		pool,
+		payload,
+		documentId,
+		dealId,
 		config,
-		logger: console,
-		logMeta: {
-			job_id: job.id ? String(job.id) : null,
-			deal_id: dealId ?? null,
-			stage: "extract_visuals",
-		},
-	});
-
-	const visionVerification = await verifyVisionServiceForJob(config.visionWorkerUrl);
-	const visionEnabledForJob = config.enabled && visionVerification.ok;
-	if (!visionVerification.ok) {
-		console.warn(
-			JSON.stringify({
-				event: "VISION_SERVICE_VERIFICATION_FAILED",
-				job_id: job.id ? String(job.id) : null,
-				deal_id: dealId ?? null,
-				vision_base_url: config.visionWorkerUrl,
-				reason: visionVerification.reason ?? "unknown",
-				details: visionVerification,
-			})
-		);
-	} else {
-		console.log(
-			JSON.stringify({
-				event: "VISION_SERVICE_VERIFICATION_OK",
-				job_id: job.id ? String(job.id) : null,
-				deal_id: dealId ?? null,
-				vision_base_url: config.visionWorkerUrl,
-				details: visionVerification,
-			})
-		);
-	}
-
-	const extractorVersion = typeof extractorVersionOverride === "string" && extractorVersionOverride.trim()
-		? extractorVersionOverride.trim()
-		: config.extractorVersion;
-	const structuredExtractorVersion = process.env.STRUCTURED_VISION_EXTRACTOR_VERSION || "structured_native_v1";
-	const nonPdfRenderEnabled = (() => {
-		const raw = process.env.ENABLE_NONPDF_RENDER_PAGES;
-		if (raw == null) return true; // default ON to ensure Office docs render
-		return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
-	})();
-	if (!nonPdfRenderEnabled) {
-		console.warn(
-			JSON.stringify({ event: "nonpdf_render_disabled", reason: "ENABLE_NONPDF_RENDER_PAGES=0" })
-		);
-	}
-
-	const pool = getPool();
+		visionRuntime,
+		visionEnabledForJob,
+		extractorVersion,
+		structuredExtractorVersion,
+		allowRenderedPagesFallback,
+		nonPdfRenderEnabled,
+		tablesOk,
+		originalFileTablesOk,
+		documentsMetaStatusOk,
+		forceResegment,
+		forceReextract,
+		forceOcr,
+		enqueueDeepScan,
+		requestedPageStart,
+		requestedPageEnd,
+		imageUris,
+		extractorVersionOverride,
+		isChunkJob,
+		isCoordinator,
+	} = context;
+	let targetDocumentIds = context.targetDocumentIds;
+	let dealIdForAudit = context.dealIdForAudit;
 	const docsTotal = targetDocumentIds.length;
-	logMemory("extract_visuals:job_start", {
-		job_id: job.id ? String(job.id) : null,
-		deal_id: dealId ?? null,
-		docs_total: docsTotal,
-		chunk: isChunkJob ? { page_start: requestedPageStart, page_end: requestedPageEnd ?? null } : null,
-	});
-	devLog("worker_extract_visuals_start", {
-		job_id: job.id ? String(job.id) : null,
-		deal_id: dealId ?? null,
-		docs_total: docsTotal,
-	});
-	const tablesOk =
-		(await hasTable(pool, "visual_assets")) &&
-		(await hasTable(pool, "visual_extractions")) &&
-		(await hasTable(pool, "evidence_links"));
-
-	if (!tablesOk) {
-		console.warn(
-			`[extract_visuals] Visual tables missing; skipping (did you run migrations?)`
-		);
-		try {
-			await enqueueAnalyzeDeal({
-				dealId: dealIdForAudit,
-				reason: "extract_visuals_start",
-				triggerJobId: job.id ? String(job.id) : null,
-				shouldEnqueue: false,
-				skipReason: "visual_tables_missing",
-				extra: {
-					required_tables: ["visual_assets", "visual_extractions", "evidence_links"],
-				},
-			});
-		} catch {
-			// never block
-		}
-		await updateJob(
-			job,
-			"failed",
-			"Visual tables missing (run DB migrations before extracting visuals)",
-			100
-		);
-		return { ok: false, skipped: true, reason: "tables_missing" };
-	}
-
-	const originalFileTablesOk =
-		(await hasTable(pool, "document_files")) &&
-		(await hasTable(pool, "document_file_blobs"));
-
-	const allowRenderedPagesFallback = (() => {
-		const raw = process.env.EXTRACT_VISUALS_ALLOW_RENDERED_PAGES_FALLBACK;
-		if (raw != null) return ["1", "true", "yes", "on"].includes(raw.trim().toLowerCase());
-		return process.env.NODE_ENV !== "production";
-	})();
-
-	const hasDocumentsMetaStatusColumn = async (): Promise<boolean> => {
-		try {
-			const { rows } = await pool.query(
-				`SELECT 1 as ok
-				   FROM information_schema.columns
-				  WHERE table_schema = 'public'
-				    AND table_name = 'documents'
-				    AND column_name = 'meta_status'
-				  LIMIT 1`,
-				[]
-			);
-			return Array.isArray(rows) && rows.length > 0;
-		} catch {
-			return false;
-		}
-	};
-
-	const documentsMetaStatusOk = await hasDocumentsMetaStatusColumn();
 
 	const candidateDocumentIds = [...targetDocumentIds];
 	const readinessResult = await evaluateTargetDocumentReadiness({

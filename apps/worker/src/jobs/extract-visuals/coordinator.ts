@@ -11,7 +11,6 @@ import { makeJobId } from "../../lib/job-id";
 import { getQueue, connection } from "../../lib/queue";
 import { planChunkEnqueues } from "../../lib/page-chunks";
 import { logMemory, yieldToEventLoop } from "../../lib/memory";
-import { evaluateVisualDocReadiness, getVisualIngestBlockReason } from "../../lib/visual-readiness";
 import {
   getVisionExtractorConfig, createVisionJobRuntime, hasTable, resolvePageImageUris,
   backfillVisualAssetImageUris, persistSyntheticVisualAssets, persistVisionResponse,
@@ -56,6 +55,7 @@ import { resolveWritableUploadDir } from "../../lib/upload-dir-resolver";
 import { computeAndPersistVisionRoutingV1 } from "../../lib/vision-routing";
 import { makeDevLogger, updateJob } from "../../lib/worker-utils";
 import { waitForIngest } from "./ingest-wait";
+import { evaluateTargetDocumentReadiness } from "./readiness";
 
 // ── Local helpers ──────────────────────────────────────────────────────────────
 
@@ -314,26 +314,6 @@ export async function runExtractVisualsCoordinator(job: Job) {
 		return process.env.NODE_ENV !== "production";
 	})();
 
-	let docsBlockedPending = 0;
-	const blockedDocs: {
-		document_id: string;
-		title: string | null;
-		deleted_at: string | null;
-		type: string | null;
-		status: string | null;
-		documents_meta_status: string | null;
-		extraction_metadata_status: string | null;
-		derived_ingest_complete: boolean;
-		block_reason: "deleted" | "status_not_ready" | "meta_status_missing" | "meta_status_not_succeeded";
-		page_count: number | null;
-		has_extraction_metadata: boolean;
-		has_original_bytes: boolean;
-		has_rendered_pages: boolean;
-		reason?: string | null;
-	}[] = [];
-
-	let blockedReasonsCount: Record<string, number> = {};
-
 	const hasDocumentsMetaStatusColumn = async (): Promise<boolean> => {
 		try {
 			const { rows } = await pool.query(
@@ -353,122 +333,21 @@ export async function runExtractVisualsCoordinator(job: Job) {
 
 	const documentsMetaStatusOk = await hasDocumentsMetaStatusColumn();
 
-	try {
-		const { rows: metaRows } = await pool.query(
-			documentsMetaStatusOk
-				? "SELECT id, deal_id, title, type, status, meta_status, page_count, extraction_metadata, deleted_at FROM documents WHERE id = ANY($1)"
-				: "SELECT id, deal_id, title, type, status, NULL::text AS meta_status, page_count, extraction_metadata, deleted_at FROM documents WHERE id = ANY($1)",
-			[targetDocumentIds]
-		);
-		const metaMap = new Map<string, any>();
-		for (const row of metaRows ?? []) metaMap.set(row.id, row);
-
-		for (const docId of targetDocumentIds) {
-			const meta = metaMap.get(docId) ?? {};
-			const status = typeof meta.status === "string" ? meta.status : null;
-			const deletedAt = meta.deleted_at != null ? String(meta.deleted_at) : null;
-			const extractionMetadataStatus = (() => {
-				const em = meta.extraction_metadata;
-				if (!em || typeof em !== "object") return null;
-				const raw = (em as any).status;
-				return typeof raw === "string" ? raw : null;
-			})();
-			const documentsMetaStatus = (() => {
-				const raw = (meta as any).meta_status;
-				return typeof raw === "string" ? raw : null;
-			})();
-			// Source of truth: documents.meta_status; fallback: extraction_metadata.status
-			const metaStatus = documentsMetaStatus ?? extractionMetadataStatus;
-
-			const pageCountRaw = meta.page_count;
-			const pageCount = typeof pageCountRaw === "number" && Number.isFinite(pageCountRaw) ? pageCountRaw : null;
-			let hasRenderedPages = false;
-			try {
-				const previewUris = await resolvePageImageUris(pool, docId, { env: process.env, logger: console });
-				hasRenderedPages = Array.isArray(previewUris) && previewUris.length > 0;
-			} catch (err) {
-				console.warn(
-					`[extract_visuals] preview resolve failed doc=${docId}: ${err instanceof Error ? err.message : String(err)}`
-				);
-			}
-
-			let hasOriginalBytes = false;
-			if (originalFileTablesOk) {
-				try {
-					const original = await getDocumentOriginalFile(docId);
-					hasOriginalBytes = !!(original?.bytes && original.bytes.length > 0);
-				} catch {
-					hasOriginalBytes = false;
-				}
-			}
-
-			const readiness = evaluateVisualDocReadiness({
-				id: docId,
-				status,
-				deletedAt,
-				metaStatus,
-			});
-			const bypassIngestGuard =
-				allowRenderedPagesFallback &&
-				readiness.blocked &&
-				readiness.reason === "ingest_not_complete" &&
-				hasRenderedPages &&
-				deletedAt == null;
-			if (readiness.blocked && !bypassIngestGuard) {
-				const blockReason = getVisualIngestBlockReason({
-					status,
-					deletedAt,
-					metaStatus,
-				});
-				const derivedIngestComplete = blockReason == null;
-				const br = (blockReason ?? "meta_status_missing") as
-					| "deleted"
-					| "status_not_ready"
-					| "meta_status_missing"
-					| "meta_status_not_succeeded";
-				blockedReasonsCount[br] = (blockedReasonsCount[br] ?? 0) + 1;
-
-				docsBlockedPending += 1;
-				blockedDocs.push({
-					document_id: docId,
-					title: typeof meta.title === "string" ? meta.title : null,
-					deleted_at: deletedAt,
-					type: typeof meta.type === "string" ? meta.type : null,
-					status,
-					documents_meta_status: documentsMetaStatus,
-					extraction_metadata_status: extractionMetadataStatus,
-					derived_ingest_complete: derivedIngestComplete,
-					block_reason: br,
-					page_count: pageCount,
-					has_extraction_metadata: meta.extraction_metadata != null,
-					has_original_bytes: hasOriginalBytes,
-					has_rendered_pages: hasRenderedPages,
-					reason: readiness.reason,
-				});
-			} else if (bypassIngestGuard) {
-				devLog("worker_extract_visuals_ingest_guard_bypassed", {
-					job_id: job.id ? String(job.id) : null,
-					deal_id: dealId ?? null,
-					document_id: docId,
-					reason: "rendered_pages_present",
-					status,
-					meta_status: metaStatus,
-					allow_rendered_pages_fallback: true,
-				});
-			}
-		}
-	} catch (err) {
-		console.warn(
-			`[extract_visuals] guard precheck failed: ${err instanceof Error ? err.message : String(err)}`
-		);
-	}
-
 	const candidateDocumentIds = [...targetDocumentIds];
-	const blockedDocIds = new Set(blockedDocs.map((d) => d.document_id));
-	let readyDocumentIds = targetDocumentIds.filter((id) => !blockedDocIds.has(id));
-	let docsReady = readyDocumentIds.length;
-	let docsBlocked = blockedDocs.length;
-	docsBlockedPending = docsBlocked;
+	const readinessResult = await evaluateTargetDocumentReadiness({
+		pool,
+		targetDocumentIds,
+		documentsMetaStatusOk,
+		originalFileTablesOk,
+		allowRenderedPagesFallback,
+		jobId: job.id ? String(job.id) : null,
+		dealId: dealId ?? null,
+	});
+	const { blockedDocs, blockedReasonsCount } = readinessResult;
+	let readyDocumentIds = readinessResult.readyDocumentIds;
+	let docsReady = readinessResult.docsReady;
+	let docsBlocked = readinessResult.docsBlocked;
+	let docsBlockedPending = readinessResult.docsBlockedPending;
 	targetDocumentIds = readyDocumentIds;
 
 	if (docsReady === 0) {

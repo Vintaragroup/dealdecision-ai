@@ -1,6 +1,6 @@
 # DealDecisionAI — Repository Status
 
-> Last updated: 2025 — `chore/repo-hardening-pass-1` cleanup pass
+> Last updated: 2026-05-12 — cleanup/canonicalization pass
 > For full known-gap inventory see: `docs/Foundation/KNOWN_GAPS_AND_NEXT_PHASES.md`
 
 ---
@@ -59,7 +59,7 @@ These are `legacy`-labeled directories in `apps/web/src/`. Each has a `README.md
 ## Canonical Orchestrator
 
 - `packages/core/src/orchestrator/` — **the only orchestrator**
-- `apps/worker/src/orchestrator/` was deleted in `chore/repo-hardening-pass-1` (shadow copy removed)
+- `apps/worker/src/orchestrator/` was deleted in `chore/canonicalize-worker-orchestrator` (shadow copy removed)
 - All orchestrator imports must use `@dealdecision/core`
 
 ---

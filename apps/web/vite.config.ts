@@ -105,6 +105,7 @@
       port: 5173,
       host: true,
       open: false,
+      allowedHosts: ['ryans-macbook-pro.tail0bfa0d.ts.net'],
     },
     test: {
       environment: 'jsdom',

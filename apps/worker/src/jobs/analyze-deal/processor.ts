@@ -1473,6 +1473,120 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 			// Integrity analysis degrades gracefully with no facts — never block orchestration.
 		}
 
+		// ── Pre-scoring LLM Financial Verification + Correction Application ──────
+		// Runs BEFORE orchestrator.analyze() / report compilation, unlike the Field
+		// Auditor further below (which still runs post-compile). This closes the
+		// "correction discovered but only takes effect on a future run" gap:
+		// financialFactsForOrchestrator is the exact array-by-reference that both
+		// orchestrator.analyze() and the report compiler's selectCanonicalRevenueFact
+		// read from later in this same run (verified — neither re-queries the DB at
+		// that point), so mutating a fact's metric_key here propagates to this run's
+		// score, not just the next one.
+		//
+		// Scope: only ACCEPTED corrections sourced from llm_financial_verification
+		// are auto-applied here. By construction of the validator's own accept rule
+		// (requires financial_type !== 'current_revenue'/'historical_revenue' plus
+		// flagged_as_projection or flagged_as_market_sizing), an accepted correction
+		// can only ever mean "take this value OUT of its current classification" —
+		// never a same-classification confirmation — so applying it is safe without
+		// needing extra guards here. Field Auditor corrections and any correction
+		// below the accept threshold are NOT auto-applied; they remain informational
+		// (needs_review / shadow_only) exactly as before.
+		let preScoringCorrectionLineage: Awaited<ReturnType<typeof runDeterministicValidatorShadow>> = null;
+		let preScoringFinancialVerification: Awaited<ReturnType<typeof runLLMFinancialVerificationShadow>> = null;
+		try {
+			const hasXlsxPreScoring = financialFactsForOrchestrator.some((f) => f.source_kind === "xlsx");
+			const financialFactsForPreScoringVerifier = financialFactsForOrchestrator.map((ff) => ({
+				fact_id: ff.fact_id ?? null,
+				metric: ff.metric_key ?? "",
+				value: typeof ff.value === "number" ? ff.value : null,
+				raw_value: ff.excerpt ?? (ff.value != null ? String(ff.value) : null),
+				period: ff.period_label ?? null,
+				source_kind: ff.source_kind ?? null,
+				confidence: ff.confidence === "high" ? 0.85 : ff.confidence === "medium" ? 0.55 : 0.25,
+				is_projection: ff.temporal_scope === "projected" || ff.temporal_scope === "scenario",
+			}));
+
+			const preScoringVerif = await runLLMFinancialVerificationShadow({
+				deal_id: dealId,
+				run_id: null,
+				company_name: null,
+				has_xlsx: hasXlsxPreScoring,
+				has_cap_table: false,
+				financial_breakdown: null,
+				financial_facts: financialFactsForPreScoringVerifier,
+				deck_financial_signals: null,
+			});
+			preScoringFinancialVerification = preScoringVerif;
+
+			if (preScoringVerif) {
+				preScoringCorrectionLineage = await runDeterministicValidatorShadow({
+					deal_id: dealId,
+					run_id: null,
+					company_name: null,
+					archetype: null,
+					llm_field_audit: null,
+					llm_financial_verification: preScoringVerif,
+					structured_summary: null,
+					financial_breakdown: null,
+				});
+
+				const factById = new Map(financialFactsForOrchestrator.map((f) => [f.fact_id, f]));
+				const nowIso = new Date().toISOString();
+				for (const correction of preScoringCorrectionLineage?.correction_lineage?.corrections ?? []) {
+					if (correction.source !== "llm_financial_verification" || correction.validator_status !== "accepted") continue;
+					const targetFact = factById.get(correction.original_field);
+					const newMetricKey = correction.proposed_field?.startsWith("financial_facts.")
+						? correction.proposed_field.slice("financial_facts.".length)
+						: null;
+					if (!targetFact || !newMetricKey || newMetricKey === targetFact.metric_key) continue;
+
+					const originalMetricKey = targetFact.metric_key;
+					targetFact.metric_key = newMetricKey; // in-memory — propagates to scoring/compile this run
+
+					try {
+						await getPool().query(
+							`UPDATE public.financial_facts_v1
+							    SET metric_key = $1,
+							        provenance_metadata = COALESCE(provenance_metadata, '{}'::jsonb) || $2::jsonb
+							  WHERE fact_id = $3`,
+							[
+								newMetricKey,
+								JSON.stringify({
+									llm_correction: {
+										correction_id: correction.correction_id,
+										original_metric_key: originalMetricKey,
+										corrected_metric_key: newMetricKey,
+										confidence: correction.confidence,
+										evidence_refs: correction.evidence_refs,
+										applied_at: nowIso,
+									},
+								}),
+								targetFact.fact_id,
+							],
+						);
+						correction.applied_to_scoring = true;
+						correction.applied_at = nowIso;
+					} catch (persistErr) {
+						// In-memory mutation still took effect for this run even if the
+						// DB write failed — never block the analysis job on this.
+						job.log(
+							`[analyze-deal] pre-scoring correction DB persist failed (non-blocking): ${
+								persistErr instanceof Error ? persistErr.message : String(persistErr)
+							}`,
+						);
+					}
+				}
+			}
+		} catch (preScoringAuditErr) {
+			// Fail-open: pre-scoring audit errors must never block the analysis job.
+			job.log(
+				`[analyze-deal] pre-scoring financial verification failed (non-blocking): ${
+					preScoringAuditErr instanceof Error ? preScoringAuditErr.message : String(preScoringAuditErr)
+				}`,
+			);
+		}
+
 		const heartbeat = startHeartbeat(job, {
 			stage: "running",
 			dealId,
@@ -1751,73 +1865,67 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						confidence: typeof f.confidence === 'number' ? f.confidence : 0,
 					}));
 
-					const financialFactsForAudit = (financialFactsForOrchestrator ?? []).map((ff: any) => ({
-						fact_id: ff.fact_id ?? null,
-						metric: String(ff.metric ?? ''),
-						value: typeof ff.value === 'number' ? ff.value : null,
-						raw_value: ff.raw_value ?? null,
-						period: ff.period ?? null,
-						source_kind: ff.source_kind ?? null,
-						confidence: typeof ff.confidence === 'number' ? ff.confidence : null,
-						is_projection: ff.is_projection ?? null,
-					}));
-
 					const runId = String((result.storage_result as any)?.version ?? '') || null;
 
-					const [fieldAuditResult, financialVerifResult] = await Promise.allSettled([
-						runLLMFieldAuditShadow({
-							deal_id: dealId,
-							run_id: runId,
-							company_name: companyName ?? null,
-							archetype,
-							structured_summary: structuredSummary,
-							financial_breakdown: financialBreakdown,
-							promoted_facts_sample: promotedFactsSample,
-							evidence_count: evidenceItemCount ?? 0,
-							has_xlsx: hasXlsx,
-							has_cap_table: hasCapTable,
-						}),
-						runLLMFinancialVerificationShadow({
-							deal_id: dealId,
-							run_id: runId,
-							company_name: companyName ?? null,
-							has_xlsx: hasXlsx,
-							has_cap_table: hasCapTable,
-							financial_breakdown: financialBreakdown,
-							financial_facts: financialFactsForAudit,
-							deck_financial_signals: (compiledReport as any)?.deck_financial_signals ?? null,
-						}),
-					]);
+					// Financial Verifier now runs pre-scoring only (see the block right after
+					// financialFactsForOrchestrator loads, above) so its accepted corrections
+					// can affect this same run's score. Only the Field Auditor still runs here,
+					// post-compile — it needs the compiled structured_summary/financial_breakdown
+					// as input, and its findings (risk flags, archetype review) remain informational
+					// for this run regardless.
+					const fieldAuditResult = await runLLMFieldAuditShadow({
+						deal_id: dealId,
+						run_id: runId,
+						company_name: companyName ?? null,
+						archetype,
+						structured_summary: structuredSummary,
+						financial_breakdown: financialBreakdown,
+						promoted_facts_sample: promotedFactsSample,
+						evidence_count: evidenceItemCount ?? 0,
+						has_xlsx: hasXlsx,
+						has_cap_table: hasCapTable,
+					}).catch(() => null);
 
-					if (fieldAuditResult.status === 'fulfilled' && fieldAuditResult.value) {
-						(compiledReport as any).llm_field_audit_v1 = fieldAuditResult.value;
+					if (fieldAuditResult) {
+						(compiledReport as any).llm_field_audit_v1 = fieldAuditResult;
 					}
-					if (financialVerifResult.status === 'fulfilled' && financialVerifResult.value) {
-						(compiledReport as any).llm_financial_verification_v1 = financialVerifResult.value;
+					if (preScoringFinancialVerification) {
+						(compiledReport as any).llm_financial_verification_v1 = preScoringFinancialVerification;
 					}
 
 					// ── Phase 3: Deterministic Validator ──────────────────────────────────
-					// Validates LLM proposals, produces correction lineage + learning events.
-					// INVARIANT: applied_to_scoring is always false. No scoring fields mutated.
-					const fieldAudit = fieldAuditResult.status === 'fulfilled' ? fieldAuditResult.value : null;
-					const financialVerif = financialVerifResult.status === 'fulfilled' ? financialVerifResult.value : null;
+					// Validates the Field Auditor's proposals (post-compile, informational only
+					// this run — see note above). The pre-scoring Financial Verifier proposals
+					// were already validated earlier; both lineages are merged into
+					// correction_lineage_v1 below so the full trail is visible in one place.
+					const fieldAudit = fieldAuditResult ?? null;
 
-					if (fieldAudit !== null || financialVerif !== null) {
-						const validatorResult = await runDeterministicValidatorShadow({
+					let postCompileValidatorResult: Awaited<ReturnType<typeof runDeterministicValidatorShadow>> = null;
+					if (fieldAudit !== null) {
+						postCompileValidatorResult = await runDeterministicValidatorShadow({
 							deal_id: dealId,
 							run_id: runId,
 							company_name: companyName ?? null,
 							archetype: archetype ?? null,
 							llm_field_audit: fieldAudit,
-							llm_financial_verification: financialVerif,
+							llm_financial_verification: null,
 							structured_summary: structuredSummary,
 							financial_breakdown: financialBreakdown,
 						});
+					}
 
-						if (validatorResult) {
-							(compiledReport as any).correction_lineage_v1 = [validatorResult.correction_lineage];
-							(compiledReport as any).llm_validation_summary_v1 = validatorResult.validation_summary;
-						}
+					const mergedLineages = [
+						preScoringCorrectionLineage?.correction_lineage,
+						postCompileValidatorResult?.correction_lineage,
+					].filter((l): l is NonNullable<typeof l> => l != null);
+					if (mergedLineages.length > 0) {
+						(compiledReport as any).correction_lineage_v1 = mergedLineages;
+					}
+					if (postCompileValidatorResult?.validation_summary) {
+						(compiledReport as any).llm_validation_summary_v1 = postCompileValidatorResult.validation_summary;
+					}
+					if (preScoringCorrectionLineage?.validation_summary) {
+						(compiledReport as any).llm_pre_scoring_validation_summary_v1 = preScoringCorrectionLineage.validation_summary;
 					}
 
 					if (envFlagEnabled(process.env.INVESTMENT_INTERPRETATION_SHADOW_MODE)) {
@@ -1845,9 +1953,10 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 								confidence: fact.confidence,
 								source_kind: null,
 							})),
-							financial_verification: financialVerif,
+							financial_verification: preScoringFinancialVerification,
 							validation_summary: (compiledReport as any)?.llm_validation_summary_v1 ?? null,
-							accepted_corrections: ((compiledReport as any)?.correction_lineage_v1?.[0]?.corrections ?? [])
+							accepted_corrections: (((compiledReport as any)?.correction_lineage_v1 ?? []) as any[])
+								.flatMap((lineage: any) => lineage?.corrections ?? [])
 								.filter((item: any) => item?.validator_status === 'accepted')
 								.slice(0, 5)
 								.map((item: any) => `${item.original_field} -> ${item.proposed_field}: ${item.correction_type}`),
@@ -1886,9 +1995,12 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						const p4HasCapTable = Boolean((compiledReport as any)?.has_cap_table);
 						const p4Archetype = (compiledReport as any)?.archetype ?? null;
 
-						// Build accepted corrections summary for synthesizer context
+						// Build accepted corrections summary for synthesizer context — flatten
+						// across all merged lineages (pre-scoring + post-compile), not just the first.
 						const lineageItems: Array<Record<string, unknown>> =
-							(compiledReport as any)?.correction_lineage_v1?.[0]?.corrections ?? [];
+							(((compiledReport as any)?.correction_lineage_v1 ?? []) as any[]).flatMap(
+								(lineage: any) => lineage?.corrections ?? [],
+							);
 						const acceptedCorrectionsSummary = lineageItems
 							.filter((c: any) => c.validator_status === 'accepted')
 							.slice(0, 5)

@@ -8,6 +8,7 @@ COPY pnpm-lock.yaml package.json pnpm-workspace.yaml tsconfig.base.json ./
 # Include workspace package manifests needed for web install
 COPY apps/web/package.json apps/web/package.json
 COPY packages/contracts/package.json packages/contracts/package.json
+COPY packages/core/package.json packages/core/package.json
 RUN pnpm install --frozen-lockfile=false
 
 CMD ["pnpm", "--filter", "web", "dev"]

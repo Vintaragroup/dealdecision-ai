@@ -63,6 +63,11 @@ import {
 } from "../../lib/intelligence/llm-auditor-hooks";
 import { synthesizeInvestmentInterpretationV1 } from '../../lib/intelligence/investment-interpretation-synthesizer-v1';
 import { validateNarrativeQualityV1 } from '../../lib/intelligence/narrative-quality-validator-v1';
+import { applyAcceptedFinancialCorrections } from '../../lib/intelligence/apply-financial-corrections';
+import { computeFinancialFactsFingerprint } from '../../lib/intelligence/financial-verification-cache';
+import { packFactsByTokenBudget, mergeFinancialVerifications } from '../../lib/intelligence/financial-verifier-batching';
+import type { LLMTokenUsage } from '../../lib/intelligence/llm-financial-verifier';
+import type { LLMFinancialVerificationV1 } from '@dealdecision/core/dist/models/llm-financial-verification-v1';
 
 import {
 	safeJsonParseObject,
@@ -1492,92 +1497,248 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 		// needing extra guards here. Field Auditor corrections and any correction
 		// below the accept threshold are NOT auto-applied; they remain informational
 		// (needs_review / shadow_only) exactly as before.
-		let preScoringCorrectionLineage: Awaited<ReturnType<typeof runDeterministicValidatorShadow>> = null;
-		let preScoringFinancialVerification: Awaited<ReturnType<typeof runLLMFinancialVerificationShadow>> = null;
+		// company_name is a trivial lookup (no compile dependency) — restoring it here
+		// gives the pre-scoring Financial Verifier the same context the old post-compile
+		// call had, rather than classifying blind. archetype is already computed above
+		// (phase1_business_archetype_v1, ~line 1071) and reused as-is.
+		let companyNamePreScoring: string | null = null;
 		try {
-			const hasXlsxPreScoring = financialFactsForOrchestrator.some((f) => f.source_kind === "xlsx");
-			const financialFactsForPreScoringVerifier = financialFactsForOrchestrator.map((ff) => ({
-				fact_id: ff.fact_id ?? null,
-				metric: ff.metric_key ?? "",
-				value: typeof ff.value === "number" ? ff.value : null,
-				raw_value: ff.excerpt ?? (ff.value != null ? String(ff.value) : null),
-				period: ff.period_label ?? null,
-				source_kind: ff.source_kind ?? null,
-				confidence: ff.confidence === "high" ? 0.85 : ff.confidence === "medium" ? 0.55 : 0.25,
-				is_projection: ff.temporal_scope === "projected" || ff.temporal_scope === "scenario",
-			}));
+			const dealNameResultPreScoring = await getPool().query<{ name: string | null }>(
+				`SELECT name FROM deals WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1`,
+				[dealId],
+			);
+			const rawNamePreScoring = dealNameResultPreScoring.rows?.[0]?.name;
+			if (typeof rawNamePreScoring === "string" && rawNamePreScoring.trim().length > 0) {
+				companyNamePreScoring = rawNamePreScoring.trim();
+			}
+		} catch {
+			// fail-open — classification proceeds without a company name
+		}
 
-			const preScoringVerif = await runLLMFinancialVerificationShadow({
-				deal_id: dealId,
-				run_id: null,
-				company_name: null,
-				has_xlsx: hasXlsxPreScoring,
-				has_cap_table: false,
-				financial_breakdown: null,
-				financial_facts: financialFactsForPreScoringVerifier,
-				deck_financial_signals: null,
-			});
-			preScoringFinancialVerification = preScoringVerif;
+		let preScoringCorrectionLineage: Awaited<ReturnType<typeof runDeterministicValidatorShadow>> = null;
+		let preScoringFinancialVerification: LLMFinancialVerificationV1 | null = null;
+		// Bump when FINANCIAL_VERIFIER_SYSTEM_PROMPT changes meaningfully, so the
+		// cache below is invalidated rather than silently serving stale decisions
+		// from before the prompt fix.
+		const PRE_SCORING_VERIFIER_PROMPT_VERSION = "pre-scoring-v1";
+		try {
+			// Nothing to classify — skip the LLM call, cache lookup, and everything
+			// downstream of it entirely rather than spending an LLM call on an
+			// empty facts array.
+			if (financialFactsForOrchestrator.length > 0) {
+				const preScoringStartedAt = Date.now();
+				const hasXlsxPreScoring = financialFactsForOrchestrator.some((f) => f.source_kind === "xlsx");
 
-			if (preScoringVerif) {
-				preScoringCorrectionLineage = await runDeterministicValidatorShadow({
-					deal_id: dealId,
-					run_id: null,
-					company_name: null,
-					archetype: null,
-					llm_field_audit: null,
-					llm_financial_verification: preScoringVerif,
-					structured_summary: null,
-					financial_breakdown: null,
-				});
+				// Batched, not filtered. Sending every fact in one call hit MAX_TOKENS
+				// well before 100 facts — verified live on a 143-fact deal, where the
+				// LLM's JSON response was truncated and silently produced zero
+				// classifications for the entire deal. A filter that decided which
+				// facts were "worth" sending would create a class of facts that never
+				// reach the LLM with no downstream signal they were skipped, which is
+				// a worse failure mode than the one it would fix. Batching guarantees
+				// every fact is reviewed — it only changes how many calls that takes.
+				// Each batch is cached independently by its own fingerprint, so a deal
+				// where only one fact changed between analyses only re-verifies the one
+				// batch that fact belongs to. See financial-verifier-batching.ts and
+				// financial-verification-cache.ts.
+				const factBatches = packFactsByTokenBudget(financialFactsForOrchestrator);
+				const batchResults: Array<LLMFinancialVerificationV1 | null> = [];
+				let cacheHitCount = 0;
+				let cacheMissCount = 0;
+				let batchFailureCount = 0;
+				// Token accounting: tokensSpent is real spend THIS run — cache hits cost
+				// zero fresh tokens. tokensSaved is what this run's cache hits would have
+				// cost had they not been cached, read back from each hit's own stored
+				// usage — this is the number that should trend toward tokensSpent (and
+				// tokensSpent toward zero) as more of a deal's facts stabilize across
+				// repeated analyses. First run on a deal: heavy, all misses. Every
+				// subsequent run where the facts are unchanged: lighter, more hits.
+				let tokensSpent = 0;
+				let tokensSaved = 0;
 
-				const factById = new Map(financialFactsForOrchestrator.map((f) => [f.fact_id, f]));
-				const nowIso = new Date().toISOString();
-				for (const correction of preScoringCorrectionLineage?.correction_lineage?.corrections ?? []) {
-					if (correction.source !== "llm_financial_verification" || correction.validator_status !== "accepted") continue;
-					const targetFact = factById.get(correction.original_field);
-					const newMetricKey = correction.proposed_field?.startsWith("financial_facts.")
-						? correction.proposed_field.slice("financial_facts.".length)
-						: null;
-					if (!targetFact || !newMetricKey || newMetricKey === targetFact.metric_key) continue;
-
-					const originalMetricKey = targetFact.metric_key;
-					targetFact.metric_key = newMetricKey; // in-memory — propagates to scoring/compile this run
+				for (const batch of factBatches) {
+					const batchFingerprint = computeFinancialFactsFingerprint(batch);
+					let batchVerif: LLMFinancialVerificationV1 | null = null;
+					let batchCacheHit = false;
 
 					try {
-						await getPool().query(
-							`UPDATE public.financial_facts_v1
-							    SET metric_key = $1,
-							        provenance_metadata = COALESCE(provenance_metadata, '{}'::jsonb) || $2::jsonb
-							  WHERE fact_id = $3`,
-							[
-								newMetricKey,
-								JSON.stringify({
-									llm_correction: {
-										correction_id: correction.correction_id,
-										original_metric_key: originalMetricKey,
-										corrected_metric_key: newMetricKey,
-										confidence: correction.confidence,
-										evidence_refs: correction.evidence_refs,
-										applied_at: nowIso,
-									},
-								}),
-								targetFact.fact_id,
-							],
+						const cached = await getPool().query<{ output_json: unknown; meta_json: unknown }>(
+							`SELECT output_json, meta_json FROM deal_report_llm_cache
+							  WHERE deal_id = $1::uuid AND llm_phase_mode = 'exploratory'
+							    AND inputs_hash = $2 AND excerpt_hash = $2
+							    AND call = 'llm_financial_verification_pre_scoring'
+							    AND model = 'gpt-4o-mini' AND prompt_version = $3
+							  ORDER BY created_at DESC LIMIT 1`,
+							[dealId, batchFingerprint, PRE_SCORING_VERIFIER_PROMPT_VERSION],
 						);
-						correction.applied_to_scoring = true;
-						correction.applied_at = nowIso;
-					} catch (persistErr) {
-						// In-memory mutation still took effect for this run even if the
-						// DB write failed — never block the analysis job on this.
-						job.log(
-							`[analyze-deal] pre-scoring correction DB persist failed (non-blocking): ${
-								persistErr instanceof Error ? persistErr.message : String(persistErr)
-							}`,
+						if (cached.rows[0]?.output_json) {
+							batchVerif = cached.rows[0].output_json as unknown as LLMFinancialVerificationV1;
+							batchCacheHit = true;
+							const cachedUsage = (cached.rows[0].meta_json as { usage?: LLMTokenUsage } | null)?.usage;
+							if (cachedUsage?.total_tokens) tokensSaved += cachedUsage.total_tokens;
+						}
+					} catch (cacheReadErr) {
+						// Cache lookup failure — fail open to a fresh LLM call, never block.
+						console.warn(
+							JSON.stringify({
+								event: "PRE_SCORING_CACHE_READ_FAILED",
+								deal_id: dealId,
+								error: cacheReadErr instanceof Error ? cacheReadErr.message : String(cacheReadErr),
+								ts: new Date().toISOString(),
+							}),
 						);
 					}
+
+					if (!batchVerif) {
+						const batchFactsForVerifier = batch.map((ff) => ({
+							fact_id: ff.fact_id ?? null,
+							metric: ff.metric_key ?? "",
+							value: typeof ff.value === "number" ? ff.value : null,
+							raw_value: ff.excerpt ?? (ff.value != null ? String(ff.value) : null),
+							period: ff.period_label ?? null,
+							source_kind: ff.source_kind ?? null,
+							confidence: ff.confidence === "high" ? 0.85 : ff.confidence === "medium" ? 0.55 : 0.25,
+							is_projection: ff.temporal_scope === "projected" || ff.temporal_scope === "scenario",
+						}));
+						const freshResult = await runLLMFinancialVerificationShadow({
+							deal_id: dealId,
+							run_id: null,
+							company_name: companyNamePreScoring,
+							has_xlsx: hasXlsxPreScoring,
+							has_cap_table: false,
+							financial_breakdown: null,
+							financial_facts: batchFactsForVerifier,
+							deck_financial_signals: null,
+						});
+						batchVerif = freshResult?.verification ?? null;
+						if (freshResult?.usage?.total_tokens) tokensSpent += freshResult.usage.total_tokens;
+
+						if (batchVerif) {
+							try {
+								await getPool().query(
+									`INSERT INTO deal_report_llm_cache
+									   (deal_id, llm_phase_mode, inputs_hash, excerpt_hash, call, model, prompt_version, output_json, meta_json)
+									 VALUES ($1::uuid, 'exploratory', $2, $2, 'llm_financial_verification_pre_scoring', 'gpt-4o-mini', $3, $4::jsonb, $5::jsonb)
+									 ON CONFLICT (deal_id, llm_phase_mode, inputs_hash, excerpt_hash, call, model, prompt_version)
+									 DO NOTHING`,
+									[
+										dealId,
+										batchFingerprint,
+										PRE_SCORING_VERIFIER_PROMPT_VERSION,
+										JSON.stringify(batchVerif),
+										JSON.stringify({ usage: freshResult?.usage ?? null, fact_count: batch.length }),
+									],
+								);
+							} catch (cacheWriteErr) {
+								// Cache write failure — non-blocking, next run just re-verifies.
+								console.warn(
+									JSON.stringify({
+										event: "PRE_SCORING_CACHE_WRITE_FAILED",
+										deal_id: dealId,
+										error: cacheWriteErr instanceof Error ? cacheWriteErr.message : String(cacheWriteErr),
+										ts: new Date().toISOString(),
+									}),
+								);
+							}
+						}
+					}
+
+					if (batchCacheHit) cacheHitCount += 1; else cacheMissCount += 1;
+					if (!batchVerif) batchFailureCount += 1;
+					batchResults.push(batchVerif);
 				}
-			}
+
+				const preScoringVerif = mergeFinancialVerifications(batchResults, { deal_id: dealId, run_id: null });
+
+				const preScoringElapsedMs = Date.now() - preScoringStartedAt;
+				console.log(
+					JSON.stringify({
+						event: "PRE_SCORING_FINANCIAL_VERIFICATION_COMPLETE",
+						deal_id: dealId,
+						fact_count: financialFactsForOrchestrator.length,
+						batch_count: factBatches.length,
+						cache_hits: cacheHitCount,
+						cache_misses: cacheMissCount,
+						batch_failures: batchFailureCount,
+						tokens_spent_this_run: tokensSpent,
+						tokens_saved_by_cache: tokensSaved,
+						elapsed_ms: preScoringElapsedMs,
+						ts: new Date().toISOString(),
+					}),
+				);
+				if (batchFailureCount > 0) {
+					// Loud on purpose — a batch failure means some facts in this deal were
+					// not reviewed this run. Coverage still recovers on the next analysis
+					// (each batch is independently retried via its own cache miss), but
+					// this should be visible, not just counted.
+					console.warn(
+						JSON.stringify({
+							event: "PRE_SCORING_FINANCIAL_VERIFICATION_INCOMPLETE",
+							deal_id: dealId,
+							batch_failures: batchFailureCount,
+							batch_count: factBatches.length,
+							ts: new Date().toISOString(),
+						}),
+					);
+				}
+				job.log(
+					`[analyze-deal] pre-scoring financial verification: ${factBatches.length} batch(es), ${cacheHitCount} cache hit(s), ${cacheMissCount} miss(es), ${batchFailureCount} failure(s), ${tokensSpent} tokens spent, ${tokensSaved} tokens saved by cache, ${preScoringElapsedMs}ms`,
+				);
+				preScoringFinancialVerification = preScoringVerif;
+
+				if (preScoringVerif) {
+					preScoringCorrectionLineage = await runDeterministicValidatorShadow({
+						deal_id: dealId,
+						run_id: null,
+						company_name: companyNamePreScoring,
+						archetype: (phase1_business_archetype_v1 as { value?: string } | null)?.value ?? null,
+						llm_field_audit: null,
+						llm_financial_verification: preScoringVerif,
+						structured_summary: null,
+						financial_breakdown: null,
+					});
+
+					// Pure, unit-tested mutation — see apply-financial-corrections.ts and its
+					// test suite for the exact scoping rules (accepted + llm_financial_verification
+					// only; never a same-classification confirmation).
+					const appliedCorrections = applyAcceptedFinancialCorrections(
+						financialFactsForOrchestrator,
+						preScoringCorrectionLineage?.correction_lineage?.corrections ?? [],
+					);
+					for (const { correction, fact, originalMetricKey, newMetricKey } of appliedCorrections) {
+						try {
+							await getPool().query(
+								`UPDATE public.financial_facts_v1
+								    SET metric_key = $1,
+								        provenance_metadata = COALESCE(provenance_metadata, '{}'::jsonb) || $2::jsonb
+								  WHERE fact_id = $3`,
+								[
+									newMetricKey,
+									JSON.stringify({
+										llm_correction: {
+											correction_id: correction.correction_id,
+											original_metric_key: originalMetricKey,
+											corrected_metric_key: newMetricKey,
+											confidence: correction.confidence,
+											evidence_refs: correction.evidence_refs,
+											applied_at: correction.applied_at,
+										},
+									}),
+									fact.fact_id,
+								],
+							);
+						} catch (persistErr) {
+							// In-memory mutation still took effect for this run even if the
+							// DB write failed — never block the analysis job on this.
+							job.log(
+								`[analyze-deal] pre-scoring correction DB persist failed (non-blocking): ${
+									persistErr instanceof Error ? persistErr.message : String(persistErr)
+								}`,
+							);
+						}
+					}
+				}
+			} // end: financialFactsForOrchestrator.length > 0
 		} catch (preScoringAuditErr) {
 			// Fail-open: pre-scoring audit errors must never block the analysis job.
 			job.log(

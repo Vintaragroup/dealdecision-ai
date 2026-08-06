@@ -22,7 +22,11 @@ import type { LLMDecisionRationaleV1 } from '@dealdecision/core/dist/models/llm-
 import type { LLMRationaleValidationV1 } from '@dealdecision/core/dist/models/llm-rationale-validation-v1';
 import type { CorrectionLineageV1 } from '@dealdecision/core/dist/models/correction-lineage-v1';
 import { runLLMFieldAuditor, type LLMFieldAuditorInput } from './llm-field-auditor.js';
-import { runLLMFinancialVerifier, type LLMFinancialVerifierInput } from './llm-financial-verifier.js';
+import {
+	runLLMFinancialVerifier,
+	type LLMFinancialVerifierInput,
+	type LLMFinancialVerifierResult,
+} from './llm-financial-verifier.js';
 import {
   runDeterministicCorrectionValidatorV1,
   type DeterministicValidatorInput,
@@ -107,7 +111,7 @@ export async function runLLMFieldAuditShadow(
  */
 export async function runLLMFinancialVerificationShadow(
   args: FinancialVerificationShadowArgs,
-): Promise<LLMFinancialVerificationV1 | null> {
+): Promise<LLMFinancialVerifierResult | null> {
   const input: LLMFinancialVerifierInput = {
     deal_id: args.deal_id,
     run_id: args.run_id ?? null,

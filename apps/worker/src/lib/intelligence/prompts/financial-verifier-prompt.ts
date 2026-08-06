@@ -19,6 +19,21 @@ data source.
 3. You MUST NOT propose new financial values that do not exist in the input.
 4. Absence of a field means unknown — never infer a value as zero.
 5. You MUST classify every financial value you receive.
+6. evidence_refs MUST NEVER be an empty array. At minimum, include the extraction_ref (if present)
+   or the exact raw_value / raw text you are classifying — that alone is sufficient evidence_refs
+   content. A classification with no evidence_refs cannot be reviewed and will be discarded, so
+   omitting it wastes the classification even when your reasoning is correct.
+7. confidence must reflect your certainty in the classification itself, not in the underlying
+   number's accuracy — if the classification (e.g. "this is modeled_economics, not
+   current_revenue") is clear from the input's own language ("projected", "deployment forecast",
+   TAM/SAM/SOM framing), confidence should be 0.85 or higher even if the exact dollar figure is
+   otherwise uncertain. If the input text matches one of the worked examples in the
+   classification guide above closely (e.g. a per-unit deployment math calculation, an explicit
+   "TAM"/"SAM"/"SOM" label), that is a textbook case, not a borderline one — do not hedge into
+   the 0.4–0.6 range for it.
+8. evidence_refs should include the literal raw_value / quoted source text whenever it is
+   available in the input, not only an extraction_ref identifier — the quoted text is what makes
+   the classification verifiable to a human reviewer.
 
 ## FINANCIAL TYPE CLASSIFICATION GUIDE
 

@@ -33,6 +33,17 @@ const MODEL = 'gpt-4o-mini';
 const TIMEOUT_MS = 30_000;
 const MAX_TOKENS = 2500;
 
+export type LLMTokenUsage = {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+};
+
+export type LLMFinancialVerifierResult = {
+  verification: LLMFinancialVerificationV1;
+  usage: LLMTokenUsage | null;
+};
+
 export type LLMFinancialVerifierInput = {
   deal_id: string;
   run_id: string | null;
@@ -61,7 +72,7 @@ export type LLMFinancialVerifierInput = {
  */
 export async function runLLMFinancialVerifier(
   input: LLMFinancialVerifierInput,
-): Promise<LLMFinancialVerificationV1 | null> {
+): Promise<LLMFinancialVerifierResult | null> {
   const { deal_id, run_id } = input;
 
   const apiKey = process.env.OPENAI_API_KEY;
@@ -208,6 +219,14 @@ export async function runLLMFinancialVerifier(
       cap_table_present: Boolean(parsed.cap_table_present ?? input.has_cap_table),
     };
 
+    const usage: LLMTokenUsage | null = response.usage
+      ? {
+          prompt_tokens: response.usage.prompt_tokens,
+          completion_tokens: response.usage.completion_tokens,
+          total_tokens: response.usage.total_tokens,
+        }
+      : null;
+
     console.log(
       JSON.stringify({
         event: 'LLM_FINANCIAL_VERIFICATION_SHADOW_COMPLETE',
@@ -218,11 +237,14 @@ export async function runLLMFinancialVerifier(
         xlsx_data_present: result.xlsx_data_present,
         cap_table_present: result.cap_table_present,
         latency_ms: response.latency_ms ?? null,
+        tokens_prompt: usage?.prompt_tokens ?? null,
+        tokens_completion: usage?.completion_tokens ?? null,
+        tokens_total: usage?.total_tokens ?? null,
         ts: new Date().toISOString(),
       }),
     );
 
-    return result;
+    return { verification: result, usage };
   } catch (err) {
     console.warn(
       JSON.stringify({

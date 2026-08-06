@@ -63,184 +63,29 @@ import {
 } from "../../lib/intelligence/llm-auditor-hooks";
 import { synthesizeInvestmentInterpretationV1 } from '../../lib/intelligence/investment-interpretation-synthesizer-v1';
 import { validateNarrativeQualityV1 } from '../../lib/intelligence/narrative-quality-validator-v1';
+import { applyAcceptedFinancialCorrections } from '../../lib/intelligence/apply-financial-corrections';
+import { computeFinancialFactsFingerprint } from '../../lib/intelligence/financial-verification-cache';
+import { packFactsByTokenBudget, mergeFinancialVerifications } from '../../lib/intelligence/financial-verifier-batching';
+import type { LLMTokenUsage } from '../../lib/intelligence/llm-financial-verifier';
+import type { LLMFinancialVerificationV1 } from '@dealdecision/core/dist/models/llm-financial-verification-v1';
 
-// -- safeJsonParseObject (local helper used by generateDealSummaryV2FromPhase1)
-function safeJsonParseObject(raw: string): Record<string, unknown> | null {
-	const trimmed = (raw ?? "").trim();
-	if (!trimmed) return null;
-	try {
-		const parsed = JSON.parse(trimmed);
-		return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-	} catch {
-		// Best-effort recovery: extract first {...} block.
-		const start = trimmed.indexOf("{");
-		const end = trimmed.lastIndexOf("}");
-		if (start >= 0 && end > start) {
-			const candidate = trimmed.slice(start, end + 1);
-			try {
-				const parsed = JSON.parse(candidate);
-				return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null;
-			} catch {
-				return null;
-			}
-		}
-		return null;
-	}
-}
-
-// -- DealSummaryV2 helpers
-function isStringArray(value: unknown): value is string[] {
-	return Array.isArray(value) && value.every((v) => typeof v === "string");
-}
-
-type DealSummaryV2 = {
-	generated_at: string;
-	model: string;
-	summary: {
-		one_liner: string;
-		paragraphs: [string, string, string];
-	};
-	strengths: string[];
-	risks: string[];
-	open_questions: string[];
-};
-
-function countWords(value: string): number {
-	const s = String(value ?? "");
-	const words = s.trim().split(/\s+/).filter(Boolean);
-	return words.length;
-}
-
-function envFlagEnabled(value: string | undefined): boolean {
-	const normalized = String(value ?? '').trim().toLowerCase();
-	return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
-}
-
-const SUMMARY_BROKEN_ARTICLE_RX = /\bis an\s+for\b/gi;
-const SUMMARY_INVESTMENT_KEYWORDS_RX =
-	/\b(invest|investment|conviction|recommend|recommendation|proceed|pass|hold|score|risk|raise|round|valuation|diligence|gating)\b/i;
-
-function cleanupSummarySentence(text: string): string {
-	if (!text) return text;
-	let out = text.replace(SUMMARY_BROKEN_ARTICLE_RX, "is for");
-	out = out.replace(/\s+/g, " ").trim();
-	return out;
-}
-
-function enforceInvestmentOneLiner(text: string, opts: { recommendation?: string | null }): string {
-	const cleaned = cleanupSummarySentence(text);
-	if (!cleaned) return cleaned;
-	if (SUMMARY_INVESTMENT_KEYWORDS_RX.test(cleaned)) return cleaned;
-	const rec = typeof opts.recommendation === "string" && opts.recommendation.trim().length > 0 ? opts.recommendation.trim() : null;
-	const prefix = rec ? `Investment view (${rec})` : "Investment view";
-	return `${prefix}: ${cleaned}`;
-}
-
-function countSentences(value: string): number {
-	const s = String(value ?? "").trim();
-	if (!s) return 0;
-	const parts = s.split(/[.!?]+\s*/).map((p) => p.trim()).filter(Boolean);
-	return parts.length;
-}
-
-function ensureParagraphConstraints(paragraph: string, opts: { minWords: number; minSentences: number; maxSentences: number; padSentences: string[] }): string {
-	let p = String(paragraph ?? "").replace(/\s+/g, " ").trim();
-	if (!p) p = "Key details are not provided in Phase 1 yet.";
-
-	const makeSentence = (s: string) => {
-		let t = String(s ?? "").replace(/\s+/g, " ").trim();
-		if (!t) return "";
-		if (!/[.!?]$/.test(t)) t += ".";
-		return t;
-	};
-
-	if (!/[.!?]$/.test(p)) p += ".";
-
-	let sentences = p.split(/[.!?]+\s*/).map((s) => s.trim()).filter(Boolean);
-	while (sentences.length > opts.maxSentences) {
-		sentences = [sentences.slice(0, opts.maxSentences - 1).join("; "), ...sentences.slice(opts.maxSentences - 1)];
-	}
-
-	let padIdx = 0;
-	while (sentences.length < opts.minSentences && padIdx < opts.padSentences.length) {
-		const s = makeSentence(opts.padSentences[padIdx++]);
-		if (s) sentences.push(s.replace(/[.!?]$/, ""));
-	}
-
-	p = sentences.map((s) => makeSentence(s)).join(" ").trim();
-	while (countWords(p) < opts.minWords && padIdx < opts.padSentences.length) {
-		const s = makeSentence(opts.padSentences[padIdx++]);
-		if (s) p = (p + " " + s).trim();
-		if (countSentences(p) > opts.maxSentences) {
-			const parts = p.split(/[.!?]+\s*/).map((x) => x.trim()).filter(Boolean);
-			const clamped = [parts.slice(0, opts.maxSentences - 1).join("; "), ...parts.slice(opts.maxSentences - 1)];
-			p = clamped.map((s2) => makeSentence(s2)).join(" ").trim();
-		}
-	}
-	return p;
-}
-
-function normalizeParagraphs(value: unknown, padSentences: string[]): [string, string, string] | null {
-	if (!Array.isArray(value) || value.length !== 3) return null;
-	const raw = value.map((p) => (typeof p === "string" ? p.replace(/\s+/g, " ").trim() : ""));
-	const p1 = ensureParagraphConstraints(raw[0], { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
-	const p2 = ensureParagraphConstraints(raw[1], { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
-	const p3 = ensureParagraphConstraints(raw[2], { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
-	return [p1, p2, p3];
-}
-
-function coerceDealSummaryV2(parsed: Record<string, unknown>, nowIso: string, padSentences: string[]): DealSummaryV2 | null {
-	const summaryNode = (parsed as any).summary;
-	const oneLinerRaw =
-		summaryNode && typeof summaryNode === "object" && typeof (summaryNode as any).one_liner === "string"
-			? (summaryNode as any).one_liner
-			: "";
-	const one_liner = oneLinerRaw.replace(/\s+/g, " ").trim();
-	if (!one_liner) return null;
-
-	const paragraphs =
-		summaryNode && typeof summaryNode === "object" ? normalizeParagraphs((summaryNode as any).paragraphs, padSentences) : null;
-	if (!paragraphs) return null;
-
-	const strengths =
-		isStringArray(parsed.strengths)
-			? parsed.strengths
-			: isStringArray((parsed as any).key_strengths)
-				? (parsed as any).key_strengths
-				: [];
-	const risks =
-		isStringArray(parsed.risks)
-			? parsed.risks
-			: isStringArray((parsed as any).key_risks)
-				? (parsed as any).key_risks
-				: [];
-	const open_questions =
-		isStringArray(parsed.open_questions)
-			? parsed.open_questions
-			: isStringArray((parsed as any).openQuestions)
-				? (parsed as any).openQuestions
-				: [];
-	const model = typeof parsed.model === "string" ? parsed.model : "gpt-4o-mini";
-	return {
-		generated_at: typeof parsed.generated_at === "string" ? parsed.generated_at : nowIso,
-		model,
-		summary: {
-			one_liner,
-			paragraphs,
-		},
-		strengths,
-		risks,
-		open_questions,
-	};
-}
-
-function isRealEstatePolicyId(policyId: string | null | undefined): boolean {
-	const v = typeof policyId === "string" ? policyId.trim().toLowerCase() : "";
-	return v === "real_estate_underwriting" || v.includes("real_estate");
-}
-
-const STARTUP_BUSINESS_MODEL_RE = /\b(omnichannel|dtc|wholesale|retail|consumer|subscription|saas|ecommerce)\b/i;
-const PLACEHOLDER_BUSINESS_MODEL_RE = /^(unknown|n\/a|na|none|tbd)$/i;
+import {
+	safeJsonParseObject,
+	isStringArray,
+	envFlagEnabled,
+	type DealSummaryV2,
+	countWords,
+	countSentences,
+	cleanupSummarySentence,
+	enforceInvestmentOneLiner,
+	ensureParagraphConstraints,
+	normalizeParagraphs,
+	coerceDealSummaryV2,
+	isRealEstatePolicyId,
+	STARTUP_BUSINESS_MODEL_RE,
+	PLACEHOLDER_BUSINESS_MODEL_RE,
+	buildDeterministicDealSummaryV2Fallback,
+} from "./summary-utils.js";
 
 export function resolvePromotedBusinessModelForPolicy(input: {
 	selectedPolicyId: string | null;
@@ -313,69 +158,7 @@ export function resolvePromotedBusinessModelForPolicy(input: {
 	};
 }
 
-function buildDeterministicDealSummaryV2Fallback(nowIso: string, input: {
-	dealId: string;
-	dealName?: string | null;
-	phase1_deal_overview_v2: unknown;
-	phase1_executive_summary_v2: unknown;
-	phase1_decision_summary_v1: unknown;
-	eligibleDocuments: Array<{ id: string; title: string | null; type: string | null; page_count: number | null }>;
-}): DealSummaryV2 {
-	const overview = input.phase1_deal_overview_v2 && typeof input.phase1_deal_overview_v2 === "object" ? (input.phase1_deal_overview_v2 as any) : {};
-	const exec = input.phase1_executive_summary_v2 && typeof input.phase1_executive_summary_v2 === "object" ? (input.phase1_executive_summary_v2 as any) : {};
-	const signals = exec.signals && typeof exec.signals === "object" ? exec.signals : {};
-	const score = typeof signals.score === "number" && Number.isFinite(signals.score) ? signals.score : null;
-	const recommendation = typeof signals.recommendation === "string" ? signals.recommendation : null;
-	const confidence = typeof signals.confidence === "string" ? signals.confidence : null;
-
-	const product = typeof overview.product_solution === "string" && overview.product_solution.trim() ? overview.product_solution.trim() : "Product not provided in Phase 1.";
-	const icp = typeof overview.market_icp === "string" && overview.market_icp.trim() ? overview.market_icp.trim() : "ICP not provided in Phase 1.";
-	const model = typeof overview.business_model === "string" && overview.business_model.trim() ? overview.business_model.trim() : "Business model not provided in Phase 1.";
-	const missing = Array.isArray(exec.missing) ? exec.missing.filter((x: any) => typeof x === "string" && x.trim()).map((x: string) => x.trim()).slice(0, 8) : [];
-	const tractionSignals = Array.isArray(overview.traction_signals) ? overview.traction_signals.filter((x: any) => typeof x === "string" && x.trim()).map((x: string) => x.trim()).slice(0, 5) : [];
-
-	const docCount = input.eligibleDocuments.length;
-	const totalPages = input.eligibleDocuments.reduce((sum, d) => sum + (typeof d.page_count === "number" ? d.page_count : 0), 0);
-	const dealName = typeof input.dealName === "string" && input.dealName.trim() ? input.dealName.trim() : "This deal";
-	const one_liner = `${dealName}: ${product.length > 140 ? product.slice(0, 140).trimEnd() + "…" : product}`;
-
-	const padSentences = [
-		`What it is: ${product}`,
-		`Target customer / ICP: ${icp}`,
-		`Business model signal: ${model}`,
-		recommendation && score != null && confidence ? `Phase 1 signal: ${recommendation} (${score}/100, confidence ${confidence}).` : "Phase 1 signal exists but scoring details may be incomplete.",
-		missing.length > 0 ? `Coverage gaps flagged in Phase 1 include: ${missing.join(", ")}.` : "Coverage gaps were not explicitly listed in Phase 1 output.",
-		`Inputs available at this stage come from ${docCount} extracted document(s) (${totalPages} page(s) total) and Phase 1 structured summaries; treat unknowns as open diligence items.`,
-	];
-
-	const p1 = ensureParagraphConstraints("", { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
-	const p2 = ensureParagraphConstraints("", { minWords: 60, minSentences: 2, maxSentences: 4, padSentences });
-	const p3 = ensureParagraphConstraints(
-		tractionSignals.length > 0 ? `Traction signals observed: ${tractionSignals.join(", ")}.` : "Traction signals were not evidenced in Phase 1.",
-		{ minWords: 60, minSentences: 2, maxSentences: 4, padSentences }
-	);
-
-	const strengths: string[] = [];
-	if (typeof overview.product_solution === "string" && overview.product_solution.trim()) strengths.push("Clear product description present in Phase 1.");
-	if (typeof overview.market_icp === "string" && overview.market_icp.trim()) strengths.push("Identified ICP / target customer.");
-	if (tractionSignals.length > 0) strengths.push(`Traction signals: ${tractionSignals.slice(0, 2).join(", ")}.`);
-	if (strengths.length === 0) strengths.push("Phase 1 provides a starting point but coverage is limited.");
-
-	const risks = missing.length > 0 ? missing.slice(0, 5).map((m: string) => `Missing: ${m}.`) : ["Missing key diligence details (raise/terms, go-to-market, risks)."];
-	const open_questions = missing.length > 0 ? missing.slice(0, 6).map((m: string) => `Clarify: ${m}.`) : ["Clarify raise amount and terms.", "Clarify go-to-market strategy.", "Clarify traction metrics and unit economics."];
-
-	return {
-		generated_at: nowIso,
-		model: "gpt-4o-mini",
-		summary: {
-			one_liner,
-			paragraphs: [p1, p2, p3],
-		},
-		strengths,
-		risks,
-		open_questions,
-	};
-}
+// buildDeterministicDealSummaryV2Fallback — imported from ./summary-utils.js
 
 async function generateDealSummaryV2FromPhase1(input: {
 	nowIso: string;
@@ -1695,6 +1478,276 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 			// Integrity analysis degrades gracefully with no facts — never block orchestration.
 		}
 
+		// ── Pre-scoring LLM Financial Verification + Correction Application ──────
+		// Runs BEFORE orchestrator.analyze() / report compilation, unlike the Field
+		// Auditor further below (which still runs post-compile). This closes the
+		// "correction discovered but only takes effect on a future run" gap:
+		// financialFactsForOrchestrator is the exact array-by-reference that both
+		// orchestrator.analyze() and the report compiler's selectCanonicalRevenueFact
+		// read from later in this same run (verified — neither re-queries the DB at
+		// that point), so mutating a fact's metric_key here propagates to this run's
+		// score, not just the next one.
+		//
+		// Scope: only ACCEPTED corrections sourced from llm_financial_verification
+		// are auto-applied here. By construction of the validator's own accept rule
+		// (requires financial_type !== 'current_revenue'/'historical_revenue' plus
+		// flagged_as_projection or flagged_as_market_sizing), an accepted correction
+		// can only ever mean "take this value OUT of its current classification" —
+		// never a same-classification confirmation — so applying it is safe without
+		// needing extra guards here. Field Auditor corrections and any correction
+		// below the accept threshold are NOT auto-applied; they remain informational
+		// (needs_review / shadow_only) exactly as before.
+		// company_name is a trivial lookup (no compile dependency) — restoring it here
+		// gives the pre-scoring Financial Verifier the same context the old post-compile
+		// call had, rather than classifying blind. archetype is already computed above
+		// (phase1_business_archetype_v1, ~line 1071) and reused as-is.
+		let companyNamePreScoring: string | null = null;
+		try {
+			const dealNameResultPreScoring = await getPool().query<{ name: string | null }>(
+				`SELECT name FROM deals WHERE id = $1::uuid AND deleted_at IS NULL LIMIT 1`,
+				[dealId],
+			);
+			const rawNamePreScoring = dealNameResultPreScoring.rows?.[0]?.name;
+			if (typeof rawNamePreScoring === "string" && rawNamePreScoring.trim().length > 0) {
+				companyNamePreScoring = rawNamePreScoring.trim();
+			}
+		} catch {
+			// fail-open — classification proceeds without a company name
+		}
+
+		let preScoringCorrectionLineage: Awaited<ReturnType<typeof runDeterministicValidatorShadow>> = null;
+		let preScoringFinancialVerification: LLMFinancialVerificationV1 | null = null;
+		// Bump when FINANCIAL_VERIFIER_SYSTEM_PROMPT changes meaningfully, so the
+		// cache below is invalidated rather than silently serving stale decisions
+		// from before the prompt fix.
+		const PRE_SCORING_VERIFIER_PROMPT_VERSION = "pre-scoring-v1";
+		try {
+			// Nothing to classify — skip the LLM call, cache lookup, and everything
+			// downstream of it entirely rather than spending an LLM call on an
+			// empty facts array.
+			if (financialFactsForOrchestrator.length > 0) {
+				const preScoringStartedAt = Date.now();
+				const hasXlsxPreScoring = financialFactsForOrchestrator.some((f) => f.source_kind === "xlsx");
+
+				// Batched, not filtered. Sending every fact in one call hit MAX_TOKENS
+				// well before 100 facts — verified live on a 143-fact deal, where the
+				// LLM's JSON response was truncated and silently produced zero
+				// classifications for the entire deal. A filter that decided which
+				// facts were "worth" sending would create a class of facts that never
+				// reach the LLM with no downstream signal they were skipped, which is
+				// a worse failure mode than the one it would fix. Batching guarantees
+				// every fact is reviewed — it only changes how many calls that takes.
+				// Each batch is cached independently by its own fingerprint, so a deal
+				// where only one fact changed between analyses only re-verifies the one
+				// batch that fact belongs to. See financial-verifier-batching.ts and
+				// financial-verification-cache.ts.
+				const factBatches = packFactsByTokenBudget(financialFactsForOrchestrator);
+				const batchResults: Array<LLMFinancialVerificationV1 | null> = [];
+				let cacheHitCount = 0;
+				let cacheMissCount = 0;
+				let batchFailureCount = 0;
+				// Token accounting: tokensSpent is real spend THIS run — cache hits cost
+				// zero fresh tokens. tokensSaved is what this run's cache hits would have
+				// cost had they not been cached, read back from each hit's own stored
+				// usage — this is the number that should trend toward tokensSpent (and
+				// tokensSpent toward zero) as more of a deal's facts stabilize across
+				// repeated analyses. First run on a deal: heavy, all misses. Every
+				// subsequent run where the facts are unchanged: lighter, more hits.
+				let tokensSpent = 0;
+				let tokensSaved = 0;
+
+				for (const batch of factBatches) {
+					const batchFingerprint = computeFinancialFactsFingerprint(batch);
+					let batchVerif: LLMFinancialVerificationV1 | null = null;
+					let batchCacheHit = false;
+
+					try {
+						const cached = await getPool().query<{ output_json: unknown; meta_json: unknown }>(
+							`SELECT output_json, meta_json FROM deal_report_llm_cache
+							  WHERE deal_id = $1::uuid AND llm_phase_mode = 'exploratory'
+							    AND inputs_hash = $2 AND excerpt_hash = $2
+							    AND call = 'llm_financial_verification_pre_scoring'
+							    AND model = 'gpt-4o-mini' AND prompt_version = $3
+							  ORDER BY created_at DESC LIMIT 1`,
+							[dealId, batchFingerprint, PRE_SCORING_VERIFIER_PROMPT_VERSION],
+						);
+						if (cached.rows[0]?.output_json) {
+							batchVerif = cached.rows[0].output_json as unknown as LLMFinancialVerificationV1;
+							batchCacheHit = true;
+							const cachedUsage = (cached.rows[0].meta_json as { usage?: LLMTokenUsage } | null)?.usage;
+							if (cachedUsage?.total_tokens) tokensSaved += cachedUsage.total_tokens;
+						}
+					} catch (cacheReadErr) {
+						// Cache lookup failure — fail open to a fresh LLM call, never block.
+						console.warn(
+							JSON.stringify({
+								event: "PRE_SCORING_CACHE_READ_FAILED",
+								deal_id: dealId,
+								error: cacheReadErr instanceof Error ? cacheReadErr.message : String(cacheReadErr),
+								ts: new Date().toISOString(),
+							}),
+						);
+					}
+
+					if (!batchVerif) {
+						const batchFactsForVerifier = batch.map((ff) => ({
+							fact_id: ff.fact_id ?? null,
+							metric: ff.metric_key ?? "",
+							value: typeof ff.value === "number" ? ff.value : null,
+							raw_value: ff.excerpt ?? (ff.value != null ? String(ff.value) : null),
+							period: ff.period_label ?? null,
+							source_kind: ff.source_kind ?? null,
+							confidence: ff.confidence === "high" ? 0.85 : ff.confidence === "medium" ? 0.55 : 0.25,
+							is_projection: ff.temporal_scope === "projected" || ff.temporal_scope === "scenario",
+						}));
+						const freshResult = await runLLMFinancialVerificationShadow({
+							deal_id: dealId,
+							run_id: null,
+							company_name: companyNamePreScoring,
+							has_xlsx: hasXlsxPreScoring,
+							has_cap_table: false,
+							financial_breakdown: null,
+							financial_facts: batchFactsForVerifier,
+							deck_financial_signals: null,
+						});
+						batchVerif = freshResult?.verification ?? null;
+						if (freshResult?.usage?.total_tokens) tokensSpent += freshResult.usage.total_tokens;
+
+						if (batchVerif) {
+							try {
+								await getPool().query(
+									`INSERT INTO deal_report_llm_cache
+									   (deal_id, llm_phase_mode, inputs_hash, excerpt_hash, call, model, prompt_version, output_json, meta_json)
+									 VALUES ($1::uuid, 'exploratory', $2, $2, 'llm_financial_verification_pre_scoring', 'gpt-4o-mini', $3, $4::jsonb, $5::jsonb)
+									 ON CONFLICT (deal_id, llm_phase_mode, inputs_hash, excerpt_hash, call, model, prompt_version)
+									 DO NOTHING`,
+									[
+										dealId,
+										batchFingerprint,
+										PRE_SCORING_VERIFIER_PROMPT_VERSION,
+										JSON.stringify(batchVerif),
+										JSON.stringify({ usage: freshResult?.usage ?? null, fact_count: batch.length }),
+									],
+								);
+							} catch (cacheWriteErr) {
+								// Cache write failure — non-blocking, next run just re-verifies.
+								console.warn(
+									JSON.stringify({
+										event: "PRE_SCORING_CACHE_WRITE_FAILED",
+										deal_id: dealId,
+										error: cacheWriteErr instanceof Error ? cacheWriteErr.message : String(cacheWriteErr),
+										ts: new Date().toISOString(),
+									}),
+								);
+							}
+						}
+					}
+
+					if (batchCacheHit) cacheHitCount += 1; else cacheMissCount += 1;
+					if (!batchVerif) batchFailureCount += 1;
+					batchResults.push(batchVerif);
+				}
+
+				const preScoringVerif = mergeFinancialVerifications(batchResults, { deal_id: dealId, run_id: null });
+
+				const preScoringElapsedMs = Date.now() - preScoringStartedAt;
+				console.log(
+					JSON.stringify({
+						event: "PRE_SCORING_FINANCIAL_VERIFICATION_COMPLETE",
+						deal_id: dealId,
+						fact_count: financialFactsForOrchestrator.length,
+						batch_count: factBatches.length,
+						cache_hits: cacheHitCount,
+						cache_misses: cacheMissCount,
+						batch_failures: batchFailureCount,
+						tokens_spent_this_run: tokensSpent,
+						tokens_saved_by_cache: tokensSaved,
+						elapsed_ms: preScoringElapsedMs,
+						ts: new Date().toISOString(),
+					}),
+				);
+				if (batchFailureCount > 0) {
+					// Loud on purpose — a batch failure means some facts in this deal were
+					// not reviewed this run. Coverage still recovers on the next analysis
+					// (each batch is independently retried via its own cache miss), but
+					// this should be visible, not just counted.
+					console.warn(
+						JSON.stringify({
+							event: "PRE_SCORING_FINANCIAL_VERIFICATION_INCOMPLETE",
+							deal_id: dealId,
+							batch_failures: batchFailureCount,
+							batch_count: factBatches.length,
+							ts: new Date().toISOString(),
+						}),
+					);
+				}
+				job.log(
+					`[analyze-deal] pre-scoring financial verification: ${factBatches.length} batch(es), ${cacheHitCount} cache hit(s), ${cacheMissCount} miss(es), ${batchFailureCount} failure(s), ${tokensSpent} tokens spent, ${tokensSaved} tokens saved by cache, ${preScoringElapsedMs}ms`,
+				);
+				preScoringFinancialVerification = preScoringVerif;
+
+				if (preScoringVerif) {
+					preScoringCorrectionLineage = await runDeterministicValidatorShadow({
+						deal_id: dealId,
+						run_id: null,
+						company_name: companyNamePreScoring,
+						archetype: (phase1_business_archetype_v1 as { value?: string } | null)?.value ?? null,
+						llm_field_audit: null,
+						llm_financial_verification: preScoringVerif,
+						structured_summary: null,
+						financial_breakdown: null,
+					});
+
+					// Pure, unit-tested mutation — see apply-financial-corrections.ts and its
+					// test suite for the exact scoping rules (accepted + llm_financial_verification
+					// only; never a same-classification confirmation).
+					const appliedCorrections = applyAcceptedFinancialCorrections(
+						financialFactsForOrchestrator,
+						preScoringCorrectionLineage?.correction_lineage?.corrections ?? [],
+					);
+					for (const { correction, fact, originalMetricKey, newMetricKey } of appliedCorrections) {
+						try {
+							await getPool().query(
+								`UPDATE public.financial_facts_v1
+								    SET metric_key = $1,
+								        provenance_metadata = COALESCE(provenance_metadata, '{}'::jsonb) || $2::jsonb
+								  WHERE fact_id = $3`,
+								[
+									newMetricKey,
+									JSON.stringify({
+										llm_correction: {
+											correction_id: correction.correction_id,
+											original_metric_key: originalMetricKey,
+											corrected_metric_key: newMetricKey,
+											confidence: correction.confidence,
+											evidence_refs: correction.evidence_refs,
+											applied_at: correction.applied_at,
+										},
+									}),
+									fact.fact_id,
+								],
+							);
+						} catch (persistErr) {
+							// In-memory mutation still took effect for this run even if the
+							// DB write failed — never block the analysis job on this.
+							job.log(
+								`[analyze-deal] pre-scoring correction DB persist failed (non-blocking): ${
+									persistErr instanceof Error ? persistErr.message : String(persistErr)
+								}`,
+							);
+						}
+					}
+				}
+			} // end: financialFactsForOrchestrator.length > 0
+		} catch (preScoringAuditErr) {
+			// Fail-open: pre-scoring audit errors must never block the analysis job.
+			job.log(
+				`[analyze-deal] pre-scoring financial verification failed (non-blocking): ${
+					preScoringAuditErr instanceof Error ? preScoringAuditErr.message : String(preScoringAuditErr)
+				}`,
+			);
+		}
+
 		const heartbeat = startHeartbeat(job, {
 			stage: "running",
 			dealId,
@@ -1973,73 +2026,67 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						confidence: typeof f.confidence === 'number' ? f.confidence : 0,
 					}));
 
-					const financialFactsForAudit = (financialFactsForOrchestrator ?? []).map((ff: any) => ({
-						fact_id: ff.fact_id ?? null,
-						metric: String(ff.metric ?? ''),
-						value: typeof ff.value === 'number' ? ff.value : null,
-						raw_value: ff.raw_value ?? null,
-						period: ff.period ?? null,
-						source_kind: ff.source_kind ?? null,
-						confidence: typeof ff.confidence === 'number' ? ff.confidence : null,
-						is_projection: ff.is_projection ?? null,
-					}));
-
 					const runId = String((result.storage_result as any)?.version ?? '') || null;
 
-					const [fieldAuditResult, financialVerifResult] = await Promise.allSettled([
-						runLLMFieldAuditShadow({
-							deal_id: dealId,
-							run_id: runId,
-							company_name: companyName ?? null,
-							archetype,
-							structured_summary: structuredSummary,
-							financial_breakdown: financialBreakdown,
-							promoted_facts_sample: promotedFactsSample,
-							evidence_count: evidenceItemCount ?? 0,
-							has_xlsx: hasXlsx,
-							has_cap_table: hasCapTable,
-						}),
-						runLLMFinancialVerificationShadow({
-							deal_id: dealId,
-							run_id: runId,
-							company_name: companyName ?? null,
-							has_xlsx: hasXlsx,
-							has_cap_table: hasCapTable,
-							financial_breakdown: financialBreakdown,
-							financial_facts: financialFactsForAudit,
-							deck_financial_signals: (compiledReport as any)?.deck_financial_signals ?? null,
-						}),
-					]);
+					// Financial Verifier now runs pre-scoring only (see the block right after
+					// financialFactsForOrchestrator loads, above) so its accepted corrections
+					// can affect this same run's score. Only the Field Auditor still runs here,
+					// post-compile — it needs the compiled structured_summary/financial_breakdown
+					// as input, and its findings (risk flags, archetype review) remain informational
+					// for this run regardless.
+					const fieldAuditResult = await runLLMFieldAuditShadow({
+						deal_id: dealId,
+						run_id: runId,
+						company_name: companyName ?? null,
+						archetype,
+						structured_summary: structuredSummary,
+						financial_breakdown: financialBreakdown,
+						promoted_facts_sample: promotedFactsSample,
+						evidence_count: evidenceItemCount ?? 0,
+						has_xlsx: hasXlsx,
+						has_cap_table: hasCapTable,
+					}).catch(() => null);
 
-					if (fieldAuditResult.status === 'fulfilled' && fieldAuditResult.value) {
-						(compiledReport as any).llm_field_audit_v1 = fieldAuditResult.value;
+					if (fieldAuditResult) {
+						(compiledReport as any).llm_field_audit_v1 = fieldAuditResult;
 					}
-					if (financialVerifResult.status === 'fulfilled' && financialVerifResult.value) {
-						(compiledReport as any).llm_financial_verification_v1 = financialVerifResult.value;
+					if (preScoringFinancialVerification) {
+						(compiledReport as any).llm_financial_verification_v1 = preScoringFinancialVerification;
 					}
 
 					// ── Phase 3: Deterministic Validator ──────────────────────────────────
-					// Validates LLM proposals, produces correction lineage + learning events.
-					// INVARIANT: applied_to_scoring is always false. No scoring fields mutated.
-					const fieldAudit = fieldAuditResult.status === 'fulfilled' ? fieldAuditResult.value : null;
-					const financialVerif = financialVerifResult.status === 'fulfilled' ? financialVerifResult.value : null;
+					// Validates the Field Auditor's proposals (post-compile, informational only
+					// this run — see note above). The pre-scoring Financial Verifier proposals
+					// were already validated earlier; both lineages are merged into
+					// correction_lineage_v1 below so the full trail is visible in one place.
+					const fieldAudit = fieldAuditResult ?? null;
 
-					if (fieldAudit !== null || financialVerif !== null) {
-						const validatorResult = await runDeterministicValidatorShadow({
+					let postCompileValidatorResult: Awaited<ReturnType<typeof runDeterministicValidatorShadow>> = null;
+					if (fieldAudit !== null) {
+						postCompileValidatorResult = await runDeterministicValidatorShadow({
 							deal_id: dealId,
 							run_id: runId,
 							company_name: companyName ?? null,
 							archetype: archetype ?? null,
 							llm_field_audit: fieldAudit,
-							llm_financial_verification: financialVerif,
+							llm_financial_verification: null,
 							structured_summary: structuredSummary,
 							financial_breakdown: financialBreakdown,
 						});
+					}
 
-						if (validatorResult) {
-							(compiledReport as any).correction_lineage_v1 = [validatorResult.correction_lineage];
-							(compiledReport as any).llm_validation_summary_v1 = validatorResult.validation_summary;
-						}
+					const mergedLineages = [
+						preScoringCorrectionLineage?.correction_lineage,
+						postCompileValidatorResult?.correction_lineage,
+					].filter((l): l is NonNullable<typeof l> => l != null);
+					if (mergedLineages.length > 0) {
+						(compiledReport as any).correction_lineage_v1 = mergedLineages;
+					}
+					if (postCompileValidatorResult?.validation_summary) {
+						(compiledReport as any).llm_validation_summary_v1 = postCompileValidatorResult.validation_summary;
+					}
+					if (preScoringCorrectionLineage?.validation_summary) {
+						(compiledReport as any).llm_pre_scoring_validation_summary_v1 = preScoringCorrectionLineage.validation_summary;
 					}
 
 					if (envFlagEnabled(process.env.INVESTMENT_INTERPRETATION_SHADOW_MODE)) {
@@ -2067,9 +2114,10 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 								confidence: fact.confidence,
 								source_kind: null,
 							})),
-							financial_verification: financialVerif,
+							financial_verification: preScoringFinancialVerification,
 							validation_summary: (compiledReport as any)?.llm_validation_summary_v1 ?? null,
-							accepted_corrections: ((compiledReport as any)?.correction_lineage_v1?.[0]?.corrections ?? [])
+							accepted_corrections: (((compiledReport as any)?.correction_lineage_v1 ?? []) as any[])
+								.flatMap((lineage: any) => lineage?.corrections ?? [])
 								.filter((item: any) => item?.validator_status === 'accepted')
 								.slice(0, 5)
 								.map((item: any) => `${item.original_field} -> ${item.proposed_field}: ${item.correction_type}`),
@@ -2108,9 +2156,12 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 						const p4HasCapTable = Boolean((compiledReport as any)?.has_cap_table);
 						const p4Archetype = (compiledReport as any)?.archetype ?? null;
 
-						// Build accepted corrections summary for synthesizer context
+						// Build accepted corrections summary for synthesizer context — flatten
+						// across all merged lineages (pre-scoring + post-compile), not just the first.
 						const lineageItems: Array<Record<string, unknown>> =
-							(compiledReport as any)?.correction_lineage_v1?.[0]?.corrections ?? [];
+							(((compiledReport as any)?.correction_lineage_v1 ?? []) as any[]).flatMap(
+								(lineage: any) => lineage?.corrections ?? [],
+							);
 						const acceptedCorrectionsSummary = lineageItems
 							.filter((c: any) => c.validator_status === 'accepted')
 							.slice(0, 5)

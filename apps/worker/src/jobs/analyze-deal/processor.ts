@@ -2200,6 +2200,35 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 							? `Financial completeness: ${financialCovPct}%`
 							: null;
 
+						// Field Auditor risk flags -> plain-language contradiction summaries.
+						// This is the Field Auditor's own findings (e.g. "$2B figure is an
+						// operational-projection calculation, not revenue"), not the richer
+						// deterministic contradiction detector behind the Decision Confidence
+						// panel (detectDeepDiveContradictionsV1) — that detector needs
+						// orchestrator_report, which isn't built until after analyze_deal
+						// completes (investor-insights render package), so it isn't reachable
+						// here without a larger pipeline reorder. Using what's actually in
+						// scope now still closes the gap where this list was always empty.
+						const riskFlagsForSynthesizer = (compiledReport as any)?.llm_field_audit_v1?.risk_flags;
+						const contradictionSummariesForSynthesizer: string[] = Array.isArray(riskFlagsForSynthesizer)
+							? riskFlagsForSynthesizer
+								.map((flag: any) => String(flag?.description ?? '').trim())
+								.filter((s: string) => s.length > 0)
+								.slice(0, 8)
+							: [];
+
+						// Underwriting readiness is already computed deterministically by this
+						// point (used above for the coordinator's own decision_readiness read) —
+						// its reasons/missing lists were previously never passed to the
+						// synthesizer at all.
+						const underwritingReadinessForSynthesizer = (compiledReport as any)?.underwriting_readiness_v1 ?? null;
+						const underwritingReadinessNotesForSynthesizer: string[] = Array.isArray(underwritingReadinessForSynthesizer?.reasons)
+							? underwritingReadinessForSynthesizer.reasons.slice(0, 8)
+							: [];
+						const missingEvidenceSignalsForSynthesizer: string[] = Array.isArray(underwritingReadinessForSynthesizer?.missing)
+							? underwritingReadinessForSynthesizer.missing.slice(0, 8)
+							: [];
+
 						// Synthesize rationale
 						const rationale = await runLLMDecisionRationaleShadow({
 							deal_id: dealId,
@@ -2221,12 +2250,12 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 								is_projection: ff.is_projection ?? null,
 								source_kind: ff.source_kind ?? null,
 							})),
-							contradiction_summaries: [],
-							missing_evidence_signals: [],
+							contradiction_summaries: contradictionSummariesForSynthesizer,
+							missing_evidence_signals: missingEvidenceSignalsForSynthesizer,
 							accepted_corrections_summary: acceptedCorrectionsSummary,
 							decision_readiness_score: (compiledReport as any)?.decision_readiness?.score ?? null,
 							financial_completeness_pct: financialCovPct,
-							underwriting_readiness_notes: [],
+							underwriting_readiness_notes: underwritingReadinessNotesForSynthesizer,
 							section_health_summary: null,
 						});
 

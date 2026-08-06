@@ -14,6 +14,7 @@ import {
   RiskAssessmentEngine,
   FinancialIntegrityAnalyzerV1,
   sanitizeText,
+  getScoreBandV2,
 } from "@dealdecision/core";
 import {
   getPool,
@@ -2144,9 +2145,25 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 				// - No scoring, conviction, or verdict fields are mutated
 				// - Rationale only reaches compiledReport if validator passes
 				try {
+					// `recommendation` (compiler-simple.ts's scoreToRecommendation()) is
+					// deliberately NOT used as a fallback here: it's a different, coarser
+					// vocabulary where 'pass' means "score < 55, decline" — the opposite
+					// of what this file's own verdictLabel mapping treats 'PASS' as
+					// ("recommend for capital commitment"). canonical_decision_v2 is only
+					// populated later, at API report-read time (apps/api/src/routes/reports.ts),
+					// so it's never actually available here — getScoreBandV2() is the
+					// closest correctly-polarized, already-canonical signal computed by
+					// this point in the pipeline (SCORING_SOURCE_OF_TRUTH_CONTRACT.md §4.1).
+					const overallScoreForVerdict: number | null =
+						typeof (compiledReport as any)?.overallScore === 'number'
+							? (compiledReport as any).overallScore
+							: null;
+					const scoreBandForVerdict = overallScoreForVerdict != null
+						? getScoreBandV2(overallScoreForVerdict)
+						: null;
 					const canonicalVerdict: string =
 						(compiledReport as any)?.canonical_decision_v2?.verdict ??
-						(compiledReport as any)?.recommendation ??
+						scoreBandForVerdict?.key ??
 						null;
 
 					if (canonicalVerdict) {

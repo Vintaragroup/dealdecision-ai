@@ -1520,7 +1520,7 @@ export async function analyzeDealProcessor(job: Job): Promise<any> {
 		// Bump when FINANCIAL_VERIFIER_SYSTEM_PROMPT changes meaningfully, so the
 		// cache below is invalidated rather than silently serving stale decisions
 		// from before the prompt fix.
-		const PRE_SCORING_VERIFIER_PROMPT_VERSION = "pre-scoring-v1";
+		const PRE_SCORING_VERIFIER_PROMPT_VERSION = "pre-scoring-v2";
 		try {
 			// Nothing to classify — skip the LLM call, cache lookup, and everything
 			// downstream of it entirely rather than spending an LLM call on an

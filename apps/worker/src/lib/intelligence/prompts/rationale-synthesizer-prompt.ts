@@ -212,10 +212,21 @@ export function buildRationaleSynthesizerUserPrompt(
 ): string {
   const verdictLabel = (() => {
     const v = (input.canonical_verdict ?? '').toUpperCase();
+    // canonical_decision_v2 vocabulary (rare here — see processor.ts comment on
+    // why this is almost always the score-band vocabulary below instead)
     if (v === 'PASS') return 'PASS — recommend for capital commitment';
     if (v === 'REJECT') return 'REJECT — do not proceed';
     if (v === 'INVESTIGATE') return 'INVESTIGATE — warrants continued diligence but not yet capital commitment';
     if (v === 'MONITOR') return 'MONITOR — track but do not commit capital';
+    // ScoreBandV2 vocabulary (score-bands-v2.ts) — the actual verdict input in
+    // the normal case, since canonical_decision_v2 isn't computed yet at this
+    // point in the pipeline.
+    if (v === 'HARD_PASS') return 'HARD PASS — score indicates decline, do not proceed';
+    if (v === 'CONSIDER_CAUTION') return 'CONSIDER WITH CAUTION — warrants continued diligence but not yet capital commitment';
+    if (v === 'STRONG_CONSIDER') return 'STRONG CONSIDER — promising, but confidence still needs to be established';
+    if (v === 'FUND_CAUTION') return 'FUND WITH CAUTION — supportable for capital commitment with noted risks';
+    if (v === 'FUND_TRACK') return 'FUND & TRACK — recommend for capital commitment with ongoing monitoring';
+    if (v === 'FUND_CONFIDENT') return 'FUND — recommend for capital commitment with high confidence';
     return input.canonical_verdict;
   })();
 

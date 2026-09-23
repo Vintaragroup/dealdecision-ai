@@ -5,11 +5,15 @@
  * system. Each item records who proposed what, what the validator decided,
  * and whether the correction was applied to scoring.
  *
- * Phase 1: Types only. No corrections are applied to scoring in Phase 1.
- * Phase 3+: The validator may flip applied_to_scoring to true after the
- *   validator pipeline is wired.
- *
- * INVARIANT: applied_to_scoring is ALWAYS false in Phase 1 and Phase 2.
+ * runDeterministicCorrectionValidatorV1() itself always returns
+ * applied_to_scoring: false — the validator only decides accept/reject/
+ * needs_review/shadow_only, it never applies anything. applied_to_scoring
+ * becomes true only downstream, in
+ * apps/worker/src/lib/intelligence/apply-financial-corrections.ts, which is
+ * called from apps/worker/src/jobs/analyze-deal/processor.ts pre-scoring for
+ * corrections that are source: 'llm_financial_verification' AND
+ * validator_status: 'accepted'. All other sources/statuses remain
+ * informational (applied_to_scoring stays false).
  */
 
 export type CorrectionLineageSource =

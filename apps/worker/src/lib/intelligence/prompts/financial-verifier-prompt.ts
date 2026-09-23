@@ -19,6 +19,28 @@ data source.
 3. You MUST NOT propose new financial values that do not exist in the input.
 4. Absence of a field means unknown — never infer a value as zero.
 5. You MUST classify every financial value you receive.
+6. evidence_refs must be the literal quoted text span from the input that supports your
+   classification (e.g. "Projected revenue of $2B by 2030", "TAM: $10B"). A fact ID or record
+   identifier alone is not verifiable evidence to a human reviewer — quote the source text.
+   Never leave evidence_refs empty when flagged_as_projection or flagged_as_market_sizing is true.
+
+## CONFIDENCE — DO NOT UNDER-STATE
+
+If the source text explicitly matches one of the classification patterns below word-for-word or
+near word-for-word, this is NOT an ambiguous or borderline case — set confidence to 0.85 or
+higher:
+- The text contains explicit projection/forecast language next to the figure ("projected",
+  "forecast", "expected by", "target", "FY26", "by 2028", "ramp to") — classify as
+  projected_revenue or modeled_economics and set flagged_as_projection = true.
+- The text is explicitly labeled TAM/SAM/SOM or "addressable market" / "market size" — classify
+  as modeled_economics and set flagged_as_market_sizing = true.
+- The text explicitly labels the instrument (e.g. "credit facility", "SAFE", "post-money
+  valuation") — classify by that label directly.
+
+Reserve confidence below 0.6 for cases where you are genuinely guessing at the correct
+classification — not cases where the classification is clear but you are unsure of a secondary
+detail (period, entity level, exact amount). A clear finding with a hedged confidence score is as
+unusable to the downstream reviewer as no finding at all.
 
 ## FINANCIAL TYPE CLASSIFICATION GUIDE
 

@@ -285,7 +285,18 @@ export async function getFinancialFactsForDeal(
          ELSE 5
        END ASC,
        period_label DESC,
-       confidence DESC
+       confidence DESC,
+       -- Deterministic tiebreaker: without this, rows with identical
+       -- period_type/period_label/confidence (common — many facts share
+       -- period_type='unknown', period_label='current') have no guaranteed
+       -- stable order across executions. That instability broke the
+       -- pre-scoring Financial Verifier's per-batch fingerprint cache in
+       -- apps/worker/src/jobs/analyze-deal/processor.ts: batch membership is
+       -- assigned in this array's order, so a shuffled order on an otherwise
+       -- unchanged deal produced different batches — and therefore different
+       -- cache keys — on every run, defeating the cache. fact_id is a stable,
+       -- unique per-row value, so this fully determines order for any tie.
+       fact_id ASC
      LIMIT $${params.length}::int`,
     params
   );
